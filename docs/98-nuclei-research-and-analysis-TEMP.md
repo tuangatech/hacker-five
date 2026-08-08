@@ -1,4 +1,4 @@
-# Nuclei Research & Analysis for VulnDetector
+# Nuclei Research & Analysis for HackerFive
 
 > Research conducted: August 2026
 > Sources: GitHub repo (30,357 stars), source code, documentation, pricing page, community templates
@@ -104,7 +104,7 @@ type Engine struct {
 
 ### 1.5 Protocol Coverage
 
-| Protocol | Use Case | VulnDetector Relevance |
+| Protocol | Use Case | HackerFive Relevance |
 |----------|----------|----------------------|
 | HTTP | Web/API scanning | ★★★★★ (core focus) |
 | DNS | Subdomain takeover | ★★☆☆☆ |
@@ -278,11 +278,11 @@ nuclei -target https://target.com -t /path/to/custom-templates/
 
 ---
 
-## Part 4: Comparison — Nuclei vs. VulnDetector
+## Part 4: Comparison — Nuclei vs. HackerFive
 
 ### 4.1 Feature Matrix
 
-| Feature | Nuclei | VulnDetector (Planned) |
+| Feature | Nuclei | HackerFive (Planned) |
 |---------|--------|----------------------|
 | **Language** | Go | Go (same choice ✓) |
 | **Template Format** | YAML | YAML (same ✓) |
@@ -301,11 +301,11 @@ nuclei -target https://target.com -t /path/to/custom-templates/
 
 ### 4.2 Key Differentiators
 
-**Where VulnDetector Wins:**
+**Where HackerFive Wins:**
 1. **IDOR Detection:** Nuclei has ZERO IDOR templates. This is your biggest opportunity — 42% of all vulnerabilities, highest impact.
-2. **Stateful Business Logic:** Nuclei's extractors are basic. VulnDetector's full state machine enables complex multi-step exploit chains.
-3. **Bug Bounty Specialization:** Nuclei targets CVEs and infrastructure. VulnDetector targets business logic flaws that earn the highest bounties.
-4. **False Positive Rate:** Nuclei uses simple matchers. VulnDetector's multi-step validation (auth → access → compare) dramatically reduces false positives.
+2. **Stateful Business Logic:** Nuclei's extractors are basic. HackerFive's full state machine enables complex multi-step exploit chains.
+3. **Bug Bounty Specialization:** Nuclei targets CVEs and infrastructure. HackerFive targets business logic flaws that earn the highest bounties.
+4. **False Positive Rate:** Nuclei uses simple matchers. HackerFive's multi-step validation (auth → access → compare) dramatically reduces false positives.
 
 **Where Nuclei Wins (and you should learn from):**
 1. **Community Templates:** 18,000+ is insurmountable directly. Strategy: focus on a niche they don't serve.
@@ -326,7 +326,7 @@ http:
         words: ["DB_PASSWORD="]
 ```
 
-**VulnDetector IDOR Template (your approach):**
+**HackerFive IDOR Template (your approach):**
 ```yaml
 id: idor-user-profile
 variables:
@@ -352,7 +352,7 @@ requests:
     condition: token_a != ""
 ```
 
-**Key difference:** Nuclei checks for static signatures. VulnDetector simulates real attacker behavior (authenticate → mutate → compare).
+**Key difference:** Nuclei checks for static signatures. HackerFive simulates real attacker behavior (authenticate → mutate → compare).
 
 ---
 
@@ -374,7 +374,7 @@ requests:
 
 Don't try to beat Nuclei at their game. Instead:
 
-> "Nuclei finds CVEs and misconfigurations. VulnDetector finds business logic flaws."
+> "Nuclei finds CVEs and misconfigurations. HackerFive finds business logic flaws."
 
 **Tagline:** "The scanner that finds what Nuclei misses."
 
@@ -406,7 +406,7 @@ Instead of 18,000 templates, start with **50 high-quality, bug-bounty-specific t
 │  TIER 1: CLI (Free) — Your "Trojan Horse"              │
 │  • Single binary, `go install`                         │
 │  • 50 bug-bounty-specific templates included           │
-│  • `vulndetector scan --target URL`                    │
+│  • `hackerfive scan --target URL`                    │
 │  • Goal: Get into bug hunters' workflows              │
 └────────────────────┬────────────────────────────────────┘
                      │
@@ -600,7 +600,7 @@ Based on ProjectDiscovery's model:
 
 **Nuclei is the gold standard for general-purpose vulnerability scanning.** With 30K+ GitHub stars, 18,000+ community templates, and a mature 3-tier deployment model (OSS CLI → Cloud → Pro/Enterprise), they've built an impressive ecosystem.
 
-**However, Nuclei has critical gaps that VulnDetector can exploit:**
+**However, Nuclei has critical gaps that HackerFive can exploit:**
 
 1. **No IDOR detection** — 42% of all vulnerabilities, your Phase 1 focus
 2. **No business logic testing** — The highest-bounty category

@@ -1,8 +1,8 @@
 # Overview & Strategy
 
-> Part of the [VulnDetector documentation set](../README.md).
+> Part of the [HackerFive documentation set](../README.md).
 
-**Project Name:** VulnDetector (Working Title)
+**Project Name:** HackerFive
 **Goal:** Build an open-source, high-performance vulnerability scanner to participate in HackerOne bug bounty programs
 **Phase 1 Launch:** ~10 weeks (IDOR + Misconfiguration)
 **Full Product Launch:** ~26 weeks (all phases) — see [03-development-roadmap.md](03-development-roadmap.md) for the authoritative week-by-week schedule
@@ -59,7 +59,7 @@ Focus on **high-volume, automatable** vulnerabilities where competitors have wea
   - Test ID mutation (1→2, alice→bob, UUID permutation)
   - Compare HTTP responses (status, body hash, content length)
   - Flag if unauthorized user can access another's data
-- **Template Format:** VulnDetector-native (baseline-mode two-account comparison has no Nuclei equivalent)
+- **Template Format:** HackerFive-native (baseline-mode two-account comparison has no Nuclei equivalent)
 - **False Positive Rate:** Very low (response content differs significantly)
 - **Automation Difficulty:** Medium (requires state awareness)
 - **Estimated Effort:** 3 weeks

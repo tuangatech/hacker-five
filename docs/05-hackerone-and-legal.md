@@ -1,6 +1,6 @@
 # HackerOne & Bug Bounty Workflow, Security & Legal Considerations
 
-> Part of the [VulnDetector documentation set](../README.md).
+> Part of the [HackerFive documentation set](../README.md).
 
 ## Joining HackerOne & Bug Bounty Programs
 
@@ -209,6 +209,16 @@ curl -H "Authorization: Bearer ABC123" \
 
 ## Security & Legal Considerations
 
+### Running the Tool Against Live Programs: CLI, Not a Container
+
+Once a program's scope is confirmed, run HackerFive as the **native CLI binary**, not the Docker image, for actual bounty work:
+- Bug-hunting is interactive and iterative — tweak a template, rerun, check the Burp/MitmProxy trace, inspect output. A native binary has none of the friction a container adds: no volume-mounting for output files, no `host.docker.internal` indirection just to route `--proxy` to a proxy running on your own machine.
+- This is also the reason Go/single-static-binary was chosen in the first place ([02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md)) and why cross-platform `goreleaser` binaries are the planned release artifact — `curl`/`brew install`/download-and-run is the intended experience for the primary user (independent bug hunters), matching Nuclei's own distribution model.
+
+The Docker image still ships and still earns its keep elsewhere — CI pipelines (the deferred GitHub Action) and unattended/scheduled scans on a remote server — but it's a secondary distribution path, not how you'd run a hands-on engagement against a real program.
+
+Regardless of which one you run: only ever point either at hosts explicitly listed in a program's scope (see Step 2.2 above), same authorization boundary either way.
+
 ### Legal Requirements
 
 #### 1. **Authorization**
@@ -247,15 +257,15 @@ Your tool should:
 ```go
 // Example: Store API keys securely
 type Config struct {
-	BearerToken string `envvar:"VULNDETECTOR_TOKEN"`
-	APIKey      string `envvar:"VULNDETECTOR_API_KEY"`
+	BearerToken string `envvar:"HACKERFIVE_TOKEN"`
+	APIKey      string `envvar:"HACKERFIVE_API_KEY"`
 }
 
 // Load from environment, never hardcode
 func LoadConfig() *Config {
 	return &Config{
-		BearerToken: os.Getenv("VULNDETECTOR_TOKEN"),
-		APIKey:      os.Getenv("VULNDETECTOR_API_KEY"),
+		BearerToken: os.Getenv("HACKERFIVE_TOKEN"),
+		APIKey:      os.Getenv("HACKERFIVE_API_KEY"),
 	}
 }
 ```

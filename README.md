@@ -1,6 +1,8 @@
-# VulnDetector
+# HackerFive
 
 Open-source, high-performance vulnerability scanner (Go) built to support bug bounty hunting on HackerOne and similar platforms. Currently in planning — no code yet.
+
+Repo: https://github.com/tuangatech/hacker-five
 
 ## Docs
 

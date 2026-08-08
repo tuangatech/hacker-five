@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> Part of the [VulnDetector documentation set](../README.md).
+> Part of the [HackerFive documentation set](../README.md).
 
 ## Phased Development Plan
 
@@ -19,9 +19,9 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 #### Week 1-2: Project Setup & Architecture
 - [ ] Initialize Go project structure
   ```
-  vulndetector/
+  hackerfive/
   ├── cmd/
-  │   └── vulndetector/
+  │   └── hackerfive/
   │       └── main.go
   ├── pkg/
   │   ├── scanner/
@@ -116,7 +116,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 **Deliverable:** Misconfiguration/panel checks run against real upstream Nuclei templates with matching results, with non-HTTP protocol templates rejected rather than silently ignored
 
 #### Week 7-8: Native YAML Template Engine
-- [ ] Implement YAML parser for the VulnDetector-native format (gopkg.in/yaml.v3), reserved for stateful/authorization-aware checks (IDOR, later business logic) that Nuclei's format has no equivalent for
+- [ ] Implement YAML parser for the HackerFive-native format (gopkg.in/yaml.v3), reserved for stateful/authorization-aware checks (IDOR, later business logic) that Nuclei's format has no equivalent for
 - [ ] Support matchers:
   - Status code matching
   - Word/regex matching
@@ -132,6 +132,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
   - Unit tests for detector modules (80%+ coverage)
   - Integration tests against crAPI, vAPI, DVWA
   - Benchmark tests for performance (req/sec, memory usage)
+  - Fuzz targets for the HTTP client and template/response parsers (seeded in Phase 1a, expanded here)
 - [ ] Run against practice targets:
   - crAPI: 8+ IDOR findings
   - DVWA: 15+ misconfiguration findings
@@ -146,8 +147,8 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
   - Installation instructions (go install, docker, source)
   - Quick-start examples
   - Template writing guide, covering both the Nuclei-compatible template path and the native format
-- [ ] Write installation guide for common platforms (Linux, macOS, Windows)
-- [ ] Create issue/PR templates for GitHub
+- [ ] Write installation guide for common platforms (Linux, macOS, Windows), built via `goreleaser` for cross-compiled binaries
+- [ ] Create issue/PR templates for GitHub, plus `CONTRIBUTING.md` (PR process, code style, required checks before submitting)
 
 **Deliverable:** v0.1.0 release with clean documentation
 
@@ -164,7 +165,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Add stateful detection (authentication, session management) and improve coverage of common web vulnerabilities.
 
-**Note on GitHub Action:** once the CLI output schema is stable (post v0.1.0), build `vulndetector/scan-action` as a thin wrapper around the existing Docker image. Treated as a parallel/stretch item, not a blocking Phase 2 deliverable.
+**Note on GitHub Action:** once the CLI output schema is stable (post v0.1.0), build `hackerfive/scan-action` as a thin wrapper around the existing Docker image. Treated as a parallel/stretch item, not a blocking Phase 2 deliverable.
 
 #### Week 11-12: API Auth Bypass Detector
 - [ ] Implement JWT testing:
@@ -264,6 +265,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] Release v1.0.0 with all Phase 3 features
 - [ ] Write blog posts on Prompt Injection detection
 - [ ] Launch community template repository
+- [ ] Evaluate template signing now that third-party submissions are actually accepted (see "Future Considerations" in [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — premature before this point)
 - [ ] Organize first community contribution
 
 **Phase 3 Success Metrics:**

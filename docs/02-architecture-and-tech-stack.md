@@ -1,6 +1,6 @@
 # Architecture & Technology Stack
 
-> Part of the [VulnDetector documentation set](../README.md).
+> Part of the [HackerFive documentation set](../README.md).
 
 ## Technology Stack
 
@@ -72,6 +72,7 @@
   - Proxy support (for routing through Burp, MitmProxy)
   - Custom headers (User-Agent rotation, API keys)
   - Request/response logging
+- **Host error cache:** track consecutive errors per host across a scan; once a host crosses an error threshold, skip further requests to it rather than continuing to hammer an unreachable or broken target for the rest of an ID-enumeration run
 
 #### 4. **Concurrency Framework: Go Goroutines + Worker Pool**
 - Implement configurable worker pool (default: 25 concurrent requests)
@@ -84,6 +85,7 @@
   - Markdown (for GitHub issue templates)
   - HTML (for stakeholder reports)
   - HackerOne JSON schema (for platform integration)
+- **Exporter interface:** one `Exporter` interface (`Export(*Finding) error`) with one implementation per format above — justified since multiple concrete formats are already planned (rule of three), not a speculative abstraction. No separate `Tracker`/issue-creation interface (GitHub, Jira, etc.) — HackerOne is the only external integration target (see [01-overview-and-strategy.md](01-overview-and-strategy.md)), and even that's report-drafting export, not live issue tracking.
 
 - **Optional:** SQLite for local finding history
 
@@ -103,11 +105,14 @@
 Matcher/regex matching uses the standard library `regexp` (RE2) — it's arm64-native, avoids cgo, and keeps cross-compiled CI builds reproducible. (An earlier draft of this list named `github.com/valyala/fastregexp`, which does not exist as a published package — do not add it.) Only reach for a third-party engine such as `github.com/dlclark/regexp2` if a template genuinely needs PCRE-only features RE2 can't express (backreferences, lookahead).
 
 #### 8. **Development Tools**
-- **Testing:** Go's built-in `testing` package + testify for assertions
+- **Testing:** Go's built-in `testing` package + testify for assertions; native `testing.F` fuzz targets for the HTTP client and response parsers (the scanner parses untrusted target responses, which is attack surface for the tool itself, not just the target)
+- **Build:** a `Makefile` wrapping `build`/`test`/`lint`/`fuzz`/`integration` targets, so the commands used throughout this doc set have one canonical entry point instead of being copy-pasted per doc
+- **Error handling:** wrap errors with context via stdlib `fmt.Errorf("...: %w", err)` and inspect with `errors.Is`/`errors.As` — no custom error-context package; that solves a debugging-at-scale problem this project doesn't have yet
 - **Linting:** golangci-lint
 - **Documentation:** MkDocs (similar to Nuclei docs)
 - **CI/CD:** GitHub Actions
 - **Docker:** Multi-stage build for production image
+- **Releases:** goreleaser for cross-compiled Linux/macOS/Windows binaries, backing the installation guide in the Phase 1b packaging step
 
 ### Development & Testing Stack
 
@@ -127,8 +132,8 @@ Matcher/regex matching uses the standard library `regexp` (RE2) — it's arm64-n
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    VulnDetector CLI                          │
-│  (Command: vulndetector scan --targets urls.txt --templates) │
+│                    HackerFive CLI                          │
+│  (Command: hackerfive scan --targets urls.txt --templates) │
 └────────────────────┬─────────────────────────────────────────┘
                      │
       ┌──────────────┼──────────────┐
@@ -211,6 +216,15 @@ Matcher/regex matching uses the standard library `regexp` (RE2) — it's arm64-n
 - Severity scoring
 - CVSS calculation (if applicable)
 - Output formatting
+
+## Future Considerations (Not Yet Scoped)
+
+Deferred because the trigger condition for needing them hasn't happened yet — revisit if the trigger occurs, not on a fixed date.
+
+- **Callback-based streaming results:** findings are returned as a batch (`[]Finding`) today. Revisit once a single scan run against many templates/targets makes "nothing shown until the whole scan finishes" a real UX problem — not needed at Phase 1-3 scan sizes.
+- **In-memory template cache:** only pays off when the same process re-parses the same templates across multiple scan jobs — true for a long-running service, not a single-shot CLI invocation. No action unless HackerFive grows a persistent service mode, which isn't currently planned.
+- **Template signing:** relevant once the community template repository (Milestone 4 / Phase 3 Week 26 in [03-development-roadmap.md](03-development-roadmap.md)) actually accepts third-party submissions. Premature while templates are either project-authored or pulled from the pinned upstream `nuclei-templates` commit.
+- **Auto-generated `SYNTAX-REFERENCE.md` (docgen):** the hand-written template-writing guide (Phase 1b packaging step) covers this need for now. Auto-generation from code solves a scale-of-external-contributors problem this project doesn't have yet.
 
 ## See also
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — the detectors this architecture must support

@@ -1,6 +1,6 @@
 # Success Metrics, Resources & FAQ
 
-> Part of the [VulnDetector documentation set](../README.md).
+> Part of the [HackerFive documentation set](../README.md).
 
 ## Success Metrics
 

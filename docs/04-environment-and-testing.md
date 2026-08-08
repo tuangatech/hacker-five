@@ -1,6 +1,6 @@
 # Development Environment & Testing Strategy
 
-> Part of the [VulnDetector documentation set](../README.md).
+> Part of the [HackerFive documentation set](../README.md).
 
 ## Development Environment Setup
 
@@ -77,27 +77,27 @@ sudo apt update && sudo apt install -y git
 #### 1. **Clone/Initialize Repository**
 ```bash
 # Clone if forking from existing repo
-git clone https://github.com/yourusername/vulndetector.git
-cd vulndetector
+git clone https://github.com/tuangatech/hacker-five.git
+cd hacker-five
 
 # Or initialize new project
-mkdir vulndetector
-cd vulndetector
+mkdir hacker-five
+cd hacker-five
 git init
-go mod init github.com/yourusername/vulndetector
+go mod init github.com/tuangatech/hacker-five
 ```
 
 #### 2. **Create Project Structure**
 ```bash
-mkdir -p cmd/vulndetector pkg/{scanner,detectors,template,reporter} templates/{idor,misconfig} tests
+mkdir -p cmd/hackerfive pkg/{scanner,detectors,template,reporter} templates/{idor,misconfig} tests
 
 # Create main entry point
-touch cmd/vulndetector/main.go
+touch cmd/hackerfive/main.go
 ```
 
 #### 3. **Initialize Go Modules**
 ```bash
-go mod init github.com/yourusername/vulndetector
+go mod init github.com/tuangatech/hacker-five
 go get github.com/spf13/cobra
 go get gopkg.in/yaml.v3
 go get github.com/json-iterator/go
@@ -107,7 +107,7 @@ Before adding a regex dependency for the matcher engine, check whether the stand
 #### 4. **Create .gitignore**
 ```bash
 # Binaries
-vulndetector
+hackerfive
 *.exe
 *.dll
 *.so
@@ -205,9 +205,9 @@ pip install mitmproxy
 mitmproxy --listen-host 127.0.0.1 --listen-port 8080
 
 # Configure tool to use proxy:
-vulndetector scan -t http://localhost:8888 --proxy http://127.0.0.1:8080
+hackerfive scan -t http://localhost:8888 --proxy http://127.0.0.1:8080
 ```
-On Windows, run `vulndetector` and `mitmproxy` inside WSL2 for consistency with the rest of this doc; `127.0.0.1` inside WSL2 is reachable from the Windows host, so pointing a Windows-native Burp at the same port works too.
+On Windows, run `hackerfive` and `mitmproxy` inside WSL2 for consistency with the rest of this doc; `127.0.0.1` inside WSL2 is reachable from the Windows host, so pointing a Windows-native Burp at the same port works too.
 
 #### 4. **Postman (Template Development)**
 ```bash
@@ -232,7 +232,7 @@ cat > .vscode/settings.json << 'EOF'
 }
 EOF
 ```
-**Windows:** install VS Code natively on Windows, then add the **Remote - WSL** extension (`code --install-extension ms-vscode-remote.remote-wsl`) and open the repo with `code .` *from inside the WSL2 Ubuntu shell*, in the repo's WSL2 path (e.g. `/home/you/vulndetector`). This runs the Go extension, terminal, and file watching inside WSL2 — the same environment used for `go build`/`docker`/`git` above — instead of against the slower, path-mismatched `\\wsl$\...` network share.
+**Windows:** install VS Code natively on Windows, then add the **Remote - WSL** extension (`code --install-extension ms-vscode-remote.remote-wsl`) and open the repo with `code .` *from inside the WSL2 Ubuntu shell*, in the repo's WSL2 path (e.g. `/home/you/hackerfive`). This runs the Go extension, terminal, and file watching inside WSL2 — the same environment used for `go build`/`docker`/`git` above — instead of against the slower, path-mismatched `\\wsl$\...` network share.
 
 #### **GoLand / IntelliJ IDEA**
 - Built-in Go support
@@ -291,9 +291,9 @@ func TestIDORDetector_SimpleSequentialIDs(t *testing.T) {
 
 | Target | Endpoint | Expected Findings | Command |
 |--------|----------|-------------------|---------|
-| **crAPI** | `/dashboard` | IDOR (vehicle access) | `vulndetector scan -t http://localhost:8888 --template idor/` |
-| **DVWA** | `/vulnerabilities/` | Misc (SQL injection, XSS) | `vulndetector scan -t http://localhost/DVWA --template misconfig/` |
-| **Juice Shop** | `/api/` | XSS, Auth bypass, IDOR | `vulndetector scan -t http://localhost:3000 --template xss/` |
+| **crAPI** | `/dashboard` | IDOR (vehicle access) | `hackerfive scan -t http://localhost:8888 --template idor/` |
+| **DVWA** | `/vulnerabilities/` | Misc (SQL injection, XSS) | `hackerfive scan -t http://localhost/DVWA --template misconfig/` |
+| **Juice Shop** | `/api/` | XSS, Auth bypass, IDOR | `hackerfive scan -t http://localhost:3000 --template xss/` |
 
 #### Test Execution Plan
 ```bash
@@ -304,11 +304,11 @@ docker compose up -d
 go test -v -tags=integration ./tests/integration/...
 
 # 3. Compare against expected findings (false positive check)
-vulndetector scan -t http://localhost:8888 --json > findings.json
+hackerfive scan -t http://localhost:8888 --json > findings.json
 python3 scripts/validate_findings.py findings.json
 
 # 4. Measure performance
-time vulndetector scan -t http://localhost:8888 -c 50
+time hackerfive scan -t http://localhost:8888 -c 50
 ```
 
 ### Performance Benchmarking
