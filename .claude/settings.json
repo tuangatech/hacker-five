@@ -26,7 +26,8 @@
       "Bash(make test *)",
       "Bash(git add *)",
       "Bash(git check-ignore *)",
-      "Bash(grep -n \"^hackerfive$\" /Users/tuan.tran/Tuan/weekend/hacker-five/docs/04-environment-and-testing.md)"
+      "Bash(grep -n \"^hackerfive$\" /Users/tuan.tran/Tuan/weekend/hacker-five/docs/04-environment-and-testing.md)",
+      "Bash(git mv *)"
     ]
   }
 }

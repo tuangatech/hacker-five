@@ -8,7 +8,7 @@
 
 **Goal:** Deliver a working MVP that detects IDOR and misconfiguration issues with low false positives.
 
-Split into two sub-phases so there's a real, working deliverable at the halfway point rather than one all-or-nothing 10-week push — see [09-implementation-plan-ph1.md](09-implementation-plan-ph1.md) for the file-by-file build plan behind Phase 1a.
+Split into two sub-phases so there's a real, working deliverable at the halfway point rather than one all-or-nothing 10-week push — see [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) for the file-by-file build plan behind Phase 1a.
 
 ---
 
@@ -83,7 +83,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] IDOR detector (baseline mode) finds ≥1 real cross-account issue in crAPI, using two distinct test accounts
 - [ ] HTTP engine sustains 150+ req/sec against a local benchmark target
 - [ ] `go build`/`go vet`/`golangci-lint` clean and CI green, verified on both macOS and Windows/WSL2 checkouts
-- [ ] Full verification detail in [09-implementation-plan-ph1.md](09-implementation-plan-ph1.md)'s Definition of Done
+- [ ] Full verification detail in [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)'s Definition of Done
 
 ---
 
@@ -341,4 +341,4 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — vulnerability classes referenced above
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — modules being built each phase
 - [04-environment-and-testing.md](04-environment-and-testing.md) — how each week's deliverables get validated
-- [09-implementation-plan-ph1.md](09-implementation-plan-ph1.md) — file-by-file build plan and verification steps for Phase 1a (Weeks 1-4)
+- [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for Phase 1a (Weeks 1-4)

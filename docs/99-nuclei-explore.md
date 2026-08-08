@@ -324,7 +324,7 @@ type WorkflowLoader interface {
 
 ### 3.3 Docs 09 Recommendations
 
-**Implementation plan (09-implementation-plan-ph1.md) should add:**
+**Implementation plan (09-implementation-plan-ph1a.md) should add:**
 
 1. **Interface definitions** for Phase 1b (Exporter, Tracker, ResultHandler)
 2. **Callback pattern** for IDOR detector results
@@ -394,7 +394,7 @@ This section was originally a raw diff against docs 02 and 09 only, importing Nu
 | # | Nuclei Practice | Status | Where | Why |
 |---|----------------|--------|-------|-----|
 | 6 | **Host error cache** (skip a host after N consecutive errors) | ❌ → ✅ | Phase 1a, Step 2 (Week 2-3) | During IDOR's sequential-ID enumeration, a struggling/dead target shouldn't get hammered for the rest of the ID range. Performance win + good-citizen/non-destructive-scanning (CLAUDE.md's read-only ethos). |
-| 13 | **Makefile** (build/test/lint/fuzz targets) | ❌ → ✅ | Phase 1a, Step 1 (Week 1-2) | Trivial. Formalizes commands already spelled out in prose in 09-implementation-plan-ph1.md. No reason not to. |
+| 13 | **Makefile** (build/test/lint/fuzz targets) | ❌ → ✅ | Phase 1a, Step 1 (Week 1-2) | Trivial. Formalizes commands already spelled out in prose in 09-implementation-plan-ph1a.md. No reason not to. |
 | 3a | **Exporter interface only** (part of Gap 3) | ❌ → ✅ | Phase 1a, Step 1 (Week 1-2) | Rule of three: three concrete formats already planned (JSON, Markdown, HackerOne JSON schema). Just the interface + three implementations. Reject the accompanying Tracker interface (GitHub/Jira/HackerOne-API-as-issue-tracker) — that's multi-platform integration scope already declined. |
 | 9 | **Fuzzing tests** (HTTP client/response parser) | ❌ → ✅ | Phase 1a, Step 2 (Week 2-3) | Go's stdlib testing.F fuzzing is free and directly relevant: the scanner parses untrusted responses from targets, which is real attack surface for the tool itself. |
 | 15 | **CONTRIBUTING.md** | ❌ → ✅ | Phase 1b, Week 9-10 | Phase 1b already plans "issue/PR templates for GitHub"; this just names the missing companion doc for that already-budgeted work. |

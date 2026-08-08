@@ -131,7 +131,7 @@ Thumbs.db
 coverage.out
 *.test
 ```
-Two fixes from an earlier draft of this list: the binary entry needs the leading `/` — a bare `hackerfive` pattern matches *any* path component named `hackerfive` anywhere in the tree, which silently excludes the whole `cmd/hackerfive/` source directory (see [09-implementation-plan-ph1.md](09-implementation-plan-ph1.md)'s package layout) since gitignore patterns without a leading slash match at every directory level, not just the repo root. And `go.sum` is deliberately *not* listed — this is an application, not a library, so `go.sum` should be committed for reproducible builds (`go mod download`/CI/goreleaser all rely on it matching what's checked in).
+Two fixes from an earlier draft of this list: the binary entry needs the leading `/` — a bare `hackerfive` pattern matches *any* path component named `hackerfive` anywhere in the tree, which silently excludes the whole `cmd/hackerfive/` source directory (see [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)'s package layout) since gitignore patterns without a leading slash match at every directory level, not just the repo root. And `go.sum` is deliberately *not* listed — this is an application, not a library, so `go.sum` should be committed for reproducible builds (`go mod download`/CI/goreleaser all rely on it matching what's checked in).
 
 #### 5. **Set Up GitHub Actions (CI/CD)**
 Create `.github/workflows/ci.yml`:

@@ -14,6 +14,6 @@ Project plan split by concern under [docs/](docs/):
 4. [Environment & Testing](docs/04-environment-and-testing.md) — dev setup, testing strategy
 5. [HackerOne & Legal](docs/05-hackerone-and-legal.md) — bug bounty workflow, security/legal/ethics
 6. [Metrics, Resources & FAQ](docs/06-metrics-resources-faq.md) — success metrics, resources, FAQ
-7. [Phase 1a Implementation Plan (Weeks 1-4)](docs/09-implementation-plan-ph1.md) — file-by-file build plan and verification steps for the Foundation kickoff
+7. [Phase 1a Implementation Plan (Weeks 1-4)](docs/09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for the Foundation kickoff
 
 See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo.
