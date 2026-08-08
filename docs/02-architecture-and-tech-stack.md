@@ -104,6 +104,8 @@
 
 Matcher/regex matching uses the standard library `regexp` (RE2) — it's arm64-native, avoids cgo, and keeps cross-compiled CI builds reproducible. (An earlier draft of this list named `github.com/valyala/fastregexp`, which does not exist as a published package — do not add it.) Only reach for a third-party engine such as `github.com/dlclark/regexp2` if a template genuinely needs PCRE-only features RE2 can't express (backreferences, lookahead).
 
+The misconfig detector's templates are pulled from upstream `nuclei-templates`, whose own engine is Go's stdlib `regexp` — so every regex matcher that ships there is already RE2-safe by construction; no audit needed. The one place a PCRE-only pattern could actually show up is the HackerFive-native IDOR baseline-comparison format (no Nuclei equivalent, see template example above) — if a future IDOR regex matcher needs a backreference or lookahead, that's the trigger to add `regexp2` for that matcher only, not switch the whole engine.
+
 #### 8. **Development Tools**
 - **Testing:** Go's built-in `testing` package + testify for assertions; native `testing.F` fuzz targets for the HTTP client and response parsers (the scanner parses untrusted target responses, which is attack surface for the tool itself, not just the target)
 - **Build:** a `Makefile` wrapping `build`/`test`/`lint`/`fuzz`/`integration` targets, so the commands used throughout this doc set have one canonical entry point instead of being copy-pasted per doc

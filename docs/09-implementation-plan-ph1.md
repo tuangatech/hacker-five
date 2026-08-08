@@ -27,6 +27,8 @@ Per [CLAUDE.md](../CLAUDE.md), versions are pinned to what's actually current ra
 
 Regex matching uses the standard library `regexp` (RE2) — no third-party regex dependency yet (see the fix in [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md), which previously named a package that doesn't exist). `gopkg.in/yaml.v3` and `github.com/json-iterator/go` aren't added until Phase 1b's template-parser work (see [03-development-roadmap.md](03-development-roadmap.md)), when the Nuclei-compatible parser and native YAML template engine actually need them — no point pulling a dependency before the code that uses it exists.
 
+Note this Phase 1a plan's IDOR detector (Step 3) doesn't use `regexp` at all — `compare.go`'s `Signature` diff is status code + body-size tolerance + hash + sorted keyword list, no pattern matching. A regex matcher only enters the picture once Phase 1b's native YAML template engine parses a `type: regex` matcher generically (shared by misconfig and IDOR templates alike) — see [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md)'s note on the IDOR baseline-comparison format being the one place a PCRE-only pattern (backreference, lookahead) could force adding `regexp2`.
+
 ---
 
 ## Step 1: Project Setup & Architecture (Week 1-2)
