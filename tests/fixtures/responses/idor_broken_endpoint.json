@@ -1,0 +1,12 @@
+{
+  "description": "Broken endpoint, not IDOR: otherToken 500 on ID 9, ownerToken 200",
+  "num_ids": 20,
+  "owner_token": "owner-secret",
+  "other_token": "other-secret",
+  "owner_default": { "status": 200, "body": "{\"id\":0,\"email\":\"owner@example.com\"}" },
+  "other_default": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+  "owner_overrides": {},
+  "other_overrides": {
+    "9": { "status": 500, "body": "{\"error\":\"internal\"}" }
+  }
+}

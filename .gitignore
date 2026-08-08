@@ -1,46 +1,24 @@
 # Binaries
 /hackerfive
-/bin/
-/dist/
 *.exe
-*.exe~
 *.dll
 *.so
-*.dylib
 
-# Go build/test artifacts
-*.test
-*.out
-coverage.txt
-coverage.html
-/vendor/
-
-# Go workspace files
-go.work
-go.work.sum
-
-# Fuzz corpus artifacts (keep seed corpus, ignore generated crashers/cache)
-/**/testdata/fuzz/*/[!seed]*
-
-# Env files / secrets — credentials must come from env vars, never committed (see CLAUDE.md)
-.env
-.env.*
-!.env.example
-
-# Local scan output (findings, reports)
-/output/
-*.findings.json
-*.findings.md
-
-# IDE / editor
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS files
+# Go
+vendor/
+
+# OS
 .DS_Store
 Thumbs.db
+*.log
 
-# Docker
-*.pid
+# Test outputs
+coverage.out
+*.test

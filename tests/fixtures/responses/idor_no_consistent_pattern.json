@@ -1,0 +1,21 @@
+{
+  "description": "No consistent denial pattern: otherToken responses split ~50/50 between two signatures across 20 IDs",
+  "num_ids": 20,
+  "owner_token": "owner-secret",
+  "other_token": "other-secret",
+  "owner_default": { "status": 200, "body": "{\"id\":0,\"email\":\"owner@example.com\"}" },
+  "other_default": { "status": 200, "body": "{\"note\":\"public\"}" },
+  "owner_overrides": {},
+  "other_overrides": {
+    "11": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "12": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "13": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "14": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "15": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "16": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "17": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "18": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "19": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+    "20": { "status": 403, "body": "{\"error\":\"forbidden\"}" }
+  }
+}

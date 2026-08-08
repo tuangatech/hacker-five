@@ -41,7 +41,7 @@ Note this Phase 1a plan's IDOR detector (Step 3) doesn't use `regexp` at all —
 
 | File | Purpose |
 |---|---|
-| `go.mod` | Module `github.com/tuangatech/hacker-five`, `go 1.21` minimum directive (toolchain itself is 1.26.5 per env doc) |
+| `go.mod` | Module `github.com/tuangatech/hacker-five`, `go 1.26.5` directive (matches the dev toolchain per env doc — no need to support older Go for this project) |
 | `Makefile` | Wraps `build`/`test`/`lint`/`fuzz`/`integration` targets (see [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md)) — same commands already used ad hoc in this plan's Verification sections, just given one canonical entry point |
 | `cmd/hackerfive/main.go` | Thin entrypoint — builds a `context.Context` via `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`, passes it to the root command, and sets the process exit code from the returned error (non-nil → exit 1) |
 | `cmd/hackerfive/root.go` | Root Cobra command, persistent (inherited by all subcommands) flags: `--proxy`, `--timeout`, `--output/-o` |
@@ -70,11 +70,12 @@ Note this Phase 1a plan's IDOR detector (Step 3) doesn't use `regexp` at all —
 | `--concurrency` | `-c` | int | `25` | | `scan` | worker pool size (Step 2) |
 | `--rate-limit` | | int | `50` | | `scan` | requests/sec across the whole scan, shared by all workers (Step 2) |
 | `--detector` | | string | *(required)* | | `scan` | which detector to run; only `"idor"` is recognized in Phase 1a — any other value is a `Validate()` error |
+| `--endpoint` | | string | `""` | | `scan` | endpoint path with an `{{id}}` placeholder to enumerate, e.g. `/identity/api/v2/user/dashboard/{{id}}`; joined with each target to build the `idor.Detector` endpoint template. Required when `--detector idor` — stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag |
 | `--auth-token` | | string | `""` | `HACKERFIVE_AUTH_TOKEN` | `scan` | owner/primary account token (Step 3); flag wins if both flag and env var are set |
 | `--other-auth-token` | | string | `""` | `HACKERFIVE_OTHER_AUTH_TOKEN` | `scan` | second account token for IDOR baseline mode; omitting both falls back to heuristic mode (Step 3) |
 | `--insecure` | | bool | `false` | | `scan` | skips TLS verification (`InsecureSkipVerify`, Step 2) — lab targets only (crAPI/DVWA self-signed certs), never the default |
 
-`Config.Validate()` (called from `scan.go`'s `RunE`, before the `Engine` is constructed) rejects: empty `Targets`, `Concurrency <= 0`, `RateLimit <= 0`, `Detector` not in the recognized set, and `Detector == "idor"` with both `AuthToken` and `OtherAuthToken` empty (Step 3 needs at least one token to run at all, even in heuristic mode).
+`Config.Validate()` (called from `scan.go`'s `RunE`, before the `Engine` is constructed) rejects: empty `Targets`, `Concurrency <= 0`, `RateLimit <= 0`, `Detector` not in the recognized set, `Detector == "idor"` with both `AuthToken` and `OtherAuthToken` empty (Step 3 needs at least one token to run at all, even in heuristic mode), `Detector == "idor"` with an empty `EndpointTemplate`, and a `ProxyURL` that fails `url.Parse`.
 
 ### Key types/functions
 
@@ -93,6 +94,7 @@ type Config struct {
     OutputFormat       string // fixed "json" in Phase 1a — no CLI flag selects it yet
     OutputPath         string // from --output/-o; "" = stdout
     Detector           string // "idor" is the only recognized value in Phase 1a
+    EndpointTemplate   string // e.g. "/identity/api/v2/user/dashboard/{{id}}" — joined with each target to build the idor.Detector endpoint template; stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag
     Insecure           bool   // maps to httpclient.Config.InsecureSkipVerify (Step 2); default false
     HostErrorThreshold int    // 0 = use hosterrors.DefaultThreshold (Step 2)
     AuthToken      string // primary/"owner" account token — from --auth-token or HACKERFIVE_AUTH_TOKEN, never hardcoded
@@ -435,6 +437,7 @@ Manual run against the live target (identical steps on Mac Docker Desktop and Wi
 ```bash
 export CRAPI_BASE_URL=http://localhost:8888
 go run ./cmd/hackerfive scan -t $CRAPI_BASE_URL --detector idor \
+  --endpoint /identity/api/v2/user/dashboard/{{id}} \
   --auth-token "$CRAPI_OWNER_TOKEN" --other-auth-token "$CRAPI_OTHER_TOKEN"
 # Expect: at least 1 finding of type "idor", Confidence: "high", printed as JSON
 ```
@@ -444,6 +447,7 @@ docker build -t hackerfive:dev .
 # Join crAPI's compose network so the container can reach crAPI by service name instead of localhost
 docker run --rm --network crapi_default hackerfive:dev \
   scan -t http://web:8888 --detector idor \
+  --endpoint /identity/api/v2/user/dashboard/{{id}} \
   --auth-token "$CRAPI_OWNER_TOKEN" --other-auth-token "$CRAPI_OTHER_TOKEN"
 ```
 (`crapi_default` and `web` are crAPI's compose project/service names — confirm with `docker compose ps`/`docker network ls` if a newer crAPI release renames them. On Linux/WSL2, `--network host` is a quicker one-off alternative; it's not available on Docker Desktop for Mac, where `http://host.docker.internal:8888` is the equivalent.)

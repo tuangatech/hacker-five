@@ -1,7 +1,32 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(go mod *)",
+      "Bash(go version *)",
+      "Bash(go get *)",
+      "Bash(go build *)",
+      "Bash(gofmt -l .)",
+      "Bash(go vet *)",
+      "Bash(./hackerfive --help)",
+      "Bash(./hackerfive scan *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(docker build *)",
+      "Bash(docker run *)",
+      "Bash(golangci-lint run *)",
+      "Bash(go test *)",
+      "Bash(python3 -c ' *)",
+      "Bash(gofmt -w tests/unit/ratelimit_test.go tests/unit/workerpool_test.go)",
+      "Bash(chmod +x /Users/tuan.tran/Tuan/weekend/hacker-five/tests/integration/scripts/crapi_setup.sh)",
+      "Bash(set -e)",
+      "Bash(kill %1)",
+      "Bash(wait)",
+      "Bash(make build *)",
+      "Bash(make lint *)",
+      "Bash(make test *)",
+      "Bash(git add *)",
+      "Bash(git check-ignore *)",
+      "Bash(grep -n \"^hackerfive$\" /Users/tuan.tran/Tuan/weekend/hacker-five/docs/04-environment-and-testing.md)"
     ]
   }
 }

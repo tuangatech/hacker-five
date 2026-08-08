@@ -1,0 +1,12 @@
+{
+  "description": "Heuristic mode, differing content: ID 13 differs from the rest",
+  "num_ids": 20,
+  "owner_token": "owner-secret",
+  "other_token": "other-secret",
+  "owner_default": { "status": 200, "body": "{}" },
+  "other_default": { "status": 200, "body": "{\"note\":\"same for every id\"}" },
+  "owner_overrides": {},
+  "other_overrides": {
+    "13": { "status": 403, "body": "{\"error\":\"forbidden\"}" }
+  }
+}

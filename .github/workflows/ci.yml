@@ -1,15 +1,17 @@
 name: CI
-
 on: [push, pull_request]
-
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]   # ubuntu-latest stands in for WSL2's linux/amd64 runtime
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.5'
-      - run: go test -v -race -coverprofile=coverage.out ./...
+          go-version-file: go.mod
+      - run: go build ./...
       - run: go vet ./...
-      - run: golangci-lint run
+      - run: go test -race ./...
+      - uses: golangci/golangci-lint-action@v6

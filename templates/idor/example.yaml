@@ -1,0 +1,22 @@
+# Documentation-only example of the eventual HackerFive-native template shape.
+# Not parsed by code until Phase 1b's template engine lands
+# (see docs/02-architecture-and-tech-stack.md and docs/09-implementation-plan-ph1.md).
+id: idor-user-profile
+info:
+  name: IDOR in User Profile Endpoint
+  author: YourName
+  severity: high
+  description: Test if user IDs are sequentially enumerable
+tags:
+  - idor
+  - api
+variables:
+  base_path: /api/users
+requests:
+  - method: GET
+    path: "{{base_path}}/{{RangeInt(1|100)}}"
+    headers:
+      Authorization: Bearer {{auth_token}}
+    matchers:
+      - type: status
+        status: [200]

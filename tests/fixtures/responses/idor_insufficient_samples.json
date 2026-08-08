@@ -1,0 +1,10 @@
+{
+  "description": "Insufficient samples (< MinBaselineSamples): only 2 candidate IDs",
+  "num_ids": 2,
+  "owner_token": "owner-secret",
+  "other_token": "other-secret",
+  "owner_default": { "status": 200, "body": "{\"id\":0,\"email\":\"owner@example.com\"}" },
+  "other_default": { "status": 403, "body": "{\"error\":\"forbidden\"}" },
+  "owner_overrides": {},
+  "other_overrides": {}
+}

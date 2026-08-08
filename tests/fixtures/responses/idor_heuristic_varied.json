@@ -1,0 +1,16 @@
+{
+  "description": "Heuristic mode, legitimately varied public content: every ID returns a distinctly-sized body (e.g. distinct public product pages)",
+  "num_ids": 5,
+  "owner_token": "owner-secret",
+  "other_token": "other-secret",
+  "owner_default": { "status": 200, "body": "{}" },
+  "other_default": { "status": 200, "body": "0123456789" },
+  "owner_overrides": {},
+  "other_overrides": {
+    "1": { "status": 200, "body": "0123456789" },
+    "2": { "status": 200, "body": "01234567890123456789" },
+    "3": { "status": 200, "body": "012345678901234567890123456789" },
+    "4": { "status": 200, "body": "0123456789012345678901234567890123456789" },
+    "5": { "status": 200, "body": "01234567890123456789012345678901234567890123456789" }
+  }
+}
