@@ -9,7 +9,7 @@
 2. HTTP Client & Request Engine (Week 2-3)
 3. IDOR Detector (Week 3-4)
 
-Phase 1b (misconfiguration detector, Nuclei-compatible template parser, native YAML template engine, full testing/validation pass, packaging) gets its own follow-up plan once this foundation is merged and working end-to-end. The repo currently has no code — this is a from-scratch build.
+Phase 1b (misconfiguration detector, Nuclei-compatible template parser, native YAML template engine, full testing/validation pass, packaging) has its own follow-up plan — see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — written after this foundation was merged and working end-to-end. The repo currently has no code — this is a from-scratch build.
 
 **Boundary this plan does *not* cross:** the roadmap's Phase 1b success metrics ("8+ IDOR findings in crAPI, 100% accuracy," "<5% false positives") are targets for Phase 1b's Testing & Validation step (see [03-development-roadmap.md](03-development-roadmap.md) for its current week numbers), which needs both template engines and a dedicated validation pass. The exit bar for *this* plan is Phase 1a's own checkpoint: the IDOR detector's logic is correct, unit-tested, and demonstrably finds at least one known issue against a live crAPI instance — not the full accuracy claim.
 
