@@ -422,7 +422,7 @@ Table-driven, each case backed by a fixture in `tests/fixtures/responses/idor_*.
 1. **Bring up the target, from a clean state:**
    ```bash
    git clone https://github.com/OWASP/crAPI.git
-   cd crAPI/deploy && docker compose down -v   # wipe any stale data from a prior run
+   cd crAPI/deploy/docker && docker compose down -v   # wipe any stale data from a prior run
    docker compose up -d
    ```
 2. **Script the two test accounts** — crAPI has no pre-seeded owner/other tokens; they come from its signup flow. Don't do this by hand each time. A small setup script (`tests/integration/scripts/crapi_setup.sh`, or a Go `TestMain` helper under the `integration` build tag) should: sign up two accounts via crAPI's `/identity/api/auth/signup`, log in via `/identity/api/auth/login` to get each token, and print/export them as `CRAPI_OWNER_TOKEN`/`CRAPI_OTHER_TOKEN` — this is what makes the integration test repeatable instead of a manual, undocumented step.

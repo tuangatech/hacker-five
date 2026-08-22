@@ -30,8 +30,9 @@ Every `git clone`/`docker pull` below assumes you're inside that directory, not 
 ### Bring it up
 
 ```bash
+cd ~/targets
 git clone https://github.com/OWASP/crAPI.git
-cd crAPI/deploy && docker compose down -v   # wipe any stale data from a prior run
+cd crAPI/deploy/docker && docker compose down -v   # wipe any stale data from a prior run
 docker compose up -d
 ```
 - **App:** `http://localhost:8888`
@@ -74,7 +75,7 @@ Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuris
 ### Teardown / reset
 
 ```bash
-cd crAPI/deploy && docker compose down -v   # -v also drops the account data crapi_setup.sh created
+cd crAPI/deploy/docker && docker compose down -v   # -v also drops the account data crapi_setup.sh created
 ```
 
 ---
