@@ -52,12 +52,20 @@ go version  # Verify: go version go1.26.5 darwin/arm64
 Homebrew on Apple Silicon installs to `/opt/homebrew` (not `/usr/local`). If `go version` isn't found after install, confirm your shell profile has `eval "$(/opt/homebrew/bin/brew shellenv)"` (the Homebrew installer adds this automatically on first run, but double-check on a fresh M4 machine).
 
 ```bash
-# Windows — inside the WSL2 Ubuntu shell (not PowerShell), install the linux/amd64 build via apt or the official tarball
+# Windows — inside the WSL2 Ubuntu shell (not PowerShell)
 wsl
-sudo apt update && sudo apt install -y golang-go
-go version  # Verify: go version go1.26.5 linux/amd64
 ```
-If `apt`'s Go package lags behind 1.26.5, install from the official tarball at https://go.dev/dl/ instead (check for the current release before pinning). Avoid installing Go natively on the Windows side (`winget install -e --id GoLang.Go`) as your primary toolchain — it works, but then editors/terminals split across two filesystems (`C:\` vs `\\wsl$\`), which reintroduces the path and line-ending issues WSL2 is meant to avoid.
+Ubuntu's `apt` package (`golang-go`) is often several minor versions behind — in practice, on a fresh Ubuntu install, `apt` has resolved to go1.22.2, well short of this repo's `go.mod` requirement (`go 1.26.5`). Install from the official tarball instead:
+```bash
+# Check https://go.dev/dl/ for the current patch first — go1.26.6 as of writing (Aug 2026),
+# which satisfies the go.mod directive since a module's `go` line is a *minimum*, not exact-match
+curl -L -o go.tar.gz https://go.dev/dl/go1.26.6.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+go version  # Verify: go version go1.26.6 linux/amd64
+```
+(`sudo apt update && sudo apt install -y golang-go` is a faster shortcut *if* `apt`'s version happens to be current enough — check `go version` against `go.mod`'s requirement before relying on it; don't assume.) Avoid installing Go natively on the Windows side (`winget install -e --id GoLang.Go`) as your primary toolchain — it works, but then editors/terminals split across two filesystems (`C:\` vs `\\wsl$\`), which reintroduces the path and line-ending issues WSL2 is meant to avoid.
 
 #### 3. **Install Git**
 ```bash
@@ -87,6 +95,14 @@ git clone https://github.com/tuangatech/hacker-five.git
 cd hacker-five
 ```
 
+**Already cloned it on the Windows-side filesystem** (e.g. `C:\...`, visible from WSL2 as `/mnt/c/...`) and want to switch to WSL2's native filesystem for speed? Don't move the files — clone a second, independent copy into your Linux home instead (safe as long as everything's committed and pushed — check with `git status` and `git log origin/main..HEAD` first):
+```bash
+mkdir -p ~/projects && cd ~/projects   # a dedicated parent dir, not your home root — more will follow
+git clone git@github.com:tuangatech/hacker-five.git   # SSH form, using the key set up in step 4 above
+cd hacker-five
+```
+Your original `/mnt/c/...` checkout can stay as-is (e.g. as a Windows-side reference) or be deleted once you've confirmed the new clone works — everything else in this doc (Go, git config, SSH key, golangci-lint) is set up per-user in WSL2, not per-checkout, so none of it needs redoing for the new clone.
+
 CI builds cross-platform release binaries (Linux, macOS, Windows). The Mac setup (native arm64) and Windows setup (WSL2, linux/amd64) each match one of those CI targets directly, so platform-specific bugs are easy to reproduce locally without a third machine.
 
 ### Local Development Tools
@@ -110,6 +126,8 @@ golangci-lint run ./...
 ```
 
 #### 2. **Testing Targets (Docker)**
+Docker here serves two purposes: running the vulnerable targets below to scan against, and (once you reach [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)/[10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)'s verification steps) building/running HackerFive's own image (`docker build -t hackerfive:dev .`). Day-to-day `go build`/`go test`/`golangci-lint run` don't touch Docker at all.
+
 All commands use `docker compose` (v2, no hyphen) — the standalone `docker-compose` (v1) binary reached end-of-life in 2024 and isn't shipped by current Docker Desktop; v2 ships as a plugin and is what both the Mac and Windows/WSL2 installs actually have available.
 ```bash
 # Juice Shop and DVWA publish native arm64 images — no emulation needed on Mac; native on Windows/WSL2 too
