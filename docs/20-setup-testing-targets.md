@@ -49,19 +49,24 @@ docker compose -f docker-compose.yml --compatibility up -d
 
 ### Prepare: two account tokens
 
-crAPI has **no pre-seeded accounts** — they only exist via its signup flow (`POST /identity/api/auth/signup` → `POST /identity/api/auth/login`). HackerFive's baseline-mode IDOR needs **two unrelated accounts**, so [tests/integration/scripts/crapi_setup.sh](../tests/integration/scripts/crapi_setup.sh) automates both signups and exports the resulting tokens:
+crAPI has **no pre-seeded accounts** — they only exist via its signup flow (`POST /identity/api/auth/signup` → `POST /identity/api/auth/login`). HackerFive's baseline-mode IDOR needs **two unrelated accounts**, so [tests/integration/scripts/crapi_setup.sh](../tests/integration/scripts/crapi_setup.sh) automates both signups and exports the resulting tokens.
 
+**Run this in your WSL2 terminal, from inside the `hacker-five` checkout** (`~/projects/hacker-five`, not `~/targets/crAPI/...`). Requires `curl` and `jq` — `curl` is preinstalled on Ubuntu, but `jq` usually isn't — the script's path below is relative to `hacker-five`, not to crAPI:
 ```bash
+cd ~/projects/hacker-five
 export CRAPI_BASE_URL=http://localhost:8888   # optional, this is the default
+sudo apt update && sudo apt install -y jq
 source tests/integration/scripts/crapi_setup.sh
 # → exports CRAPI_OWNER_TOKEN and CRAPI_OTHER_TOKEN
 ```
-Requires `curl` and `jq`. Must be `source`d (not executed) so the exports land in your current shell.
+
+Must be `source`d (not executed, and from bash — not a Windows PowerShell/cmd window) so the exports land in your current shell. If it prints an error about a failed signup/login instead of the success message, crAPI's `identity` service is most likely still starting up (its DB migrations can take a minute or two after `docker compose up -d` returns) — check `docker compose ps` shows `crapi-identity` healthy, then re-run.
 
 These are single-session JWTs tied to the two throwaway accounts the script just created via crAPI's real signup endpoint — there's no fixed sample value to hardcode. Re-run the script (or the two `/identity/api/...` endpoints by hand) whenever you need fresh tokens, e.g. after a `docker compose down -v` wipes account data.
 
 ### What HackerFive needs
 
+Same shell as above (so `$CRAPI_OWNER_TOKEN`/`$CRAPI_OTHER_TOKEN` are still set), still inside `~/projects/hacker-five` (`./hackerfive` is the binary built there, e.g. via `go build -o hackerfive ./cmd/hackerfive` — see [README.md](../README.md)'s Quick Start):
 ```bash
 export HACKERFIVE_AUTH_TOKEN="$CRAPI_OWNER_TOKEN"
 export HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN"
@@ -70,7 +75,7 @@ export HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN"
   --detector idor \
   --endpoint /identity/api/v2/user/dashboard/{{id}}
 ```
-Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuristic mode (low confidence, single account) instead of failing — see [README.md](../README.md)'s Quick Start.
+Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuristic mode (low confidence, single account) instead of failing.
 
 ### Teardown / reset
 
@@ -106,7 +111,9 @@ Phase 1b Step 1's fixed `DefaultCreds` rule table (see [pkg/detectors/misconfig/
 
 ### What HackerFive needs
 
+From your WSL2 terminal, inside `~/projects/hacker-five` (where `./hackerfive` was built):
 ```bash
+cd ~/projects/hacker-five
 ./hackerfive scan -t http://localhost --detector misconfig
 ```
 No tokens, no `--endpoint` — misconfig runs its full built-in rule table against the target root and its fixed path list directly.
