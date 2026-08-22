@@ -12,20 +12,10 @@
 # CURRENT shell, not a subshell, so `set -e` here would kill your actual
 # login shell (not just this script) the moment any curl call failed —
 # e.g. because crAPI's identity service hadn't finished starting yet.
-# Errors are instead handled explicitly via crapi_setup_fail below, which
-# `return`s (sourced) or `exit`s (executed directly) as appropriate.
+# Failures are instead handled explicitly below: `return 1` stops just this
+# script when sourced (the normal/documented usage); `2>/dev/null || exit 1`
+# is the fallback for the unsupported case of running it directly.
 set -uo pipefail
-
-(return 0 2>/dev/null) && crapi_setup_sourced=1 || crapi_setup_sourced=0
-
-crapi_setup_fail() {
-	echo "crapi_setup.sh: $*" >&2
-	if [ "$crapi_setup_sourced" = 1 ]; then
-		return 1
-	else
-		exit 1
-	fi
-}
 
 : "${CRAPI_BASE_URL:=http://localhost:8888}"
 
@@ -33,10 +23,17 @@ signup_and_login() {
 	local role="$1"
 	local email="hackerfive-${role}-$$@example.com"
 	local password="Passw0rd!"
+	# crAPI enforces unique phone numbers per account, same as email — a
+	# fixed literal here would collide with any account (from this run or a
+	# past one) that already claimed it, rejected as 403 "Number already
+	# registered". $RANDOM is reseeded fresh per shell/script invocation and
+	# read twice below, so owner/other calls get different numbers too.
+	local number
+	number=$(printf '%010d' $(( (RANDOM * 100000 + RANDOM) % 10000000000 )))
 
 	curl -sf -X POST "${CRAPI_BASE_URL}/identity/api/auth/signup" \
 		-H "Content-Type: application/json" \
-		-d "{\"name\":\"HackerFive ${role}\",\"email\":\"${email}\",\"number\":\"1234567890\",\"password\":\"${password}\"}" \
+		-d "{\"name\":\"HackerFive ${role}\",\"email\":\"${email}\",\"number\":\"${number}\",\"password\":\"${password}\"}" \
 		>/dev/null \
 		|| { echo "signup failed for the ${role} account — is crAPI up at ${CRAPI_BASE_URL}? (check: docker compose ps, wait for crapi-identity to be healthy)" >&2; return 1; }
 
@@ -55,8 +52,8 @@ signup_and_login() {
 	printf '%s' "$token"
 }
 
-CRAPI_OWNER_TOKEN=$(signup_and_login owner) || crapi_setup_fail "could not create/log in the owner account"
-CRAPI_OTHER_TOKEN=$(signup_and_login other) || crapi_setup_fail "could not create/log in the other account"
+CRAPI_OWNER_TOKEN=$(signup_and_login owner) || { echo "crapi_setup.sh: aborting — could not create/log in the owner account" >&2; return 1 2>/dev/null || exit 1; }
+CRAPI_OTHER_TOKEN=$(signup_and_login other) || { echo "crapi_setup.sh: aborting — could not create/log in the other account" >&2; return 1 2>/dev/null || exit 1; }
 export CRAPI_OWNER_TOKEN CRAPI_OTHER_TOKEN
 
 echo "CRAPI_OWNER_TOKEN and CRAPI_OTHER_TOKEN exported." >&2
