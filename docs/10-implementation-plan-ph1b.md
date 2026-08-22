@@ -421,4 +421,4 @@ Tag `v0.1.0` and cut the GitHub release once the Definition of Done below is met
 - [04-environment-and-testing.md](04-environment-and-testing.md) — dev environment and test-target setup this plan assumes
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — read-only/no-exfiltration constraints reflected in the misconfig detector's default-creds and verbose-error checks
 - [follow-up.md](follow-up.md) — the read/enumerate-only-vs-brute-force tension this plan's `DefaultCredRule` design (fixed list, single pass, never retried) is a direct response to
-- [20-setup-targets.md](20-setup-targets.md) — DVWA bring-up/database-init steps for Step 1's integration test, including the CSRF caveat on why the default-creds check won't fire against DVWA's real login form
+- [20-setup-testing-targets.md](20-setup-testing-targets.md) — DVWA bring-up/database-init steps for Step 1's integration test, including the CSRF caveat on why the default-creds check won't fire against DVWA's real login form

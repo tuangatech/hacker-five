@@ -2,15 +2,24 @@
 
 > Part of the [HackerFive documentation set](../README.md).
 
-HackerFive is validated against local, deliberately vulnerable targets — never live/external hosts (see [05-hackerone-and-legal.md](05-hackerone-and-legal.md)). Each detector needs a different kind of target, so this doc is split by target rather than by detector, and is meant to grow as more targets are added (Juice Shop, vAPI, WebGoat in later phases).
+HackerFive is validated against local, deliberately vulnerable targets — never live/external hosts (see [05-hackerone-and-legal.md](05-hackerone-and-legal.md)). Each detector needs a different kind of target, so this doc is split by target rather than by detector, and is meant to grow as more targets are added.
+
+Every command below is identical on macOS and Windows (WSL2) — Docker Desktop abstracts the difference, and these targets publish multi-arch images. No platform split needed here; see [04-environment-and-testing.md](04-environment-and-testing.md) for the underlying Mac/Windows dev-environment setup itself (Docker Desktop, WSL2, etc.).
 
 | Target | Detector it supports | Why |
 |---|---|---|
 | **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
-| Juice Shop, vAPI | *(none yet)* | Available via Docker for later phases (XSS, auth bypass — see [03-development-roadmap.md](03-development-roadmap.md)); no detector targets them yet, skip for now |
+| Juice Shop | *(none yet)* | XSS/auth-bypass targets — no detector for those exists yet (see [03-development-roadmap.md](03-development-roadmap.md)'s Phase 2); skip for now |
+| vAPI, WebGoat | *(none yet)* | Reserved for later API-auth/broader-coverage phases; not referenced by any implemented detector yet |
 
-Prerequisites for either target: Docker + Docker Compose v2 (`docker compose`, no hyphen — v1's standalone `docker-compose` is EOL), per [04-environment-and-testing.md](04-environment-and-testing.md).
+Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
+
+**Where to clone target repos:** targets like crAPI are separate, unrelated git repos — never clone them *inside* the `hacker-five` checkout (their own `.git` would end up nested in yours). Use a sibling directory instead, e.g. `~/targets/`, next to wherever `hacker-five` itself lives (`~/projects/hacker-five` per [04-environment-and-testing.md](04-environment-and-testing.md)):
+```bash
+mkdir -p ~/targets && cd ~/targets
+```
+Every `git clone`/`docker pull` below assumes you're inside that directory, not inside `hacker-five`.
 
 ---
 
@@ -107,6 +116,17 @@ No tokens, no `--endpoint` — misconfig runs its full built-in rule table again
 docker ps --filter ancestor=vulnerables/web-dvwa -q | xargs -r docker stop
 ```
 (the container was started with `--rm`-equivalent cleanup only if you added `--rm`; otherwise `docker rm` it explicitly if you want the image's stopped container gone too.)
+
+---
+
+## Other targets (no detector uses these yet)
+
+No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above). Pull the images ahead of time if you want them ready for when Phase 2 lands:
+```bash
+docker pull bkimminich/juice-shop
+docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; needs Rosetta on Apple Silicon Macs, native on Windows/WSL2 and Intel Macs
+```
+vAPI has no single canonical Docker image the way the others do — see its [own repo](https://github.com/roottusk/vapi) when it's actually needed.
 
 ---
 

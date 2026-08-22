@@ -478,4 +478,4 @@ go test -tags=integration ./tests/integration/... -v   # only runs with CRAPI_BA
 - [03-development-roadmap.md](03-development-roadmap.md) — full Phase 1-3 roadmap this plan is a slice of
 - [04-environment-and-testing.md](04-environment-and-testing.md) — dev environment (macOS + WSL2) and test-target setup this plan assumes
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — read-only/no-exfiltration constraints reflected in the IDOR detector design
-- [20-setup-targets.md](20-setup-targets.md) — step-by-step crAPI bring-up and account/token minting for this step's integration test
+- [20-setup-testing-targets.md](20-setup-testing-targets.md) — step-by-step crAPI bring-up and account/token minting for this step's integration test

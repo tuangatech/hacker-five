@@ -44,6 +44,7 @@ The team develops on a mix of **macOS (Apple Silicon)** and **Windows 11** lapto
 CI still builds and tests cross-platform (Linux, macOS, Windows) binaries via GitHub Actions — see [Continuous Integration](#continuous-integration) — but day-to-day local development happens on macOS (native shell) or Windows (inside WSL2's Ubuntu shell).
 
 #### 2. **Install Go**
+HackerFive's CLI and every detector are Go code — nothing in this repo builds, tests, or runs without a working Go toolchain.
 ```bash
 # macOS (Homebrew) — installs the current stable release, native arm64 build
 brew install go
@@ -108,16 +109,20 @@ CI builds cross-platform release binaries (Linux, macOS, Windows). The Mac setup
 ### Local Development Tools
 
 #### 1. **Code Linting**
+Catches style, correctness, and staleness issues before CI does — `golangci-lint run ./...` is a required check in docs 09/10's Definition of Done, so running it locally saves a red CI run.
 ```bash
 # macOS: Install golangci-lint (check https://golangci-lint.run for the current release before pinning —
-# v2.12.2 as of writing; note the v2 line moved the module path to .../golangci-lint/v2)
+# v2.13.1 as of writing; note the v2 line moved the module path to .../golangci-lint/v2)
 brew install golangci-lint
 golangci-lint --version  # confirm v2.x, native arm64 build
 ```
 ```bash
 # Windows — inside WSL2 Ubuntu
 wsl
-curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2
+curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.13.1
+
+echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc
+source ~/.bashrc
 golangci-lint --version  # confirm v2.x, linux/amd64
 ```
 ```bash
@@ -126,25 +131,10 @@ golangci-lint run ./...
 ```
 
 #### 2. **Testing Targets (Docker)**
-Docker here serves two purposes: running the vulnerable targets below to scan against, and (once you reach [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)/[10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)'s verification steps) building/running HackerFive's own image (`docker build -t hackerfive:dev .`). Day-to-day `go build`/`go test`/`golangci-lint run` don't touch Docker at all.
+Docker here serves two purposes: running the vulnerable targets to scan against, and (once you reach [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)/[10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)'s verification steps) building/running HackerFive's own image (`docker build -t hackerfive:dev .`). Day-to-day `go build`/`go test`/`golangci-lint run` don't touch Docker at all.
 
-All commands use `docker compose` (v2, no hyphen) — the standalone `docker-compose` (v1) binary reached end-of-life in 2024 and isn't shipped by current Docker Desktop; v2 ships as a plugin and is what both the Mac and Windows/WSL2 installs actually have available.
-```bash
-# Juice Shop and DVWA publish native arm64 images — no emulation needed on Mac; native on Windows/WSL2 too
-docker pull bkimminich/juice-shop
-docker pull vulnerables/web-dvwa
+Bring-up steps for each target (crAPI, DVWA, and what's not needed yet) live in [20-setup-testing-targets.md](20-setup-testing-targets.md) — identical on both platforms, since Docker Desktop abstracts the difference. This section only covers Docker/platform quirks that aren't target-specific:
 
-# WebGoat/goatandwolf is amd64-only — needs Rosetta on Mac; runs natively on Windows/WSL2, no flag needed there
-docker pull --platform linux/amd64 webgoat/goatandwolf
-
-# Run crAPI (API testing) — docker compose pulls per-service images, mostly multi-arch
-git clone https://github.com/OWASP/crAPI.git
-cd crAPI/deploy && docker compose up
-
-# Access at http://localhost:8888
-# Note: this leaves your shell inside crAPI/deploy — cd back to the hackerfive
-# repo root (e.g. `cd ~/hacker-five`) before running any hackerfive command below
-```
 **Mac:** if an image doesn't publish a `linux/arm64` variant, `docker pull --platform linux/amd64 <image>` runs it under Rosetta rather than the much slower QEMU fallback — but confirm Settings > General > "Use Rosetta for x86/amd64 emulation" is checked first, or Docker Desktop will silently use QEMU. Run `docker inspect <image> --format '{{.Architecture}}'` if a container feels unexpectedly slow to confirm which path it's using.
 
 **Windows:** run `docker` and `docker compose` from inside the WSL2 Ubuntu shell (not PowerShell) so bind-mounted paths resolve the same way they do on the Mac/Linux instructions in this doc. `localhost:PORT` from a WSL2 container is reachable directly from the Windows browser — no extra port-forwarding needed with the WSL2 backend.
@@ -174,11 +164,11 @@ On Windows, run `hackerfive` and `mitmproxy` inside WSL2 for consistency with th
 ### IDE Setup (Recommended)
 
 #### **VS Code**
+
+**macOS:**
 ```bash
-# Install Go extension
 code --install-extension golang.go
 
-# Create .vscode/settings.json
 cat > .vscode/settings.json << 'EOF'
 {
   "go.lintTool": "golangci-lint",
@@ -188,7 +178,35 @@ cat > .vscode/settings.json << 'EOF'
 }
 EOF
 ```
-**Windows:** install VS Code natively on Windows, then add the **Remote - WSL** extension (`code --install-extension ms-vscode-remote.remote-wsl`) and open the repo with `code .` *from inside the WSL2 Ubuntu shell*, in the repo's WSL2 path (e.g. `/home/you/hacker-five`). This runs the Go extension, terminal, and file watching inside WSL2 — the same environment used for `go build`/`docker`/`git` above — instead of against the slower, path-mismatched `\\wsl$\...` network share.
+
+**Windows — recommended workflow: VS Code opens the WSL2 repo directly, no edit-on-Windows-then-push/pull round trip.** Editing the Windows-side filesystem and syncing to WSL2 via git only adds friction and risk (two clones to keep straight, no working Go toolchain on the Windows side to build/test against anyway). Instead:
+
+1. Install VS Code natively on Windows (once), then add the **Remote - WSL** extension:
+   ```powershell
+   code --install-extension ms-vscode-remote.remote-wsl
+   ```
+2. Open the repo *from inside the WSL2 Ubuntu shell*, not via Windows Explorer or VS Code's own "Open Folder":
+   ```bash
+   wsl
+   cd ~/projects/hacker-five
+   code .
+   ```
+3. VS Code reopens in a new window — check the bottom-left green indicator reads **"WSL: Ubuntu"** before doing anything else. Extensions installed from here go *into* that WSL window, separately from your main Windows-side VS Code install.
+4. Inside that WSL window's integrated terminal, install the Go extension and project settings:
+   ```bash
+   code --install-extension golang.go
+
+   cat > .vscode/settings.json << 'EOF'
+   {
+     "go.lintTool": "golangci-lint",
+     "go.lintOnSave": "package",
+     "go.formatTool": "goimports",
+     "editor.formatOnSave": true
+   }
+   EOF
+   ```
+
+From this point on, the integrated terminal, file editing, file watching, and Go tooling all run inside WSL2 against `~/projects/hacker-five` directly — `go build`, `go test`, `golangci-lint run`, `git` all just work from the same terminal, instead of against the slower, path-mismatched `\\wsl$\...` network share.
 
 #### **GoLand / IntelliJ IDEA**
 - Built-in Go support

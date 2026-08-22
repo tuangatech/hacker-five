@@ -16,7 +16,7 @@ Phase 1a (Weeks 1-4) is done: CLI, HTTP engine, and a working **IDOR detector**.
 
 ## Setting Up a Target
 
-Full walkthrough (Docker bring-up, account/token minting, one-time setup steps, and a per-detector caveat about DVWA's login form) lives in [docs/20-setup-targets.md](docs/20-setup-targets.md). Short version:
+Full walkthrough (Docker bring-up, account/token minting, one-time setup steps, and a per-detector caveat about DVWA's login form) lives in [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md). Short version:
 
 - **crAPI** (for `--detector idor`): `docker compose up -d`, then `source tests/integration/scripts/crapi_setup.sh` to mint two account tokens.
 - **DVWA** (for `--detector misconfig`): `docker run -d -p 80:80 vulnerables/web-dvwa`, then click "Create / Reset Database" once at `http://localhost/setup.php`. No tokens needed.
@@ -69,6 +69,6 @@ Project plan split by concern under [docs/](docs/):
 7. [Phase 1a Implementation Plan (Weeks 1-4)](docs/09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for the Foundation kickoff
 8. [Phase 1b Implementation Plan (Weeks 5-10)](docs/10-implementation-plan-ph1b.md) — misconfiguration detector, Nuclei-compatible parser, native YAML engine, testing/validation, packaging
 9. [Follow-Up: Security Review, Expansion Strategy & Protocol Scope](docs/follow-up.md) — security review notes, open-source/VDP expansion plan, XBOW research, non-HTTP protocol assessment
-10. [Setting Up Test Targets](docs/20-setup-targets.md) — crAPI and DVWA bring-up, account/token minting, per-target setup steps and caveats
+10. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI and DVWA bring-up, account/token minting, per-target setup steps and caveats
 
 See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo.
