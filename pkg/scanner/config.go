@@ -6,9 +6,10 @@ import (
 	"time"
 )
 
-// recognizedDetectors is the set of --detector values accepted in Phase 1a.
+// recognizedDetectors is the set of --detector values accepted.
 var recognizedDetectors = map[string]bool{
-	"idor": true,
+	"idor":      true,
+	"misconfig": true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -21,7 +22,7 @@ type Config struct {
 	Timeout            time.Duration
 	OutputFormat       string // fixed "json" in Phase 1a — no CLI flag selects it yet
 	OutputPath         string // from --output/-o; "" = stdout
-	Detector           string // "idor" is the only recognized value in Phase 1a
+	Detector           string // "idor" or "misconfig"
 	EndpointTemplate   string // e.g. "/identity/api/v2/user/dashboard/{{id}}" — joined with each target to build the idor.Detector endpointTemplate; stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag
 	Insecure           bool   // maps to httpclient.Config.InsecureSkipVerify; default false
 	HostErrorThreshold int    // 0 = use hosterrors.DefaultThreshold

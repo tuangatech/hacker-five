@@ -33,9 +33,13 @@ The team develops on a mix of **macOS (Apple Silicon)** and **Windows 11** lapto
   wsl --set-default-version 2
   ```
   All Go/Git/Docker work below happens *inside* this Ubuntu shell — it's your dev environment, not the Windows host. This is what gives parity with the Mac/Linux instructions in this doc without a second, PowerShell-flavored copy of every command.
-- **Docker Desktop for Windows:** install with the WSL2 backend (selected by default) — Settings > General > "Use the WSL 2 based engine" — then enable Settings > Resources > WSL Integration for your Ubuntu distro so `docker`/`docker compose` work from inside it.
+- **Docker Desktop for Windows:** install with the WSL2 backend (selected by default) — Settings > General > "Use the WSL 2 based engine" — then, in Settings > Resources > WSL Integration: if Ubuntu is your only WSL distro (the normal case, since it's the first one installed above and Windows auto-defaults the first-ever distro), check **"Enable integration with my default WSL distro"** — that alone covers Ubuntu. Only reach for the separate **"Enable integration with additional distros"** toggle if Ubuntu *isn't* the default — e.g. you had another distro installed before this doc's `wsl --install -d Ubuntu` step, in which case that command didn't change the default. Run `wsl -l -v` (the `*` marks the default) if unsure which case applies.
   - Because the host CPU is already x86_64, all test images (including WebGoat) pull and run **natively** — no Rosetta-equivalent emulation step needed, and no platform flags required.
-- **Git line endings:** if you ever touch files from the Windows side (VS Code's Windows binary, Explorer, etc.), set `git config --global core.autocrlf input` inside WSL2 to avoid CRLF diffs — the repo's `.gitignore` and Go source expect LF.
+- **Git line endings:** if you ever touch files from the Windows side (VS Code's Windows binary, Explorer, etc.), set `core.autocrlf input` inside WSL2 (not from PowerShell/cmd) to avoid CRLF diffs — the repo's `.gitignore` and Go source expect LF:
+  ```bash
+  wsl                                        # enter the Ubuntu shell first — this setting lives in WSL2's own ~/.gitconfig
+  git config --global core.autocrlf input
+  ```
 
 CI still builds and tests cross-platform (Linux, macOS, Windows) binaries via GitHub Actions — see [Continuous Integration](#continuous-integration) — but day-to-day local development happens on macOS (native shell) or Windows (inside WSL2's Ubuntu shell).
 
@@ -49,6 +53,7 @@ Homebrew on Apple Silicon installs to `/opt/homebrew` (not `/usr/local`). If `go
 
 ```bash
 # Windows — inside the WSL2 Ubuntu shell (not PowerShell), install the linux/amd64 build via apt or the official tarball
+wsl
 sudo apt update && sudo apt install -y golang-go
 go version  # Verify: go version go1.26.5 linux/amd64
 ```
@@ -64,93 +69,22 @@ brew install git
 
 ```bash
 # Windows — inside WSL2 Ubuntu
+wsl
 sudo apt update && sudo apt install -y git
 ```
 
 #### 4. **Set Up GitHub Account**
 - Create GitHub account if you don't have one
-- Generate SSH key: `ssh-keygen -t ed25519 -C "your_email@example.com"` (run inside WSL2 on Windows, so the key and `~/.ssh/config` live alongside the repo you'll clone)
+- Generate SSH key: `ssh-keygen -t ed25519 -C "anhtuantran@gmail.com"` (run inside WSL2 on Windows, so the key and `~/.ssh/config` live alongside the repo you'll clone)
 - Add public key to GitHub (Settings > SSH Keys)
 
 ### Project Setup
 
-#### 1. **Clone/Initialize Repository**
+The steps below (project skeleton, `go.mod`, `.gitignore`, CI workflow) were the original from-scratch bootstrap, done once during Phase 1a — see [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)'s Step 1. The repo already has all of it, and in some cases the real files have since evolved past this doc's original draft (e.g. `.github/workflows/ci.yml` now runs a macOS+Ubuntu matrix with newer action versions; `go.mod` carries the actual Phase 1a/1b dependency set, not the placeholder list originally sketched here — `github.com/json-iterator/go` in particular was deliberately *not* added, see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)'s "Dependencies added in this plan"). Don't re-run `go mod init`, recreate `.gitignore`, or recreate the CI workflow from a stale copy here — read the actual files in the repo instead. The only step that still applies to a new checkout is cloning it:
+
 ```bash
-# Clone if forking from existing repo
 git clone https://github.com/tuangatech/hacker-five.git
 cd hacker-five
-
-# Or initialize new project
-mkdir hacker-five
-cd hacker-five
-git init
-go mod init github.com/tuangatech/hacker-five
-```
-
-#### 2. **Create Project Structure**
-```bash
-mkdir -p cmd/hackerfive pkg/{scanner,detectors,template,reporter} templates/{idor,misconfig} tests
-
-# Create main entry point
-touch cmd/hackerfive/main.go
-```
-
-#### 3. **Initialize Go Modules**
-```bash
-go mod init github.com/tuangatech/hacker-five
-go get github.com/spf13/cobra
-go get gopkg.in/yaml.v3
-go get github.com/json-iterator/go
-```
-Before adding a regex dependency for the matcher engine, check whether the standard library `regexp` (RE2) is sufficient — it's arm64-native and avoids cgo, which matters for reproducible cross-compiled CI builds. Only reach for a third-party engine (e.g. `github.com/dlclark/regexp2`) if a template genuinely needs PCRE-only features (backreferences, lookahead) that RE2 can't express.
-
-#### 4. **Create .gitignore**
-```bash
-# Binaries
-/hackerfive
-*.exe
-*.dll
-*.so
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Go
-vendor/
-
-# OS
-.DS_Store
-Thumbs.db
-*.log
-
-# Test outputs
-coverage.out
-*.test
-```
-Two fixes from an earlier draft of this list: the binary entry needs the leading `/` — a bare `hackerfive` pattern matches *any* path component named `hackerfive` anywhere in the tree, which silently excludes the whole `cmd/hackerfive/` source directory (see [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)'s package layout) since gitignore patterns without a leading slash match at every directory level, not just the repo root. And `go.sum` is deliberately *not* listed — this is an application, not a library, so `go.sum` should be committed for reproducible builds (`go mod download`/CI/goreleaser all rely on it matching what's checked in).
-
-#### 5. **Set Up GitHub Actions (CI/CD)**
-Create `.github/workflows/ci.yml`:
-```yaml
-name: CI
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v4
-        with:
-          go-version: '1.26.5'
-      - run: go test -v -race -coverprofile=coverage.out ./...
-      - run: go vet ./...
-      - run: golangci-lint run
 ```
 
 CI builds cross-platform release binaries (Linux, macOS, Windows). The Mac setup (native arm64) and Windows setup (WSL2, linux/amd64) each match one of those CI targets directly, so platform-specific bugs are easy to reproduce locally without a third machine.
@@ -166,6 +100,7 @@ golangci-lint --version  # confirm v2.x, native arm64 build
 ```
 ```bash
 # Windows — inside WSL2 Ubuntu
+wsl
 curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2
 golangci-lint --version  # confirm v2.x, linux/amd64
 ```
@@ -189,6 +124,8 @@ git clone https://github.com/OWASP/crAPI.git
 cd crAPI/deploy && docker compose up
 
 # Access at http://localhost:8888
+# Note: this leaves your shell inside crAPI/deploy — cd back to the hackerfive
+# repo root (e.g. `cd ~/hacker-five`) before running any hackerfive command below
 ```
 **Mac:** if an image doesn't publish a `linux/arm64` variant, `docker pull --platform linux/amd64 <image>` runs it under Rosetta rather than the much slower QEMU fallback — but confirm Settings > General > "Use Rosetta for x86/amd64 emulation" is checked first, or Docker Desktop will silently use QEMU. Run `docker inspect <image> --format '{{.Architecture}}'` if a container feels unexpectedly slow to confirm which path it's using.
 
@@ -204,8 +141,9 @@ cd crAPI/deploy && docker compose up
 pip install mitmproxy
 mitmproxy --listen-host 127.0.0.1 --listen-port 8080
 
-# Configure tool to use proxy:
-hackerfive scan -t http://localhost:8888 --proxy http://127.0.0.1:8080
+# Configure tool to use proxy (from the hackerfive repo root):
+cd ~/hacker-five
+./hackerfive scan -t http://localhost:8888 --proxy http://127.0.0.1:8080
 ```
 On Windows, run `hackerfive` and `mitmproxy` inside WSL2 for consistency with the rest of this doc; `127.0.0.1` inside WSL2 is reachable from the Windows host, so pointing a Windows-native Burp at the same port works too.
 
@@ -232,7 +170,7 @@ cat > .vscode/settings.json << 'EOF'
 }
 EOF
 ```
-**Windows:** install VS Code natively on Windows, then add the **Remote - WSL** extension (`code --install-extension ms-vscode-remote.remote-wsl`) and open the repo with `code .` *from inside the WSL2 Ubuntu shell*, in the repo's WSL2 path (e.g. `/home/you/hackerfive`). This runs the Go extension, terminal, and file watching inside WSL2 — the same environment used for `go build`/`docker`/`git` above — instead of against the slower, path-mismatched `\\wsl$\...` network share.
+**Windows:** install VS Code natively on Windows, then add the **Remote - WSL** extension (`code --install-extension ms-vscode-remote.remote-wsl`) and open the repo with `code .` *from inside the WSL2 Ubuntu shell*, in the repo's WSL2 path (e.g. `/home/you/hacker-five`). This runs the Go extension, terminal, and file watching inside WSL2 — the same environment used for `go build`/`docker`/`git` above — instead of against the slower, path-mismatched `\\wsl$\...` network share.
 
 #### **GoLand / IntelliJ IDEA**
 - Built-in Go support

@@ -10,6 +10,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
+	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
@@ -112,6 +113,9 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		strategy := idor.SequentialIntStrategy{Start: idEnumRangeStart, End: idEnumRangeEnd}
 		detector := idor.New(e.client, strategy)
 		return detector.Run(ctx, endpointTemplate, e.cfg.AuthToken, e.cfg.OtherAuthToken)
+	case "misconfig":
+		detector := misconfig.New(e.client)
+		return detector.Run(ctx, target, e.cfg.AuthToken)
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)
 	}

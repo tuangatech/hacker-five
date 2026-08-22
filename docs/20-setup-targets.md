@@ -1,0 +1,125 @@
+# Setting Up Test Targets
+
+> Part of the [HackerFive documentation set](../README.md).
+
+HackerFive is validated against local, deliberately vulnerable targets — never live/external hosts (see [05-hackerone-and-legal.md](05-hackerone-and-legal.md)). Each detector needs a different kind of target, so this doc is split by target rather than by detector, and is meant to grow as more targets are added (Juice Shop, vAPI, WebGoat in later phases).
+
+| Target | Detector it supports | Why |
+|---|---|---|
+| **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
+| **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
+| Juice Shop, vAPI | *(none yet)* | Available via Docker for later phases (XSS, auth bypass — see [03-development-roadmap.md](03-development-roadmap.md)); no detector targets them yet, skip for now |
+
+Prerequisites for either target: Docker + Docker Compose v2 (`docker compose`, no hyphen — v1's standalone `docker-compose` is EOL), per [04-environment-and-testing.md](04-environment-and-testing.md).
+
+---
+
+## crAPI (for `--detector idor`)
+
+[OWASP crAPI](https://github.com/OWASP/crAPI) ("completely ridiculous API") ships a deliberately vulnerable "vehicle location" / user-dashboard endpoint with a real cross-account IDOR, and a real signup/login flow — exactly what baseline-mode IDOR needs two account tokens for.
+
+### Bring it up
+
+```bash
+git clone https://github.com/OWASP/crAPI.git
+cd crAPI/deploy && docker compose down -v   # wipe any stale data from a prior run
+docker compose up -d
+```
+- **App:** `http://localhost:8888`
+- **MailHog** (catches all outbound email, incl. any OTP/verification mail): `http://localhost:8025` — optional; plain signup/login doesn't require checking it.
+- Requires `docker compose` v1.27.0+ (per [OWASP's official setup guide](https://owasp.org/crAPI/docs/setup.html)).
+
+An equivalent official alternative (no git history, current release archive) if you'd rather not clone the full repo:
+```bash
+curl -L -o crapi.zip https://github.com/OWASP/crAPI/archive/refs/heads/main.zip
+unzip crapi.zip && cd crAPI-main/deploy/docker
+docker compose pull
+docker compose -f docker-compose.yml --compatibility up -d
+```
+
+### Prepare: two account tokens
+
+crAPI has **no pre-seeded accounts** — they only exist via its signup flow (`POST /identity/api/auth/signup` → `POST /identity/api/auth/login`). HackerFive's baseline-mode IDOR needs **two unrelated accounts**, so [tests/integration/scripts/crapi_setup.sh](../tests/integration/scripts/crapi_setup.sh) automates both signups and exports the resulting tokens:
+
+```bash
+export CRAPI_BASE_URL=http://localhost:8888   # optional, this is the default
+source tests/integration/scripts/crapi_setup.sh
+# → exports CRAPI_OWNER_TOKEN and CRAPI_OTHER_TOKEN
+```
+Requires `curl` and `jq`. Must be `source`d (not executed) so the exports land in your current shell.
+
+These are single-session JWTs tied to the two throwaway accounts the script just created via crAPI's real signup endpoint — there's no fixed sample value to hardcode. Re-run the script (or the two `/identity/api/...` endpoints by hand) whenever you need fresh tokens, e.g. after a `docker compose down -v` wipes account data.
+
+### What HackerFive needs
+
+```bash
+export HACKERFIVE_AUTH_TOKEN="$CRAPI_OWNER_TOKEN"
+export HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN"
+
+./hackerfive scan -t http://localhost:8888 \
+  --detector idor \
+  --endpoint /identity/api/v2/user/dashboard/{{id}}
+```
+Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuristic mode (low confidence, single account) instead of failing — see [README.md](../README.md)'s Quick Start.
+
+### Teardown / reset
+
+```bash
+cd crAPI/deploy && docker compose down -v   # -v also drops the account data crapi_setup.sh created
+```
+
+---
+
+## DVWA (for `--detector misconfig`)
+
+[Damn Vulnerable Web Application](https://github.com/digininja/DVWA) is a stateless PHP/MySQL app — no account tokens needed, since misconfig's checks (exposed paths, missing headers, disallowed methods, CORS, verbose errors, default creds) don't require an authenticated session to probe.
+
+### Bring it up
+
+```bash
+docker pull vulnerables/web-dvwa
+docker run -d -p 80:80 vulnerables/web-dvwa
+```
+- **App:** `http://localhost`
+- `-d` runs it detached (no attached terminal needed for scanning); the [Docker Hub image page](https://hub.docker.com/r/vulnerables/web-dvwa) documents an equivalent `-it` foreground form if you want to watch container logs directly.
+
+### Required one-time step: initialize the database
+
+DVWA serves a **setup/login page only** until its database is created — open `http://localhost/setup.php` in a browser once and click **"Create / Reset Database."** Skipping this step means most misconfig checks (and everything else) will see an empty setup shell, not the actual app, so do this before running a scan.
+
+- **Default web UI login:** `admin` / `password` — only needed for a human to browse DVWA and confirm setup; HackerFive's `misconfig` detector doesn't need it (no `--auth-token` required).
+- **Security/difficulty level** (DVWA Security tab): controls how many intentional weaknesses are exposed. Set it to **Low** for the broadest signal — image defaults have been reported inconsistently across tags/rebuilds, so don't assume it's already Low; check after first login.
+
+### Caveat: HackerFive's built-in default-creds check won't fire against DVWA
+
+Phase 1b Step 1's fixed `DefaultCreds` rule table (see [pkg/detectors/misconfig/rules.go](../pkg/detectors/misconfig/rules.go)) POSTs `username`/`password` form fields to a plain `/login` path. DVWA's real login lives at `/login.php` and requires a CSRF `user_token` hidden field submitted alongside the credentials — a request without it is rejected regardless of whether `admin`/`password` is correct. So expect **zero** default-creds findings against DVWA; that's the fixed-path/fixed-form checker working as designed, not a bug. The other five rule categories (exposed paths, missing headers, disallowed methods, CORS, verbose errors) apply normally and don't depend on DVWA's login form.
+
+### What HackerFive needs
+
+```bash
+./hackerfive scan -t http://localhost --detector misconfig
+```
+No tokens, no `--endpoint` — misconfig runs its full built-in rule table against the target root and its fixed path list directly.
+
+### Teardown / reset
+
+```bash
+docker ps --filter ancestor=vulnerables/web-dvwa -q | xargs -r docker stop
+```
+(the container was started with `--rm`-equivalent cleanup only if you added `--rm`; otherwise `docker rm` it explicitly if you want the image's stopped container gone too.)
+
+---
+
+## Summary: what to prepare, per target
+
+| Target | Credentials/tokens HackerFive needs | Where they come from | One-time setup step |
+|---|---|---|---|
+| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | None beyond `docker compose up -d` |
+| DVWA | None | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
+
+## See also
+- [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under
+- [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — read-only/authorized-target-only constraints these local targets satisfy
+- [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — IDOR detector this crAPI setup validates
+- [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — misconfiguration detector this DVWA setup validates
+- [README.md](../README.md) — Quick Start commands that assume the setup steps on this page are done
