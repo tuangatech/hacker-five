@@ -2,6 +2,19 @@
 
 > Part of the [HackerFive documentation set](../README.md).
 
+## Objective
+
+Phase 1a proved HackerFive can find one real vulnerability class (IDOR) end-to-end. Phase 1b's job is breadth: catch the other bugs a bug-bounty hunter checks for by hand on every target, and stop needing a Go code change for each new check.
+
+**What it detects, and how:**
+- **Misconfigurations** (exposed `.env`/`.git`/admin panels, missing security headers, dangerous HTTP methods like PUT/DELETE, permissive CORS, verbose stack-trace errors, default credentials) — a fixed, hand-written table of paths/headers/methods/patterns, each probed directly with one HTTP request per check (Step 1).
+- **Everything the community already has templates for** (exposed panels, known misconfigurations, technology fingerprinting) — by running a curated subset of real, upstream Nuclei templates instead of re-encoding that knowledge by hand (Step 2).
+- **HackerFive's own checks as data, not code** (starting with IDOR) — a native YAML format so a new check is a template file, not a new Go detector; IDOR templates drive the exact baseline-comparison logic Phase 1a already built (Step 3).
+
+Both template formats share one matcher/extractor engine (status/word/regex/size matching, regex/JSON/header extraction) — the format differs, the evaluation logic doesn't.
+
+**Why this order:** the misconfig detector ships first as plain Go so there's a second working detector even before any template engine exists — Nuclei templates then *add* to it later rather than being a dependency for it. Testing/validation (Step 4) and packaging (Step 5) come last because they need Steps 1-3's detectors and templates to already exist to measure against.
+
 ## Scope
 
 [03-development-roadmap.md](03-development-roadmap.md) splits Phase 1 ("Foundation") into Phase 1a (Weeks 1-4, done — see [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)) and **Phase 1b (Weeks 5-10)**. This plan covers Phase 1b's five chunks:
@@ -11,7 +24,9 @@
 4. Testing & Validation (Week 8-9)
 5. Packaging & Documentation (Week 9-10)
 
-**What Phase 1a actually shipped** (verified against the working tree, not just the plan): CLI skeleton (`cmd/hackerfive/{main,root,scan}.go`), `scanner.{Config,Engine}`, a middleware-decorated `httpclient.Client` (retry/backoff, proxy, TLS, redirects), `ratelimit.Limiter`, `hosterrors.Cache`, `workerpool.Pool`, `vars.Render`/`RangeInt`, and a fully working `idor` detector (baseline + heuristic modes, per [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) Step 3) with unit + integration tests against crAPI. `pkg/detectors/misconfig/detector.go` and `pkg/template/parser.go` are stubs. `reporter.WriteJSON` is the only output path. This plan builds on that code directly — every new package below reuses `httpclient.Client`, `hosterrors.Cache`, `vars.Render`, and (for template-driven IDOR) the existing `idor.Baseline`/`idor.Signature`/`idor.Establish` rather than reimplementing any of it.
+**What Phase 1a actually shipped** (verified against the working tree, not just the plan): CLI skeleton (`cmd/hackerfive/{main,root,scan}.go`), `scanner.{Config,Engine}`, a middleware-decorated `httpclient.Client` (retry/backoff, proxy, TLS, redirects), `ratelimit.Limiter`, `hosterrors.Cache`, `workerpool.Pool`, `vars.Render`/`RangeInt`, and a fully working `idor` detector (baseline + heuristic modes, per [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) Step 3) with unit + integration tests against crAPI. At that point, `pkg/detectors/misconfig/detector.go` and `pkg/template/parser.go` were stubs. `reporter.WriteJSON` is the only output path. This plan builds on that code directly — every new package below reuses `httpclient.Client`, `hosterrors.Cache`, `vars.Render`, and (for template-driven IDOR) the existing `idor.Baseline`/`idor.Signature`/`idor.Establish` rather than reimplementing any of it.
+
+**Since then, Step 1 has landed** (verified against the working tree: `pkg/detectors/misconfig/{rules,detector}.go` are real, `recognizedDetectors`/`Engine.runDetector` are wired, `tests/unit/detector_misconfig_test.go` and `tests/integration/misconfig_dvwa_test.go` exist, README's Status section already marks it ✅) — Steps 2-5 below and `pkg/template/parser.go` are still not started. Step 1's section is kept as originally written (it documents what was built, not a still-open plan) rather than rewritten in the past tense.
 
 **Naming note:** an earlier, incompatible draft of a Phase 1a plan (different project name, different package layout) was committed as `docs/10-implementation-phase-1a.md` and removed for contradicting the doc that was actually built (see `git log` — commit `13c70f0`). This plan is grounded in the *actual* Phase 1a code above, not a fresh redesign, specifically to avoid repeating that mistake.
 
@@ -30,7 +45,7 @@ Dev environment is unchanged from [04-environment-and-testing.md](04-environment
 
 ---
 
-## Step 1: Misconfiguration Detector (Week 5)
+## Step 1: Misconfiguration Detector (Week 5) — done
 
 **Goal:** replace the `pkg/detectors/misconfig` stub with a working, Go-native detector using fixed built-in rule tables (paths, headers, methods) — this ships *before* the Nuclei-compatible parser exists (Step 2), so it must not depend on it. This mirrors how Phase 1a's `idor` detector shipped as working Go code before any template engine existed. Once Step 2 lands, upstream Nuclei templates become an *additional* source of misconfig-relevant checks (doc 03's "Misconfiguration/panel checks run against real upstream Nuclei templates" deliverable) — they don't replace this detector, exactly as the roadmap's own week ordering (Week 5 before Week 6-7) implies.
 

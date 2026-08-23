@@ -2,6 +2,16 @@
 
 > Part of the [HackerFive documentation set](../README.md).
 
+## Objective
+
+Phase 1a's job is to prove the scanner works at all, end-to-end, on one real vulnerability class — before spending time on breadth (Phase 1b). That class is IDOR (Insecure Direct Object Reference): an endpoint that returns another user's data for an ID it shouldn't, because it checks that the ID is *valid* but not that the caller *owns* it.
+
+**What it detects, and how:**
+- **Baseline mode (primary, high-confidence):** two accounts, `ownerToken` and `otherToken`. The detector requests the same range of candidate IDs with both, and asks: what does "access denied" normally look like for `otherToken`? It builds that answer by majority vote across all the IDs it tried. Any ID where `otherToken` gets something that *doesn't* match that denied pattern — but `ownerToken` gets real content for the same ID — is flagged. The `ownerToken` check exists so a broken endpoint or a random 5xx isn't mistaken for a leak.
+- **Heuristic mode (fallback, low-confidence):** only one token available, no second account to compare against. Just checks whether responses across sequential IDs look different from each other. Cheaper, but can't tell "this is someone else's private data" apart from "this is just a different public page" — flagged low-confidence for manual review, not treated as a real finding on its own.
+
+The detector only ever issues `GET` requests — it reads and compares, never writes or mutates target state, per [CLAUDE.md](../CLAUDE.md)'s read-only rule.
+
 ## Scope
 
 [03-development-roadmap.md](03-development-roadmap.md) splits Phase 1 ("Foundation") into **Phase 1a (Weeks 1-4)** and **Phase 1b** (see that doc for Phase 1b's current week numbers). This plan covers Phase 1a only — the three chunks that get a working, IDOR-only scanner running end-to-end:
