@@ -13,6 +13,16 @@ HackerFive — an open-source vulnerability scanner in Go, template-driven (YAML
 - **Testing:** Go `testing` + testify; integration tests run against local vulnerable targets (crAPI, DVWA, Juice Shop, vAPI) via Docker Compose — never against live/external hosts.
 - **Lint:** `golangci-lint run ./...` before considering work done.
 
+## Verification (this environment)
+
+This checkout is `c:\ML-Projects\Weekend-Projects\hacker-five` (Windows-side). No Go toolchain on Windows PATH — instead, shell out to WSL2's toolchain via `wsl.exe`, against this checkout through its `/mnt/c` mount (no separate clone needed):
+```bash
+wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go build ./... && go vet ./... && go test ./... -race && PATH=\$PATH:\$HOME/go/bin golangci-lint run ./..."
+```
+(`golangci-lint` needs the explicit `PATH` prepend — it's not on a non-interactive shell's PATH; see [docs/04-environment-and-testing.md](docs/04-environment-and-testing.md).)
+
+`~/projects/hacker-five` is the user's separate, native-Linux clone — used for what the `/mnt/c` mount can't do: `docker compose` for live crAPI/DVWA targets and running `./hackerfive scan` against them (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)). It has its own git history and needs its own `git pull`; edits here don't reach it automatically.
+
 ## Rules
 
 - Never add code that exfiltrates data, writes/destroys target state, or targets a host outside an explicitly authorized scope — this tool only reads/enumerates (see [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md)).

@@ -2,6 +2,8 @@
 
 Open-source, high-performance vulnerability scanner (Go) built to support bug bounty hunting on HackerOne and similar platforms.
 
+HackerFive is the scanner. crAPI, DVWA and Juice Shop are the targets.
+
 Repo: https://github.com/tuangatech/hacker-five
 
 ## Status
