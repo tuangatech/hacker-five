@@ -83,7 +83,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "worker pool size")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 50, "requests/sec across the whole scan")
 	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor" or "misconfig"`)
-	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/identity/api/v2/user/dashboard/{{id}}" (required for --detector idor)`)
+	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")
 	cmd.Flags().StringVar(&otherAuthToken, "other-auth-token", "", "second account token for IDOR baseline mode (env: HACKERFIVE_OTHER_AUTH_TOKEN)")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification — lab targets only, never the default")

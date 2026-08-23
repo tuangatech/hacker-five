@@ -40,11 +40,17 @@ func TestIDORAgainstCRAPI(t *testing.T) {
 	strategy := idor.SequentialIntStrategy{Start: 1, End: 100}
 	detector := idor.New(client, strategy)
 
-	endpointTemplate := baseURL + "/identity/api/v2/user/dashboard/{{id}}"
+	// GetReportView (services/workshop/crapi/mechanic/views.py) fetches a
+	// ServiceRequest by numeric id with no ownership check beyond requiring
+	// any valid JWT — a real BOLA. Requires at least one report to already
+	// exist (submitted via the "Contact Mechanic" flow in crAPI's web UI, or
+	// its unauthenticated GET .../mechanic/receive_report endpoint) — a
+	// fresh, never-used crAPI instance has none, and the scan finds nothing.
+	endpointTemplate := baseURL + "/workshop/api/mechanic/mechanic_report?report_id={{id}}"
 	findings, err := detector.Run(context.Background(), endpointTemplate, ownerToken, otherToken)
 	require.NoError(t, err)
 
-	require.NotEmpty(t, findings, "expected at least one IDOR finding against crAPI's dashboard endpoint")
+	require.NotEmpty(t, findings, "expected at least one IDOR finding against crAPI's mechanic-report endpoint")
 	for _, f := range findings {
 		assert.Equal(t, "idor", f.Type)
 		assert.Equal(t, "high", f.Confidence)

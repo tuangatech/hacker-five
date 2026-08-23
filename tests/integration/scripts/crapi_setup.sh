@@ -2,7 +2,10 @@
 # Signs up two unrelated crAPI accounts and exports their auth tokens as
 # CRAPI_OWNER_TOKEN / CRAPI_OTHER_TOKEN, so the Phase 1a IDOR integration
 # test (and manual `hackerfive scan` runs) don't require a manual signup
-# step against a freshly-provisioned crAPI instance.
+# step against a freshly-provisioned crAPI instance. Also exports the
+# accounts' emails/password (CRAPI_OWNER_EMAIL/CRAPI_OTHER_EMAIL/
+# CRAPI_PASSWORD) so you can log into crAPI's own web UI as either account,
+# e.g. to submit a "Contact Mechanic" report for the IDOR scan to find.
 #
 # Usage: source this script (not execute it) so the exports land in your
 # shell:
@@ -18,29 +21,40 @@
 set -uo pipefail
 
 : "${CRAPI_BASE_URL:=http://localhost:8888}"
+CRAPI_PASSWORD="Passw0rd!"
 
+# Prints the account's email on the first line and its auth token on the
+# second — command substitution runs in a subshell, so this is how values
+# get back to the sourcing shell instead of via (subshell-local) variable
+# assignment inside the function.
 signup_and_login() {
 	local role="$1"
-	local email="hackerfive-${role}-$$@example.com"
-	local password="Passw0rd!"
-	# crAPI enforces unique phone numbers per account, same as email — a
-	# fixed literal here would collide with any account (from this run or a
-	# past one) that already claimed it, rejected as 403 "Number already
-	# registered". $RANDOM is reseeded fresh per shell/script invocation and
-	# read twice below, so owner/other calls get different numbers too.
+	# Fixed and memorable on purpose — these are throwaway @example.com
+	# accounts on your own local container, nothing confidential about them.
+	# Signup failing here is NOT treated as fatal: it just means this email
+	# already has an account from an earlier run against a database that
+	# was never wiped, in which case login below with the same fixed
+	# password still succeeds against that existing account. This makes
+	# re-running the script idempotent instead of erroring on a collision.
+	local email="hackerfive-${role}@example.com"
+	# crAPI enforces unique phone numbers per account too, but the number
+	# itself is never used again after signup (unlike the email, nothing
+	# references it later) — so it stays random rather than fixed, to avoid
+	# a 403 "Number already registered" on signup when the account doesn't
+	# actually already exist. $RANDOM is reseeded fresh per shell/script
+	# invocation and read twice below, so owner/other calls still differ.
 	local number
 	number=$(printf '%010d' $(( (RANDOM * 100000 + RANDOM) % 10000000000 )))
 
 	curl -sf -X POST "${CRAPI_BASE_URL}/identity/api/auth/signup" \
 		-H "Content-Type: application/json" \
-		-d "{\"name\":\"HackerFive ${role}\",\"email\":\"${email}\",\"number\":\"${number}\",\"password\":\"${password}\"}" \
-		>/dev/null \
-		|| { echo "signup failed for the ${role} account — is crAPI up at ${CRAPI_BASE_URL}? (check: docker compose ps, wait for crapi-identity to be healthy)" >&2; return 1; }
+		-d "{\"name\":\"HackerFive ${role}\",\"email\":\"${email}\",\"number\":\"${number}\",\"password\":\"${CRAPI_PASSWORD}\"}" \
+		>/dev/null 2>&1 || true   # failure here just means the account already exists — login below is the real check
 
 	local token
 	token=$(curl -sf -X POST "${CRAPI_BASE_URL}/identity/api/auth/login" \
 		-H "Content-Type: application/json" \
-		-d "{\"email\":\"${email}\",\"password\":\"${password}\"}" \
+		-d "{\"email\":\"${email}\",\"password\":\"${CRAPI_PASSWORD}\"}" \
 		| jq -r '.token') \
 		|| { echo "login failed for the ${role} account right after signup — is crAPI healthy?" >&2; return 1; }
 
@@ -49,11 +63,18 @@ signup_and_login() {
 		return 1
 	fi
 
-	printf '%s' "$token"
+	printf '%s\n%s' "$email" "$token"
 }
 
-CRAPI_OWNER_TOKEN=$(signup_and_login owner) || { echo "crapi_setup.sh: aborting — could not create/log in the owner account" >&2; return 1 2>/dev/null || exit 1; }
-CRAPI_OTHER_TOKEN=$(signup_and_login other) || { echo "crapi_setup.sh: aborting — could not create/log in the other account" >&2; return 1 2>/dev/null || exit 1; }
-export CRAPI_OWNER_TOKEN CRAPI_OTHER_TOKEN
+owner_out=$(signup_and_login owner) || { echo "crapi_setup.sh: aborting — could not create/log in the owner account" >&2; return 1 2>/dev/null || exit 1; }
+CRAPI_OWNER_EMAIL=$(printf '%s' "$owner_out" | head -n1)
+CRAPI_OWNER_TOKEN=$(printf '%s' "$owner_out" | tail -n1)
+
+other_out=$(signup_and_login other) || { echo "crapi_setup.sh: aborting — could not create/log in the other account" >&2; return 1 2>/dev/null || exit 1; }
+CRAPI_OTHER_EMAIL=$(printf '%s' "$other_out" | head -n1)
+CRAPI_OTHER_TOKEN=$(printf '%s' "$other_out" | tail -n1)
+
+export CRAPI_OWNER_TOKEN CRAPI_OTHER_TOKEN CRAPI_OWNER_EMAIL CRAPI_OTHER_EMAIL CRAPI_PASSWORD
 
 echo "CRAPI_OWNER_TOKEN and CRAPI_OTHER_TOKEN exported." >&2
+echo "Web UI login (${CRAPI_BASE_URL}) — owner: ${CRAPI_OWNER_EMAIL} / other: ${CRAPI_OTHER_EMAIL} / password: ${CRAPI_PASSWORD}" >&2

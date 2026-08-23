@@ -47,7 +47,7 @@ docker compose pull
 docker compose -f docker-compose.yml --compatibility up -d
 ```
 
-### Prepare: two account tokens
+### Prepare: two accounts, one submitted report
 
 crAPI has **no pre-seeded accounts** — they only exist via its signup flow (`POST /identity/api/auth/signup` → `POST /identity/api/auth/login`). HackerFive's baseline-mode IDOR needs **two unrelated accounts**, so [tests/integration/scripts/crapi_setup.sh](../tests/integration/scripts/crapi_setup.sh) automates both signups and exports the resulting tokens.
 
@@ -57,12 +57,19 @@ cd ~/projects/hacker-five
 export CRAPI_BASE_URL=http://localhost:8888   # optional, this is the default
 sudo apt update && sudo apt install -y jq
 source tests/integration/scripts/crapi_setup.sh
-# → exports CRAPI_OWNER_TOKEN and CRAPI_OTHER_TOKEN
+# → exports CRAPI_OWNER_TOKEN, CRAPI_OTHER_TOKEN, CRAPI_OWNER_EMAIL, CRAPI_OTHER_EMAIL, CRAPI_PASSWORD
 ```
 
 Must be `source`d (not executed, and from bash — not a Windows PowerShell/cmd window) so the exports land in your current shell. If it prints an error about a failed signup/login instead of the success message, crAPI's `identity` service is most likely still starting up (its DB migrations can take a minute or two after `docker compose up -d` returns) — check `docker compose ps` shows `crapi-identity` healthy, then re-run.
 
-These are single-session JWTs tied to the two throwaway accounts the script just created via crAPI's real signup endpoint — there's no fixed sample value to hardcode. Re-run the script (or the two `/identity/api/...` endpoints by hand) whenever you need fresh tokens, e.g. after a `docker compose down -v` wipes account data.
+The tokens themselves are session JWTs, so re-run the script whenever you need fresh ones (e.g. after your shell closes, or after a `docker compose down -v` wipes account data) — safe to run repeatedly against the same crAPI instance, since it logs into the same two fixed accounts (`hackerfive-owner@example.com` / `hackerfive-other@example.com`, password `Passw0rd!`) rather than erroring if they already exist. Nothing confidential about these — throwaway accounts on your own local container — so they're fixed and safe to hardcode/reuse rather than regenerated per run. Also exported as `$CRAPI_OWNER_EMAIL`/`$CRAPI_OTHER_EMAIL`/`$CRAPI_PASSWORD` and printed by the script itself, in case you don't want to re-type them below.
+
+**Now create one mechanic report** — the scan needs at least one to exist (`report_id` is a real numeric primary key in crAPI's `workshop` service, and a freshly-provisioned instance has zero of them, so a scan run before this step correctly finds nothing). There's no API shortcut for this step — it goes through crAPI's own app flow, same as how a real attacker would first find something worth targeting:
+1. Open `http://localhost:8888` in a browser and log in as the owner account: `hackerfive-owner@example.com` / `Passw0rd!`.
+2. Add a vehicle (any make/model/VIN the form accepts).
+3. Use **"Contact Mechanic"** once to submit a report.
+
+That report's numeric `id` is what the scan below will find `CRAPI_OTHER_TOKEN` can also read — the actual BOLA in [GetReportView](https://github.com/OWASP/crAPI/blob/develop/services/workshop/crapi/mechanic/views.py) (`services/workshop/crapi/mechanic/views.py`): it only requires *any* valid JWT, never checking that the report belongs to the requesting account.
 
 ### What HackerFive needs
 
@@ -73,9 +80,9 @@ export HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN"
 
 ./hackerfive scan -t http://localhost:8888 \
   --detector idor \
-  --endpoint /identity/api/v2/user/dashboard/{{id}}
+  --endpoint '/workshop/api/mechanic/mechanic_report?report_id={{id}}'
 ```
-Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuristic mode (low confidence, single account) instead of failing.
+Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuristic mode (low confidence, single account) instead of failing. Requires the mechanic report from the previous step to already exist — without one, this correctly finds nothing.
 
 ### Teardown / reset
 
@@ -142,7 +149,7 @@ vAPI has no single canonical Docker image the way the others do — see its [own
 
 | Target | Credentials/tokens HackerFive needs | Where they come from | One-time setup step |
 |---|---|---|---|
-| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | None beyond `docker compose up -d` |
+| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
 | DVWA | None | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 
 ## See also

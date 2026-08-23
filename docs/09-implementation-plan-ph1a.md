@@ -70,7 +70,7 @@ Note this Phase 1a plan's IDOR detector (Step 3) doesn't use `regexp` at all —
 | `--concurrency` | `-c` | int | `25` | | `scan` | worker pool size (Step 2) |
 | `--rate-limit` | | int | `50` | | `scan` | requests/sec across the whole scan, shared by all workers (Step 2) |
 | `--detector` | | string | *(required)* | | `scan` | which detector to run; only `"idor"` is recognized in Phase 1a — any other value is a `Validate()` error |
-| `--endpoint` | | string | `""` | | `scan` | endpoint path with an `{{id}}` placeholder to enumerate, e.g. `/identity/api/v2/user/dashboard/{{id}}`; joined with each target to build the `idor.Detector` endpoint template. Required when `--detector idor` — stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag |
+| `--endpoint` | | string | `""` | | `scan` | endpoint path with an `{{id}}` placeholder to enumerate, e.g. `/workshop/api/mechanic/mechanic_report?report_id={{id}}`; joined with each target to build the `idor.Detector` endpoint template. Required when `--detector idor` — stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag |
 | `--auth-token` | | string | `""` | `HACKERFIVE_AUTH_TOKEN` | `scan` | owner/primary account token (Step 3); flag wins if both flag and env var are set |
 | `--other-auth-token` | | string | `""` | `HACKERFIVE_OTHER_AUTH_TOKEN` | `scan` | second account token for IDOR baseline mode; omitting both falls back to heuristic mode (Step 3) |
 | `--insecure` | | bool | `false` | | `scan` | skips TLS verification (`InsecureSkipVerify`, Step 2) — lab targets only (crAPI/DVWA self-signed certs), never the default |
@@ -94,7 +94,7 @@ type Config struct {
     OutputFormat       string // fixed "json" in Phase 1a — no CLI flag selects it yet
     OutputPath         string // from --output/-o; "" = stdout
     Detector           string // "idor" is the only recognized value in Phase 1a
-    EndpointTemplate   string // e.g. "/identity/api/v2/user/dashboard/{{id}}" — joined with each target to build the idor.Detector endpoint template; stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag
+    EndpointTemplate   string // e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" — joined with each target to build the idor.Detector endpoint template; stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag
     Insecure           bool   // maps to httpclient.Config.InsecureSkipVerify (Step 2); default false
     HostErrorThreshold int    // 0 = use hosterrors.DefaultThreshold (Step 2)
     AuthToken      string // primary/"owner" account token — from --auth-token or HACKERFIVE_AUTH_TOKEN, never hardcoded
@@ -387,7 +387,7 @@ Enumeration and comparison only ever issue `GET` requests — no state-mutating 
   "type": "idor",
   "severity": "high",
   "confidence": "high",
-  "target": "http://localhost:8888/identity/api/v2/user/dashboard/1234",
+  "target": "http://localhost:8888/workshop/api/mechanic/mechanic_report?report_id=1234",
   "description": "otherToken retrieved real user data for ID 1234, which does not match the established denied-access baseline for this endpoint",
   "evidence": {
     "id": "1234",
@@ -433,11 +433,11 @@ Table-driven, each case backed by a fixture in `tests/fixtures/responses/idor_*.
 ```bash
 go test ./pkg/detectors/idor/... -race -v     # mocked, no network — covers both modes, passes on both platforms
 ```
-Manual run against the live target (identical steps on Mac Docker Desktop and Windows/WSL2 Docker Desktop), using the two accounts from the setup script above:
+Manual run against the live target (identical steps on Mac Docker Desktop and Windows/WSL2 Docker Desktop), using the two accounts from the setup script above. Needs at least one mechanic report to already exist first — `report_id` is a real numeric primary key in crAPI's `workshop` service (`GetReportView`, `services/workshop/crapi/mechanic/views.py`), and a freshly-provisioned instance has none; submit one via crAPI's web UI (`http://localhost:8888` → add a vehicle → "Contact Mechanic") before running this:
 ```bash
 export CRAPI_BASE_URL=http://localhost:8888
 go run ./cmd/hackerfive scan -t $CRAPI_BASE_URL --detector idor \
-  --endpoint /identity/api/v2/user/dashboard/{{id}} \
+  --endpoint '/workshop/api/mechanic/mechanic_report?report_id={{id}}' \
   --auth-token "$CRAPI_OWNER_TOKEN" --other-auth-token "$CRAPI_OTHER_TOKEN"
 # Expect: at least 1 finding of type "idor", Confidence: "high", printed as JSON
 ```
@@ -447,7 +447,7 @@ docker build -t hackerfive:dev .
 # Join crAPI's compose network so the container can reach crAPI by service name instead of localhost
 docker run --rm --network crapi_default hackerfive:dev \
   scan -t http://web:8888 --detector idor \
-  --endpoint /identity/api/v2/user/dashboard/{{id}} \
+  --endpoint '/workshop/api/mechanic/mechanic_report?report_id={{id}}' \
   --auth-token "$CRAPI_OWNER_TOKEN" --other-auth-token "$CRAPI_OTHER_TOKEN"
 ```
 (`crapi_default` and `web` are crAPI's compose project/service names — confirm with `docker compose ps`/`docker network ls` if a newer crAPI release renames them. On Linux/WSL2, `--network host` is a quicker one-off alternative; it's not available on Docker Desktop for Mac, where `http://host.docker.internal:8888` is the equivalent.)

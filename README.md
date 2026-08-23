@@ -36,7 +36,7 @@ export HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN"
 
 ./hackerfive scan -t http://localhost:8888 \
   --detector idor \
-  --endpoint /identity/api/v2/user/dashboard/{{id}} \
+  --endpoint '/workshop/api/mechanic/mechanic_report?report_id={{id}}' \
   -o findings.json
 # Expect: at least 1 finding of type "idor", confidence "high"
 ```

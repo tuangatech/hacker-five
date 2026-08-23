@@ -64,6 +64,13 @@
   - **Variable scope:** `variables:` at the template's top level is global (visible to every request); anything bound by an `extractors:` entry is chain-scoped — visible only to requests *after* the one that produced it, not before, and not across separate template files.
   - **Conditionals:** an optional `condition:` on a request is evaluated against already-bound variables before the request fires; a false condition skips that request entirely rather than sending it with an empty/broken value.
 
+  **In plain English, this template does the following:**
+  - Step 1: log in with the credentials supplied on the command line (`{{Email}}` / `{{Password}}`) and pull the auth token out of the login response.
+  - Step 2: pick a random ID between 1 and 100 (`RangeInt(1|100)`) and request that user's profile using the token from step 1 — i.e., "am I, as this logged-in user, able to view someone else's profile by guessing their ID?"
+  - It only counts as a finding if the response comes back `200 OK` **and** contains fields like `email`/`name` — a redirect to a login page or an empty body doesn't match, which is what keeps false positives low.
+  - The `condition` guard on request 2 means: if login failed and there's no token, skip the probe instead of sending a broken/unauthenticated request that could look like a false finding.
+  - Nothing here writes or deletes target data — it's a read-only probe, consistent with the project's scan-only rule.
+
 #### 3. **HTTP Client: Go Standard Library + Custom Middleware**
 - Use Go's `net/http` for base functionality
 - Add custom middleware for:
@@ -206,6 +213,13 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 - **Template Runner:** Parses YAML, executes requests, applies matchers
 - **Matcher Engine:** Regex, word, status code, size, JSON extraction
 - **Extractor Engine:** Pull dynamic values from responses for chaining requests
+
+**Detector solutions, in plain English:**
+
+- **IDOR Detector — "swap the ID, see what comes back."** Log in as one account, note what a normal response looks like, then request the same endpoint with a different object ID (another user's order, document, profile). If the response looks like real, authorized data (200 status, expected fields present) rather than a rejection (401/403, empty body, redirect to login), that's an access-control failure. Where possible this runs as a **two-account baseline comparison** (Account A's token accessing Account B's resource) rather than single-account ID guessing, which is what keeps the false-positive rate low — see the IDOR template example above and [01-overview-and-strategy.md](01-overview-and-strategy.md#1-idor-insecure-direct-object-reference).
+- **Misconfiguration Detector — "check known-bad paths and settings."** No guessing or fuzzing: it requests a fixed list of paths/headers (`/.env`, `/.git`, missing `Content-Security-Policy`, wildcard CORS, etc.) and matches on status code + keyword/header presence. Because the checks are deterministic (a path either exposes `.env` or it doesn't), this is the lowest-effort, lowest-false-positive detector, and it runs almost entirely on templates pulled from the upstream `nuclei-templates` repo rather than custom Go code.
+- **Auth Bypass Detector — "does the API enforce what it claims to enforce?"** A family of state-based checks rather than one technique: call an endpoint with no credentials at all (should reject, does it?), tamper with a JWT (strip the signature, flip `alg` to `none`), reuse one user's token against another user's session, or hammer a login endpoint to see if rate limiting actually kicks in. These require sequencing multiple requests and comparing outcomes, which is why this detector is rated medium-high automation difficulty in the roadmap.
+- **Template Runner (shared by all detectors)** — the common execution engine: it reads the YAML request/matcher/extractor definitions, fires the HTTP requests through the worker pool, and hands each response to the matcher engine. Detector-specific logic (IDOR's two-account diffing, auth bypass's multi-step sequencing) sits on top of this shared runner rather than each detector reimplementing HTTP handling from scratch.
 
 #### 4. **Concurrency Manager**
 - Worker pool with configurable size

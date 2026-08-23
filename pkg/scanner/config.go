@@ -23,7 +23,7 @@ type Config struct {
 	OutputFormat       string // fixed "json" in Phase 1a — no CLI flag selects it yet
 	OutputPath         string // from --output/-o; "" = stdout
 	Detector           string // "idor" or "misconfig"
-	EndpointTemplate   string // e.g. "/identity/api/v2/user/dashboard/{{id}}" — joined with each target to build the idor.Detector endpointTemplate; stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag
+	EndpointTemplate   string // e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" — joined with each target to build the idor.Detector endpointTemplate; stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag
 	Insecure           bool   // maps to httpclient.Config.InsecureSkipVerify; default false
 	HostErrorThreshold int    // 0 = use hosterrors.DefaultThreshold
 
