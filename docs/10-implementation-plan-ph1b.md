@@ -141,8 +141,10 @@ All of this reuses `httpclient.Client` (Step 2 of Phase 1a) and `hosterrors.Cach
 ### Verification
 
 ```bash
-go test ./pkg/detectors/misconfig/... -race -v
-go test -tags=integration ./tests/integration/... -run TestMisconfigDVWA -v   # requires DVWA running
+go test ./tests/unit/... -run TestMisconfig -race -v   # tests live in tests/unit/, not pkg/detectors/misconfig/ itself
+
+export DVWA_BASE_URL=http://localhost   # wherever DVWA is reachable — required, this test skips without it
+go test -tags=integration ./tests/integration/... -run TestMisconfigDVWA -v
 ```
 `go vet ./...` and `golangci-lint run ./...` clean, same as every prior step.
 
@@ -415,7 +417,7 @@ Tag `v0.1.0` and cut the GitHub release once the Definition of Done below is met
 
 - [ ] `go build ./...`, `go vet ./...`, `golangci-lint run ./...` clean on both macOS and WSL2 checkouts
 - [ ] GitHub Actions CI green, including the new coverage gate (≥80%)
-- [ ] Misconfiguration detector (built-in rules) finds ≥15 issues in DVWA
+- [ ] Misconfiguration detector (built-in rules) finds ≥15 issues in DVWA — **at risk:** a live run against DVWA (Security level Low) found only 7 (4 missing-header + 3 disallowed-method findings); exposed-paths/CORS/verbose-errors/default-creds all legitimately found nothing, since DVWA doesn't expose the generic paths this fixed rule table checks and its login form fails the CSRF precondition (see [20-setup-testing-targets.md](20-setup-testing-targets.md)'s caveat). 7 may be close to this detector's ceiling against DVWA as built — closing the gap likely needs Step 2's Nuclei-compatible templates (which include DVWA-relevant checks) rather than more built-in rules
 - [ ] IDOR detector finds ≥8 findings in crAPI at 100% accuracy (baseline mode)
 - [ ] Juice Shop scan (misconfig + template-driven) returns ≥20 findings across categories
 - [ ] Nuclei-compatible parser loads ≥50 templates from the pinned upstream commit's `exposed-panels`/`misconfiguration`/`technologies` categories and produces matching results against DVWA/Juice Shop

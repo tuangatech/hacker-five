@@ -6,6 +6,8 @@ HackerFive is validated against local, deliberately vulnerable targets — never
 
 Every command below is identical on macOS and Windows (WSL2) — Docker Desktop abstracts the difference, and these targets publish multi-arch images. No platform split needed here; see [04-environment-and-testing.md](04-environment-and-testing.md) for the underlying Mac/Windows dev-environment setup itself (Docker Desktop, WSL2, etc.).
 
+**On Windows, run every command on this page — `docker`/`docker compose` included — inside your WSL2 Ubuntu shell, not PowerShell/cmd.** Docker Desktop's WSL2 integration technically exposes `docker` to both, but this doc's later steps (`crapi_setup.sh`'s `curl`/`jq`, the `./hackerfive` binary itself) only work in WSL2, so keeping Docker commands in the same shell avoids switching terminals mid-setup. Published ports (`localhost:8888`, `localhost:80`, etc.) are reachable from a browser on the Windows side either way — Docker Desktop forwards them regardless of which shell started the container.
+
 | Target | Detector it supports | Why |
 |---|---|---|
 | **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
@@ -30,6 +32,7 @@ Every `git clone`/`docker pull` below assumes you're inside that directory, not 
 ### Bring it up
 
 ```bash
+wsl                     # Windows only — drops into the Ubuntu shell; skip on macOS
 cd ~/targets
 git clone https://github.com/OWASP/crAPI.git
 cd crAPI/deploy/docker && docker compose down -v   # wipe any stale data from a prior run
@@ -88,7 +91,7 @@ Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuris
 ### Teardown / reset
 
 ```bash
-cd crAPI/deploy/docker && docker compose down -v   # -v also drops the account data crapi_setup.sh created
+cd ~/targets/crAPI/deploy/docker && docker compose down -v   # -v also drops the account data crapi_setup.sh created
 ```
 
 ---
@@ -100,9 +103,11 @@ cd crAPI/deploy/docker && docker compose down -v   # -v also drops the account d
 ### Bring it up
 
 ```bash
+wsl                     # Windows only — drops into the Ubuntu shell; skip on macOS
 docker pull vulnerables/web-dvwa
 docker run -d -p 80:80 vulnerables/web-dvwa
 ```
+- **Run from anywhere** — unlike crAPI, DVWA isn't cloned from a repo; it's a single public image with no compose file and no local state, so these two commands don't depend on a working directory.
 - **App:** `http://localhost`
 - `-d` runs it detached (no attached terminal needed for scanning); the [Docker Hub image page](https://hub.docker.com/r/vulnerables/web-dvwa) documents an equivalent `-it` foreground form if you want to watch container logs directly.
 

@@ -17,11 +17,13 @@
 - **Minimum Version:** Go 1.21+
 
 #### 2. **Detection Templates: YAML**
-- **Why?**
-  - Human-readable and maintainable
-  - No programming knowledge required to write new checks
-  - Supports community contribution model (like Nuclei)
-  - Extensible matchers (regex, word, status code, JSON extraction)
+- **Why, in plain English:** the scanner splits into two separate things — an engine (the Go code) and templates (YAML files). The engine is generic and only gets built once: it knows how to send a web request, read the response, and check it against a set of rules. It has no idea what "IDOR" or "exposed `.env` file" actually means. A template is what supplies that meaning — a short, readable recipe for one specific weakness on one kind of app: which URL to hit, what a "vulnerable" response looks like, what a "safe" response looks like. So the intuition is correct: build the tool once, then add a new template whenever we want to check for a new weakness or adapt to a new app — no rebuild, no new release, no code change.
+
+  Why that split is worth the extra layer, rather than just hardcoding every check into the engine:
+  - **New checks ship fast.** Adding a check is writing a YAML file, not writing and testing new Go code — turnaround for "can we also check for X" drops from a code change + release cycle to editing a text file.
+  - **We don't have to invent detection knowledge from scratch.** The security community already maintains a large, actively updated library of these recipes (Nuclei's `nuclei-templates` project) covering thousands of known exposed panels, misconfigurations, and technology fingerprints. Because our engine speaks a compatible template format, we can pull in that existing, vetted work directly instead of re-researching and re-writing detection logic ourselves for everything that's already publicly known.
+  - **Non-engineers can contribute checks.** A template is a readable text file, not a pull request against the scanner's internals — a security researcher who knows *what* to check for doesn't need to know Go, or how the scanner is built, to add *how* to check for it.
+  - **One engine, many apps and many bug types.** The same underlying request/compare logic works for crAPI's IDOR bug, DVWA's exposed paths, or a future customer's app — what changes between them is only which template file is loaded, not the program itself.
 
 - **Template Structure Example:**
   ```yaml
