@@ -1,0 +1,10 @@
+{
+  "description": "Real, live-verified finding-ID prefixes for Juice Shop (http://localhost:3000), from docs/10-implementation-plan-ph1b.md Step 2's 'Fourth live run' and docs/20-setup-testing-targets.md's Juice Shop caveat (post .htpasswd-rule fix).",
+  "expected_id_prefixes": [
+    "misconfig-missing-header-",
+    "misconfig-method-",
+    "misconfig-exposed-path-.well-known-security.txt",
+    "nuclei-http-missing-security-headers",
+    "nuclei-owasp-juice-shop-detect"
+  ]
+}

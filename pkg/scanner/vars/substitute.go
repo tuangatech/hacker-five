@@ -42,15 +42,3 @@ func Render(input string, ctx Context) (string, error) {
 	}
 	return result, nil
 }
-
-// RangeInt returns the inclusive sequence of ints from min to max.
-func RangeInt(min, max int) []int {
-	if max < min {
-		return nil
-	}
-	out := make([]int, 0, max-min+1)
-	for i := min; i <= max; i++ {
-		out = append(out, i)
-	}
-	return out
-}

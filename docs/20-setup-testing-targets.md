@@ -12,8 +12,9 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 |---|---|---|
 | **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
-| **Juice Shop** | `misconfig`; Nuclei-compatible templates (Step 2, not yet CLI-wired — see caveat below) | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
-| vAPI, WebGoat | *(none yet)* | Reserved for later API-auth/broader-coverage phases; not referenced by any implemented detector yet |
+| **Juice Shop** | `misconfig`; Nuclei-compatible templates | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
+| **vAPI** | `misconfig`; Nuclei-compatible templates | Stateless checks only for now — has a real BOLA (see its own section below) but uses a custom auth-header scheme `idor.Detector` doesn't support yet |
+| WebGoat | *(none yet)* | Reserved for later API-auth/broader-coverage phases; not referenced by any implemented detector yet |
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
 
@@ -189,13 +190,48 @@ docker ps --filter ancestor=bkimminich/juice-shop -q | xargs -r docker stop
 
 ---
 
+## vAPI (for `--detector misconfig`, and Nuclei-compatible templates)
+
+[vAPI](https://github.com/roottusk/vapi) ("Vulnerable Adversely Programmed Interface") is a PHP/Laravel + MySQL app mimicking OWASP API Top 10 scenarios. Its `docker-compose.yml` already bakes in DB credentials — no manual `.env` editing needed for basic bring-up, despite what the project's general docs suggest for a non-Docker install.
+
+### Bring it up
+
+```bash
+wsl                     # Windows only — drops into the Ubuntu shell; skip on macOS
+mkdir -p ~/targets && cd ~/targets
+git clone https://github.com/roottusk/vapi.git
+cd vapi && docker-compose up -d
+```
+- **App:** `http://localhost:8000`
+- **phpMyAdmin** (exposed by vAPI's own compose file — a real, separate misconfiguration if scanned on its own): `http://localhost:8001`
+- No database-init step needed — the `db` container's init scripts run automatically on first start.
+
+### Real BOLA exists here too, but isn't tested by HackerFive yet
+
+Reading vAPI's source confirms a real bug structurally identical to crAPI's: `API1UsersController::show($id)` calls `API1Users::find($id)` with no check that `$id` belongs to the authenticated user (`API5UsersController::show` is the *fixed* counterpart — it adds `->where('id', $id)`, worth comparing). But every vAPI endpoint authenticates via a custom `Authorization-Token: base64(username:password)` header (see `CustomHeaderAuth`), not `Authorization: Bearer <token>` — which `idor.Detector` doesn't support. So `--detector idor` can't test vAPI as-is; only `--detector misconfig` and Nuclei-compatible templates apply here for now (a configurable auth-header scheme is a real Future Enhancement candidate, see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)).
+
+### What HackerFive needs
+
+```bash
+cd ~/projects/hacker-five
+./hackerfive scan -t http://localhost:8000 --detector misconfig
+```
+No tokens, no `--endpoint`. Real, live-verified result (2026-08-25): **9 findings** — 4 missing security headers, 3 disallowed methods (`PUT`/`DELETE`/`PATCH` all return `500` rather than `405`/`403` — Laravel's `APP_DEBUG: "true"` in its `docker-compose.yml` means this and any other unhandled path likely also produces a real, verbose stack trace, a live signal for `misconfig`'s verbose-error check), plus 2 from the synced Nuclei-compatible template set (`http-missing-security-headers`, `php-detect`).
+
+### Teardown / reset
+
+```bash
+cd ~/targets/vapi && docker-compose down -v
+```
+
+---
+
 ## Other targets (no detector targets these yet)
 
 No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above). Pull the image ahead of time if you want it ready for when Phase 2 lands:
 ```bash
 docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; needs Rosetta on Apple Silicon Macs, native on Windows/WSL2 and Intel Macs
 ```
-vAPI has no single canonical Docker image the way the others do — see its [own repo](https://github.com/roottusk/vapi) when it's actually needed.
 
 ---
 
@@ -206,6 +242,7 @@ vAPI has no single canonical Docker image the way the others do — see its [own
 | crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
 | DVWA | None | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 | Juice Shop | None | — | None — ready as soon as the container responds |
+| vAPI | None | — | None — `docker-compose.yml`'s DB init runs automatically |
 
 ## See also
 - [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under

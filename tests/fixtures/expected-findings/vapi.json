@@ -1,0 +1,9 @@
+{
+  "description": "Real, live-verified finding-ID prefixes for vAPI (http://localhost:8000), from docs/10-implementation-plan-ph1b.md Step 4 and docs/20-setup-testing-targets.md's vAPI section. IDOR not included: vAPI's custom Authorization-Token header scheme isn't supported by idor.Detector yet.",
+  "expected_id_prefixes": [
+    "misconfig-missing-header-",
+    "misconfig-method-",
+    "nuclei-http-missing-security-headers",
+    "nuclei-php-detect"
+  ]
+}
