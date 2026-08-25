@@ -20,7 +20,8 @@ import (
 type Context struct {
 	StatusCode int
 	Body       string
-	Header     string // raw "Name: value\n"-per-line dump, matching Nuclei's own "header" DSL variable — see matcher.Part("header", r)
+	Header     string            // raw "Name: value\n"-per-line dump, matching Nuclei's own "header" DSL variable — see matcher.Part("header", r)
+	Vars       map[string]string // bound template variables (native format's condition: field, e.g. "auth_token != \"\"") — checked after the built-ins below, so a bound var can't shadow status_code/body/header
 }
 
 // Eval parses and evaluates expr against ctx. A bare comparison or an
@@ -331,6 +332,9 @@ func (p *parser) resolveIdent(name string) (any, error) {
 	case "header":
 		return p.ctx.Header, nil
 	default:
+		if v, ok := p.ctx.Vars[name]; ok {
+			return v, nil
+		}
 		return nil, fmt.Errorf("unknown identifier %q", name)
 	}
 }

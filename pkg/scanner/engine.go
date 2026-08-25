@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
+	"github.com/tuangatech/hacker-five/pkg/template/native"
+	"github.com/tuangatech/hacker-five/pkg/template/nuclei"
 )
 
 const (
@@ -63,6 +66,10 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 	limiter := ratelimit.New(e.cfg.RateLimit)
 	pool := workerpool.New(ctx, e.cfg.Concurrency, 2*e.cfg.Concurrency)
 
+	nucleiTemplates, nativeTemplates := e.loadTemplates()
+	nucleiExec := nuclei.New(e.client)
+	nativeExec := native.New(e.client)
+
 	var (
 		mu       sync.Mutex
 		findings []detectors.Finding
@@ -90,6 +97,29 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 			}
 			hostCache.RecordSuccess(host)
 
+			// Templates are additive on top of the built-in detector, not an
+			// alternative to it (see docs/10-implementation-plan-ph1b.md
+			// Step 1's rationale) — every loaded template runs against every
+			// target, in addition to whichever --detector was selected
+			// above. Sequential per target, not fanned into further pool
+			// jobs: matches the default (small, curated) --templates set;
+			// scanning the full opt-in synced corpus against many targets
+			// will be slower, a pre-existing characteristic, not a new one.
+			for _, tmpl := range nucleiTemplates {
+				fs, err := nucleiExec.Run(ctx, target, tmpl)
+				if err != nil {
+					continue // one bad template shouldn't abort the whole target's scan
+				}
+				results = append(results, fs...)
+			}
+			for _, tmpl := range nativeTemplates {
+				fs, err := nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
+				if err != nil {
+					continue
+				}
+				results = append(results, fs...)
+			}
+
 			mu.Lock()
 			findings = append(findings, results...)
 			mu.Unlock()
@@ -104,6 +134,36 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 		return findings, fmt.Errorf("scan completed with %d error(s), first: %w", len(errs), errs[0])
 	}
 	return findings, nil
+}
+
+// loadTemplates parses every template directory in cfg.TemplatePaths once,
+// via both template formats, before any target is scanned — parsing is
+// target-independent, so doing it once here (not per-target inside the pool)
+// avoids re-parsing the same files once per target. Prints a one-line
+// summary to stderr: this CLI has no other log output, so a typo'd
+// --templates path silently loading zero templates would otherwise be
+// invisible.
+func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
+	var (
+		nucleiTemplates []*nuclei.Template
+		nativeTemplates []*native.Template
+		rejected        int
+	)
+	for _, dir := range e.cfg.TemplatePaths {
+		if dir == "" {
+			continue
+		}
+		nt, nErrs := nuclei.LoadDir(dir)
+		nucleiTemplates = append(nucleiTemplates, nt...)
+		rejected += len(nErrs)
+
+		vt, vErrs := native.LoadDir(dir)
+		nativeTemplates = append(nativeTemplates, vt...)
+		rejected += len(vErrs)
+	}
+	fmt.Fprintf(os.Stderr, "loaded %d nuclei-compatible, %d native templates (%d rejected)\n",
+		len(nucleiTemplates), len(nativeTemplates), rejected)
+	return nucleiTemplates, nativeTemplates
 }
 
 func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Finding, error) {

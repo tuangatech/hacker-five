@@ -388,20 +388,35 @@ Already run for real (2026-08-24): `make templates-sync` → 2,552 loaded / 899 
 
 ---
 
-## Step 3: Native YAML Template Engine (Week 7-8)
+## Step 3: Native YAML Template Engine (Week 7-8) — done, live-verified
 
-**Goal:** parse the HackerFive-native format (the one shown in [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) and previously documentation-only in `templates/idor/example.yaml`), reusing the `matcher`/`extractor` packages from Step 2, and — for IDOR templates specifically — reusing Phase 1a's `idor.Baseline`/`idor.Signature`/`idor.Establish` rather than reimplementing baseline-mode comparison a second time.
+**Status:** `pkg/template/native/{schema,idor,loader,executor}.go` are implemented, unit-tested (18 new tests across `tests/unit/native_loader_test.go`, `native_executor_idor_test.go`, `native_executor_generic_test.go`, `dsl_test.go`), and `--templates` is now genuinely live — `pkg/scanner/engine.go`'s `Engine.Run` loads both template formats once via `nuclei.LoadDir`/`native.LoadDir` and runs every loaded template against every target, additive on top of whichever `--detector` was selected. Confirmed against real crAPI (2026-08-25, same account/token setup as `docs/20-setup-testing-targets.md`): `./hackerfive scan -t http://localhost:8888 --detector misconfig --templates ./templates/idor/` produced 5 genuine `misconfig` findings from `--detector` **and** 6 genuine `idor` findings from `templates/idor/crapi-mechanic-report.yaml` routed through the real `idor.Detector` — the first end-to-end proof the template engine (not just `--endpoint`) can drive a real detector.
+
+**Reviewing this section against the working codebase before implementing surfaced real gaps the original plan didn't specify a mechanism for** — resolved as follows, each verified against the actual code, not assumed:
+
+1. **`{{RangeInt(min|max)}}` wasn't parseable by anything.** `pkg/scanner/vars/substitute.go`'s `Render` only recognizes `\{\{(\w+)\}\}` — parens and `|` aren't word characters, so this marker (used in the old `example.yaml` and doc02's worked example) silently passed through unrendered. Added `pkg/template/native/idor.go`'s `parseIDORRequest`: extracts the marker via a dedicated regex, swaps it for a NUL-byte sentinel so `vars.Render` can resolve every *other* `{{name}}` in the path against the template's `variables:` without erroring on the marker, then restores it as a literal `{{id}}` — the exact shape `idor.Detector.Run` already expects.
+2. **doc02's worked example conflicted with this step's actual design.** doc02 shows an `idor`-tagged template doing its own login + word/status matchers — a self-contained single-account check. This step instead routes `idor`-tagged templates through the *existing* `idor.Detector` (external `ownerToken`/`otherToken`, its own hardcoded baseline logic, no login request of its own). Resolved in favor of the working `idor.Detector`'s design: an `idor`-tagged template is now constrained to **exactly one** request (endpoint + `RangeInt` marker only — no `Method` override, `Headers`, `Body`, `Matchers`, `Extractors`, or `Condition`), rejected at load time otherwise (`pkg/template/native/loader.go`'s `validateIDORTemplate`) rather than silently ignoring those fields.
+3. **No field existed to combine multiple matchers within one native request.** Added `Request.MatchersCondition`, defaulting to **`and`** when unset — the opposite of Nuclei's `or` default — because doc02's own worked example relies on AND semantics ("only counts as a finding if 200 OK **and** contains fields like email/name") with no field to say so.
+4. **`condition:` had no defined evaluator.** Reused `pkg/template/dsl` (Step 2) instead of building a second one: added `Vars map[string]string` to `dsl.Context`, with `resolveIdent` falling back to it after the existing built-ins. `native_loader_test.go`'s `TestNativeLoadDir_ConditionTypoRejected` confirms a genuine typo (referencing a variable that's neither in `variables:` nor any extractor's `name:` anywhere in the template) is still caught at load time, not just at runtime.
+5. **A real, load-bearing bug found while implementing, not anticipated in the plan:** gating extraction on a match (mirroring `nuclei.Executor` exactly, as originally planned) would have silently broken doc02's own canonical chaining example — its login request has no `matchers:` at all (it's not meant to be a finding, just a token source), and `matcher.EvaluateAll` with zero matchers returns `false` (the Step 2 fix from this same document). Under Nuclei's per-request model that's correct; for native chaining it would mean the login step's extractor never runs, so request 2 never gets a token. Fixed by decoupling extraction from match status in `native/executor.go`'s `tryRequest`: extractors always run after a request fires; a request with no `Matchers` still never produces a `Finding`, but its bindings still propagate. `TestNativeExecutorRun_NoMatchersNeverAFindingButStillExtracts` locks this in.
+6. **"20+ real, executable" IDOR templates wasn't achievable honestly.** Shipped 3 instead: the one already-live-verified crAPI endpoint (`crapi-mechanic-report.yaml`) plus 2 clearly-labeled generic/reusable starting points (`generic-path-segment-id.yaml`, `generic-query-param-id.yaml`) — not 20 speculative, unverified crAPI endpoint guesses. `templates/idor/example.yaml` is rewritten too: under the resolved design (#2 above) its old shape would now be rejected at load time (2 requests + matchers on an `idor`-tagged template), so it's retagged as a generic (non-`idor`) chaining example instead — real, loadable, and accurate.
+7. **Minor gap, fixed:** `Config.Validate()` only requires a token when `--detector idor` is explicitly selected — an `idor`-tagged *native* template reached via `--templates` while `--detector misconfig` is selected wouldn't be covered by that check. `native/executor.go`'s `runIDOR` now skips cleanly (no findings, no error) when both `ownerToken`/`otherToken` are empty, rather than let `idor.Detector`'s single-token heuristic fallback fire fully unauthenticated. `TestNativeExecutorIDOR_SkipsWhenBothTokensEmpty` confirms it.
+
+`--detector` stays mandatory for every scan (`Config.Validate()` unchanged) — per this step's own "additive, not alternative" design, confirmed still correct after implementation. Known minor UX wart, not fixed here: running templates-only (no built-in detector genuinely wanted) still requires picking a `--detector` as a no-op base (e.g. `misconfig`).
 
 ### Files
 
 | File | Purpose |
 |---|---|
-| `pkg/template/native/schema.go` | YAML structs: `Template`, `Request` (method/path/headers/body/extractors/matchers/condition), `Variables` |
-| `pkg/template/native/loader.go` | `Parse`/`LoadDir`, same shape as the Nuclei loader |
-| `pkg/template/native/executor.go` | Runs a native template; routes `idor`-tagged templates through the existing `idor` package instead of generic matcher logic |
-| `templates/idor/*.yaml` | 20+ real, executable native templates (crAPI-style endpoints, generic patterns) — replaces the Phase 1a placeholder |
-| `tests/unit/native_loader_test.go` | Parsing + variable-scope tests (global `variables:` vs. chain-scoped extractor output) |
-| `tests/unit/native_executor_idor_test.go` | Confirms template-driven baseline mode produces identical findings to the flag-driven path from Phase 1a, given the same fixture responses |
+| `pkg/template/native/schema.go` | YAML structs: `Template`, `Request` (method/path/headers/body/extractors/matchers/matchers-condition/condition), `Variables` |
+| `pkg/template/native/idor.go` | `parseIDORRequest`/`isIDORTagged` — the `{{RangeInt(min\|max)}}` extraction shared by loader and executor (see #1/#2 above) |
+| `pkg/template/native/loader.go` | `LoadDir`, same recursive/per-file-error-isolated shape as the Nuclei loader; `validateIDORTemplate`/`validateGenericTemplate` |
+| `pkg/template/native/executor.go` | Runs a native template; routes `idor`-tagged templates through the existing `idor` package, everything else through the generic matcher/extractor path |
+| `templates/idor/*.yaml` | 3 real, executable native templates (see #6 above) |
+| `tests/unit/native_loader_test.go` | Parsing, `idor`-tagged constraint rejections, condition-typo rejection, malformed-YAML isolation, recursion |
+| `tests/unit/native_executor_idor_test.go` | Reuses `detector_idor_test.go`'s exact fixture/server plumbing, driven through `native.Executor` instead of `idor.Detector` directly |
+| `tests/unit/native_executor_generic_test.go` | Single match, chained extraction without matchers, condition skip, AND-default matchers-condition |
+| `tests/unit/dsl_test.go` | `dsl.Context.Vars` fallback, unbound-var error, built-ins take priority |
 
 ### Key types/functions
 
@@ -415,46 +430,48 @@ type Template struct {
     Requests  []Request
 }
 type Request struct {
-    Method     string
-    Path       string
-    Headers    map[string]string
-    Body       string
-    Extractors []extractor.Extractor
-    Matchers   []matcher.Matcher
-    Condition  string // evaluated against already-bound variables before firing, per doc 02
+    Method            string
+    Path              string
+    Headers           map[string]string
+    Body              string
+    Extractors        []extractor.Extractor
+    Matchers          []matcher.Matcher
+    MatchersCondition matcher.MatchersCondition // "" defaults to "and" here — see #3 above
+    Condition         string                    // dsl.Eval against bound vars; "" = always fire
 }
 
+// pkg/template/native/idor.go
+func isIDORTagged(tmpl *Template) bool
+func parseIDORRequest(target string, tmpl *Template, req Request) (min, max int, endpointTemplate string, err error)
+
 // pkg/template/native/executor.go
-type Executor struct {
-    client *httpclient.Client
-}
+type Executor struct{ client *httpclient.Client }
 func New(client *httpclient.Client) *Executor
-// ownerToken/otherToken are threaded through exactly as in idor.Detector.Run —
-// "" for otherToken falls back to heuristic mode. A non-idor-tagged template
-// runs through the generic matcher/extractor path instead.
 func (e *Executor) Run(ctx context.Context, target string, tmpl *Template, ownerToken, otherToken string) ([]detectors.Finding, error)
 ```
 
-**Why `idor`-tagged templates don't get a second comparison engine:** Step 3's job is to let a YAML file *supply* what `--endpoint` used to supply (the endpoint template, per doc 09's own "stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag"), not to reimplement baseline-mode comparison. `native/executor.go`'s `idor` path extracts the endpoint template and ID-range hints from the parsed `Template`/`Request`, then constructs and calls the *existing* `idor.Detector` from `pkg/detectors/idor` — one comparison algorithm, two ways to configure it (flag or YAML).
+**Why `idor`-tagged templates don't get a second comparison engine:** Step 3's job is to let a YAML file *supply* what `--endpoint` used to supply (the endpoint template, per doc 09's own "stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag"), not to reimplement baseline-mode comparison. `native/executor.go`'s `runIDOR` extracts the endpoint template and ID range via `parseIDORRequest`, then constructs and calls the *existing* `idor.Detector` from `pkg/detectors/idor`, returning its `Finding`s unchanged — one comparison algorithm, two ways to configure it (flag or YAML).
 
 ### CLI wiring
 
-`--templates` (accepted since Phase 1a, previously unused) becomes live: `Engine.Run` loads templates from `cfg.TemplatePaths` via `template/nuclei.LoadDir` and `template/native.LoadDir` for every scan, in addition to whichever built-in detector `--detector` selects — the two are complementary layers (Step 1's rationale), not alternatives. The `--endpoint`-driven `idor` path from Phase 1a is **kept**, not removed: it's still the fastest way to point the IDOR detector at a single endpoint during ad hoc recon without first writing a template file.
+`--templates` is now live: `pkg/scanner/engine.go`'s `Engine.loadTemplates` loads every `cfg.TemplatePaths` entry via both `nuclei.LoadDir` and `native.LoadDir` once, before the per-target loop (parsing is target-independent — no reason to re-parse per target), and prints a one-line summary to stderr (`loaded %d nuclei-compatible, %d native templates (%d rejected)`) since this CLI otherwise has zero log output — a typo'd `--templates` path silently loading nothing would previously have been invisible. Inside the per-target scan job, every loaded template runs (via `nuclei.Executor`/`native.Executor`) in addition to whichever `--detector` selected, sequentially per target rather than fanned into further worker-pool jobs (matches the small default `--templates ./templates/` set; scanning the full opt-in synced corpus against many targets will be slower — a pre-existing characteristic, not a new regression). The `--endpoint`-driven `idor` path from Phase 1a is **kept**, not removed: still the fastest way to point the IDOR detector at a single endpoint during ad hoc recon without first writing a template file.
 
-`templates/idor/example.yaml` (Phase 1a's documentation-only placeholder) is replaced with real, executable templates now that something actually parses them — either updated in place or split into a still-documentation-only `example.yaml` plus real starter templates alongside it.
-
-### Test cases (`tests/unit/native_executor_idor_test.go`)
-
-Reuses the exact fixture shapes from `tests/fixtures/responses/idor_*.json` (Phase 1a) — same clean-baseline / classic-IDOR / server-error / insufficient-samples cases — but driving them through a parsed `Template` instead of `--endpoint`/`--auth-token` flags, asserting the resulting `Finding`s match Phase 1a's flag-driven output for the same fixtures. This is a regression test for "one algorithm, two entry points," not new IDOR logic.
+One expected, harmless side effect of running both loaders over the same directory tree: each format's loader "rejects" the other's files as wrong-shaped (e.g. `native.LoadDir` over `templates/nuclei-samples/` reports "template has no requests: entries" for every real Nuclei template there, and vice versa) — real, verified behavior (`nuclei.LoadDir("./templates/idor")` reports exactly 4 rejections, one per native file, all "template has no http: requests"), not a bug; the summary line's "rejected" count is a sum across both loaders for this reason.
 
 ### Verification
 
 ```bash
-go test ./pkg/template/native/... -race -v
-go run ./cmd/hackerfive scan -t $CRAPI_BASE_URL --detector idor --templates ./templates/idor/ \
-  --auth-token "$CRAPI_OWNER_TOKEN" --other-auth-token "$CRAPI_OTHER_TOKEN"
-# Expect: same findings as Phase 1a's --endpoint-driven run, now also sourced from templates/idor/*.yaml
+wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go build ./... && go vet ./... && go test ./... -race && PATH=\$PATH:\$HOME/go/bin golangci-lint run ./..."
 ```
+Already run for real (2026-08-25): all clean, 18 new tests passing. Live check against crAPI:
+```bash
+export CRAPI_BASE_URL=http://localhost:8888
+source tests/integration/scripts/crapi_setup.sh
+go build -o hackerfive ./cmd/hackerfive
+HACKERFIVE_AUTH_TOKEN="$CRAPI_OWNER_TOKEN" HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN" \
+  ./hackerfive scan -t http://localhost:8888 --detector misconfig --templates ./templates/idor/
+```
+Real result: 5 `misconfig` findings (`.env`, 4 missing headers) from `--detector`, plus 6 `idor` findings (report IDs 1-6, all `confidence: high`) from `crapi-mechanic-report.yaml` — produced via the template path for the first time, not `--endpoint`.
 
 ---
 
@@ -544,7 +561,7 @@ Not part of Steps 1-5's committed Week 5-10 deliverables — ideas surfaced whil
 - [ ] Juice Shop scan (misconfig + template-driven) returns ≥20 findings across categories — **at risk:** measured 6 misconfig (2 missing-header, 3 disallowed-method, 1 exposed-path — see [20-setup-testing-targets.md](20-setup-testing-targets.md)'s Juice Shop caveat; a `.htpasswd` false positive was found and fixed here too, see `pkg/detectors/misconfig/rules.go`) + 2 Nuclei-template (`http-missing-security-headers`, `owasp-juice-shop-detect`) = 8 combined, well under 20. Not yet a fair test either way: these two paths don't run together yet (`--templates` CLI wiring is Step 3), so this is two separate single-path runs added by hand, not one real combined scan — revisit once Step 3 lands
 - [x] Nuclei-compatible parser loads ≥50 templates from the pinned upstream commit's `http/exposed-panels`/`http/misconfiguration`/`http/technologies` categories and runs cleanly against DVWA/Juice Shop — confirmed against both: DVWA (2,552 templates loaded at the time, 4 genuine findings — see "Full synced-set run") and Juice Shop (2,473 templates loaded after later validation tightened further, 2 genuine findings — see "Fourth live run"). Live findings came from both `technologies` (`apache-detect`, `php-detect`, `owasp-juice-shop-detect`) and `misconfiguration` (`http-missing-security-headers`, `missing-cookie-samesite-strict`) — the "Realistic yield" note's category prediction was directionally right but not exclusive; its `angular-detect` prediction specifically turned out wrong (see "Fourth live run")
 - [ ] Templates containing `code:`/`javascript:`/`headless:`/`file:` (or any of the other disallowed blocks) are rejected at load time with a named error, never silently skipped
-- [ ] Native YAML engine executes `templates/idor/*.yaml` (20+ templates) and produces the same findings as the Phase 1a flag-driven path on identical fixtures
+- [x] Native YAML engine executes `templates/idor/*.yaml` (3 real templates, not 20 — see Step 3's #6) and produces the same findings as the Phase 1a flag-driven path on identical fixtures (`tests/unit/native_executor_idor_test.go`) — confirmed live against crAPI too: `crapi-mechanic-report.yaml` via `--templates` found the same real BOLA the `--endpoint`-driven path finds
 - [ ] Measured false-positive rate <5%, covering built-in misconfig rules, Nuclei-compatible templates, and native templates
 - [ ] `hackerfive scan` scans 100 targets in <2 minutes
 - [ ] Fuzz targets exist and run clean for the HTTP client (Phase 1a) and both template parsers (this plan)

@@ -1,0 +1,19 @@
+# Generic, reusable starting point — NOT tied to any specific target. Edit
+# variables.base_path (and the ID range, if needed) before use: this covers
+# the common REST convention of a numeric ID as its own path segment, e.g.
+# /api/orders/42 or /api/users/42.
+id: generic-idor-path-segment
+info:
+  name: Generic IDOR — numeric ID as a path segment
+  author: HackerFive
+  severity: high
+  description: >
+    Template starting point for baseline-mode IDOR against an endpoint whose
+    resource ID is a trailing path segment. Requires HACKERFIVE_AUTH_TOKEN
+    and HACKERFIVE_OTHER_AUTH_TOKEN (or --auth-token/--other-auth-token).
+tags:
+  - idor
+variables:
+  base_path: /api/CHANGE-ME
+requests:
+  - path: "{{BaseURL}}{{base_path}}/{{RangeInt(1|100)}}"

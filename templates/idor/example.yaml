@@ -1,22 +1,52 @@
-# Documentation-only example of the eventual HackerFive-native template shape.
-# Not parsed by code until Phase 1b's template engine lands
-# (see docs/02-architecture-and-tech-stack.md and docs/09-implementation-plan-ph1.md).
-id: idor-user-profile
+# Documentation example of the native format's GENERIC (non-idor-tagged)
+# request-chaining path: login, extract a token, use it in a follow-up probe
+# gated by condition:. This is real, working YAML — parsed and executed by
+# pkg/template/native — not documentation-only.
+#
+# NOT tagged "idor": per docs/10-implementation-plan-ph1b.md Step 3, an
+# "idor"-tagged template routes through the existing idor.Detector instead
+# (baseline two-account comparison, external --auth-token/--other-auth-token,
+# ID-range enumeration via {{RangeInt(min|max)}} — see
+# crapi-mechanic-report.yaml / generic-*.yaml in this same directory) and is
+# constrained to exactly one request with no matchers/extractors/chaining of
+# its own. {{RangeInt(...)}} enumeration is idor-tagged-only machinery — a
+# generic template like this one fires each request exactly once, so this
+# example checks one fixed illustrative ID (42) rather than enumerating.
+id: login-then-probe-example
 info:
-  name: IDOR in User Profile Endpoint
-  author: YourName
-  severity: high
-  description: Test if user IDs are sequentially enumerable
+  name: Example — login, then probe one endpoint with the resulting token
+  author: HackerFive
+  severity: info
+  description: Illustrates request chaining, not a real vulnerability check.
 tags:
-  - idor
-  - api
+  - example
+
 variables:
   base_path: /api/users
+  Email: demo@example.com     # self-contained example — no external input required to load or run
+  Password: changeme
+
 requests:
+  - method: POST
+    path: "{{BaseURL}}/api/auth/login"
+    body: '{"email":"{{Email}}","password":"{{Password}}"}'
+    extractors:
+      - type: json
+        name: auth_token
+        json:
+          - token
+
   - method: GET
-    path: "{{base_path}}/{{RangeInt(1|100)}}"
+    path: "{{BaseURL}}{{base_path}}/42"
     headers:
-      Authorization: Bearer {{auth_token}}
+      Authorization: "Bearer {{auth_token}}"
+    condition: auth_token != ""
+    matchers-condition: and
     matchers:
       - type: status
-        status: [200]
+        status:
+          - 200
+      - type: word
+        words:
+          - email
+          - name
