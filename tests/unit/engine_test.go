@@ -36,6 +36,8 @@ func TestEngineRun_DetectorOnly(t *testing.T) {
 	assert.NotEmpty(t, findings, "missing security headers should be found")
 	for _, f := range findings {
 		assert.Equal(t, "misconfig", f.Type)
+		assert.Contains(t, f.Evidence["request"], server.URL, "Finding.Evidence must carry raw request evidence — Future Enhancement #7")
+		assert.Contains(t, f.Evidence["response"], "HTTP 404", "Finding.Evidence must carry raw response evidence — Future Enhancement #7 (handler always returns 404)")
 	}
 }
 

@@ -41,9 +41,11 @@ func New(client *httpclient.Client, strategy Strategy) *Detector {
 
 // idSample is one candidate ID's request/response outcome.
 type idSample struct {
-	id  string
-	url string
-	sig Signature
+	id           string
+	url          string
+	sig          Signature
+	reqEvidence  string
+	respEvidence string
 }
 
 // Run enumerates endpointTemplate's {{id}} placeholder and emits a Finding
@@ -80,10 +82,12 @@ func (d *Detector) runBaseline(ctx context.Context, endpointTemplate, ownerToken
 	}
 
 	type baselineSample struct {
-		id       string
-		url      string
-		ownerSig Signature
-		otherSig Signature
+		id           string
+		url          string
+		ownerSig     Signature
+		otherSig     Signature
+		reqEvidence  string // otherToken's request — the one that proves the bypass
+		respEvidence string
 	}
 	var samples []baselineSample
 
@@ -100,19 +104,22 @@ func (d *Detector) runBaseline(ctx context.Context, endpointTemplate, ownerToken
 			return nil, fmt.Errorf("idor baseline: %w", err)
 		}
 
-		ownerSig, err := d.fetch(ctx, reqURL, ownerToken)
+		ownerSig, _, _, err := d.fetch(ctx, reqURL, ownerToken)
 		if err != nil {
 			d.hostErrors.RecordError(host)
 			continue
 		}
-		otherSig, err := d.fetch(ctx, reqURL, otherToken)
+		otherSig, otherReqEvidence, otherRespEvidence, err := d.fetch(ctx, reqURL, otherToken)
 		if err != nil {
 			d.hostErrors.RecordError(host)
 			continue
 		}
 		d.hostErrors.RecordSuccess(host)
 
-		samples = append(samples, baselineSample{id: id, url: reqURL, ownerSig: ownerSig, otherSig: otherSig})
+		samples = append(samples, baselineSample{
+			id: id, url: reqURL, ownerSig: ownerSig, otherSig: otherSig,
+			reqEvidence: otherReqEvidence, respEvidence: otherRespEvidence,
+		})
 	}
 
 	otherSigs := make([]Signature, len(samples))
@@ -127,7 +134,7 @@ func (d *Detector) runBaseline(ctx context.Context, endpointTemplate, ownerToken
 		// already-collected signatures, rather than discarding them.
 		heuristicSamples := make([]idSample, len(samples))
 		for i, s := range samples {
-			heuristicSamples[i] = idSample{id: s.id, url: s.url, sig: s.otherSig}
+			heuristicSamples[i] = idSample{id: s.id, url: s.url, sig: s.otherSig, reqEvidence: s.reqEvidence, respEvidence: s.respEvidence}
 		}
 		return heuristicFindings(heuristicSamples), nil
 	}
@@ -156,6 +163,8 @@ func (d *Detector) runBaseline(ctx context.Context, endpointTemplate, ownerToken
 				"other_status":                strconv.Itoa(s.otherSig.StatusCode),
 				"denied_baseline_status":      strconv.Itoa(baseline.denied.StatusCode),
 				"denied_baseline_sample_size": strconv.Itoa(len(otherSigs)),
+				"request":                     s.reqEvidence,
+				"response":                    s.respEvidence,
 			},
 		})
 	}
@@ -187,14 +196,14 @@ func (d *Detector) runHeuristic(ctx context.Context, endpointTemplate, token str
 			return nil, fmt.Errorf("idor heuristic: %w", err)
 		}
 
-		sig, err := d.fetch(ctx, reqURL, token)
+		sig, reqEvidence, respEvidence, err := d.fetch(ctx, reqURL, token)
 		if err != nil {
 			d.hostErrors.RecordError(host)
 			continue
 		}
 		d.hostErrors.RecordSuccess(host)
 
-		samples = append(samples, idSample{id: id, url: reqURL, sig: sig})
+		samples = append(samples, idSample{id: id, url: reqURL, sig: sig, reqEvidence: reqEvidence, respEvidence: respEvidence})
 	}
 
 	return heuristicFindings(samples), nil
@@ -230,18 +239,23 @@ func heuristicFindings(samples []idSample) []detectors.Finding {
 			Target:      s.url,
 			Description: fmt.Sprintf("ID %s returned a response signature that differs from the majority of enumerated IDs — needs manual triage; heuristic mode cannot distinguish an authorization bypass from legitimately varied content", s.id),
 			Evidence: map[string]string{
-				"id":     s.id,
-				"status": strconv.Itoa(s.sig.StatusCode),
+				"id":       s.id,
+				"status":   strconv.Itoa(s.sig.StatusCode),
+				"request":  s.reqEvidence,
+				"response": s.respEvidence,
 			},
 		})
 	}
 	return findings
 }
 
-func (d *Detector) fetch(ctx context.Context, reqURL, token string) (Signature, error) {
+// fetch fires one candidate-ID request and returns its Signature alongside
+// rendered request/response evidence strings (detectors.FormatRequest/
+// FormatResponse) for whichever Finding a caller ends up building from it.
+func (d *Detector) fetch(ctx context.Context, reqURL, token string) (Signature, string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return Signature{}, fmt.Errorf("building request: %w", err)
+		return Signature{}, "", "", fmt.Errorf("building request: %w", err)
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -249,16 +263,18 @@ func (d *Detector) fetch(ctx context.Context, reqURL, token string) (Signature, 
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return Signature{}, fmt.Errorf("fetching %s: %w", reqURL, err)
+		return Signature{}, "", "", fmt.Errorf("fetching %s: %w", reqURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Signature{}, fmt.Errorf("reading response body: %w", err)
+		return Signature{}, "", "", fmt.Errorf("reading response body: %w", err)
 	}
 
-	return Sign(resp, body), nil
+	reqEvidence := detectors.FormatRequest(req.Method, reqURL, req.Header, nil)
+	respEvidence := detectors.FormatResponse(resp.StatusCode, resp.Header, body)
+	return Sign(resp, body), reqEvidence, respEvidence, nil
 }
 
 // hostFor renders endpointTemplate with a representative ID just to extract

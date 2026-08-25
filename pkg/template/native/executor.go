@@ -180,6 +180,8 @@ func (e *Executor) tryRequest(ctx context.Context, target string, tmpl *Template
 			"template_id":    tmpl.ID,
 			"status":         fmt.Sprintf("%d", resp.StatusCode),
 			"matched_checks": strings.Join(matchedChecks, ","),
+			"request":        detectors.FormatRequest(httpReq.Method, fullURL, httpReq.Header, []byte(body)),
+			"response":       detectors.FormatResponse(resp.StatusCode, resp.Header, respBody),
 		},
 	}, true, nil
 }

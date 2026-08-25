@@ -91,7 +91,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	var findings []detectors.Finding
 	for _, rule := range ExposedPaths {
-		resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, rule.Path, authToken, nil, nil)
+		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, rule.Path, authToken, nil, nil)
 		if err != nil {
 			continue // already recorded against hostErrors; keep checking other paths
 		}
@@ -109,8 +109,10 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 			Target:      target + rule.Path,
 			Description: fmt.Sprintf("%s returned status %d with sensitive content matching a keyword for an exposed-path rule", rule.Path, resp.StatusCode),
 			Evidence: map[string]string{
-				"path":   rule.Path,
-				"status": fmt.Sprintf("%d", resp.StatusCode),
+				"path":     rule.Path,
+				"status":   fmt.Sprintf("%d", resp.StatusCode),
+				"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+				"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
 			},
 		})
 	}
@@ -118,7 +120,7 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 }
 
 func (d *Detector) checkMissingHeaders(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
-	resp, _, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, nil, nil)
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, nil, nil)
 	if err != nil {
 		return nil, nil
 	}
@@ -134,7 +136,11 @@ func (d *Detector) checkMissingHeaders(ctx context.Context, target, host, authTo
 			Confidence:  "high",
 			Target:      target,
 			Description: fmt.Sprintf("response is missing the %s security header", rule.Name),
-			Evidence:    map[string]string{"header": rule.Name},
+			Evidence: map[string]string{
+				"header":   rule.Name,
+				"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+				"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+			},
 		})
 	}
 	return findings, nil
@@ -143,7 +149,7 @@ func (d *Detector) checkMissingHeaders(ctx context.Context, target, host, authTo
 func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	var findings []detectors.Finding
 	for _, rule := range DisallowedMethods {
-		resp, _, err := d.doRequest(ctx, rule.Method, target, host, rule.Path, authToken, nil, nil)
+		req, resp, body, err := d.doRequest(ctx, rule.Method, target, host, rule.Path, authToken, nil, nil)
 		if err != nil {
 			continue
 		}
@@ -158,8 +164,10 @@ func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, aut
 			Target:      target + rule.Path,
 			Description: fmt.Sprintf("%s appears to be accepted (status %d) instead of rejected", rule.Method, resp.StatusCode),
 			Evidence: map[string]string{
-				"method": rule.Method,
-				"status": fmt.Sprintf("%d", resp.StatusCode),
+				"method":   rule.Method,
+				"status":   fmt.Sprintf("%d", resp.StatusCode),
+				"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+				"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
 			},
 		})
 	}
@@ -174,7 +182,7 @@ func rejected(status int) bool {
 
 func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	headers := map[string]string{"Origin": corsProbeOrigin}
-	resp, _, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, headers, nil)
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, headers, nil)
 	if err != nil {
 		return nil, nil
 	}
@@ -196,6 +204,8 @@ func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string
 		Evidence: map[string]string{
 			"access_control_allow_origin":      allowOrigin,
 			"access_control_allow_credentials": resp.Header.Get("Access-Control-Allow-Credentials"),
+			"request":                          detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+			"response":                         detectors.FormatResponse(resp.StatusCode, resp.Header, body),
 		},
 	}}, nil
 }
@@ -204,7 +214,7 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 	var findings []detectors.Finding
 	for _, rule := range ExposedPaths {
 		path := rule.Path + malformedQuery
-		_, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
+		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
 		if err != nil {
 			continue
 		}
@@ -220,8 +230,10 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 			Target:      target + path,
 			Description: "response to a malformed request contains a verbose error message (stack trace, internal path, or internal IP)",
 			Evidence: map[string]string{
-				"path":    path,
-				"pattern": pattern,
+				"path":     path,
+				"pattern":  pattern,
+				"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+				"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
 			},
 		})
 	}
@@ -233,7 +245,7 @@ func (d *Detector) checkDefaultCreds(ctx context.Context, target, host, _ string
 	for _, rule := range DefaultCreds {
 		form := url.Values{"username": {rule.Username}, "password": {rule.Password}}.Encode()
 		headers := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
-		resp, _, err := d.doRequest(ctx, http.MethodPost, target, host, rule.LoginPath, "", headers, strings.NewReader(form))
+		req, resp, body, err := d.doRequest(ctx, http.MethodPost, target, host, rule.LoginPath, "", headers, strings.NewReader(form))
 		if err != nil {
 			continue
 		}
@@ -250,6 +262,8 @@ func (d *Detector) checkDefaultCreds(ctx context.Context, target, host, _ string
 			Evidence: map[string]string{
 				"login_path": rule.LoginPath,
 				"username":   rule.Username,
+				"request":    detectors.FormatRequest(req.Method, req.URL.String(), req.Header, []byte(form)),
+				"response":   detectors.FormatResponse(resp.StatusCode, resp.Header, body),
 			},
 		})
 	}
@@ -268,12 +282,14 @@ func loginSucceeded(resp *http.Response, loginPath string) bool {
 
 // doRequest fires one request and records the outcome against hostErrors.
 // The returned response's body has already been drained and closed; body is
-// returned as a byte slice for matcher convenience.
-func (d *Detector) doRequest(ctx context.Context, method, target, host, path, authToken string, headers map[string]string, reqBody io.Reader) (*http.Response, []byte, error) {
+// returned as a byte slice for matcher convenience. The built *http.Request
+// is also returned so callers can render Finding.Evidence's raw-request
+// entry without reconstructing it.
+func (d *Detector) doRequest(ctx context.Context, method, target, host, path, authToken string, headers map[string]string, reqBody io.Reader) (*http.Request, *http.Response, []byte, error) {
 	fullURL := strings.TrimRight(target, "/") + path
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
 	if err != nil {
-		return nil, nil, fmt.Errorf("building request: %w", err)
+		return nil, nil, nil, fmt.Errorf("building request: %w", err)
 	}
 	if authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+authToken)
@@ -285,17 +301,17 @@ func (d *Detector) doRequest(ctx context.Context, method, target, host, path, au
 	resp, err := d.client.Do(req)
 	if err != nil {
 		d.hostErrors.RecordError(host)
-		return nil, nil, fmt.Errorf("fetching %s: %w", fullURL, err)
+		return nil, nil, nil, fmt.Errorf("fetching %s: %w", fullURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		d.hostErrors.RecordError(host)
-		return nil, nil, fmt.Errorf("reading response body: %w", err)
+		return nil, nil, nil, fmt.Errorf("reading response body: %w", err)
 	}
 	d.hostErrors.RecordSuccess(host)
-	return resp, body, nil
+	return req, resp, body, nil
 }
 
 func hostOf(target string) (string, error) {
