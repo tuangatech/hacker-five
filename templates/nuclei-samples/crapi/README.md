@@ -1,0 +1,17 @@
+# crAPI-targeted sample templates
+
+Five real, unmodified upstream templates picked for a Node/Go/Spring-Boot API target rather than a classic PHP app — [templates/nuclei-samples/](../)'s original four and [dvwa-php/](../dvwa-php/)'s five were both picked against DVWA, a plain server-rendered PHP site, so neither set exercises header-based DSL matching (`content_type`) or the hash/encoding DSL functions (`mmh3`, `base64_py`) real API-fingerprinting templates lean on. Picked by searching the actual upstream repo for API-relevant categories (`http/exposed-panels`, `http/exposures/apis`, `http/technologies`, `http/misconfiguration/springboot`) rather than guessed blind, then cross-checked against [docs/20-setup-testing-targets.md](../../../docs/20-setup-testing-targets.md)'s known crAPI setup (identity service on Spring Boot, MailHog for OTP capture at `:8025`).
+
+Fetched 2026-08-24 (upstream HEAD `0d52c00779dcea3280cc45629917ed9daecbc5ef`).
+
+**Live run against crAPI (`http://localhost:8888`, MailHog `http://localhost:8025`, 2026-08-24), via `pkg/template/nuclei.LoadDir` + `nuclei.New(client).Run`:**
+
+| Template | Result | Why |
+|---|---|---|
+| `mailhog-panel.yaml` | ✅ 1 finding (against `:8025`), ○ 0 findings (against `:8888`) | Correctly silent against crAPI's own app root, and correctly fires against the real MailHog UI crAPI ships for OTP capture — confirms the engine isn't just pattern-matching noise, it's actually target-specific |
+| `openapi.yaml` | ○ 0 findings, loaded fine | Checks `{{BaseURL}}/openapi.json` only; crAPI's real API-doc endpoints live under service prefixes (`/identity/api-docs`, `/identity/v3/api-docs` — confirmed present via direct `curl`, returning `401` not `404`, i.e. they exist but require auth this template doesn't send), not at bare root — so this specific unmodified template has nothing to match at the exact path it tries |
+| `springboot-env.yaml` | ○ 0 findings, loaded fine | Same prefix mismatch: tries `{{BaseURL}}/actuator/env` etc. at root; crAPI's identity service (the Spring Boot component) sits behind `/identity/`, confirmed unreachable at bare `/actuator/env` (`404`) while `/identity/actuator/env` returns `401` (exists, gated) |
+| `springboot-actuator.yaml` | ✗ rejected at load | DSL expression `status_code==200 && ("116323821" == mmh3(base64_py(body)))` uses `base64_py()` — a hash/encoding helper function this project's DSL evaluator doesn't implement (only `len`/`contains`/`regex` are supported, see `pkg/template/dsl/dsl.go`) |
+| `redoc-api-docs.yaml` | ✗ rejected at load | DSL expression `contains(content_type, "text/html")` references `content_type` — a built-in identifier (the response's `Content-Type` header value) this project's DSL only exposes as `status_code`/`body`/`header`, not as its own name |
+
+This run is real evidence the parser, matcher/extractor engine, and executor all work correctly end-to-end against a live API target, distinct from the DVWA run: one genuine target-specific finding (MailHog), two correctly-empty results explained by crAPI's real routing (not a bug), and two load-time rejections that surface concrete DSL gaps not seen in the DVWA batch — real hash/encoding functions (`mmh3`, `base64_py`) and a `content_type` identifier, both plausible upstream-template needs beyond the unary-`!`/`header` gap fixed earlier. Not fixed here — recorded as candidates for `docs/10-implementation-plan-ph1b.md`'s Future Enhancements section if the DSL's scope is revisited.
