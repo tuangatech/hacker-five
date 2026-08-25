@@ -29,3 +29,11 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 - Load credentials/tokens from environment variables only; never hardcode them.
 - Keep new detectors and templates consistent with the false-positive targets in [docs/03-development-roadmap.md](docs/03-development-roadmap.md) (<5%) — flag doubtful matchers instead of guessing.
 - Do not rely on your own knowledge about library, framework versions. Please search for new, stable version of library, framework before use.
+
+## Workflow
+
+- Read existing files before writing code. Prefer editing over rewriting.
+- For non-trivial tasks: discuss impact → plan affected code → update specs → implement.
+- Push back with evidence when appropriate.
+- Never mark a task complete without proving it works.
+- User instructions always override this file.

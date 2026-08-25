@@ -157,12 +157,13 @@ docker run -d -p 3000:3000 bkimminich/juice-shop
 - **App:** `http://localhost:3000`
 - No database-init step needed (unlike DVWA) — ready to scan as soon as the container responds.
 
-### Caveat: two of `misconfig`'s findings need a grain of salt against SPA-style targets like this one
+### Caveat: one of `misconfig`'s findings needs a grain of salt against SPA-style targets like this one
 
-A live run (`./hackerfive scan -t http://localhost:3000 --detector misconfig`) returned 7 findings: 2 missing-header, 3 disallowed-method, 2 exposed-path. Confirmed by direct `curl` that not all of them mean what they look like:
-- **`/.htpasswd` is a false positive.** Its rule's keyword (`pkg/detectors/misconfig/rules.go`) is a bare `":"` — Juice Shop's Angular frontend returns its `index.html` shell (HTTP 200) for any unmatched path, Express's SPA catch-all rather than a real per-route handler, and that shell's own markup trivially contains a colon somewhere. Real signal, wrong conclusion — worth narrowing that keyword before trusting this specific rule against any SPA-style target, not just this one.
-- **`/.well-known/security.txt` is real but not a misconfiguration.** Juice Shop intentionally serves one (a standard, deliberate disclosure file, not a leak) — correctly identified content, but "found a `security.txt`" isn't itself a finding worth acting on; its `low` severity already reflects that, but don't read it as a bug.
+A live run (`./hackerfive scan -t http://localhost:3000 --detector misconfig`) returned 6 findings: 2 missing-header, 3 disallowed-method, 1 exposed-path. Confirmed by direct `curl` that not all of them mean what they look like:
+- **`/well-known/security.txt` is real but not a misconfiguration.** Juice Shop intentionally serves one (a standard, deliberate disclosure file, not a leak) — correctly identified content, but "found a `security.txt`" isn't itself a finding worth acting on; its `low` severity already reflects that, but don't read it as a bug.
 - **PUT/DELETE/PATCH-accepted findings are real signal, same root cause.** The server does return 200 for all three at root — but that's the same SPA catch-all responding to any verb, not a state-changing endpoint that actually accepts those methods.
+
+**Previously also false-positived on `/.htpasswd`, now fixed:** its rule's keyword used to be a bare `":"` — Juice Shop's Angular frontend returns its `index.html` shell (HTTP 200) for any unmatched path, Express's SPA catch-all rather than a real per-route handler, and that shell's own markup trivially contains a colon somewhere. Fixed in `pkg/detectors/misconfig/rules.go` by keying on real htpasswd hash-format markers (`$apr1$`, `{SHA}`, `$2y$`/`$2a$`/`$2b$`) instead — confirmed live, `.htpasswd` no longer appears in the 6 findings above.
 
 ### What HackerFive needs
 

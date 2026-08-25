@@ -56,7 +56,14 @@ var ExposedPaths = []PathRule{
 	{Path: "/config.json", Keywords: []string{"apiKey", "secret", "password"}, Severity: "high"},
 	{Path: "/wp-config.php.bak", Keywords: []string{"DB_PASSWORD", "define("}, Severity: "high"},
 	{Path: "/server-status", Keywords: []string{"Apache Server Status"}, Severity: "medium"},
-	{Path: "/.htpasswd", Keywords: []string{":"}, Severity: "high"},
+	// Keywords are real htpasswd hash-format markers (Apache MD5, bcrypt,
+	// SHA1-base64 — see `man htpasswd`), not a bare ":" — a real .htpasswd
+	// line is "user:hash", but ":" alone false-positived against any target
+	// that returns HTTP 200 for unmatched paths (e.g. an SPA's catch-all
+	// index.html, which trivially contains a colon somewhere in its own
+	// markup) — found live against Juice Shop, see
+	// docs/20-setup-testing-targets.md's Juice Shop caveat.
+	{Path: "/.htpasswd", Keywords: []string{"$apr1$", "{SHA}", "$2y$", "$2a$", "$2b$"}, Severity: "high"},
 }
 
 // MissingHeaders are common security headers whose absence is worth flagging.

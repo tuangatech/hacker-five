@@ -75,6 +75,42 @@ func TestMisconfigExposedPath_CustomNotFoundPage_NoFinding(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// TestMisconfigExposedPath_HtpasswdRealHash_Hit and
+// TestMisconfigExposedPath_HtpasswdSPAFallback_NoFinding lock in a real,
+// live-found false-positive fix: the .htpasswd rule's keyword used to be a
+// bare ":", which any HTTP-200 catch-all response (e.g. an SPA's
+// index.html fallback for unmatched paths) trivially contains somewhere in
+// its own markup — found against a live Juice Shop instance (see
+// docs/20-setup-testing-targets.md). The keywords are now real htpasswd
+// hash-format markers instead.
+func TestMisconfigExposedPath_HtpasswdRealHash_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.htpasswd" && r.URL.RawQuery == "" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("admin:$apr1$SXBrCpTP$FhrjmwCTf.6UbYEHnPa1O0"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-exposed-path-.htpasswd")
+	require.Len(t, got, 1)
+	assert.Equal(t, "high", got[0].Severity)
+}
+
+func TestMisconfigExposedPath_HtpasswdSPAFallback_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		// An SPA-style catch-all: HTTP 200 for any unmatched path, body is
+		// the same index.html shell every time — real markup contains a
+		// bare ":" (e.g. inside a URL) but no real htpasswd hash format.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head><link href="https://fonts.googleapis.com"></head></html>`))
+	})
+
+	got := withPrefix(findings, "misconfig-exposed-path-.htpasswd")
+	assert.Empty(t, got)
+}
+
 func TestMisconfigMissingHeaders_AllAbsent(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
