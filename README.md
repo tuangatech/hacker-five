@@ -51,7 +51,7 @@ Run the misconfiguration detector against DVWA — no `--endpoint` or tokens nee
 ./hackerfive scan -t http://localhost --detector misconfig -o findings.json
 ```
 
-`-t/--targets` accepts either a single URL or a path to a file with one target per line. Other useful flags: `--concurrency/-c` (default 25), `--rate-limit` (default 50 req/s), `--proxy`, `--timeout`, `--insecure` (skip TLS verification — lab targets only, e.g. crAPI/DVWA self-signed certs). Run `./hackerfive scan --help` for the full list.
+`-t/--targets` accepts either a single URL or a path to a file with one target per line. Other useful flags: `--tags` (comma-separated, loads only templates carrying at least one — mirrors upstream Nuclei's `-tags`), `--concurrency/-c` (default 25), `--rate-limit` (default 50 req/s), `--proxy`, `--timeout`, `--insecure` (skip TLS verification — lab targets only, e.g. crAPI/DVWA self-signed certs). Run `./hackerfive scan --help` for the full list.
 
 Once a target is up (crAPI with tokens exported, and/or `export DVWA_BASE_URL=http://localhost`), the equivalent opt-in Go integration tests also run directly:
 ```bash
@@ -59,6 +59,10 @@ go test -tags=integration ./tests/integration/... -v
 ```
 
 **Only scan targets you're authorized to test** — see [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md). crAPI/DVWA/Juice Shop are self-contained local Docker targets built for this purpose; never point `--endpoint` or `-t` at a live/external host without explicit authorization.
+
+## Scanning a Real, Authorized Target
+
+Once you have an actual authorized target — a HackerOne program or a published VDP/`security.txt` policy, not a lab container — [docs/21-scanning-real-targets.md](docs/21-scanning-real-targets.md) walks through the rest: finding one, the recon to run before scanning, building a Nuclei template set that fits that target's tech stack instead of firing the full synced corpus, and conservative `--rate-limit`/`--concurrency` settings for a live program.
 
 ## Docs
 
@@ -74,5 +78,6 @@ Project plan split by concern under [docs/](docs/):
 8. [Phase 1b Implementation Plan (Weeks 5-10)](docs/10-implementation-plan-ph1b.md) — misconfiguration detector, Nuclei-compatible parser, native YAML engine, testing/validation, packaging
 9. [Follow-Up: Security Review, Expansion Strategy & Protocol Scope](docs/follow-up.md) — security review notes, open-source/VDP expansion plan, XBOW research, non-HTTP protocol assessment
 10. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI and DVWA bring-up, account/token minting, per-target setup steps and caveats
+11. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
 
 See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo.

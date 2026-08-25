@@ -36,4 +36,5 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 - For non-trivial tasks: discuss impact → plan affected code → update specs → implement.
 - Push back with evidence when appropriate.
 - Never mark a task complete without proving it works.
+- Proactively recommend features/practices that raise the tool's maturity (feature parity with established tools, robustness, real-world usability), not just answers to the literal question asked.
 - User instructions always override this file.

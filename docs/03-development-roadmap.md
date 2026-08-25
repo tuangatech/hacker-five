@@ -257,9 +257,10 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] Multi-target scanning orchestration
 - [ ] Finding deduplication across targets
 - [ ] Integration with HackerOne API (report submission automation)
+- [ ] Markdown/HTML/HackerOne-JSON-schema `Exporter` implementations (doc 02 §5) — deferred here from Phase 1b's v0.1.0 (see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 5); built together with the HackerOne API integration since it's the first point three concrete output formats are actually needed at once
 - [ ] Dashboard/web UI (optional, nice-to-have)
 
-**Note on HackerOne API integration:** treat this as report-drafting assistance, not unattended submission. It needs its own auth handling (API token or OAuth2, depending on endpoint), is subject to H1's per-endpoint rate limits, and requires a hand-authored mapping from `Finding` fields to H1's report schema (title, severity/CVSS, weakness/CWE) — none of which is a quick wrapper around the API.
+**Note on HackerOne API integration:** treat this as report-drafting assistance, not unattended submission. It needs its own auth handling (API token or OAuth2, depending on endpoint), is subject to H1's per-endpoint rate limits, and requires a hand-authored mapping from `Finding` fields to H1's report schema (title, severity/CVSS, weakness/CWE) — none of which is a quick wrapper around the API. The exporters above feed that mapping directly, and should apply the same default-redact-sensitive-evidence policy `follow-up.md` calls for on HTML/Markdown output.
 
 #### Week 26: Release & Community Building
 - [ ] Release v1.0.0 with all Phase 3 features

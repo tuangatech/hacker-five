@@ -30,3 +30,15 @@ func TestResolveTargets_FileWithMultipleTargets(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"http://a.example", "http://b.example"}, targets, "blank lines must be skipped")
 }
+
+func TestParseTags_Empty(t *testing.T) {
+	assert.Nil(t, parseTags(""))
+}
+
+func TestParseTags_SplitsAndTrims(t *testing.T) {
+	assert.Equal(t, []string{"wordpress", "grafana"}, parseTags(" wordpress, grafana "))
+}
+
+func TestParseTags_DropsEmptyEntries(t *testing.T) {
+	assert.Equal(t, []string{"wordpress"}, parseTags("wordpress,,  "))
+}

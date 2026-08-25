@@ -16,6 +16,7 @@ var recognizedDetectors = map[string]bool{
 type Config struct {
 	Targets            []string
 	TemplatePaths      []string
+	Tags               []string // from --tags; a loaded template fires only if it carries at least one of these (OR match, mirrors upstream Nuclei's -tags). Empty = no filtering
 	Concurrency        int
 	RateLimit          int
 	ProxyURL           string

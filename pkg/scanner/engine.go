@@ -161,9 +161,68 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		nativeTemplates = append(nativeTemplates, vt...)
 		rejected += len(vErrs)
 	}
-	fmt.Fprintf(os.Stderr, "loaded %d nuclei-compatible, %d native templates (%d rejected)\n",
-		len(nucleiTemplates), len(nativeTemplates), rejected)
+
+	loadedNuclei, loadedNative := len(nucleiTemplates), len(nativeTemplates)
+	if len(e.cfg.Tags) > 0 {
+		nucleiTemplates = filterNucleiByTags(nucleiTemplates, e.cfg.Tags)
+		nativeTemplates = filterNativeByTags(nativeTemplates, e.cfg.Tags)
+	}
+	filtered := (loadedNuclei - len(nucleiTemplates)) + (loadedNative - len(nativeTemplates))
+
+	fmt.Fprintf(os.Stderr, "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)\n",
+		len(nucleiTemplates), len(nativeTemplates), rejected, filtered)
 	return nucleiTemplates, nativeTemplates
+}
+
+// filterNucleiByTags keeps only templates whose comma-separated info.tags
+// intersects wanted — OR match, same semantics as upstream Nuclei's -tags
+// flag: any one shared tag is enough to include the template.
+func filterNucleiByTags(templates []*nuclei.Template, wanted []string) []*nuclei.Template {
+	set := tagSet(wanted)
+	var kept []*nuclei.Template
+	for _, tmpl := range templates {
+		for _, tag := range strings.Split(tmpl.Info.Tags, ",") {
+			if set[normalizeTag(tag)] {
+				kept = append(kept, tmpl)
+				break
+			}
+		}
+	}
+	return kept
+}
+
+// filterNativeByTags is filterNucleiByTags's native-format counterpart —
+// native.Template.Tags is already a slice, unlike nuclei's comma-separated
+// string, so no split step is needed here.
+func filterNativeByTags(templates []*native.Template, wanted []string) []*native.Template {
+	set := tagSet(wanted)
+	var kept []*native.Template
+	for _, tmpl := range templates {
+		for _, tag := range tmpl.Tags {
+			if set[normalizeTag(tag)] {
+				kept = append(kept, tmpl)
+				break
+			}
+		}
+	}
+	return kept
+}
+
+// tagSet normalizes wanted into a lookup set. Normalizing here (not just at
+// the CLI flag) keeps filtering correct regardless of how Config.Tags was
+// built — e.g. constructed directly in a test, not parsed from --tags.
+func tagSet(tags []string) map[string]bool {
+	set := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		if t = normalizeTag(t); t != "" {
+			set[t] = true
+		}
+	}
+	return set
+}
+
+func normalizeTag(tag string) string {
+	return strings.ToLower(strings.TrimSpace(tag))
 }
 
 func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Finding, error) {

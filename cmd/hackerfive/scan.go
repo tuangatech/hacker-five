@@ -15,6 +15,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	var (
 		targets          string
 		templatesPath    string
+		tags             string
 		concurrency      int
 		rateLimit        int
 		detector         string
@@ -43,6 +44,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			cfg := scanner.Config{
 				Targets:          targetList,
 				TemplatePaths:    []string{templatesPath},
+				Tags:             parseTags(tags),
 				Concurrency:      concurrency,
 				RateLimit:        rateLimit,
 				ProxyURL:         root.proxy,
@@ -80,6 +82,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 
 	cmd.Flags().StringVarP(&targets, "targets", "t", "", "target URL, or path to a file with one target per line (required)")
 	cmd.Flags().StringVar(&templatesPath, "templates", "./templates/", "template directory")
+	cmd.Flags().StringVar(&tags, "tags", "", "comma-separated tags — only load templates carrying at least one (default: no filtering)")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "worker pool size")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 50, "requests/sec across the whole scan")
 	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor" or "misconfig"`)
@@ -112,4 +115,21 @@ func resolveTargets(value string) ([]string, error) {
 		return targetList, nil
 	}
 	return []string{value}, nil
+}
+
+// parseTags splits a comma-separated --tags value into a trimmed slice,
+// dropping empty entries; "" (the flag's default) returns nil, meaning no
+// filtering. Case-normalizing happens later, in scanner.Engine — this just
+// does the CLI-level split.
+func parseTags(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var tags []string
+	for _, t := range strings.Split(raw, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }

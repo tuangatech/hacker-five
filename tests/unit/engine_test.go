@@ -105,6 +105,75 @@ http:
 	assert.True(t, haveNuclei, "nuclei-compatible template finding must be present alongside the built-in detector's")
 }
 
+// TestEngineRun_TagsFilterTemplates confirms --tags (Config.Tags) does the
+// OR-match filtering documented in engine.go's loadTemplates: a template
+// loads only if it carries at least one of the requested tags. Two
+// templates, one per format, tagged "wordpress" and "grafana" respectively —
+// requesting only "wordpress" must fire the first and skip the second.
+func TestEngineRun_TagsFilterTemplates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("hello-from-target"))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wanted.yaml"), []byte(`
+id: wanted-check
+info:
+  name: Wanted check
+  severity: info
+tags:
+  - wordpress
+requests:
+  - path: "{{BaseURL}}/"
+    matchers:
+      - type: word
+        words:
+          - "hello-from-target"
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "unwanted.yaml"), []byte(`
+id: unwanted-check
+info:
+  name: Unwanted check
+  severity: info
+  tags: grafana
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: word
+        words:
+          - "hello-from-target"
+`), 0o644))
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Tags:          []string{"WordPress"}, // deliberately mixed-case: filtering must normalize
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	findings, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+
+	var haveWanted, haveUnwanted bool
+	for _, f := range findings {
+		switch f.ID {
+		case "native-wanted-check-0":
+			haveWanted = true
+		case "nuclei-unwanted-check-0":
+			haveUnwanted = true
+		}
+	}
+	assert.True(t, haveWanted, "template tagged wordpress must fire when --tags wordpress is set")
+	assert.False(t, haveUnwanted, "template tagged grafana must be filtered out when --tags wordpress is set")
+}
+
 func TestEngineRun_MultipleTargets(t *testing.T) {
 	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 	t.Cleanup(server1.Close)

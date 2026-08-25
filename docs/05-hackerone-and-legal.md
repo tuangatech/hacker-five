@@ -304,3 +304,4 @@ func LoadConfig() *Config {
 ## See also
 - [03-development-roadmap.md](03-development-roadmap.md) — tool maturity gates required before joining HackerOne
 - [06-metrics-resources-faq.md](06-metrics-resources-faq.md) — business metrics tracking bounty income
+- [21-scanning-real-targets.md](21-scanning-real-targets.md) — the concrete scan workflow once a target from this page's process is actually authorized
