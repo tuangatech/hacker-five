@@ -12,7 +12,7 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 |---|---|---|
 | **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
-| Juice Shop | *(none yet)* | XSS/auth-bypass targets — no detector for those exists yet (see [03-development-roadmap.md](03-development-roadmap.md)'s Phase 2); skip for now |
+| **Juice Shop** | `misconfig`; Nuclei-compatible templates (Step 2, not yet CLI-wired — see caveat below) | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
 | vAPI, WebGoat | *(none yet)* | Reserved for later API-auth/broader-coverage phases; not referenced by any implemented detector yet |
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
@@ -140,11 +140,58 @@ docker ps --filter ancestor=vulnerables/web-dvwa -q | xargs -r docker stop
 
 ---
 
-## Other targets (no detector uses these yet)
+## Juice Shop (for `--detector misconfig`, and Nuclei-compatible templates)
 
-No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above). Pull the images ahead of time if you want them ready for when Phase 2 lands:
+[OWASP Juice Shop](https://github.com/juice-shop/juice-shop) is a single-container Angular/Express app — like DVWA, no accounts or setup step needed, so both `misconfig` and Step 2's Nuclei-compatible template engine can point at it directly. Two things actually run against it today, verified live (2026-08-25):
+
+1. **`misconfig` detector** (CLI-wired) — real findings, but read the caveat below before trusting all of them.
+2. **Nuclei-compatible template engine** (Step 2, `pkg/template/nuclei`) — not yet reachable from `hackerfive scan` (`--templates` CLI wiring is [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 3), so this only runs via the Go integration test below for now.
+
+### Bring it up
+
 ```bash
+wsl                     # Windows only — drops into the Ubuntu shell; skip on macOS
 docker pull bkimminich/juice-shop
+docker run -d -p 3000:3000 bkimminich/juice-shop
+```
+- **App:** `http://localhost:3000`
+- No database-init step needed (unlike DVWA) — ready to scan as soon as the container responds.
+
+### Caveat: two of `misconfig`'s findings need a grain of salt against SPA-style targets like this one
+
+A live run (`./hackerfive scan -t http://localhost:3000 --detector misconfig`) returned 7 findings: 2 missing-header, 3 disallowed-method, 2 exposed-path. Confirmed by direct `curl` that not all of them mean what they look like:
+- **`/.htpasswd` is a false positive.** Its rule's keyword (`pkg/detectors/misconfig/rules.go`) is a bare `":"` — Juice Shop's Angular frontend returns its `index.html` shell (HTTP 200) for any unmatched path, Express's SPA catch-all rather than a real per-route handler, and that shell's own markup trivially contains a colon somewhere. Real signal, wrong conclusion — worth narrowing that keyword before trusting this specific rule against any SPA-style target, not just this one.
+- **`/.well-known/security.txt` is real but not a misconfiguration.** Juice Shop intentionally serves one (a standard, deliberate disclosure file, not a leak) — correctly identified content, but "found a `security.txt`" isn't itself a finding worth acting on; its `low` severity already reflects that, but don't read it as a bug.
+- **PUT/DELETE/PATCH-accepted findings are real signal, same root cause.** The server does return 200 for all three at root — but that's the same SPA catch-all responding to any verb, not a state-changing endpoint that actually accepts those methods.
+
+### What HackerFive needs
+
+```bash
+cd ~/projects/hacker-five
+./hackerfive scan -t http://localhost:3000 --detector misconfig
+```
+No tokens, no `--endpoint`.
+
+For the Nuclei-compatible engine (not CLI-wired yet, so via the Go integration test instead):
+```bash
+export JUICESHOP_BASE_URL=http://localhost:3000   # optional if already synced
+make templates-sync   # if .nuclei-templates-cache/ isn't already populated — see 10-implementation-plan-ph1b.md Step 2
+go test -tags=integration ./tests/integration/... -run TestNucleiTemplates -v
+```
+Real result (2026-08-25, 2,473 templates loaded): 2 genuine findings — `http-missing-security-headers` (8 of 11 checked headers missing) and `owasp-juice-shop-detect`, a real upstream template that fingerprints Juice Shop specifically by its page title. Notably, `angular-detect.yaml` (one of the permanent samples in `templates/nuclei-samples/`) does **not** fire here despite Juice Shop being an Angular app — confirmed via direct `curl` that its raw HTML has no `ng-version="..."` attribute at all (this build hydrates entirely client-side, no server-rendered marker), so a plain-HTTP template genuinely has nothing to match — not an engine bug.
+
+### Teardown / reset
+
+```bash
+docker ps --filter ancestor=bkimminich/juice-shop -q | xargs -r docker stop
+```
+
+---
+
+## Other targets (no detector targets these yet)
+
+No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above). Pull the image ahead of time if you want it ready for when Phase 2 lands:
+```bash
 docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; needs Rosetta on Apple Silicon Macs, native on Windows/WSL2 and Intel Macs
 ```
 vAPI has no single canonical Docker image the way the others do — see its [own repo](https://github.com/roottusk/vapi) when it's actually needed.
@@ -157,10 +204,11 @@ vAPI has no single canonical Docker image the way the others do — see its [own
 |---|---|---|---|
 | crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
 | DVWA | None | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
+| Juice Shop | None | — | None — ready as soon as the container responds |
 
 ## See also
 - [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — read-only/authorized-target-only constraints these local targets satisfy
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — IDOR detector this crAPI setup validates
-- [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — misconfiguration detector this DVWA setup validates
+- [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — misconfiguration detector this DVWA/Juice Shop setup validates, and the Nuclei-compatible template engine this Juice Shop setup also validates
 - [README.md](../README.md) — Quick Start commands that assume the setup steps on this page are done
