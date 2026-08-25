@@ -14,7 +14,7 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
 | **Juice Shop** | `misconfig`; Nuclei-compatible templates | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
 | **vAPI** | `misconfig`; Nuclei-compatible templates | Stateless checks only for now — has a real BOLA (see its own section below) but uses a custom auth-header scheme `idor.Detector` doesn't support yet |
-| WebGoat | *(none yet)* | Reserved for later API-auth/broader-coverage phases; not referenced by any implemented detector yet |
+| WebGoat | *(none yet)* | Reserved for Phase 2 — per [03-development-roadmap.md](03-development-roadmap.md), its Week 13-14 (XSS) and Week 15-16 (SQL injection) deliverables don't name a specific test target the way Week 11-12's API-auth work names vAPI/crAPI; WebGoat's general multi-vulnerability lesson set (unlike the API-specific targets above) is the natural fit for those. Not referenced by any implemented detector yet |
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
 
@@ -228,7 +228,7 @@ cd ~/targets/vapi && docker-compose down -v
 
 ## Other targets (no detector targets these yet)
 
-No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above). Pull the image ahead of time if you want it ready for when Phase 2 lands:
+No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above), so there's no real live-verified result to document, unlike the sections above. Pull the image ahead of time if you want it ready for when Phase 2's XSS/SQLi work lands (see [03-development-roadmap.md](03-development-roadmap.md) Week 13-16) and this graduates to its own section:
 ```bash
 docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; needs Rosetta on Apple Silicon Macs, native on Windows/WSL2 and Intel Macs
 ```
