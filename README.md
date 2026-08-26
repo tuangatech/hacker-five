@@ -8,7 +8,7 @@ Repo: https://github.com/tuangatech/hacker-five
 
 ## Status
 
-Phase 1a (Weeks 1-4) is done: CLI, HTTP engine, and a working **IDOR detector**. Phase 1b ([docs/10-implementation-plan-ph1b.md](docs/10-implementation-plan-ph1b.md)) is also done: misconfig detector, Nuclei-compatible template parser, native YAML template engine (`--templates`), testing/validation, and packaging — the only thing left before `v0.1.0` is tagging the release (see doc10's Definition of Done). See [docs/09-implementation-plan-ph1a.md](docs/09-implementation-plan-ph1a.md) for Phase 1a.
+Phase 1a (Weeks 1-4) is done: CLI, HTTP engine, and a working **IDOR detector**. Phase 1b ([docs/10-implementation-plan-ph1b.md](docs/10-implementation-plan-ph1b.md)) is also done: misconfig detector, Nuclei-compatible template parser, native YAML template engine (`--templates`), testing/validation, and packaging. `v0.1.0` is tagged and released — see [Using HackerFive](#using-hackerfive) below to get started. See [docs/09-implementation-plan-ph1a.md](docs/09-implementation-plan-ph1a.md) for Phase 1a.
 
 - ✅ **IDOR** (`--detector idor`) — sequential/wordlist ID enumeration, two modes:
   - **Baseline mode** (high confidence): give both `--auth-token` and `--other-auth-token`. Two unrelated accounts are compared against each ID; a finding fires only when the second account gets real content where the majority "denied" baseline says it shouldn't.
@@ -18,7 +18,43 @@ Phase 1a (Weeks 1-4) is done: CLI, HTTP engine, and a working **IDOR detector**.
   - **Nuclei-compatible** (`pkg/template/nuclei`) — a defined, fail-loudly subset of real upstream `nuclei-templates` (`scripts/sync-nuclei-templates.sh` syncs a pinned commit); rejects `raw:`/`payloads:`, `flow:`, disallowed protocol blocks, and out-of-band/OAST matchers at load time rather than silently mis-evaluating them. Live-verified against DVWA, crAPI, and Juice Shop — see doc10 Step 2.
   - **Native YAML** (`pkg/template/native`) — HackerFive's own format, sharing the same matcher/extractor engine. `idor`-tagged templates (`templates/idor/*.yaml`) route through the real `idor.Detector`, so a YAML file can now supply what `--endpoint` used to — see doc10 Step 3.
 
-## Installation
+## Using HackerFive
+
+For running scans against a target — just a downloaded binary, no Go toolchain needed. Contributing to HackerFive, or want to try it against a local lab target first? See [Building & Local Testing](#building--local-testing) below instead.
+
+### Download & Install
+
+Pre-built cross-platform binaries (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64) are attached to each [GitHub release](https://github.com/tuangatech/hacker-five/releases) — download the archive for your platform and extract it.
+
+**On Windows**, download `hackerfive_<version>_windows_amd64.zip`, extract it anywhere, then run from PowerShell:
+```powershell
+.\hackerfive.exe --version
+```
+It's an unsigned binary (no code-signing certificate), so the first run typically shows a SmartScreen "Windows protected your PC" prompt — click "More info" → "Run anyway". This is standard for unsigned OSS binaries, not a sign of tampering; verify against `hackerfive_<version>_checksums.txt` from the same release if you want to confirm the download wasn't corrupted/modified.
+
+### Run a Scan
+
+The zip/tarball bundles `templates/`, so as long as you run the binary from inside the extracted folder, the default `--templates ./templates/` just works — no separate clone needed:
+```powershell
+.\hackerfive.exe scan -t https://www.example.com --detector misconfig -o findings.json
+```
+```bash
+# Linux/macOS
+./hackerfive scan -t https://www.example.com --detector misconfig -o findings.json
+```
+`--detector misconfig` needs no auth token and is the safe first thing to run against any target. `-t/--targets` accepts either a single URL or a path to a file with one target per line. Other useful flags: `--tags` (comma-separated, loads only templates carrying at least one — mirrors upstream Nuclei's `-tags`), `--concurrency/-c` (default 25), `--rate-limit` (default 50 req/s), `--proxy`, `--timeout`, `--insecure` (skip TLS verification — lab targets only). `--detector idor` additionally needs `--endpoint` plus `--auth-token`/`--other-auth-token` (or `HACKERFIVE_AUTH_TOKEN`/`HACKERFIVE_OTHER_AUTH_TOKEN`) — see [Quick Start](#quick-start) below for a full worked example against a lab target. Run `hackerfive scan --help` for the full flag list.
+
+**`www.example.com` is IANA's reserved documentation domain** (safe for a syntax check) — **only scan a real site you're actually authorized to test.** See [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md) and the next section.
+
+### Scanning a Real, Authorized Target
+
+Once you have an actual authorized target — a HackerOne program or a published VDP/`security.txt` policy, not a lab container — [docs/21-scanning-real-targets.md](docs/21-scanning-real-targets.md) walks through the rest: finding one, the recon to run before scanning, building a Nuclei template set that fits that target's tech stack instead of firing the full synced corpus, and conservative `--rate-limit`/`--concurrency` settings for a live program.
+
+## Building & Local Testing
+
+For contributing to HackerFive, or trying it out against local lab targets (crAPI, DVWA, Juice Shop) before ever pointing it at something real.
+
+### Build from Source
 
 ```bash
 # via go install (requires Go 1.26+)
@@ -33,36 +69,17 @@ git clone https://github.com/tuangatech/hacker-five.git && cd hacker-five
 make build
 ./hackerfive --version
 ```
-Pre-built cross-platform binaries (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64) are attached to each [GitHub release](https://github.com/tuangatech/hacker-five/releases), built via `goreleaser` (`.goreleaser.yml`).
 
-**On Windows**, download `hackerfive_<version>_windows_amd64.zip` from the release, extract it anywhere, then run from PowerShell:
-```powershell
-.\hackerfive.exe --version
-```
-It's an unsigned binary (no code-signing certificate), so the first run typically shows a SmartScreen "Windows protected your PC" prompt — click "More info" → "Run anyway". This is standard for unsigned OSS binaries, not a sign of tampering; verify against `hackerfive_<version>_checksums.txt` from the same release if you want to confirm the download wasn't corrupted/modified.
-
-The zip also bundles `templates/`, so as long as you run `hackerfive.exe` from inside the extracted folder, the default `--templates ./templates/` just works — no separate clone needed:
-```powershell
-.\hackerfive.exe scan -t https://www.example.com --detector misconfig -o findings.json
-```
-`--detector misconfig` needs no auth token and is the safe first thing to run against any target — see the [Quick Start](#quick-start) section below for what each flag does and the [IDOR detector](#status) example. **`www.example.com` is IANA's reserved documentation domain, safe to point a scanner at for a syntax check — but only scan a real site you're actually authorized to test** (see [Scanning a Real, Authorized Target](#scanning-a-real-authorized-target) and [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md)).
-
-## Setting Up a Target
+### Setting Up a Target
 
 Full walkthrough (Docker bring-up, account/token minting, one-time setup steps, and a per-detector caveat about DVWA's login form) lives in [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md). Short version:
 
 - **crAPI** (for `--detector idor`): `docker compose up -d`, then `source tests/integration/scripts/crapi_setup.sh` to mint two account tokens.
 - **DVWA** (for `--detector misconfig`): `docker run -d -p 80:80 vulnerables/web-dvwa`, then click "Create / Reset Database" once at `http://localhost/setup.php`. No tokens needed.
 
-## Quick Start
+### Quick Start
 
-Build:
-```bash
-go build -o hackerfive ./cmd/hackerfive
-# or: make build
-```
-
-Run the IDOR detector against crAPI (baseline mode — recommended), using the tokens from the setup step above:
+With a target up, run the IDOR detector against crAPI (baseline mode — recommended), using the tokens from the setup step above:
 ```bash
 export HACKERFIVE_AUTH_TOKEN="$CRAPI_OWNER_TOKEN"
 export HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN"
@@ -80,18 +97,12 @@ Run the misconfiguration detector against DVWA — no `--endpoint` or tokens nee
 ./hackerfive scan -t http://localhost --detector misconfig -o findings.json
 ```
 
-`-t/--targets` accepts either a single URL or a path to a file with one target per line. Other useful flags: `--tags` (comma-separated, loads only templates carrying at least one — mirrors upstream Nuclei's `-tags`), `--concurrency/-c` (default 25), `--rate-limit` (default 50 req/s), `--proxy`, `--timeout`, `--insecure` (skip TLS verification — lab targets only, e.g. crAPI/DVWA self-signed certs). Run `./hackerfive scan --help` for the full list.
-
 Once a target is up (crAPI with tokens exported, and/or `export DVWA_BASE_URL=http://localhost`), the equivalent opt-in Go integration tests also run directly:
 ```bash
 go test -tags=integration ./tests/integration/... -v
 ```
 
-**Only scan targets you're authorized to test** — see [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md). crAPI/DVWA/Juice Shop are self-contained local Docker targets built for this purpose; never point `--endpoint` or `-t` at a live/external host without explicit authorization.
-
-## Scanning a Real, Authorized Target
-
-Once you have an actual authorized target — a HackerOne program or a published VDP/`security.txt` policy, not a lab container — [docs/21-scanning-real-targets.md](docs/21-scanning-real-targets.md) walks through the rest: finding one, the recon to run before scanning, building a Nuclei template set that fits that target's tech stack instead of firing the full synced corpus, and conservative `--rate-limit`/`--concurrency` settings for a live program.
+**crAPI/DVWA/Juice Shop are self-contained local Docker targets built for this purpose — never point `--endpoint` or `-t` at a live/external host with these lab credentials/assumptions.** See [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md).
 
 ## Docs
 
