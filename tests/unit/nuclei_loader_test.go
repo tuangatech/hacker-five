@@ -295,16 +295,19 @@ http:
 	assert.True(t, templates[0].HTTP[0].StopAtFirstMatch)
 }
 
-// TestNucleiLoadDir_FlowRejected locks in a fix for a real, live false
-// positive: upstream's apache-server-status-localhost.yaml uses `flow:` to
-// run a 403/404/401 "is it blocked" gate check (marked `internal: true`,
-// meaning "never a standalone result") before a second request that
-// actually attempts the bypass. Without flow: support, this project's
-// executor used to run both requests unconditionally and independently —
-// so the gate's own 403 match got reported as a false "Server Status
-// Disclosure" finding, backwards from what it meant (403 = correctly
-// blocked). Now rejected at load time instead of silently mis-evaluated.
-func TestNucleiLoadDir_FlowRejected(t *testing.T) {
+// TestNucleiLoadDir_FlowLoads is modeled on upstream's real
+// apache-server-status-localhost.yaml — a 403/404/401 "is it blocked" gate
+// check (marked internal: true, meaning "never a standalone result")
+// followed by a bypass attempt, connected via flow: http(1) && http(2).
+// Before flow: support, running both requests unconditionally/independently
+// reported the gate's own 403 match as a false "Server Status Disclosure"
+// finding, backwards from what it meant (403 = correctly blocked) — see
+// docs/10-implementation-plan-ph1b.md's flow: note. Now this grammar (a
+// boolean composition of http(N) calls, matching 36 of 38 real sampled
+// flow: templates) is parsed and internal: true is allowed when flow: is
+// set. See tests/unit/nuclei_executor_test.go for the actual end-to-end
+// false-positive-fixed proof; this test only confirms it loads.
+func TestNucleiLoadDir_FlowLoads(t *testing.T) {
 	dir := t.TempDir()
 	writeTemplate(t, dir, "flow-style.yaml", `
 id: apache-server-status-style
@@ -329,6 +332,93 @@ http:
       - type: word
         words:
           - "Apache Server Status"
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_FlowMixedBooleanLoads is modeled on the one real
+// sampled flow: template that mixes && and || with explicit parens
+// (upstream's citrix-xenmobile-version.yaml-style shape) — confirms the
+// parser handles grouping, not just a flat chain.
+func TestNucleiLoadDir_FlowMixedBooleanLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "flow-mixed.yaml", `
+id: flow-mixed-boolean
+info:
+  name: Flow Mixed Boolean
+  severity: info
+flow: http(1) && (http(2) || http(3))
+http:
+  - method: GET
+    path: ["{{BaseURL}}/a"]
+    matchers:
+      - type: status
+        status: [200]
+  - method: GET
+    path: ["{{BaseURL}}/b"]
+    matchers:
+      - type: status
+        status: [200]
+  - method: GET
+    path: ["{{BaseURL}}/c"]
+    matchers:
+      - type: status
+        status: [200]
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_FlowOutOfRangeRejected rejects a flow: expression
+// referencing an http: index the template doesn't actually have.
+func TestNucleiLoadDir_FlowOutOfRangeRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "flow-oor.yaml", `
+id: flow-out-of-range
+info:
+  name: Flow Out Of Range
+  severity: info
+flow: http(1) && http(2)
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: status
+        status: [200]
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, templates)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "http(2)")
+}
+
+// TestNucleiLoadDir_FlowJavascriptRejected keeps a javascript()-based flow:
+// script rejected — this project's minimal grammar only covers boolean
+// composition of http(N) calls, not a JS engine (same category as the
+// code:/headless: disallowed blocks). Real upstream has 2 of these among
+// the 38 sampled flow: templates (e.g. cookies-without-secure.yaml).
+func TestNucleiLoadDir_FlowJavascriptRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "flow-js.yaml", `
+id: flow-javascript
+info:
+  name: Flow Javascript
+  severity: info
+flow: |
+  http()
+  javascript()
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: status
+        status: [200]
 `)
 
 	templates, errs := nuclei.LoadDir(dir)

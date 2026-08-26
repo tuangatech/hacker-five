@@ -16,6 +16,154 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/template/nuclei"
 )
 
+// apacheServerStatusFlowTemplate mirrors real upstream's
+// apache-server-status-localhost.yaml (simplified to one spoofed header
+// instead of the real template's eleven): a 403/404/401 "is it blocked"
+// gate (internal: true) followed by a bypass attempt using a spoofed
+// X-Forwarded-For header — connected via flow: http(1) && http(2). See
+// TestExecutorRun_FlowApacheServerStatus_FalsePositiveFixed and
+// TestExecutorRun_FlowApacheServerStatus_RealBypassDetected below, and
+// docs/10-implementation-plan-ph1b.md's flow: note for the real, live false
+// positive this reproduces and fixes.
+const apacheServerStatusFlowTemplate = `
+id: apache-server-status-style
+info:
+  name: Server Status Disclosure
+  severity: low
+flow: http(1) && http(2)
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/server-status"
+    matchers:
+      - type: status
+        status:
+          - 403
+          - 404
+          - 401
+        condition: or
+        internal: true
+  - method: GET
+    path:
+      - "{{BaseURL}}/server-status"
+    headers:
+      X-Forwarded-For: 127.0.0.1
+    matchers:
+      - type: word
+        words:
+          - "Apache Server Status"
+`
+
+// TestExecutorRun_FlowApacheServerStatus_FalsePositiveFixed is the concrete
+// proof flow: support fixes Step 2's real, live false positive: against a
+// correctly-configured server (doesn't trust X-Forwarded-For, always
+// blocks /server-status), request 1's internal gate matcher passes (403 =
+// correctly blocked) but request 2's spoofed-header bypass genuinely fails
+// — so no finding should be produced. Before flow: support, this project
+// ran both requests unconditionally/independently and reported request 1's
+// own 403 match as a false "Server Status Disclosure" finding.
+func TestExecutorRun_FlowApacheServerStatus_FalsePositiveFixed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "apache-status.yaml", apacheServerStatusFlowTemplate)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	assert.Empty(t, findings, "a correctly-configured server must not be reported as vulnerable")
+}
+
+// TestExecutorRun_FlowApacheServerStatus_RealBypassDetected is the positive
+// counterpart: a server that actually trusts the spoofed X-Forwarded-For
+// header. Request 1's gate still passes (403 without the header), and
+// request 2's bypass now genuinely succeeds — exactly one finding, from
+// request 2 only (request 1's matcher is internal: true and never produces
+// one).
+func TestExecutorRun_FlowApacheServerStatus_RealBypassDetected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Forwarded-For") == "127.0.0.1" {
+			_, _ = w.Write([]byte("Apache Server Status for localhost"))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "apache-status.yaml", apacheServerStatusFlowTemplate)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Contains(t, findings[0].Evidence["response"], "Apache Server Status")
+}
+
+// TestExecutorRun_FlowUmamiPanel_MatcherlessExtractorChains is modeled on
+// real upstream's umami-panel.yaml: request 1 has a real matcher (the
+// finding), request 2 has no matchers at all — only an extractor. Before
+// this project's chainable fix (see tryPath's doc comment), a matcher-less
+// request never ran its extractors (matcher.EvaluateAll(nil, ...) is
+// false), so request 2 would never even fire under flow:'s && short
+// circuit — chainVars.Extract needs to run regardless of there being
+// nothing to match. Verified here by tracking which paths the test server
+// actually saw, since Run doesn't expose chainVars directly.
+func TestExecutorRun_FlowUmamiPanel_MatcherlessExtractorChains(t *testing.T) {
+	var hits []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		switch r.URL.Path {
+		case "/login":
+			_, _ = w.Write([]byte("umami</h1>"))
+		case "/~404":
+			_, _ = w.Write([]byte("v1.2.3"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "umami.yaml", `
+id: umami-panel-style
+info:
+  name: Umami Panel
+  severity: info
+flow: http(1) && http(2)
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/login"
+    matchers:
+      - type: word
+        words:
+          - "umami</h1>"
+  - method: GET
+    path:
+      - "{{BaseURL}}/~404"
+    extractors:
+      - type: regex
+        name: version
+        part: body
+        regex:
+          - 'v(\d+\.\d+\.\d+)'
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "request 1's word matcher should produce exactly one finding")
+	assert.ElementsMatch(t, []string{"/login", "/~404"}, hits, "request 2 (matcher-less, extractor-only) must still fire once request 1's flow-gate matched")
+}
+
 func newExecutorClient() *httpclient.Client {
 	return httpclient.New(httpclient.Config{
 		Timeout:             5 * time.Second,

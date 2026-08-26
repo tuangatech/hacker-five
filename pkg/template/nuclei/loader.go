@@ -103,7 +103,14 @@ func validate(tmpl *Template) error {
 		return fmt.Errorf("template has no http: requests")
 	}
 	if tmpl.Flow != "" {
-		return fmt.Errorf("uses flow: — conditional multi-request control flow unsupported in this version, see docs/10-implementation-plan-ph1b.md Step 2")
+		ast, maxN, err := parseFlow(tmpl.Flow)
+		if err != nil {
+			return fmt.Errorf("flow: %w", err)
+		}
+		if maxN > len(tmpl.HTTP) {
+			return fmt.Errorf("flow: references http(%d) but template only has %d http: requests", maxN, len(tmpl.HTTP))
+		}
+		tmpl.flowAST = ast
 	}
 	for i, req := range tmpl.HTTP {
 		// payloads: is also legitimately used with a plain path:-based
@@ -126,8 +133,8 @@ func validate(tmpl *Template) error {
 		}
 		dslCtx := rawIndexedDSLContext(req.Raw)
 		for j, m := range req.Matchers {
-			if m.Internal {
-				return fmt.Errorf("http[%d].matchers[%d]: uses internal: true — flow-control-only matcher, unsupported without flow: support, see docs/10-implementation-plan-ph1b.md Step 2", i, j)
+			if m.Internal && tmpl.Flow == "" {
+				return fmt.Errorf("http[%d].matchers[%d]: uses internal: true outside a flow: template — flow-control-only matcher has nothing to gate without flow:, see docs/10-implementation-plan-ph1b.md", i, j)
 			}
 			if err := matcher.ValidateWithContext(m, dslCtx); err != nil {
 				return fmt.Errorf("http[%d].matchers[%d]: %w", i, j, err)

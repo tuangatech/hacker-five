@@ -57,14 +57,15 @@ type Matcher struct {
 	// Internal marks a matcher as flow-control-only: in real Nuclei, an
 	// internal matcher gates whether a later request in a multi-request
 	// `flow:` template runs at all, and never produces standalone output on
-	// its own. This project's executor doesn't implement `flow:`'s
-	// conditional request sequencing (see Template.Flow), so a template
-	// using Internal is rejected at load time — evaluating it as an
-	// ordinary matcher is actively wrong, not just incomplete: found live
-	// against upstream's apache-server-status-localhost.yaml, whose
-	// internal matcher checks for a 403 (i.e. "correctly blocked") as its
-	// flow gate, which our engine reported as a false "disclosure" finding
-	// when DVWA's real 403 respose "matched" it in isolation.
+	// its own, even when it evaluates true. Allowed only inside a template
+	// that has `flow:` set (see nuclei/loader.go's validate) — outside one,
+	// still rejected at load time, since there's nothing for it to gate.
+	// Found live against upstream's apache-server-status-localhost.yaml,
+	// whose internal matcher checks for a 403 (i.e. "correctly blocked") as
+	// its flow gate: before flow: support existed, this project ran it as
+	// an ordinary matcher and reported a false "disclosure" finding on its
+	// own true evaluation — see nuclei.Executor.hasReportableMatcher, which
+	// exists specifically so an all-internal block can never do that again.
 	Internal bool `yaml:"internal,omitempty"`
 }
 

@@ -74,14 +74,39 @@ http:
 - **An absolute-URI request line (`GET http://192.168.0.1/ HTTP/1.1`) is rejected at load time** — real templates use this to test whether the target relays proxied requests to an arbitrary URI (open-proxy/SSRF-via-proxy checks, e.g. `open-proxy-internal.yaml`, the cloud-metadata-via-proxy templates). This project has no execution path that can honor it safely: `net/http`'s client dials whatever URL it's given, so sending it naively would connect the scanner directly to whatever host the (downloaded, template-authored) text names — a real out-of-scope-host risk per [CLAUDE.md](../CLAUDE.md), not just an unsupported feature.
 - **A payload variable used *inside a matcher's `dsl:` string* isn't substituted** — only `raw:`/`path:`/`headers:`/`body:` are rendered through `{{}}` substitution. Real upstream's `cors-misconfig.yaml` does this (`contains(tolower(header), 'access-control-allow-origin: {{cors_origin}}')`) — it loads and runs without erroring, but that specific check will never fire (the literal, unsubstituted `{{cors_origin}}` text never appears in a real response) — a known, safe-direction (false-negative) gap, not a crash.
 
+### `flow:` (v1 scope)
+
+```yaml
+flow: http(1) && http(2)   # or: http(1) || http(2), parens for grouping, e.g. http(1) && (http(2) || http(3))
+
+http:
+  - method: GET
+    path: ["{{BaseURL}}/server-status"]
+    matchers:
+      - type: status
+        status: [403, 404, 401]
+        internal: true       # gates flow only — never itself produces a Finding
+  - method: GET
+    path: ["{{BaseURL}}/server-status"]
+    headers:
+      X-Forwarded-For: 127.0.0.1
+    matchers:
+      - type: word
+        words: ["Apache Server Status"]
+```
+
+- **Supported: a `flow:` script that's a pure boolean composition of `http(N)` calls** — `&&`, `||`, and parens, standard precedence, N = 1-indexed position in the template's `http:` list. Covers 36 of 38 real sampled `flow:` templates (94.7%). Evaluation short-circuits exactly like `&&`/`||` in any C-like language: a request gated behind an earlier false `&&` or true `||` never fires — no request, no `Finding`, no extractor side effects from it.
+- **`matchers: [{internal: true}]` is allowed only inside a `flow:` template** — an internal matcher's own result never produces a `Finding` (even when it evaluates true), it only decides whether the `http(N)` call it belongs to counts as true for the flow script. Outside a `flow:` template it's still rejected — nothing gates without `flow:`.
+- **A request block with no `matchers:` at all is treated as trivially true** for flow purposes — its extractors still run, but (having nothing to match) it can never itself produce a `Finding`. This is what makes a pure "detect, then extract a version from a second request" template (e.g. upstream's `umami-panel.yaml`) work.
+- **Not supported: `javascript()` flow scripts, loops, or variable assignment** — rejected at load time. In practice a `javascript()`-based `flow:` script pairs with a real top-level `javascript:` protocol block (arbitrary code execution), which this project has never supported (see the disallowed-blocks table below) — the two sampled real templates using it are rejected there, not by the `flow:` parser itself.
+- **Cross-request DSL identifier references between separate `http:` blocks aren't supported** — distinct from same-block `raw:` multi-entry `body_N`/`header_N`/`status_code_N` correlation (see above), which does work. A handful of real `flow:` templates reference other missing DSL identifiers entirely unrelated to flow (`server`, `all_headers`, `Input`, `email`) — see doc10's `flow:` note for the exact list; these stay rejected until those identifiers are implemented.
+
 ### Rejected at load time, not silently ignored
 
 A template using any of these fails to load with a named error, rather than running incompletely or wrong:
 
 | Block/field | Why |
 |---|---|
-| `flow:` | Conditional/sequenced multi-request control flow. This project's executor runs every `http:` entry unconditionally and independently — for a `flow:` template that's not just incomplete, it's **actively wrong** (a live false positive against `apache-server-status-localhost.yaml` is what found this — see doc10 Step 2). |
-| `matchers: [{internal: true}]` | Flow-control-only matcher — meaningless without `flow:` support, rejected for the same reason. |
 | `code:`, `javascript:`, `headless:`, `file:` | Arbitrary code execution / local file access — out of scope for a template source this project doesn't hand-review (see [CLAUDE.md](../CLAUDE.md)). |
 | `dns:`, `tcp:`, `ssl:`, `network:`, `websocket:`, `whois:` | Non-HTTP protocols — out of scope for v0.1.0 (see doc03's Week 6-7 note). |
 

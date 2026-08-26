@@ -20,16 +20,23 @@ type Template struct {
 	Info Info          `yaml:"info"`
 	HTTP []HTTPRequest `yaml:"http"`
 
-	// Flow is a presence-only sentinel, not implemented: real Nuclei's
-	// `flow:` field is small JS controlling conditional/looped execution
-	// across a template's multiple HTTP requests (e.g. "only run request 2
-	// if request 1's matcher fired"). This project's executor runs every
-	// HTTP entry unconditionally and independently, which is actively wrong
-	// for a flow template, not just incomplete — see loader.go's rejection
-	// and matcher.Matcher.Internal's doc comment for the real example that
-	// found this (a false "disclosure" finding from a flow-control gate
-	// matcher evaluated as if it were a standalone check).
+	// Flow holds the raw flow: script text. Real Nuclei's flow: is small JS
+	// controlling conditional/looped execution across a template's multiple
+	// HTTP requests (e.g. "only run request 2 if request 1's matcher
+	// fired"); this project supports only a minimal subset — boolean
+	// composition of http(N) calls via &&/||/() — parsed into flowAST by
+	// loader.go's validate. See matcher.Matcher.Internal's doc comment for
+	// the real example (apache-server-status-localhost.yaml) that showed
+	// why running a flow template's requests unconditionally/independently
+	// is actively wrong, not just incomplete, and
+	// docs/10-implementation-plan-ph1b.md's flow: note for the real corpus
+	// measurement behind the supported grammar.
 	Flow string `yaml:"flow,omitempty"`
+
+	// flowAST is Flow parsed by loader.go's validate — nil for a non-flow
+	// template. Unexported: only nuclei.Executor.runFlow reads it, and it
+	// has no YAML shape of its own (populated after decode, not by it).
+	flowAST flowExpr
 }
 
 // Info carries the fields that affect a Finding (Name, Severity), plus the

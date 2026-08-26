@@ -32,6 +32,16 @@ func FuzzNucleiLoadDir(f *testing.F) {
 	f.Add([]byte("id: x\nhttp:\n  - raw:\n      - \"GET http://192.168.0.1/ HTTP/1.1\"\n"))
 	f.Add([]byte("id: x\nhttp:\n  - raw:\n      - \"GET / HTTP/1.1\\nHost: x\"\n"))
 	f.Add([]byte("id: x\nhttp:\n  - raw: []\n"))
+	// flow: — new attack surface added by this project's own flow: support
+	// (see docs/10-implementation-plan-ph1b.md's flow: note): valid and
+	// invalid boolean grammars, out-of-range http(N), deeply nested parens,
+	// and internal: true both with and without flow: set.
+	f.Add([]byte("id: x\nflow: http(1) && http(2)\nhttp:\n  - path: [\"{{BaseURL}}\"]\n    matchers:\n      - type: status\n        status: [200]\n        internal: true\n  - path: [\"{{BaseURL}}\"]\n    matchers:\n      - type: status\n        status: [200]\n"))
+	f.Add([]byte("id: x\nflow: http(1) && http(5)\nhttp:\n  - path: [\"{{BaseURL}}\"]\n"))
+	f.Add([]byte("id: x\nflow: javascript()\nhttp:\n  - path: [\"{{BaseURL}}\"]\n"))
+	f.Add([]byte("id: x\nflow: http(1) &&\nhttp:\n  - path: [\"{{BaseURL}}\"]\n"))
+	f.Add([]byte("id: x\nflow: " + repeatString("(", 200) + "http(1)" + repeatString(")", 200) + "\nhttp:\n  - path: [\"{{BaseURL}}\"]\n"))
+	f.Add([]byte("id: x\nhttp:\n  - path: [\"{{BaseURL}}\"]\n    matchers:\n      - type: status\n        status: [200]\n        internal: true\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		dir := t.TempDir()
