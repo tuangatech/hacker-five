@@ -35,6 +35,12 @@ make build
 ```
 Pre-built cross-platform binaries (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64) are attached to each [GitHub release](https://github.com/tuangatech/hacker-five/releases), built via `goreleaser` (`.goreleaser.yml`).
 
+**On Windows**, download `hackerfive_<version>_windows_amd64.zip` from the release, extract it anywhere, then run from PowerShell:
+```powershell
+.\hackerfive.exe --version
+```
+It's an unsigned binary (no code-signing certificate), so the first run typically shows a SmartScreen "Windows protected your PC" prompt — click "More info" → "Run anyway". This is standard for unsigned OSS binaries, not a sign of tampering; verify against `hackerfive_<version>_checksums.txt` from the same release if you want to confirm the download wasn't corrupted/modified.
+
 ## Setting Up a Target
 
 Full walkthrough (Docker bring-up, account/token minting, one-time setup steps, and a per-detector caveat about DVWA's login form) lives in [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md). Short version:
