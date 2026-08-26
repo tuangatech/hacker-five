@@ -115,7 +115,7 @@ func extractKval(e Extractor, r matcher.Response) (string, bool) {
 
 func extractDSL(e Extractor, r matcher.Response) (string, bool) {
 	for _, expr := range e.DSL {
-		val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: matcher.Part("header", r), ContentType: r.Headers.Get("Content-Type")})
+		val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: matcher.Part("header", r), ContentType: r.Headers.Get("Content-Type"), Vars: r.ExtraVars, IntVars: r.ExtraInts})
 		if err != nil {
 			continue
 		}
@@ -129,6 +129,15 @@ func extractDSL(e Extractor, r matcher.Response) (string, bool) {
 // extracting from a real response. Used by the nuclei loader to reject a
 // malformed template at load time.
 func Validate(e Extractor) error {
+	return ValidateWithContext(e, dsl.Context{})
+}
+
+// ValidateWithContext is Validate, but checks a dsl: extractor's expressions
+// against a caller-supplied dsl.Context instead of an empty one — same
+// reason as matcher.ValidateWithContext (a raw:-request block with more
+// than one Raw entry legitimately references indexed identifiers that only
+// exist once execution binds them).
+func ValidateWithContext(e Extractor, ctx dsl.Context) error {
 	if !matcher.ValidPart(e.Part) {
 		return fmt.Errorf("extractor: unsupported part %q (likely an out-of-band/OAST check — not supported)", e.Part)
 	}
@@ -144,7 +153,7 @@ func Validate(e Extractor) error {
 		return nil
 	case "dsl":
 		for _, expr := range e.DSL {
-			if _, err := dsl.Eval(expr, dsl.Context{}); err != nil {
+			if _, err := dsl.Eval(expr, ctx); err != nil {
 				return fmt.Errorf("extractor: invalid dsl expression %q: %w", expr, err)
 			}
 		}

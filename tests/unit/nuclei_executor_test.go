@@ -150,3 +150,143 @@ func TestExecutorRun_ChainedRequestsUseExtractedVariable(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, findings, 2, "both the login and profile requests should match")
 }
+
+// TestExecutorRun_PathWithPayloads mirrors real upstream's
+// phpmyadmin-panel.yaml shape (the more common payloads: pattern in the
+// synced corpus — see docs/10-implementation-plan-ph1b.md's raw:/payloads:
+// note): a plain path:-based request with a single inline-list payload
+// substituted into that path, stop-at-first-match true.
+func TestExecutorRun_PathWithPayloads(t *testing.T) {
+	var hits []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		if r.URL.Path == "/phpmyadmin/" {
+			_, _ = w.Write([]byte(`alt="phpMyAdmin`))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "path-payload.yaml", `
+id: path-payload-style
+info:
+  name: Path Payload Style
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}{{paths}}"
+    payloads:
+      paths:
+        - ""
+        - "/phpmyadmin/"
+        - "/admin/phpmyadmin/"
+    stop-at-first-match: true
+    matchers:
+      - type: word
+        words:
+          - 'alt="phpMyAdmin'
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, []string{"/", "/phpmyadmin/"}, hits, "stop-at-first-match must stop the payload loop once one value matches")
+}
+
+// TestExecutorRun_RawSinglePayload mirrors real upstream's
+// apache-mod-negotiation-listing.yaml shape: a raw: request with a single
+// inline-list payload, firing once per value.
+func TestExecutorRun_RawSinglePayload(t *testing.T) {
+	var hits []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		if r.URL.Path == "/admin" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Available variants: href=\"admin.php\""))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "raw-payload.yaml", `
+id: raw-payload-style
+info:
+  name: Raw Payload Style
+  severity: low
+http:
+  - raw:
+      - |
+        GET {{path}} HTTP/1.1
+        Host: {{Hostname}}
+    payloads:
+      path:
+        - /index
+        - /admin
+        - /login
+    matchers:
+      - type: word
+        words:
+          - "Available variants"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "only the /admin iteration should match")
+	assert.Equal(t, []string{"/index", "/admin", "/login"}, hits, "no stop-at-first-match set, so every payload value fires")
+}
+
+// TestExecutorRun_RawMultiEntryCorrelation mirrors real upstream's
+// open-proxy-internal.yaml shape (scaled down): multiple raw: entries in
+// one block, all fired every time, with a matcher correlating results
+// across them via indexed identifiers (body_N/status_code_N) — the
+// scope the user explicitly asked for over the simpler
+// try-each-independently alternative.
+func TestExecutorRun_RawMultiEntryCorrelation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte("It works"))
+		case "/internal-probe":
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "multi-raw.yaml", `
+id: multi-raw-correlation-style
+info:
+  name: Multi Raw Correlation Style
+  severity: high
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /internal-probe HTTP/1.1
+        Host: {{Hostname}}
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code_1 == 200 && contains(body_1, \"It works\") && status_code_2 == 404"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "the correlating matcher should fire once both probes' results are bound")
+}

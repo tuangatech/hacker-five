@@ -112,17 +112,20 @@ http:
 	assert.Contains(t, errs[0].Error(), "invalid dsl expression")
 }
 
-func TestNucleiLoadDir_RawPayloadsRejected(t *testing.T) {
+// TestNucleiLoadDir_RawPayloadsLoad locks in the v1-supported shape: a
+// single raw: entry, one inline-list payload key — modeled on real
+// upstream's apache-mod-negotiation-listing.yaml.
+func TestNucleiLoadDir_RawPayloadsLoad(t *testing.T) {
 	dir := t.TempDir()
-	writeTemplate(t, dir, "cors-style.yaml", `
-id: cors-misconfig-style
+	writeTemplate(t, dir, "raw-style.yaml", `
+id: raw-payload-style
 info:
-  name: CORS Misconfiguration
+  name: Raw Payload Style
   severity: info
 http:
   - raw:
       - |
-        GET / HTTP/1.1
+        GET {{path}} HTTP/1.1
         Host: {{Hostname}}
         Origin: {{cors_origin}}
     payloads:
@@ -135,9 +138,134 @@ http:
 `)
 
 	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "raw-payload-style", templates[0].ID)
+	assert.Len(t, templates[0].HTTP[0].Raw, 1)
+}
+
+// TestNucleiLoadDir_MultiKeyPayloadsRejected locks in the v1 boundary: more
+// than one payload key (real Nuclei's sniper/pitchfork/clusterbomb "attack
+// modes") is rejected at load time — see schema.go's resolvePayload.
+func TestNucleiLoadDir_MultiKeyPayloadsRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "multi-key.yaml", `
+id: multi-key-style
+info:
+  name: Multi Key Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-A: {{a}}
+        X-B: {{b}}
+    attack: clusterbomb
+    payloads:
+      a:
+        - "1"
+      b:
+        - "2"
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
 	require.Empty(t, templates)
 	require.Len(t, errs, 1)
-	assert.Contains(t, errs[0].Error(), "raw:/payloads:")
+	assert.Contains(t, errs[0].Error(), "2 payload keys")
+	assert.Contains(t, errs[0].Error(), "clusterbomb")
+}
+
+// TestNucleiLoadDir_FileBasedPayloadRejected locks in the v1 boundary: a
+// payload value that's a bare string (a wordlist file path) rather than an
+// inline list is rejected at load time — see schema.go's resolvePayload.
+func TestNucleiLoadDir_FileBasedPayloadRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "file-payload.yaml", `
+id: file-payload-style
+info:
+  name: File Payload Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET {{path}} HTTP/1.1
+        Host: {{Hostname}}
+    payloads:
+      path: helpers/wordlists/adminer-paths.txt
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, templates)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "file-based payload")
+}
+
+// TestNucleiLoadDir_AbsoluteURIRawRejected locks in the v1 boundary: a raw:
+// entry whose request line names an absolute URI (the open-proxy-relay
+// technique) is rejected at load time rather than risking a connection to
+// a template-controlled host — see schema.go's hasAbsoluteRequestLine.
+func TestNucleiLoadDir_AbsoluteURIRawRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "absolute-uri.yaml", `
+id: absolute-uri-style
+info:
+  name: Absolute URI Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET http://192.168.0.1/ HTTP/1.1
+        Host: 192.168.0.1
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, templates)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "absolute-URI")
+}
+
+// TestNucleiLoadDir_MultiRawEntry locks in the other v1-supported shape:
+// multiple raw: entries in one http: block (no payloads) — modeled on
+// real upstream's open-proxy-internal.yaml's overall structure, scaled
+// down.
+func TestNucleiLoadDir_MultiRawEntry(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "multi-raw.yaml", `
+id: multi-raw-style
+info:
+  name: Multi Raw Style
+  severity: high
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /internal HTTP/1.1
+        Host: {{Hostname}}
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code_1 == 200 && status_code_2 != 404"
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+	assert.Len(t, templates[0].HTTP[0].Raw, 2)
 }
 
 func TestNucleiLoadDir_MultiPathPanelTemplate(t *testing.T) {

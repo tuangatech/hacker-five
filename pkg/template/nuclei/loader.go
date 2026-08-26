@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/tuangatech/hacker-five/pkg/template/dsl"
 	"github.com/tuangatech/hacker-five/pkg/template/extractor"
 	"github.com/tuangatech/hacker-five/pkg/template/matcher"
 )
@@ -105,25 +106,61 @@ func validate(tmpl *Template) error {
 		return fmt.Errorf("uses flow: — conditional multi-request control flow unsupported in this version, see docs/10-implementation-plan-ph1b.md Step 2")
 	}
 	for i, req := range tmpl.HTTP {
-		if len(req.Raw) > 0 || len(req.Payloads) > 0 {
-			return fmt.Errorf("http[%d]: uses raw:/payloads: — unsupported in this version, see docs/10-implementation-plan-ph1b.md Step 2", i)
+		// payloads: is also legitimately used with a plain path:-based
+		// request, not just raw: (real example: upstream's
+		// phpmyadmin-panel.yaml — path: ["{{BaseURL}}{{paths}}"] +
+		// payloads: {paths: [...]}, arguably the more common shape in the
+		// synced corpus — see docs/10-implementation-plan-ph1b.md's raw:/
+		// payloads: note). No rejection needed here for that combination;
+		// nuclei.Executor's Run handles both.
+		for j, entry := range req.Raw {
+			if hasAbsoluteRequestLine(entry) {
+				return fmt.Errorf("http[%d].raw[%d]: absolute-URI request line — proxy-relay-style raw requests unsupported in this version, see docs/10-implementation-plan-ph1b.md", i, j)
+			}
 		}
-		if len(req.Path) == 0 {
+		if _, _, err := req.resolvePayload(); err != nil {
+			return fmt.Errorf("http[%d]: %w", i, err)
+		}
+		if len(req.Raw) == 0 && len(req.Path) == 0 {
 			return fmt.Errorf("http[%d]: no path", i)
 		}
+		dslCtx := rawIndexedDSLContext(req.Raw)
 		for j, m := range req.Matchers {
 			if m.Internal {
 				return fmt.Errorf("http[%d].matchers[%d]: uses internal: true — flow-control-only matcher, unsupported without flow: support, see docs/10-implementation-plan-ph1b.md Step 2", i, j)
 			}
-			if err := matcher.Validate(m); err != nil {
+			if err := matcher.ValidateWithContext(m, dslCtx); err != nil {
 				return fmt.Errorf("http[%d].matchers[%d]: %w", i, j, err)
 			}
 		}
 		for j, e := range req.Extractors {
-			if err := extractor.Validate(e); err != nil {
+			if err := extractor.ValidateWithContext(e, dslCtx); err != nil {
 				return fmt.Errorf("http[%d].extractors[%d]: %w", i, j, err)
 			}
 		}
 	}
 	return nil
+}
+
+// rawIndexedDSLContext builds a dsl.Context with a zero-valued body_N/
+// header_N/status_code_N entry for every N = 1..len(raw) — just enough for
+// matcher.ValidateWithContext/extractor.ValidateWithContext to confirm a
+// dsl: expression referencing those identifiers actually parses/type-checks
+// at load time, without needing (or having) real per-entry results yet
+// (those only exist once nuclei.Executor's tryRaw actually fires every
+// entry). Returns a zero-value Context (identical to the old
+// dsl.Context{}-everywhere behavior) when raw is empty, so non-raw
+// templates are completely unaffected.
+func rawIndexedDSLContext(raw []string) dsl.Context {
+	if len(raw) == 0 {
+		return dsl.Context{}
+	}
+	vars := make(map[string]string, len(raw)*2)
+	ints := make(map[string]int, len(raw))
+	for n := 1; n <= len(raw); n++ {
+		vars[fmt.Sprintf("body_%d", n)] = ""
+		vars[fmt.Sprintf("header_%d", n)] = ""
+		ints[fmt.Sprintf("status_code_%d", n)] = 0
+	}
+	return dsl.Context{Vars: vars, IntVars: ints}
 }

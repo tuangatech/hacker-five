@@ -31,6 +31,7 @@ type Context struct {
 	Header      string            // raw "Name: value\n"-per-line dump, matching Nuclei's own "header" DSL variable — see matcher.Part("header", r)
 	ContentType string            // the response's Content-Type header value alone, matching Nuclei's own "content_type" DSL identifier — see matcher.Part("content_type", r); distinct from part: content_type, real upstream templates use both forms (e.g. redoc-api-docs.yaml uses the identifier form: contains(content_type, "text/html"))
 	Vars        map[string]string // bound template variables (native format's condition: field, e.g. "auth_token != \"\"") — checked after the built-ins below, so a bound var can't shadow status_code/body/header/content_type
+	IntVars     map[string]int    // same idea as Vars, but int-typed — needed for e.g. a raw:-multi-request template's status_code_2 (see matcher.Response.ExtraInts), since compare() only compares matching types and a real template does "status_code_1 != 404", not a string comparison
 }
 
 // Eval parses and evaluates expr against ctx. A bare comparison or an
@@ -363,6 +364,9 @@ func (p *parser) resolveIdent(name string) (any, error) {
 		return p.ctx.Header + p.ctx.Body, nil
 	default:
 		if v, ok := p.ctx.Vars[name]; ok {
+			return v, nil
+		}
+		if v, ok := p.ctx.IntVars[name]; ok {
 			return v, nil
 		}
 		return nil, fmt.Errorf("unknown identifier %q", name)

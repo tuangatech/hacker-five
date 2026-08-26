@@ -21,11 +21,7 @@ import (
 func TestNucleiSamples_LoadRealUpstreamTemplates(t *testing.T) {
 	templates, errs := nuclei.LoadDir("../../templates/nuclei-samples")
 
-	var errMsgs []string
-	for _, e := range errs {
-		errMsgs = append(errMsgs, e.Error())
-	}
-	assert.Contains(t, joinErrs(errMsgs), "cors-misconfig.yaml", "cors-misconfig.yaml (raw:/payloads:) must be rejected")
+	require.Empty(t, errs)
 
 	var ids []string
 	byID := map[string]nuclei.Template{}
@@ -33,18 +29,18 @@ func TestNucleiSamples_LoadRealUpstreamTemplates(t *testing.T) {
 		ids = append(ids, tmpl.ID)
 		byID[tmpl.ID] = *tmpl
 	}
-	assert.Subset(t, ids, []string{"angular-detect", "adminer-panel", "django-debug-config-enabled"})
+	// cors-misconfig.yaml (raw:/payloads:) now loads (see doc10's raw:/
+	// payloads: note) — but real upstream Nuclei helper functions this
+	// template's payload values use (rand_base, RDN, FQDN) aren't
+	// implemented, and its matcher DSL string references {{cors_origin}}
+	// directly (payload-variable substitution inside a matcher, not just
+	// the raw request) which this project doesn't render either. It loads
+	// and runs without erroring, but won't produce a real CORS-reflection
+	// finding yet — a known, documented v1 gap, not silently claimed fixed.
+	assert.Subset(t, ids, []string{"angular-detect", "adminer-panel", "django-debug-config-enabled", "cors-misconfig"})
 
 	adminer, ok := byID["adminer-panel"]
 	require.True(t, ok)
 	assert.Len(t, adminer.HTTP[0].Path, 9, "every candidate path must parse, not just the first")
 	assert.True(t, adminer.HTTP[0].StopAtFirstMatch)
-}
-
-func joinErrs(msgs []string) string {
-	out := ""
-	for _, m := range msgs {
-		out += m + "\n"
-	}
-	return out
 }

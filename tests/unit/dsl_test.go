@@ -41,6 +41,24 @@ func TestDSLEval_BuiltinsTakePriorityOverVars(t *testing.T) {
 	assert.Equal(t, true, val)
 }
 
+// TestDSLEval_IntVarsFallback locks in the IntVars addition to dsl.Context —
+// added for a raw:-request block with more than one Raw entry, whose
+// matcher needs status_code_N as a real int (e.g. real upstream's
+// open-proxy-internal.yaml: "status_code_1 != 404"), not a string —
+// compare() only compares matching types, so a string wouldn't type-check
+// against a numeric literal.
+func TestDSLEval_IntVarsFallback(t *testing.T) {
+	ctx := dsl.Context{IntVars: map[string]int{"status_code_2": 404}}
+
+	val, err := dsl.Eval(`status_code_2 == 404`, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+
+	val, err = dsl.Eval(`status_code_2 != 200`, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
+
 // TestDSLEval_EscapedQuoteInStringLiteral locks in the tokenizer fix for a
 // backslash-escaped quote inside a DSL string literal — found live against
 // real upstream templates (e.g. airbyte-panel.yaml's

@@ -49,13 +49,37 @@ http:
 - **`part`** on both matchers and extractors: `body` (default), `header`, `all`, `content_type` (the `Content-Type` header value alone), or `response` (alias for `all` — header+body; real Nuclei's is the full raw response including the status line, but no sampled template checks that literal line, so this project doesn't synthesize one).
 - Every `path`/`headers`/`body` string is rendered through the same `{{BaseURL}}`/`{{chainVar}}` substitution the native format uses (`pkg/scanner/vars`).
 
+### `raw:`/`payloads:` (v1 scope)
+
+```yaml
+http:
+  - raw:
+      - |
+        GET {{path}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: */*
+    payloads:
+      path:
+        - /admin
+        - /login
+    matchers:
+      - type: word
+        words: ["Available variants"]
+```
+
+- **One payload key, an inline list only.** `payloads: {key: [v1, v2, ...]}` fires the request once per value, substituting `{{key}}` everywhere it appears (`raw:`, or a plain `path:`/`headers:`/`body:` request — both shapes are real; upstream's `phpmyadmin-panel.yaml` is the `path:` shape, `apache-mod-negotiation-listing.yaml` the `raw:` one). `stop-at-first-match: true` stops the payload loop early, same meaning as it already has for a multi-entry `path:` list.
+- **Multiple payload keys are rejected at load time** — real Nuclei's `attack: sniper|pitchfork|clusterbomb` modes, which only matter with more than one key. Rare in practice and adds real combinatorial-request-count risk against a live target; not built in v1.
+- **A payload value that's a bare string (a wordlist file path, e.g. `payloads: {path: helpers/wordlists/x.txt}`) is rejected at load time** — not synced, and reading a template-specified file path at scan time is its own security surface not taken on lightly. Real size, measured: 240 templates use this, 237 of them one uniform WordPress-plugin-version category (`technologies/wordpress/plugins/*.yaml`) that also needs `compare_versions()`/`concat()` DSL functions and same-request extractor-into-matcher binding — gaps beyond just this one, so it wouldn't actually unlock that category even if built. See doc10's `raw:`/`payloads:` note.
+- **Multiple `raw:` entries in one block all fire, every time** — not a `path:`-style "try each until one matches" list. A shared matcher can reference each entry's result via indexed identifiers: `body_N`, `header_N` (string), `status_code_N` (int, real int — `status_code_1 != 404` type-checks), for `N = 1..len(raw)`. Real example: upstream's `open-proxy-internal.yaml` fires ~24 probes and checks `body_1`..`body_24` in one DSL expression. Non-DSL matcher types (`word`/`regex`/`status`/`size`) and extractors apply to the **last** fired entry only.
+- **An absolute-URI request line (`GET http://192.168.0.1/ HTTP/1.1`) is rejected at load time** — real templates use this to test whether the target relays proxied requests to an arbitrary URI (open-proxy/SSRF-via-proxy checks, e.g. `open-proxy-internal.yaml`, the cloud-metadata-via-proxy templates). This project has no execution path that can honor it safely: `net/http`'s client dials whatever URL it's given, so sending it naively would connect the scanner directly to whatever host the (downloaded, template-authored) text names — a real out-of-scope-host risk per [CLAUDE.md](../CLAUDE.md), not just an unsupported feature.
+- **A payload variable used *inside a matcher's `dsl:` string* isn't substituted** — only `raw:`/`path:`/`headers:`/`body:` are rendered through `{{}}` substitution. Real upstream's `cors-misconfig.yaml` does this (`contains(tolower(header), 'access-control-allow-origin: {{cors_origin}}')`) — it loads and runs without erroring, but that specific check will never fire (the literal, unsubstituted `{{cors_origin}}` text never appears in a real response) — a known, safe-direction (false-negative) gap, not a crash.
+
 ### Rejected at load time, not silently ignored
 
 A template using any of these fails to load with a named error, rather than running incompletely or wrong:
 
 | Block/field | Why |
 |---|---|
-| `raw:`, `payloads:` | A templated-request-plus-payload-substitution engine in its own right — genuinely unsupported, not a matcher-subset gap. See doc10 Future Enhancement #1. |
 | `flow:` | Conditional/sequenced multi-request control flow. This project's executor runs every `http:` entry unconditionally and independently — for a `flow:` template that's not just incomplete, it's **actively wrong** (a live false positive against `apache-server-status-localhost.yaml` is what found this — see doc10 Step 2). |
 | `matchers: [{internal: true}]` | Flow-control-only matcher — meaningless without `flow:` support, rejected for the same reason. |
 | `code:`, `javascript:`, `headless:`, `file:` | Arbitrary code execution / local file access — out of scope for a template source this project doesn't hand-review (see [CLAUDE.md](../CLAUDE.md)). |

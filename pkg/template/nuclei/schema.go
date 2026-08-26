@@ -4,6 +4,11 @@
 package nuclei
 
 import (
+	"fmt"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
 	"github.com/tuangatech/hacker-five/pkg/template/extractor"
 	"github.com/tuangatech/hacker-five/pkg/template/matcher"
 )
@@ -56,11 +61,96 @@ type HTTPRequest struct {
 	Matchers          []matcher.Matcher         `yaml:"matchers,omitempty"`
 	Extractors        []extractor.Extractor     `yaml:"extractors,omitempty"`
 
-	// Raw/Payloads are presence-only sentinels, not implemented: a template
-	// using either is rejected at load time (see loader.go's validate) —
-	// see docs/10-implementation-plan-ph1b.md Step 2's "Unsupported request
-	// styles" note for why (a small fuzzing engine, not a matcher-subset
-	// extension).
-	Raw      []string       `yaml:"raw,omitempty"`
-	Payloads map[string]any `yaml:"payloads,omitempty"`
+	// Raw is a list of literal HTTP/1.1 request texts (method/path/headers/
+	// body, {{}}-templated same as Path/Headers/Body), fired instead of the
+	// Method/Path/Headers/Body fields above when non-empty. Every entry
+	// fires, every time (see executor.go's tryRaw) — not a Path-style "try
+	// each until one matches" list, because a request block with more than
+	// one Raw entry commonly correlates results across all of them in a
+	// single shared matcher (real example: upstream's open-proxy-*.yaml,
+	// which fires ~24 probes and checks body_1..body_24 in one DSL
+	// expression) — see docs/10-implementation-plan-ph1b.md's "raw:/
+	// payloads: support" note for the real corpus measurement behind this.
+	Raw []string `yaml:"raw,omitempty"`
+
+	// Payloads maps a placeholder name (referenced as {{name}} in Raw) to
+	// its list of substitution values. Real Nuclei allows either an inline
+	// YAML list (supported here) or a bare string naming an external
+	// wordlist file (rejected at load time — see loader.go's validate,
+	// "file-based payload not supported"); kept as yaml.Node rather than
+	// []string so validate() can distinguish the two shapes and reject the
+	// unsupported one with a clear error instead of a decode failure.
+	// Multiple keys (Nuclei's sniper/pitchfork/clusterbomb "attack modes")
+	// are also rejected at load time — see Attack's doc comment.
+	Payloads map[string]yaml.Node `yaml:"payloads,omitempty"`
+
+	// Attack names Nuclei's payload "attack mode" (sniper/pitchfork/
+	// clusterbomb/batteringram, default batteringram) — only meaningful
+	// with more than one Payloads key, which this project doesn't support
+	// (see Payloads' doc comment); kept only so a rejected multi-key
+	// template's error message can name the mode it was trying to use.
+	Attack string `yaml:"attack,omitempty"`
+}
+
+// resolvePayload validates and decodes req.Payloads into the single
+// key/values pair this project supports (see Payloads' doc comment), or
+// ("", nil, nil) when there are none. Shared by loader.go's validate (so a
+// bad payload is a load-time error, not a scan-time surprise) and
+// executor.go's tryRaw (so execution uses the exact values validation
+// already confirmed).
+func (req HTTPRequest) resolvePayload() (key string, values []string, err error) {
+	if len(req.Payloads) == 0 {
+		return "", nil, nil
+	}
+	if len(req.Payloads) > 1 {
+		return "", nil, fmt.Errorf("uses %d payload keys — multi-key payloads (attack: %s and friends) unsupported in this version, see docs/10-implementation-plan-ph1b.md", len(req.Payloads), attackOrDefault(req.Attack))
+	}
+	for k, node := range req.Payloads {
+		switch node.Kind {
+		case yaml.SequenceNode:
+			var vals []string
+			if err := node.Decode(&vals); err != nil {
+				return "", nil, fmt.Errorf("payloads.%s: %w", k, err)
+			}
+			return k, vals, nil
+		case yaml.ScalarNode:
+			return "", nil, fmt.Errorf("payloads.%s: file-based payload (%q) unsupported in this version, see docs/10-implementation-plan-ph1b.md", k, node.Value)
+		default:
+			return "", nil, fmt.Errorf("payloads.%s: unsupported payload shape", k)
+		}
+	}
+	panic("unreachable") // len == 1, loop above always returns
+}
+
+func attackOrDefault(attack string) string {
+	if attack == "" {
+		return "batteringram (default)"
+	}
+	return attack
+}
+
+// hasAbsoluteRequestLine reports whether raw's first line's request target
+// is an absolute URI (e.g. "GET http://192.168.0.1/ HTTP/1.1") rather than
+// a path relative to whatever host the connection actually goes to. Real
+// templates use this to test open-proxy/SSRF-via-proxy behavior — the
+// scanned target is expected to relay the request to the named URI. This
+// project has no execution path that can honor that safely: net/http's
+// standard client dials whatever URL it's given, so naively sending this
+// would connect the scanner directly to the (template-controlled,
+// downloaded) URI's own host, never touching the actual authorized target —
+// a real out-of-scope-host risk, not just an unsupported feature. Checked
+// on the raw, pre-render template text (real templates author the absolute
+// URI literally, not via a payload variable), so this is a load-time
+// rejection like the other raw:/payloads: exclusions above.
+func hasAbsoluteRequestLine(raw string) bool {
+	line := raw
+	if idx := strings.IndexAny(raw, "\r\n"); idx != -1 {
+		line = raw[:idx]
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return false
+	}
+	target := fields[1]
+	return strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
 }

@@ -20,6 +20,19 @@ type Response struct {
 	StatusCode int
 	Headers    http.Header
 	Body       []byte
+
+	// ExtraVars/ExtraInts supply additional named values a dsl: matcher or
+	// extractor can reference beyond the status_code/body/header/
+	// content_type/response built-ins — used by a raw:-request block with
+	// more than one Raw entry to bind body_N/header_N (string) and
+	// status_code_N (int) for N = 1..len(Raw), so a real template's shared
+	// correlating matcher (e.g. upstream's open-proxy-internal.yaml:
+	// contains(body_1, ...) || contains(body_2, ...) ...) can actually
+	// reference each fired probe's own result — see nuclei.Executor's
+	// tryRaw. Nil for every non-raw Response (the existing path:-based
+	// flow), so this is a zero-behavior-change addition there.
+	ExtraVars map[string]string
+	ExtraInts map[string]int
 }
 
 // Matcher checks one condition against a Response. Type selects which
@@ -139,7 +152,7 @@ func (m Matcher) evaluate(r Response) bool {
 		return false
 	case "dsl":
 		return m.evaluateList(m.DSL, func(expr string) bool {
-			val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: Part("header", r), ContentType: r.Headers.Get("Content-Type")})
+			val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: Part("header", r), ContentType: r.Headers.Get("Content-Type"), Vars: r.ExtraVars, IntVars: r.ExtraInts})
 			if err != nil {
 				return false
 			}
@@ -246,6 +259,20 @@ func ValidPart(part string) bool {
 // unsupported-protocol template at load time rather than mis-evaluating it
 // mid-scan.
 func Validate(m Matcher) error {
+	return ValidateWithContext(m, dsl.Context{})
+}
+
+// ValidateWithContext is Validate, but checks a dsl: matcher's expressions
+// against a caller-supplied dsl.Context instead of an empty one — needed
+// for a raw:-request block with more than one Raw entry, whose matchers
+// legitimately reference indexed identifiers (body_1, status_code_2, ...)
+// that only exist once execution actually binds them (see nuclei.Executor's
+// tryRaw); validating against an empty Context would reject those as
+// "unknown identifier" even though they're valid. The nuclei loader builds
+// a dummy Context (zero-valued entries for every N = 1..len(Raw)) purely so
+// these identifiers resolve during validation — the values themselves are
+// never used for anything but confirming the expression parses/type-checks.
+func ValidateWithContext(m Matcher, ctx dsl.Context) error {
 	if !ValidPart(m.Part) {
 		return fmt.Errorf("matcher: unsupported part %q (likely an out-of-band/OAST check — not supported)", m.Part)
 	}
@@ -261,7 +288,7 @@ func Validate(m Matcher) error {
 		return nil
 	case "dsl":
 		for _, expr := range m.DSL {
-			if _, err := dsl.Eval(expr, dsl.Context{}); err != nil {
+			if _, err := dsl.Eval(expr, ctx); err != nil {
 				return fmt.Errorf("matcher: invalid dsl expression %q: %w", expr, err)
 			}
 		}

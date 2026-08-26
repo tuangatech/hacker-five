@@ -20,18 +20,18 @@ import (
 // http-missing-security-headers.yaml used to be rejected here too (unary
 // "!" wasn't supported in the DSL grammar) — that gap is now fixed
 // (pkg/template/dsl's parseUnary), so it loads and runs like the other
-// three; only apache-mod-negotiation-listing.yaml (raw:/payloads:) is still
-// expected to be rejected.
+// three. apache-mod-negotiation-listing.yaml (raw:/payloads:, single
+// inline-list payload key, plain word/status matchers — no matcher-DSL
+// templating gap) now loads too, see doc10's raw:/payloads: note.
 func TestNucleiDVWAPHPSamples_LoadRealUpstreamTemplates(t *testing.T) {
 	templates, errs := nuclei.LoadDir("../../templates/nuclei-samples/dvwa-php")
 
-	require.Len(t, errs, 1, "only apache-mod-negotiation-listing.yaml (raw:/payloads:) should be rejected")
-	assert.Contains(t, errs[0].Error(), "raw:/payloads:")
+	require.Empty(t, errs)
 
-	require.Len(t, templates, 4)
+	require.Len(t, templates, 5)
 	var ids []string
 	for _, tmpl := range templates {
 		ids = append(ids, tmpl.ID)
 	}
-	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers"}, ids)
+	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing"}, ids)
 }

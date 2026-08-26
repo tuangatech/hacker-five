@@ -12,8 +12,9 @@ import (
 
 // Context carries the values available to Render when expanding a template string.
 type Context struct {
-	BaseURL string
-	Vars    map[string]string
+	BaseURL  string
+	Hostname string // host[:port], no scheme — matches Nuclei's own {{Hostname}}, used by raw: requests' Host: header (see nuclei.Executor's tryRaw)
+	Vars     map[string]string
 }
 
 var placeholderPattern = regexp.MustCompile(`\{\{(\w+)\}\}`)
@@ -28,6 +29,9 @@ func Render(input string, ctx Context) (string, error) {
 		name := placeholderPattern.FindStringSubmatch(match)[1]
 		if name == "BaseURL" {
 			return ctx.BaseURL
+		}
+		if name == "Hostname" {
+			return ctx.Hostname
 		}
 		if v, ok := ctx.Vars[name]; ok {
 			return v
