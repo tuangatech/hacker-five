@@ -28,6 +28,16 @@ A living list of real, authorized targets (found via disclose.io/HackerOne per [
 - **Fit for HackerFive:** ⚠️ **open question, resolve before scanning** — "third-party tools" is banned in the same clause as DDoS/social engineering, which most likely means third-party attack services (botnets, etc.), not vulnerability scanners — but it's genuinely ambiguous read cold. Per doc05's "when in doubt, treat as out of scope" rule: **email `security@aalberts.com` for explicit confirmation that automated scanning tools are permitted before pointing HackerFive at them.**
 - **Vetted:** 2026-08-26
 
+### abc8.immobilien
+- **Source:** disclose.io
+- **Policy:** [abc8.immobilien/security-policy](https://abc8.immobilien/security-policy/) — confirmed via `/.well-known/security.txt` (Contact + Policy fields consistent)
+- **Scope:** "this domain, its subdomains, and services operated directly by us"; third-party services out of scope — same wording as a2x.io's policy
+- **Safe harbor:** explicit
+- **Restrictions:** no DoS/destructive testing, no privacy/data-confidentiality violations, exploitation limited to what's necessary to demonstrate the issue
+- **Bounty:** none (pure VDP)
+- **Fit for HackerFive:** good — same shape as a2x.io, `--detector misconfig`'s read-only design matches their "no destructive testing" rule directly
+- **Vetted:** 2026-08-26
+
 ## Also checked, not added
 
 Found via the same disclose.io search; recorded here so they aren't re-researched later.
@@ -39,7 +49,6 @@ Found via the same disclose.io search; recorded here so they aren't re-researche
 | `aatf.us` | `security.txt` is bare (no `Policy`/`Scope`); its own `Acknowledgments` link has no VDP either. Small 501(c)(3) nonprofit (Asian Arts Talents Foundation) — unlikely to have meaningful attack surface even if a policy turned up. |
 | `abax.com` | Both the VDP page and `/.well-known/security.txt` returned 403 to automated fetching — inconclusive, not a rejection. Check manually in a browser before deciding. |
 | `ab.co` (ABC Australia) | Redirects to a real-looking "ABC Responsible Disclosure Guideline" at `help.abc.net.au`, but that page returned 403 to automated fetch on repeated tries — inconclusive. A large, credible org (plausible legitimate program), but needs a manual read of the actual policy text before adding. |
-| `abc8.immobilien` | **Not rejected — just not requested.** `security.txt` is consistent, and the linked policy is a full VDP with the same shape as a2x.io's (scope = domain+subdomains+own services, safe harbor explicit, DoS/destructive testing banned, no bounty). Looks like a clean next candidate. |
 
 ## See also
 - [21-scanning-real-targets.md](21-scanning-real-targets.md) — the workflow this registry feeds: recon, `--tags`-based template selection, running the scan itself
