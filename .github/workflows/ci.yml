@@ -14,7 +14,16 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          # Pinned explicitly: golangci-lint-action@v6's unpinned default
+          # resolved to golangci-lint v1.64.8 (built with Go 1.24) on the
+          # macOS runner, which then refused to run — "the Go language
+          # version (go1.24) used to build golangci-lint is lower than the
+          # targeted Go version (1.26.5)" (go.mod's go directive). v2.13.1
+          # is current stable as of 2026-08-26 (github.com/golangci/golangci-lint/releases)
+          # and is built with a Go version new enough for this module.
+          version: v2.13.1
       - name: Coverage gate
         run: |
           # -coverpkg=./... is required: every test lives in tests/unit (an
