@@ -27,8 +27,14 @@ type Client struct {
 	timeout time.Duration
 }
 
-// New builds a Client. Middlewares wrap the base transport in the order given
-// — the first middleware is outermost.
+// New builds a Client. Each middleware wraps the previous result, so the
+// *last* argument ends up outermost (its RoundTrip runs first on every
+// request) and the *first* argument ends up innermost, closest to the real
+// transport (its RoundTrip runs last, right before the network call) —
+// verified against the wrapping loop below, not just asserted. This matters
+// for e.g. WithRateLimit vs WithRetry: WithRateLimit needs to be innermost
+// (passed first) so every retry attempt re-enters it, not just each
+// request's first attempt.
 func New(cfg Config, mws ...Middleware) *Client {
 	transport := &http.Transport{
 		MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,

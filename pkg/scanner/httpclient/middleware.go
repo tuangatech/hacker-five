@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"net/http"
 	"time"
+
+	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
 )
 
 // Middleware decorates a RoundTripper. Proxy support is not a middleware —
@@ -41,6 +43,28 @@ func WithHeaders(headers map[string]string) Middleware {
 		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			for k, v := range headers {
 				req.Header.Set(k, v)
+			}
+			return next.RoundTrip(req)
+		})
+	}
+}
+
+// WithRateLimit paces every actual outgoing request through limiter — one
+// shared limiter across every worker in a scan, so --rate-limit caps real
+// requests/sec regardless of concurrency. Must be passed to New() *before*
+// WithRetry (i.e. as the innermost middleware — see New's doc comment on
+// ordering): a live 100-target benchmark found that gating only once per
+// target job (the previous design, in scanner.Engine.Run) let a single
+// target's own dozens of detector requests fire completely unthrottled —
+// passing this innermost instead means every retry attempt also re-enters
+// the limiter, not just each target's first request. See
+// docs/10-implementation-plan-ph1b.md's Definition of Done for the
+// benchmark that found this.
+func WithRateLimit(limiter *ratelimit.Limiter) Middleware {
+	return func(next http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if err := limiter.Wait(req.Context()); err != nil {
+				return nil, err
 			}
 			return next.RoundTrip(req)
 		})

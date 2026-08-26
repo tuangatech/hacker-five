@@ -41,13 +41,20 @@ type Engine struct {
 
 // New constructs an Engine from a validated Config.
 func New(cfg Config) *Engine {
+	// WithRateLimit before WithRetry: rate-limiting must be innermost so
+	// every retry attempt re-enters it too, not just each request's first
+	// attempt — see httpclient.New's ordering doc comment. Constructed here
+	// (not in Run) so --rate-limit caps every actual HTTP request across the
+	// whole scan, not just once per target job (a real gap a live 100-target
+	// benchmark found — see docs/10-implementation-plan-ph1b.md's Definition
+	// of Done).
 	client := httpclient.New(httpclient.Config{
 		Timeout:             cfg.Timeout,
 		MaxRedirects:        maxRedirects,
 		InsecureSkipVerify:  cfg.Insecure,
 		MaxIdleConnsPerHost: cfg.Concurrency,
 		ProxyURL:            cfg.ProxyURL,
-	}, httpclient.WithRetry(retryMaxAttempts, retryBackoff))
+	}, httpclient.WithRateLimit(ratelimit.New(cfg.RateLimit)), httpclient.WithRetry(retryMaxAttempts, retryBackoff))
 
 	return &Engine{cfg: cfg, client: client}
 }
@@ -63,7 +70,6 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 		threshold = hosterrors.DefaultThreshold
 	}
 	hostCache := hosterrors.New(threshold)
-	limiter := ratelimit.New(e.cfg.RateLimit)
 	pool := workerpool.New(ctx, e.cfg.Concurrency, 2*e.cfg.Concurrency)
 
 	nucleiTemplates, nativeTemplates := e.loadTemplates()
@@ -85,9 +91,6 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 		err = pool.Submit(func(ctx context.Context) error {
 			if hostCache.ShouldSkip(host) {
 				return nil
-			}
-			if err := limiter.Wait(ctx); err != nil {
-				return err
 			}
 
 			results, err := e.runDetector(ctx, target)
