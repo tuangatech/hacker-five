@@ -257,6 +257,40 @@ http:
 	assert.Equal(t, "still-valid", templates[0].ID)
 }
 
+// TestNucleiLoadDir_PreviouslyRejectedDSLGapsNowLoad is a regression test
+// for real templates that used to fail matcher validation before the DSL
+// builtins/tokenizer fix (see docs/10-implementation-plan-ph1b.md's
+// "Post-v0.1.0 DSL/part expansion" note) — modeled directly on real
+// upstream shapes: activemq-panel.yaml's `contains_any(to_lower(body), ...)`
+// and appwrite-panel.yaml's `mmh3(base64_py(body))` favicon-hash check,
+// both of which failed to even parse before this fix.
+func TestNucleiLoadDir_PreviouslyRejectedDSLGapsNowLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "dsl-gap-style.yaml", `
+id: dsl-gap-style
+info:
+  name: DSL Gap Style
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains_any(to_lower(body), "welcome to the apache activemq!", "manage activemq broker")'
+      - type: dsl
+        dsl:
+          - '"-1787112514" == mmh3(base64_py(body))'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "dsl-gap-style", templates[0].ID)
+}
+
 func TestNucleiLoadDir_RecursesSubdirectories(t *testing.T) {
 	dir := t.TempDir()
 	vendorDir := filepath.Join(dir, "adobe")

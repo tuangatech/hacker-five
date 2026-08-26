@@ -1,16 +1,24 @@
 // Package dsl implements a hand-rolled evaluator for the small subset of
 // Nuclei's DSL expression language this project supports: comparisons
-// (==, !=, <, >) against status_code/len(body), contains()/regex() function
-// calls, the status_code/body/header built-in variables, combined with
-// &&/||, unary "!" negation, and parenthesized grouping. Anything outside
-// this grammar is a parse/eval error, not a silent false/empty result — see
-// docs/10-implementation-plan-ph1b.md Step 2's "DSL matcher/extractor scope"
-// note for why this stays deliberately small rather than growing toward a
-// general expression language.
+// (==, !=, <, >) against status_code/len(body), function calls
+// (contains/contains_any/contains_all/regex/to_lower/tolower/trim/md5/sha1/
+// base64_py/mmh3), the status_code/body/header/content_type/response
+// built-in variables, combined with &&/||, unary "!" negation, and
+// parenthesized grouping. Anything
+// outside this grammar is a parse/eval error, not a silent false/empty
+// result — see docs/10-implementation-plan-ph1b.md Step 2's "DSL
+// matcher/extractor scope" note for why this stays deliberately small
+// rather than growing toward a general expression language; the function
+// set above is grown deliberately too, one real observed template need at a
+// time (see "Post-v0.1.0 DSL/part expansion" in doc10), not speculatively.
 package dsl
 
 import (
+	"crypto/md5"  //nolint:gosec // fingerprint matching against known template hashes, not a security use of MD5
+	"crypto/sha1" //nolint:gosec // same as above
+	"encoding/base64"
 	"fmt"
+	"math/bits"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,10 +26,11 @@ import (
 
 // Context supplies the values a DSL expression can reference.
 type Context struct {
-	StatusCode int
-	Body       string
-	Header     string            // raw "Name: value\n"-per-line dump, matching Nuclei's own "header" DSL variable — see matcher.Part("header", r)
-	Vars       map[string]string // bound template variables (native format's condition: field, e.g. "auth_token != \"\"") — checked after the built-ins below, so a bound var can't shadow status_code/body/header
+	StatusCode  int
+	Body        string
+	Header      string            // raw "Name: value\n"-per-line dump, matching Nuclei's own "header" DSL variable — see matcher.Part("header", r)
+	ContentType string            // the response's Content-Type header value alone, matching Nuclei's own "content_type" DSL identifier — see matcher.Part("content_type", r); distinct from part: content_type, real upstream templates use both forms (e.g. redoc-api-docs.yaml uses the identifier form: contains(content_type, "text/html"))
+	Vars        map[string]string // bound template variables (native format's condition: field, e.g. "auth_token != \"\"") — checked after the built-ins below, so a bound var can't shadow status_code/body/header/content_type
 }
 
 // Eval parses and evaluates expr against ctx. A bare comparison or an
@@ -111,14 +120,26 @@ func tokenize(expr string) ([]token, error) {
 			i++
 		case c == '"' || c == '\'':
 			quote := c
+			var sb strings.Builder
 			j := i + 1
-			for j < len(r) && r[j] != quote {
+			closed := false
+			for j < len(r) {
+				if r[j] == '\\' && j+1 < len(r) && (r[j+1] == quote || r[j+1] == '\\') {
+					sb.WriteRune(r[j+1])
+					j += 2
+					continue
+				}
+				if r[j] == quote {
+					closed = true
+					break
+				}
+				sb.WriteRune(r[j])
 				j++
 			}
-			if j >= len(r) {
+			if !closed {
 				return nil, fmt.Errorf("unterminated string literal starting at %d", i)
 			}
-			toks = append(toks, token{tokString, string(r[i+1 : j])})
+			toks = append(toks, token{tokString, sb.String()})
 			i = j + 1
 		case c >= '0' && c <= '9':
 			j := i
@@ -331,6 +352,15 @@ func (p *parser) resolveIdent(name string) (any, error) {
 		return p.ctx.Body, nil
 	case "header":
 		return p.ctx.Header, nil
+	case "content_type":
+		return p.ctx.ContentType, nil
+	case "response":
+		// Same header+body alias as matcher.Part's "response" case, and the
+		// same reasoning: real usage (e.g. upstream's
+		// jetty-directory-listing.yaml: contains_all(response, "Jetty",
+		// "jetty-dir.css")) only word-matches header/body content, never the
+		// literal HTTP status line.
+		return p.ctx.Header + p.ctx.Body, nil
 	default:
 		if v, ok := p.ctx.Vars[name]; ok {
 			return v, nil
@@ -374,9 +404,172 @@ func callFunc(name string, args []any) (any, error) {
 			return nil, fmt.Errorf("regex() invalid pattern %q: %w", pattern, err)
 		}
 		return re.MatchString(subject), nil
+	case "contains_any":
+		return containsMulti(name, args, false)
+	case "contains_all":
+		return containsMulti(name, args, true)
+	case "to_lower", "tolower":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return strings.ToLower(s), nil
+	case "trim":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("trim() takes exactly 2 arguments, got %d", len(args))
+		}
+		s, ok1 := args[0].(string)
+		cutset, ok2 := args[1].(string)
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("trim() arguments must be strings")
+		}
+		return strings.Trim(s, cutset), nil
+	case "md5":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		sum := md5.Sum([]byte(s)) //nolint:gosec // fingerprint matching, not a security use of MD5
+		return fmt.Sprintf("%x", sum), nil
+	case "sha1":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha1.Sum([]byte(s)) //nolint:gosec // fingerprint matching, not a security use of SHA1
+		return fmt.Sprintf("%x", sum), nil
+	case "base64_py":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return base64Py(s), nil
+	case "mmh3":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return strconv.FormatInt(int64(int32(mmh3Sum32(s))), 10), nil
 	default:
 		return nil, fmt.Errorf("unsupported function %q", name)
 	}
+}
+
+// oneStringArg validates that fn was called with exactly one string argument
+// — the shape shared by to_lower/tolower, md5, sha1, base64_py, and mmh3.
+func oneStringArg(fn string, args []any) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("%s() takes exactly 1 argument, got %d", fn, len(args))
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return "", fmt.Errorf("%s() argument must be a string", fn)
+	}
+	return s, nil
+}
+
+// containsMulti implements contains_any (all==false: true if any needle
+// matches) and contains_all (all==true: true only if every needle matches).
+func containsMulti(fn string, args []any, all bool) (bool, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("%s() takes at least 2 arguments, got %d", fn, len(args))
+	}
+	haystack, ok := args[0].(string)
+	if !ok {
+		return false, fmt.Errorf("%s() arguments must be strings", fn)
+	}
+	for _, a := range args[1:] {
+		needle, ok := a.(string)
+		if !ok {
+			return false, fmt.Errorf("%s() arguments must be strings", fn)
+		}
+		matched := strings.Contains(haystack, needle)
+		if matched && !all {
+			return true, nil
+		}
+		if !matched && all {
+			return false, nil
+		}
+	}
+	return all, nil
+}
+
+// base64Py reproduces Python's base64.encodebytes (the function real
+// Nuclei's base64_py DSL function matches): standard base64, but with a
+// newline inserted every 76 encoded characters and a trailing newline —
+// unlike Go's base64.StdEncoding, which emits one unbroken line. Templates
+// pair this with mmh3() for Shodan/ZoomEye-style favicon-hash fingerprinting
+// (e.g. real upstream's appwrite-panel.yaml), so the exact line-wrapping
+// matters: it changes the hashed bytes, not just cosmetic formatting.
+// Cross-checked against a real Python 3.12 base64.encodebytes+mmh3.hash run
+// (empty string, a short string, and a >76-char string forcing multiple
+// wrapped lines) — all three matched this implementation's output exactly,
+// not just verified against documentation.
+func base64Py(s string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte(s))
+	var sb strings.Builder
+	for i := 0; i < len(encoded); i += 76 {
+		end := i + 76
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		sb.WriteString(encoded[i:end])
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
+// mmh3 constants and mmh3Sum32 are a direct, hand-ported implementation of
+// MurmurHash3's 32-bit x86 variant (seed 0) — verified against the
+// canonical reference vectors published in spaolacci/murmur3's own test
+// suite (e.g. Sum32WithSeed([]byte("hello"), 0) == 0x248bfa47), not
+// reimplemented from memory. Ported rather than added as a go.mod
+// dependency: this project avoids new third-party dependencies for a
+// self-contained security tool where every dependency is extra supply-chain
+// surface, and the algorithm itself is small, fixed, and easily verified.
+const (
+	mmh3C1 uint32 = 0xcc9e2d51
+	mmh3C2 uint32 = 0x1b873593
+)
+
+func mmh3Sum32(s string) uint32 {
+	data := []byte(s)
+	var h1 uint32
+	nblocks := len(data) / 4
+	for i := 0; i < nblocks; i++ {
+		k1 := uint32(data[i*4]) | uint32(data[i*4+1])<<8 | uint32(data[i*4+2])<<16 | uint32(data[i*4+3])<<24
+		k1 *= mmh3C1
+		k1 = bits.RotateLeft32(k1, 15)
+		k1 *= mmh3C2
+		h1 ^= k1
+		h1 = bits.RotateLeft32(h1, 13)
+		h1 = h1*4 + h1 + 0xe6546b64
+	}
+
+	tail := data[nblocks*4:]
+	var k1 uint32
+	switch len(tail) & 3 {
+	case 3:
+		k1 ^= uint32(tail[2]) << 16
+		fallthrough
+	case 2:
+		k1 ^= uint32(tail[1]) << 8
+		fallthrough
+	case 1:
+		k1 ^= uint32(tail[0])
+		k1 *= mmh3C1
+		k1 = bits.RotateLeft32(k1, 15)
+		k1 *= mmh3C2
+		h1 ^= k1
+	}
+
+	h1 ^= uint32(len(data))
+	h1 ^= h1 >> 16
+	h1 *= 0x85ebca6b
+	h1 ^= h1 >> 13
+	h1 *= 0xc2b2ae35
+	h1 ^= h1 >> 16
+	return h1
 }
 
 func compare(op token, a, b any) (bool, error) {

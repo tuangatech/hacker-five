@@ -37,7 +37,7 @@ type Matcher struct {
 	Regex     []string `yaml:"regex,omitempty"`
 	Size      []int    `yaml:"size,omitempty"`
 	DSL       []string `yaml:"dsl,omitempty"`
-	Part      string   `yaml:"part,omitempty"`      // "body" | "header" | "all"; default "body"
+	Part      string   `yaml:"part,omitempty"`      // "body" | "header" | "all" | "content_type" | "response"; default "body"
 	Condition string   `yaml:"condition,omitempty"` // "and" | "or", within this matcher's own Words/Regex/DSL list; default "or"
 	Negative  bool     `yaml:"negative,omitempty"`
 
@@ -80,7 +80,16 @@ func Part(part string, r Response) string {
 			}
 		}
 		return b.String()
-	case "all":
+	case "content_type":
+		return r.Headers.Get("Content-Type")
+	case "all", "response":
+		// "response" is real Nuclei's full raw HTTP response (status line +
+		// headers + body). Every real "response"-part matcher sampled across
+		// the synced corpus (all 32, checked at implementation time) only
+		// word/regex-matches against header/body content, never the literal
+		// status line — so aliasing it to the existing "all" behavior is
+		// safe and avoids synthesizing a fake status line this project has
+		// no real use for yet.
 		return Part("header", r) + string(r.Body)
 	default:
 		return string(r.Body)
@@ -130,7 +139,7 @@ func (m Matcher) evaluate(r Response) bool {
 		return false
 	case "dsl":
 		return m.evaluateList(m.DSL, func(expr string) bool {
-			val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: Part("header", r)})
+			val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: Part("header", r), ContentType: r.Headers.Get("Content-Type")})
 			if err != nil {
 				return false
 			}
@@ -209,8 +218,9 @@ func MatchingNames(matchers []Matcher, r Response) []string {
 }
 
 // ValidPart reports whether part is one of the response slices this project
-// actually implements ("", "body", "header", "all" — "" defaults to
-// "body"). Real templates also use protocol-specific parts this project
+// actually implements ("", "body", "header", "all", "content_type",
+// "response" — "" defaults to "body"). Real templates also use
+// protocol-specific parts this project
 // doesn't have the underlying protocol support for, most notably the OAST/
 // out-of-band values ("interactsh_protocol", "interactsh_request",
 // "interactsh_response") used by blind-SSRF-style checks like upstream's
@@ -222,7 +232,7 @@ func MatchingNames(matchers []Matcher, r Response) []string {
 // nearly any HTML page, a live false positive against a real target.
 func ValidPart(part string) bool {
 	switch part {
-	case "", "body", "header", "all":
+	case "", "body", "header", "all", "content_type", "response":
 		return true
 	default:
 		return false

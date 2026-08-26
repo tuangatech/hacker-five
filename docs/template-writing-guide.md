@@ -32,7 +32,7 @@ http:
     matchers-condition: or        # "and" | "or" — default "or" (Nuclei's own default)
     matchers:
       - type: word                # word | regex | status | size | dsl
-        part: body                 # body | header | all — default "body"
+        part: body                 # body | header | all | content_type | response — default "body"
         words: ["admin panel"]
         condition: or               # and | or, within this matcher's own list — default "or"
         negative: false
@@ -46,7 +46,7 @@ http:
 
 - **Matchers:** `word`, `regex`, `status`, `size`, `dsl`. No `binary` — not needed by any sampled template across the curated categories; added when a real template needs it, not speculatively.
 - **Extractors:** `regex`, `kval` (response header key), `json` (dot-path, e.g. `data.user.id` — no array wildcards), `dsl`.
-- **`part`** on both matchers and extractors: `body` (default), `header`, or `all`.
+- **`part`** on both matchers and extractors: `body` (default), `header`, `all`, `content_type` (the `Content-Type` header value alone), or `response` (alias for `all` — header+body; real Nuclei's is the full raw response including the status line, but no sampled template checks that literal line, so this project doesn't synthesize one).
 - Every `path`/`headers`/`body` string is rendered through the same `{{BaseURL}}`/`{{chainVar}}` substitution the native format uses (`pkg/scanner/vars`).
 
 ### Rejected at load time, not silently ignored
@@ -122,9 +122,14 @@ Extractors always run after a request fires, **regardless of whether its matcher
 
 Both `condition:` (native) and `dsl:` matchers/extractors (both formats) share one small, hand-rolled evaluator (`pkg/template/dsl`) — deliberately not a general expression language:
 
-- **Identifiers:** `status_code` (int), `body` (string), `header` (string — raw `"Name: value\n"`-per-line dump), plus any already-bound chain/global variable by name.
-- **Functions:** `len(x)`, `contains(haystack, needle)`, `regex(pattern, subject)` — RE2 only, no catastrophic-backtracking risk.
+- **Identifiers:** `status_code` (int), `body` (string), `header` (string — raw `"Name: value\n"`-per-line dump), `content_type` (string — the `Content-Type` header value alone), `response` (string — alias for `header+body`, see the `part:` note above), plus any already-bound chain/global variable by name.
+- **Functions:**
+  - `len(x)`, `contains(haystack, needle)`, `contains_any(haystack, needle1, needle2, ...)`, `contains_all(haystack, needle1, needle2, ...)`, `regex(pattern, subject)` — RE2 only, no catastrophic-backtracking risk.
+  - `to_lower(s)` / `tolower(s)` (both spellings, same function — both appear in real upstream templates), `trim(s, cutset)` (like Go's `strings.Trim`, not whitespace-only).
+  - `md5(s)`, `sha1(s)` — hex-encoded digest, for templates that fingerprint by a known content hash.
+  - `base64_py(s)`, `mmh3(s)` — Shodan/ZoomEye-style favicon-hash fingerprinting, almost always used together as `mmh3(base64_py(body))` compared against a quoted (possibly negative) decimal string. `base64_py` reproduces Python's `base64.encodebytes` line-wrapping (a newline every 76 characters), not Go's unbroken `base64.StdEncoding` output — the wrapping changes the hashed bytes, not just formatting. `mmh3` is a hand-rolled MurmurHash3 x86-32 (seed 0) returning its signed-int32 result as a decimal string (so it compares directly against a quoted literal like `"-633108100"`), verified against MurmurHash3's own canonical published test vectors, not reimplemented from memory.
 - **Operators:** `==`, `!=`, `<`, `>` (comparisons), `&&`, `\|\|`, unary `!` (logical), parentheses for grouping. `!a && b` parses as `(!a) && b`, same as most C-family languages — confirmed against a real upstream template (`http-missing-security-headers.yaml`) that relies on exactly this precedence.
+- **String literals** support backslash-escaped quotes (`"name=\"value\""`) and `\\`, matching how real templates embed a quote inside a DSL string argument.
 
 Anything outside this grammar is a parse/eval error, not a silent `false`.
 

@@ -145,6 +145,44 @@ func TestMatchingNames(t *testing.T) {
 	assert.Equal(t, []string{"csp"}, names, "only the named, actually-matching check should be reported")
 }
 
+// TestMatcherEvaluate_PartContentType locks in `part: content_type`
+// (matcher & extractor both share Part()), added for real upstream
+// templates like gitlab-saml.yaml's SAML-panel check.
+func TestMatcherEvaluate_PartContentType(t *testing.T) {
+	resp := matcher.Response{
+		Headers: http.Header{"Content-Type": []string{"application/xml"}},
+		Body:    []byte("application/xml appears in the body too, must not match on that"),
+	}
+	m := matcher.Matcher{Type: "word", Part: "content_type", Words: []string{"application/xml"}}
+	assert.True(t, m.Evaluate(resp))
+
+	miss := matcher.Matcher{Type: "word", Part: "content_type", Words: []string{"text/html"}}
+	assert.False(t, miss.Evaluate(resp))
+}
+
+// TestMatcherEvaluate_PartResponse locks in `part: response`, aliased to
+// the existing "all" (header+body) behavior — every real `part: response`
+// template sampled in the synced corpus only word/regex-matches header or
+// body content, never the literal HTTP status line, so this is a safe,
+// verified equivalence rather than an assumption (see matcher.Part's doc
+// comment).
+func TestMatcherEvaluate_PartResponse(t *testing.T) {
+	resp := matcher.Response{
+		Headers: http.Header{"X-App": []string{"Homarr"}},
+		Body:    []byte("<title>Homarr</title>"),
+	}
+	fromHeader := matcher.Matcher{Type: "word", Part: "response", Words: []string{"Homarr"}}
+	assert.True(t, fromHeader.Evaluate(resp), "response part must see header content")
+
+	fromBody := matcher.Matcher{Type: "word", Part: "response", Words: []string{"<title>Homarr</title>"}}
+	assert.True(t, fromBody.Evaluate(resp), "response part must see body content")
+}
+
+func TestMatcherValidate_AcceptsNewParts(t *testing.T) {
+	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "word", Part: "content_type", Words: []string{"x"}}))
+	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "word", Part: "response", Words: []string{"x"}}))
+}
+
 func TestMatcherValidate(t *testing.T) {
 	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "status"}))
 	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "regex", Regex: []string{`ng-version="[0-9.]+"`}}))

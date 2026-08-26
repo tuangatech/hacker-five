@@ -115,7 +115,7 @@ func extractKval(e Extractor, r matcher.Response) (string, bool) {
 
 func extractDSL(e Extractor, r matcher.Response) (string, bool) {
 	for _, expr := range e.DSL {
-		val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: matcher.Part("header", r)})
+		val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: matcher.Part("header", r), ContentType: r.Headers.Get("Content-Type")})
 		if err != nil {
 			continue
 		}
