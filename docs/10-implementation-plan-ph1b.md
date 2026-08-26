@@ -527,7 +527,7 @@ CI (`.github/workflows/ci.yml`) gains a coverage-gate step alongside the existin
 
 ---
 
-## Step 5: Packaging & Documentation (Week 9-10)
+## Step 5: Packaging & Documentation (Week 9-10) — done, live-verified
 
 **Goal:** ship v0.1.0 — multi-stage Docker image, cross-compiled binaries, and documentation covering both template formats.
 
@@ -535,25 +535,36 @@ CI (`.github/workflows/ci.yml`) gains a coverage-gate step alongside the existin
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Replaces Phase 1a's single-stage build: multi-stage, `CGO_ENABLED=0`, `-trimpath`, `-ldflags '-s -w'` for a small static binary |
-| `.goreleaser.yml` | Cross-compiled Linux/macOS/Windows binaries (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64) |
-| `README.md` | Install instructions (`go install`, Docker, source), quick-start, links to the template-writing guide |
-| `docs/template-writing-guide.md` | Covers both the Nuclei-compatible subset (what's supported, what's rejected, what's out of scope) and the native format (variables, chaining, baseline-mode IDOR) |
+| `LICENSE` | MIT — real gap found while scoping this step: README already called the project "Open-source" with no license actually committed. Matches Nuclei's own license and this project's `nuclei-templates` dependency. |
+| `cmd/hackerfive/main.go`, `root.go` | `var version = "dev"`, wired to Cobra's `cmd.Version` — enables `--version`, and gives goreleaser/Docker's `-X main.version=...` ldflags somewhere to land. Didn't exist before this step. |
+| `Dockerfile` | Replaces Phase 1a's single-stage build: multi-stage, `CGO_ENABLED=0`, `-trimpath`, `-ldflags '-s -w -X main.version=...'`. Final stage is `gcr.io/distroless/static-debian13:nonroot`, not `scratch` — this tool makes outbound HTTPS scan requests and needs the CA cert bundle `scratch` doesn't ship. |
+| `.dockerignore` | Not in the original plan — added after a live build showed a 186MB build context (dragging in `.git`, `.nuclei-templates-cache`, the compiled `hackerfive` binary itself). Dropped to 4.6kB. |
+| `.goreleaser.yml` | Cross-compiled Linux/macOS/Windows binaries (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64 — `windows/arm64` explicitly `ignore`d) |
+| `README.md` | Install instructions (`go install`, Docker, source), quick-start, links to the template-writing guide/CONTRIBUTING/SECURITY/LICENSE |
+| `docs/template-writing-guide.md` | Covers both the Nuclei-compatible subset (what's supported, what's rejected, what's out of scope) and the native format (variables, chaining, baseline-mode IDOR) — grounded directly in `pkg/template/{matcher,extractor,dsl}` and both schema.go files, not written from memory |
 | `CONTRIBUTING.md` | PR process, code style, required checks (`make build test lint`) before submitting |
-| `.github/ISSUE_TEMPLATE/*.md`, `.github/PULL_REQUEST_TEMPLATE.md` | Standard GitHub templates |
+| `SECURITY.md` | Not in doc10's original file list — added after noticing doc05 only covers vulnerabilities the tool *finds*, nothing covered a vulnerability *in HackerFive itself*. Points to GitHub private security advisories. |
+| `.github/ISSUE_TEMPLATE/*.yml`, `config.yml`, `.github/PULL_REQUEST_TEMPLATE.md` | YAML issue-form templates (current GitHub best practice, not the legacy Markdown+frontmatter form) |
+| `.gitignore` | `dist/` added — goreleaser's snapshot run wasn't previously excluded |
+
+**Real gap, not yet resolved:** the repo (`tuangatech/hacker-five`) is currently **private** — confirmed live (`curl` to the GitHub API returns 404 unauthenticated) — even though README calls the project "Open-source" and the Installation section now documents `go install .../hackerfive@latest` and GitHub release downloads, neither of which work against a private repo. Per user decision, docs are written assuming the repo goes public before the `v0.1.0` tag is actually cut — **flipping repo visibility is a real, outstanding prerequisite this session can't do** (no repo admin access from here), not something to lose track of before release.
 
 **Deferred to Phase 3 Week 25, not dropped:** Markdown/HTML/HackerOne-JSON-schema exporters (listed in doc 02's architecture but not in doc 03's Phase 1b week bullets) wait for [03-development-roadmap.md](03-development-roadmap.md)'s Week 25 (`Integration with HackerOne API`), which now lists them explicitly. Doc 03's own note on the GitHub Action already establishes the principle: integrations wait until "the CLI output schema is stable (post v0.1.0)." JSON is that schema; v0.1.0 is when it stabilizes — but Week 25 is genuinely the first point three concrete formats are needed together (HackerOne-JSON for actual report submission, Markdown/HTML alongside it for the same report), which is what turns doc 02 §5's `Exporter` interface from aspirational to a literal rule-of-three. Building it now would repeat the removed `docs/10-implementation-phase-1a.md`'s mistake (it built Markdown/HTML reporters in *Phase 1a*, before there was even one detector to report on). `reporter.WriteJSON` stays a plain function, not an interface, until then. See Future Enhancement #7 below — the raw-evidence-capture groundwork those exporters will need is now done, ahead of this v0.1.0 tag rather than at Week 25, while it was still cheap.
 
-### Verification
+### Verification — real results, not just commands
 
 ```bash
-make build && ./hackerfive --help
-docker build -t hackerfive:v0.1.0 .
-docker run --rm hackerfive:v0.1.0 --help
-
+make build && ./hackerfive --version && ./hackerfive --help   # → "hackerfive version dev"; confirmed
+docker build --build-arg VERSION=v0.1.0-dev -t hackerfive:v0.1.0-dev .
+docker run --rm hackerfive:v0.1.0-dev --version                # → "hackerfive version v0.1.0-dev"; confirmed — ldflags injection round-trips through the multi-stage build correctly
+# image: 16.7MB total (3.89MB content) — confirmed via `docker images`
 goreleaser release --snapshot --clean   # local dry run, no publish
 ```
-Tag `v0.1.0` and cut the GitHub release once the Definition of Done below is met.
+`goreleaser` wasn't installed in this environment — installed via `go install github.com/goreleaser/goreleaser/v2@latest` (resolved to v2.18.0). The snapshot run succeeded and produced exactly the 5 targets this doc's file table names — confirmed by listing `dist/`: `hackerfive_..._{linux_amd64,linux_arm64,darwin_amd64,darwin_arm64}.tar.gz` + `..._windows_amd64.zip` + a checksums file, no `windows_arm64` (the `ignore:` rule worked). Extracted and ran the linux/amd64 archive's binary directly: `hackerfive version 0.0.0-SNAPSHOT-<commit>` — goreleaser's own ldflags path also confirmed working, not just the Dockerfile's.
+
+**Not verified from this environment:** the GitHub Actions coverage-gate CI run being green on a real push (no `gh` CLI available here, and the repo returns 404 to unauthenticated API calls since it's private — see the repo-visibility gap above). This is a real, open item for the user to confirm before tagging, not something to assume passed.
+
+Tag `v0.1.0` and cut the GitHub release once the Definition of Done below is met — including flipping the repo to public first.
 
 ---
 
@@ -586,10 +597,10 @@ Not part of Steps 1-5's committed Week 5-10 deliverables — ideas surfaced whil
 - [x] Measured false-positive rate <5%, covering built-in misconfig rules, Nuclei-compatible templates, and native templates — real result (Step 4, `scripts/measure-fp-rate.sh`, all four live targets): 35 findings, 0% candidate FP rate after one fixture correction
 - [ ] `hackerfive scan` scans 100 targets in <2 minutes — not measured; vAPI's dev-mode server specifically is much slower than the other three targets per-request (see Step 4), worth revisiting if this becomes a real bottleneck at scale
 - [x] Fuzz targets exist and run clean for the HTTP client (Phase 1a) and both template parsers (this plan) — `FuzzNucleiLoadDir`/`FuzzNativeLoadDir`, ~48K/57K execs, zero panics (Step 4)
-- [ ] `docker build` produces a multi-stage image; `goreleaser release --snapshot` produces binaries for all five target platforms
-- [ ] README, template-writing guide, CONTRIBUTING.md, and issue/PR templates are complete
-- [ ] No hardcoded credentials, no request verb beyond what each detector's design calls for (`GET` for IDOR/misconfig path checks, one bounded `POST` per default-cred pair) — read/enumerate-only rule from [CLAUDE.md](../CLAUDE.md) holds throughout
-- [ ] `v0.1.0` tagged and released
+- [x] `docker build` produces a multi-stage image; `goreleaser release --snapshot` produces binaries for all five target platforms — both confirmed live (Step 5): Docker image 16.7MB total, `--version` round-trips the injected version string correctly; goreleaser snapshot run produced exactly `linux_{amd64,arm64}`/`darwin_{amd64,arm64}`/`windows_amd64` (no `windows_arm64`), extracted and ran the linux/amd64 binary directly to confirm
+- [x] README, template-writing guide, CONTRIBUTING.md, and issue/PR templates are complete — plus `LICENSE` (MIT) and `SECURITY.md`, neither in the original file list but real gaps found while scoping this step (see Step 5's Files table)
+- [x] No hardcoded credentials, no request verb beyond what each detector's design calls for (`GET` for IDOR/misconfig path checks, one bounded `POST` per default-cred pair) — read/enumerate-only rule from [CLAUDE.md](../CLAUDE.md) holds throughout; unchanged by Step 5, which added no new request paths
+- [ ] `v0.1.0` tagged and released — **blocked, real prerequisite outstanding:** the repo is currently private (confirmed live), which breaks the `go install`/GitHub-release install paths README now documents; needs to go public before tagging. Also still open: confirming the CI coverage gate is actually green on a real GitHub Actions run (can't check from this environment — no `gh` CLI, repo returns 404 to unauthenticated API calls)
 
 ## See also
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — package layout, dependency, and template-security decisions this plan follows

@@ -1,0 +1,30 @@
+version: 2
+
+project_name: hackerfive
+
+builds:
+  - id: hackerfive
+    main: ./cmd/hackerfive
+    binary: hackerfive
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      # windows/arm64 isn't one of the 5 platforms doc10 targets
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256

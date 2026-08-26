@@ -8,7 +8,7 @@ Repo: https://github.com/tuangatech/hacker-five
 
 ## Status
 
-Phase 1a (Weeks 1-4) is done: CLI, HTTP engine, and a working **IDOR detector**. Phase 1b's Steps 1-3 ([docs/10-implementation-plan-ph1b.md](docs/10-implementation-plan-ph1b.md)) are also done: misconfig detector, Nuclei-compatible template parser, and the native YAML template engine — `--templates` is now live. See [docs/09-implementation-plan-ph1a.md](docs/09-implementation-plan-ph1a.md) for Phase 1a.
+Phase 1a (Weeks 1-4) is done: CLI, HTTP engine, and a working **IDOR detector**. Phase 1b ([docs/10-implementation-plan-ph1b.md](docs/10-implementation-plan-ph1b.md)) is also done: misconfig detector, Nuclei-compatible template parser, native YAML template engine (`--templates`), testing/validation, and packaging — the only thing left before `v0.1.0` is tagging the release (see doc10's Definition of Done). See [docs/09-implementation-plan-ph1a.md](docs/09-implementation-plan-ph1a.md) for Phase 1a.
 
 - ✅ **IDOR** (`--detector idor`) — sequential/wordlist ID enumeration, two modes:
   - **Baseline mode** (high confidence): give both `--auth-token` and `--other-auth-token`. Two unrelated accounts are compared against each ID; a finding fires only when the second account gets real content where the majority "denied" baseline says it shouldn't.
@@ -17,6 +17,23 @@ Phase 1a (Weeks 1-4) is done: CLI, HTTP engine, and a working **IDOR detector**.
 - ✅ **Templates** (`--templates`, default `./templates/`) — both formats run automatically alongside whichever `--detector` is selected, additive, not an alternative:
   - **Nuclei-compatible** (`pkg/template/nuclei`) — a defined, fail-loudly subset of real upstream `nuclei-templates` (`scripts/sync-nuclei-templates.sh` syncs a pinned commit); rejects `raw:`/`payloads:`, `flow:`, disallowed protocol blocks, and out-of-band/OAST matchers at load time rather than silently mis-evaluating them. Live-verified against DVWA, crAPI, and Juice Shop — see doc10 Step 2.
   - **Native YAML** (`pkg/template/native`) — HackerFive's own format, sharing the same matcher/extractor engine. `idor`-tagged templates (`templates/idor/*.yaml`) route through the real `idor.Detector`, so a YAML file can now supply what `--endpoint` used to — see doc10 Step 3.
+
+## Installation
+
+```bash
+# via go install (requires Go 1.26+)
+go install github.com/tuangatech/hacker-five/cmd/hackerfive@latest
+
+# via Docker (build locally — see Dockerfile)
+docker build -t hackerfive .
+docker run --rm hackerfive --help
+
+# from source
+git clone https://github.com/tuangatech/hacker-five.git && cd hacker-five
+make build
+./hackerfive --version
+```
+Pre-built cross-platform binaries (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64) are attached to each [GitHub release](https://github.com/tuangatech/hacker-five/releases), built via `goreleaser` (`.goreleaser.yml`).
 
 ## Setting Up a Target
 
@@ -79,5 +96,10 @@ Project plan split by concern under [docs/](docs/):
 9. [Follow-Up: Security Review, Expansion Strategy & Protocol Scope](docs/follow-up.md) — security review notes, open-source/VDP expansion plan, XBOW research, non-HTTP protocol assessment
 10. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI and DVWA bring-up, account/token minting, per-target setup steps and caveats
 11. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
+12. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
 
-See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo.
+See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo. Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a vulnerability in HackerFive itself (not a finding it produced against some other target)? See [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

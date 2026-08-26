@@ -19,6 +19,7 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "hackerfive",
 		Short:         "HackerFive — a template-driven vulnerability scanner",
+		Version:       version, // non-empty enables Cobra's built-in --version flag
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}

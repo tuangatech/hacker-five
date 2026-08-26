@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in HackerFive itself is broken (crash, wrong output, bad build)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a vulnerability *in HackerFive* rather than a bug? Use [private security reporting](https://github.com/tuangatech/hacker-five/security/advisories/new) instead — see [SECURITY.md](../../SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `hackerfive --version`, or the commit SHA if built from source
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what actually happened
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Command run, and a minimal template/input that triggers it if applicable. Redact any real target URLs/tokens.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Linux
+        - macOS
+        - Windows (WSL2)
+        - Windows (native)
+        - Docker
+    validations:
+      required: true

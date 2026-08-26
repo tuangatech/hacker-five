@@ -1,0 +1,10 @@
+.git/
+.github/
+.claude/
+docs/
+.nuclei-templates-cache/
+hackerfive
+*.exe
+coverage.out
+*.test
+tests/

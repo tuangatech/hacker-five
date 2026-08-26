@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a new detector, template capability, or CLI feature
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For anything beyond a small fix, please describe the approach here before opening a PR — see [CONTRIBUTING.md](../../CONTRIBUTING.md#before-you-start).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the gap
+      description: What can't HackerFive do today that you need it to?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: How you'd implement it, or what you'd want it to look like from the CLI/template side
+    validations:
+      required: true
+  - type: textarea
+    id: fp-impact
+    attributes:
+      label: False-positive impact (if this is a new detector or template)
+      description: How would this stay inside the project's <5% false-positive target (docs/03-development-roadmap.md)?

@@ -25,3 +25,6 @@ coverage.out
 
 # Synced upstream templates (scripts/sync-nuclei-templates.sh) — never redistributed, see docs/10-implementation-plan-ph1b.md Step 2
 .nuclei-templates-cache/
+
+# goreleaser output (goreleaser release --snapshot --clean)
+dist/
