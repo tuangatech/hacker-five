@@ -41,6 +41,12 @@ Pre-built cross-platform binaries (linux/amd64, linux/arm64, darwin/amd64, darwi
 ```
 It's an unsigned binary (no code-signing certificate), so the first run typically shows a SmartScreen "Windows protected your PC" prompt — click "More info" → "Run anyway". This is standard for unsigned OSS binaries, not a sign of tampering; verify against `hackerfive_<version>_checksums.txt` from the same release if you want to confirm the download wasn't corrupted/modified.
 
+The zip also bundles `templates/`, so as long as you run `hackerfive.exe` from inside the extracted folder, the default `--templates ./templates/` just works — no separate clone needed:
+```powershell
+.\hackerfive.exe scan -t https://www.example.com --detector misconfig -o findings.json
+```
+`--detector misconfig` needs no auth token and is the safe first thing to run against any target — see the [Quick Start](#quick-start) section below for what each flag does and the [IDOR detector](#status) example. **`www.example.com` is IANA's reserved documentation domain, safe to point a scanner at for a syntax check — but only scan a real site you're actually authorized to test** (see [Scanning a Real, Authorized Target](#scanning-a-real-authorized-target) and [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md)).
+
 ## Setting Up a Target
 
 Full walkthrough (Docker bring-up, account/token minting, one-time setup steps, and a per-detector caveat about DVWA's login form) lives in [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md). Short version:
