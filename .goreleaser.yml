@@ -24,6 +24,16 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
+    # Setting `files` replaces goreleaser's default LICENSE*/README* globs
+    # entirely (not additive), so both are re-listed here alongside
+    # templates/ — a standalone binary with no repo checkout needs its own
+    # copy of templates/ or --templates falls back to an empty directory
+    # (see docs/21-scanning-real-targets.md and README's Installation section).
+    files:
+      - LICENSE*
+      - README*
+      - src: templates/**/*
+        dst: templates
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
