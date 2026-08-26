@@ -6,6 +6,8 @@
 
 **Every step below assumes the authorization step is already done.** Nothing here substitutes for reading a program's scope yourself — see doc05 §"Read Program Scope": *"If it's not explicitly in scope, don't test it."*
 
+**Platform note:** commands below use the Linux/macOS binary name (`./hackerfive`) and `export VAR=val` for env vars. On Windows, that's `.\hackerfive.exe` and `$env:VAR = "val"` — see [README's Windows walkthrough](../README.md#download--install). Everything else (`git`, `curl`, flags) translates as-is.
+
 ---
 
 ## 1. Finding an authorized target
@@ -43,6 +45,8 @@ HackerFive has no crawler or fingerprinting module yet (the closest planned cand
    make templates-sync   # scripts/sync-nuclei-templates.sh — pinned commit, see doc10 Step 2
    ```
    This populates `.nuclei-templates-cache/http/{exposed-panels,misconfiguration,technologies}/` (gitignored, never committed).
+
+   **Using just the downloaded release binary, no repo clone?** `make templates-sync` needs this repo checked out for its `Makefile`. Either clone the repo just for the sync script — `git clone https://github.com/tuangatech/hacker-five.git && cd hacker-five && make templates-sync` (needs `git`/`bash`/`make`, not Go) — or run the same sparse-checkout directly, copying the pinned commit and category list from [`scripts/sync-nuclei-templates.sh`](../scripts/sync-nuclei-templates.sh); those are plain `git` invocations, unchanged in PowerShell.
 
 2. **Filter by what step 2's recon actually found**, using its own tags directly:
    ```bash
