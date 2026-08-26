@@ -42,6 +42,15 @@ func FuzzNucleiLoadDir(f *testing.F) {
 	f.Add([]byte("id: x\nflow: http(1) &&\nhttp:\n  - path: [\"{{BaseURL}}\"]\n"))
 	f.Add([]byte("id: x\nflow: " + repeatString("(", 200) + "http(1)" + repeatString(")", 200) + "\nhttp:\n  - path: [\"{{BaseURL}}\"]\n"))
 	f.Add([]byte("id: x\nhttp:\n  - path: [\"{{BaseURL}}\"]\n    matchers:\n      - type: status\n        status: [200]\n        internal: true\n"))
+	// extractor->DSL binding — new attack surface added by this project's
+	// own same-request/chain-scoped extractor binding support (see
+	// docs/10-implementation-plan-ph1b.md's extractor->DSL binding note):
+	// a matcher referencing a same-request extractor Name, a forward
+	// reference (invalid), and the two new DSL functions with malformed
+	// input.
+	f.Add([]byte("id: x\nhttp:\n  - path: [\"{{BaseURL}}\"]\n    matchers:\n      - type: dsl\n        dsl: [\"compare_versions(v, '<=1.2.3')\"]\n    extractors:\n      - type: regex\n        name: v\n        regex: [\"(.*)\"]\n"))
+	f.Add([]byte("id: x\nhttp:\n  - path: [\"{{BaseURL}}\"]\n    matchers:\n      - type: dsl\n        dsl: [\"compare_versions(v, 'not-a-version')\"]\n    extractors:\n      - type: regex\n        name: v\n        regex: [\"(.*)\"]\n"))
+	f.Add([]byte("id: x\nhttp:\n  - path: [\"{{BaseURL}}\"]\n    matchers:\n      - type: dsl\n        dsl: [\"base64_decode(v)\"]\n    extractors:\n      - type: regex\n        name: v\n        regex: [\"(.*)\"]\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		dir := t.TempDir()

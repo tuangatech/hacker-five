@@ -231,7 +231,17 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 		return detectors.Finding{}, false, false, nil
 	}
 
-	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody}
+	// Extraction runs unconditionally, before matchers evaluate — not just
+	// when chainable — so a matcher in THIS SAME request can reference an
+	// extractor's Name from THIS SAME request as a DSL identifier (real
+	// example: upstream's apache-httpd-eol.yaml, compare_versions(version,
+	// '<=2.2.34') where "version" is extracted by this same request). It's
+	// a pure function over the already-fetched response, so computing it
+	// unconditionally has no side effect until its results are used below.
+	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: chainVars}
+	extracted := extractor.Extract(req.Extractors, baseResp)
+
+	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: mergeVars(chainVars, extracted)}
 	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
 	chainable = evaluated || len(req.Matchers) == 0
 	matched = evaluated && hasReportableMatcher(req.Matchers)
@@ -239,7 +249,7 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 		return detectors.Finding{}, false, false, nil
 	}
 
-	for k, v := range extractor.Extract(req.Extractors, mResp) {
+	for k, v := range extracted {
 		chainVars[k] = v
 	}
 	if !matched {
@@ -396,7 +406,20 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 		return detectors.Finding{}, false, false, nil // req.Raw was empty — rejected at load time, defensive only
 	}
 
-	mResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: extraVars, ExtraInts: extraInts}
+	// chainVars merged in alongside the body_N/header_N entries so a
+	// matcher/extractor here can also reference an earlier request's named
+	// extractor result — same mechanism tryPath uses, see its doc comment.
+	for k, v := range chainVars {
+		extraVars[k] = v
+	}
+
+	// Extraction runs unconditionally, before matchers evaluate — see
+	// tryPath's doc comment for why (same-request extractor->matcher
+	// binding).
+	baseResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: extraVars, ExtraInts: extraInts}
+	extracted := extractor.Extract(req.Extractors, baseResp)
+
+	mResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: mergeVars(extraVars, extracted), ExtraInts: extraInts}
 	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
 	chainable = evaluated || len(req.Matchers) == 0
 	matched = evaluated && hasReportableMatcher(req.Matchers)
@@ -404,7 +427,7 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 		return detectors.Finding{}, false, false, nil
 	}
 
-	for k, v := range extractor.Extract(req.Extractors, mResp) {
+	for k, v := range extracted {
 		chainVars[k] = v
 	}
 	if !matched {
@@ -514,6 +537,21 @@ func splitRawHeaderBody(raw string) (headerBlock, body string) {
 		return raw[:idx] + "\n\n", raw[idx+2:]
 	}
 	return raw + "\n\n", ""
+}
+
+// mergeVars combines maps into one new map, later maps' keys winning on
+// conflict — used to build the matcher-facing ExtraVars from chainVars
+// (accumulated from earlier requests) plus a request's own freshly
+// extracted values (see tryPath/tryRawIteration), without mutating any of
+// the inputs.
+func mergeVars(maps ...map[string]string) map[string]string {
+	out := make(map[string]string)
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // hasReportableMatcher reports whether matchers contains at least one

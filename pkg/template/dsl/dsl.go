@@ -2,7 +2,7 @@
 // Nuclei's DSL expression language this project supports: comparisons
 // (==, !=, <, >) against status_code/len(body), function calls
 // (contains/contains_any/contains_all/regex/to_lower/tolower/trim/md5/sha1/
-// base64_py/mmh3), the status_code/body/header/content_type/response
+// base64_py/mmh3/compare_versions/base64_decode), the status_code/body/header/content_type/response
 // built-in variables, combined with &&/||, unary "!" negation, and
 // parenthesized grouping. Anything
 // outside this grammar is a parse/eval error, not a silent false/empty
@@ -454,6 +454,18 @@ func callFunc(name string, args []any) (any, error) {
 			return nil, err
 		}
 		return strconv.FormatInt(int64(int32(mmh3Sum32(s))), 10), nil
+	case "compare_versions":
+		return compareVersions(args)
+	case "base64_decode":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("base64_decode(): %w", err)
+		}
+		return string(decoded), nil
 	default:
 		return nil, fmt.Errorf("unsupported function %q", name)
 	}
@@ -574,6 +586,114 @@ func mmh3Sum32(s string) uint32 {
 	h1 *= 0xc2b2ae35
 	h1 ^= h1 >> 16
 	return h1
+}
+
+// compareVersions implements Nuclei's compare_versions(version, constraint,
+// ...) — real corpus usage (grep across .nuclei-templates-cache/http) is
+// always a dot-separated numeric version against one or more constraints
+// like "<=2.2.34" or ">= 12.0.0", ANDed together when there's more than
+// one (e.g. upstream's ">= 12.0.0", "< 14.0.0" range check). No dependency
+// added for this — a hand-rolled numeric-segment comparator, same
+// precedent as the existing hand-ported MurmurHash3, since every sampled
+// real constraint is plain dot-separated integers (no semver pre-release
+// suffixes observed).
+func compareVersions(args []any) (bool, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("compare_versions() takes at least 2 arguments, got %d", len(args))
+	}
+	version, ok := args[0].(string)
+	if !ok {
+		return false, fmt.Errorf("compare_versions() arguments must be strings")
+	}
+	for _, a := range args[1:] {
+		constraint, ok := a.(string)
+		if !ok {
+			return false, fmt.Errorf("compare_versions() arguments must be strings")
+		}
+		ok, err := satisfiesConstraint(version, constraint)
+		if err != nil {
+			return false, fmt.Errorf("compare_versions(): %w", err)
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// versionConstraintOps is checked longest-prefix-first so "<=" doesn't get
+// mistaken for a "<" followed by a stray "=".
+var versionConstraintOps = []string{"<=", ">=", "==", "!=", "<", ">", "="}
+
+func satisfiesConstraint(version, constraint string) (bool, error) {
+	constraint = strings.TrimSpace(constraint)
+	op := "=="
+	for _, candidate := range versionConstraintOps {
+		if strings.HasPrefix(constraint, candidate) {
+			op = candidate
+			constraint = constraint[len(candidate):]
+			break
+		}
+	}
+	constraint = strings.TrimSpace(constraint)
+	if op == "=" {
+		op = "=="
+	}
+
+	cmp, err := compareVersionSegments(version, constraint)
+	if err != nil {
+		return false, err
+	}
+	switch op {
+	case "<":
+		return cmp < 0, nil
+	case "<=":
+		return cmp <= 0, nil
+	case ">":
+		return cmp > 0, nil
+	case ">=":
+		return cmp >= 0, nil
+	case "==":
+		return cmp == 0, nil
+	case "!=":
+		return cmp != 0, nil
+	default:
+		return false, fmt.Errorf("unsupported constraint operator %q", op)
+	}
+}
+
+// compareVersionSegments compares two dot-separated numeric version strings
+// segment by segment, treating a missing trailing segment as 0 (so "2.2"
+// vs "2.2.34" compares as "2.2.0" vs "2.2.34"). Returns -1/0/1 like
+// strings.Compare.
+func compareVersionSegments(a, b string) (int, error) {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	n := len(as)
+	if len(bs) > n {
+		n = len(bs)
+	}
+	for i := 0; i < n; i++ {
+		var av, bv int
+		var err error
+		if i < len(as) {
+			if av, err = strconv.Atoi(strings.TrimSpace(as[i])); err != nil {
+				return 0, fmt.Errorf("invalid version segment %q in %q", as[i], a)
+			}
+		}
+		if i < len(bs) {
+			if bv, err = strconv.Atoi(strings.TrimSpace(bs[i])); err != nil {
+				return 0, fmt.Errorf("invalid version segment %q in %q", bs[i], b)
+			}
+		}
+		if av != bv {
+			if av < bv {
+				return -1, nil
+			}
+			return 1, nil
+		}
+	}
+	return 0, nil
 }
 
 func compare(op token, a, b any) (bool, error) {

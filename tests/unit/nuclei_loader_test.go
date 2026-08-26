@@ -528,3 +528,121 @@ http:
 	require.Empty(t, errs)
 	require.Len(t, templates, 1, "templates nested under a vendor subdirectory must still be found")
 }
+
+// TestNucleiLoadDir_SameRequestExtractorBindingLoads is modeled on real
+// upstream's apache-httpd-eol.yaml: a matcher's dsl: expression references
+// an extractor's Name from the SAME request block
+// (compare_versions(version, ...) where "version" is extracted by that
+// same request) — previously rejected as "unknown identifier", since
+// load-time validation only knew about same-block raw: N-indexed
+// identifiers, never extractor Names. See docs/10-implementation-plan-ph1b.md's
+// extractor->DSL binding note.
+func TestNucleiLoadDir_SameRequestExtractorBindingLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "eol-style.yaml", `
+id: apache-httpd-eol-style
+info:
+  name: Apache HTTP Server EOL
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: dsl
+        dsl:
+          - compare_versions(version, '<=2.2.34')
+        condition: and
+    extractors:
+      - type: regex
+        part: header
+        name: version
+        group: 1
+        regex:
+          - 'Server: Apache/([0-9.]+)'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_CrossRequestExtractorBindingLoads is modeled on real
+// upstream's google-iap-detect.yaml: request 2's extractor references
+// "email", extracted by request 1 — a chain-scoped (not same-block-raw:)
+// reference, connected via flow: so the binding is meaningful regardless of
+// evaluation order.
+func TestNucleiLoadDir_CrossRequestExtractorBindingLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "iap-style.yaml", `
+id: google-iap-detect-style
+info:
+  name: Google IAP Detect
+  severity: info
+flow: http(1) && http(2)
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    extractors:
+      - type: regex
+        part: body
+        name: email
+        group: 1
+        regex:
+          - "owner:\\s*([^;]+)"
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: word
+        words:
+          - "X-Goog-Iap-Generated-Response"
+    extractors:
+      - type: dsl
+        name: contact_email
+        dsl:
+          - "email"
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_ForwardExtractorReferenceRejected keeps a genuinely
+// unresolvable reference rejected: request 1's matcher references "token",
+// which is only extracted by a LATER request (request 2) — real Nuclei
+// templates never do this (extraction only flows forward), and this
+// project's knownExtractorNames accumulation deliberately doesn't look
+// ahead, so this should still fail exactly like before.
+func TestNucleiLoadDir_ForwardExtractorReferenceRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "forward-ref.yaml", `
+id: forward-ref-style
+info:
+  name: Forward Reference Style
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/a"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'token != ""'
+  - method: GET
+    path:
+      - "{{BaseURL}}/b"
+    extractors:
+      - type: regex
+        name: token
+        regex:
+          - 'token=(\w+)'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, templates)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), `unknown identifier "token"`)
+}

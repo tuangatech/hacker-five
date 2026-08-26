@@ -438,3 +438,108 @@ http:
 	require.NoError(t, err)
 	require.Len(t, findings, 1, "the correlating matcher should fire once both probes' results are bound")
 }
+
+// TestExecutorRun_SameRequestExtractorBinding is modeled on real upstream's
+// apache-httpd-eol.yaml: a single request whose matcher references its own
+// extractor's Name (compare_versions(version, ...)) — end-to-end proof
+// that extraction now runs before matcher evaluation and its result is
+// visible as a DSL identifier, not just that the template loads (see
+// TestNucleiLoadDir_SameRequestExtractorBindingLoads).
+func TestExecutorRun_SameRequestExtractorBinding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Apache/2.2.34 (Unix)")
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "eol.yaml", `
+id: apache-httpd-eol-style
+info:
+  name: Apache HTTP Server EOL
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: dsl
+        dsl:
+          - compare_versions(version, '<=2.2.34')
+    extractors:
+      - type: regex
+        part: header
+        name: version
+        group: 1
+        regex:
+          - 'Server: Apache/([0-9.]+)'
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "Apache/2.2.34 is <= 2.2.34, so the EOL matcher should fire")
+
+	// A newer, non-EOL version must NOT match.
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Apache/2.4.58 (Unix)")
+	}))
+	t.Cleanup(server2.Close)
+	findings, err = nuclei.New(newExecutorClient()).Run(context.Background(), server2.URL, templates[0])
+	require.NoError(t, err)
+	assert.Empty(t, findings, "Apache/2.4.58 is not <= 2.2.34")
+}
+
+// TestExecutorRun_CrossRequestExtractorBinding is modeled on real
+// upstream's google-iap-detect.yaml: request 1 extracts "email", request 2
+// (reached via flow: http(1) && http(2)) references it in a dsl:
+// extractor — end-to-end proof that chainVars now flow into DSL
+// evaluation, not just {{}} substitution.
+func TestExecutorRun_CrossRequestExtractorBinding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Goog-Iap-Generated-Response", "true")
+		_, _ = w.Write([]byte("owner: security@example.com;"))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "iap.yaml", `
+id: google-iap-detect-style
+info:
+  name: Google IAP Detect
+  severity: info
+flow: http(1) && http(2)
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    extractors:
+      - type: regex
+        part: body
+        name: email
+        group: 1
+        regex:
+          - "owner:\\s*([^;]+)"
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "X-Goog-Iap-Generated-Response"
+    extractors:
+      - type: dsl
+        name: contact_email
+        dsl:
+          - "email"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "request 2's word matcher should fire; the DSL extractor referencing request 1's \"email\" must not error the template out")
+}

@@ -99,7 +99,30 @@ http:
 - **`matchers: [{internal: true}]` is allowed only inside a `flow:` template** — an internal matcher's own result never produces a `Finding` (even when it evaluates true), it only decides whether the `http(N)` call it belongs to counts as true for the flow script. Outside a `flow:` template it's still rejected — nothing gates without `flow:`.
 - **A request block with no `matchers:` at all is treated as trivially true** for flow purposes — its extractors still run, but (having nothing to match) it can never itself produce a `Finding`. This is what makes a pure "detect, then extract a version from a second request" template (e.g. upstream's `umami-panel.yaml`) work.
 - **Not supported: `javascript()` flow scripts, loops, or variable assignment** — rejected at load time. In practice a `javascript()`-based `flow:` script pairs with a real top-level `javascript:` protocol block (arbitrary code execution), which this project has never supported (see the disallowed-blocks table below) — the two sampled real templates using it are rejected there, not by the `flow:` parser itself.
-- **Cross-request DSL identifier references between separate `http:` blocks aren't supported** — distinct from same-block `raw:` multi-entry `body_N`/`header_N`/`status_code_N` correlation (see above), which does work. A handful of real `flow:` templates reference other missing DSL identifiers entirely unrelated to flow (`server`, `all_headers`, `Input`, `email`) — see doc10's `flow:` note for the exact list; these stay rejected until those identifiers are implemented.
+- **A named extractor's result IS usable as a DSL identifier in a later request's matcher/extractor** — see "Extractor -> DSL binding" below; this is what unlocks a `flow:` template like `google-iap-detect.yaml` whose second request references the first request's `email`. What's still unsupported is a handful of *other*, unrelated missing built-in identifiers a few real `flow:` templates happen to also reference (`server`, `all_headers`, `Input`) — see doc10's `flow:` note for the exact list; these stay rejected until those identifiers are implemented, unrelated to extractor binding.
+
+### Extractor -> DSL binding (v1 scope)
+
+```yaml
+http:
+  - method: GET
+    path: ["{{BaseURL}}"]
+    matchers:
+      - type: dsl
+        dsl:
+          - compare_versions(version, '<=2.2.34')
+    extractors:
+      - type: regex
+        part: header
+        name: version
+        group: 1
+        regex:
+          - 'Server: Apache/([0-9.]+)'
+```
+
+- **A named extractor's result is a DSL identifier, resolvable in a matcher/extractor from the same request or any later one** — distinct from `{{}}` string substitution (already worked everywhere via `vars.Render`/chain variables); this is specifically about referencing an extracted value as a bare identifier inside a `dsl:` expression, as in the example above (`version`, extracted by that same request, referenced by that same request's matcher). One mechanism covers both the same-request case above and the cross-request case (an earlier request's extractor referenced by a later request's `dsl:`, e.g. via `flow:`).
+- **Two DSL functions exist mainly to make this useful:** `compare_versions(version, constraint...)` (see the `condition:`/DSL reference below) and `base64_decode(s)`.
+- **Not supported:** a *forward* reference (a matcher in an earlier request referencing an extractor `Name` that's only declared in a *later* request) — extraction only ever flows forward, matching real Nuclei and every real sampled template. Payload-bound variables (`payloads:`'s per-iteration value) aren't merged into this DSL context either — a separate, unmeasured gap, not needed by any real template found so far.
 
 ### Rejected at load time, not silently ignored
 
@@ -110,7 +133,7 @@ A template using any of these fails to load with a named error, rather than runn
 | `code:`, `javascript:`, `headless:`, `file:` | Arbitrary code execution / local file access — out of scope for a template source this project doesn't hand-review (see [CLAUDE.md](../CLAUDE.md)). |
 | `dns:`, `tcp:`, `ssl:`, `network:`, `websocket:`, `whois:` | Non-HTTP protocols — out of scope for v0.1.0 (see doc03's Week 6-7 note). |
 
-**Not rejected, but not implemented either:** `req-condition` (cross-request field references like `request_1.status_code` in a later request's DSL matcher) has no matching field in this project's schema, so a template using it loads without error but won't behave as the upstream author intended — the DSL evaluator has no `request_N`-prefixed identifiers to resolve. If you hit this, treat the template as unsupported even though it loaded.
+**`req-condition`-style cross-request field references** (real Nuclei's `request_1.status_code`-style dotted identifiers in a later request's DSL matcher) have no matching identifiers in this project's DSL evaluator — a template using that exact dotted syntax fails to load ("unknown identifier"), it doesn't silently misbehave. What *is* supported is the more common real shape: a *named extractor's* result referenced as a bare identifier (not the dotted `request_N.field` form) — see "Extractor -> DSL binding" above.
 
 ### Getting real templates
 
@@ -171,12 +194,14 @@ Extractors always run after a request fires, **regardless of whether its matcher
 
 Both `condition:` (native) and `dsl:` matchers/extractors (both formats) share one small, hand-rolled evaluator (`pkg/template/dsl`) — deliberately not a general expression language:
 
-- **Identifiers:** `status_code` (int), `body` (string), `header` (string — raw `"Name: value\n"`-per-line dump), `content_type` (string — the `Content-Type` header value alone), `response` (string — alias for `header+body`, see the `part:` note above), plus any already-bound chain/global variable by name.
+- **Identifiers:** `status_code` (int), `body` (string), `header` (string — raw `"Name: value\n"`-per-line dump), `content_type` (string — the `Content-Type` header value alone), `response` (string — alias for `header+body`, see the `part:` note above), plus any already-bound chain/global variable by name, plus (Nuclei-compatible format) any named extractor's result — see "Extractor -> DSL binding" above.
 - **Functions:**
   - `len(x)`, `contains(haystack, needle)`, `contains_any(haystack, needle1, needle2, ...)`, `contains_all(haystack, needle1, needle2, ...)`, `regex(pattern, subject)` — RE2 only, no catastrophic-backtracking risk.
   - `to_lower(s)` / `tolower(s)` (both spellings, same function — both appear in real upstream templates), `trim(s, cutset)` (like Go's `strings.Trim`, not whitespace-only).
   - `md5(s)`, `sha1(s)` — hex-encoded digest, for templates that fingerprint by a known content hash.
   - `base64_py(s)`, `mmh3(s)` — Shodan/ZoomEye-style favicon-hash fingerprinting, almost always used together as `mmh3(base64_py(body))` compared against a quoted (possibly negative) decimal string. `base64_py` reproduces Python's `base64.encodebytes` line-wrapping (a newline every 76 characters), not Go's unbroken `base64.StdEncoding` output — the wrapping changes the hashed bytes, not just formatting. `mmh3` is a hand-rolled MurmurHash3 x86-32 (seed 0) returning its signed-int32 result as a decimal string (so it compares directly against a quoted literal like `"-633108100"`), verified against MurmurHash3's own canonical published test vectors, not reimplemented from memory.
+  - `compare_versions(version, constraint, ...)` — dot-separated numeric version comparison, e.g. `compare_versions(version, "<=2.2.34")` or a range via two constraints (`">= 12.0.0"`, `"< 14.0.0"`, ANDed). Operators: `<`, `<=`, `>`, `>=`, `==`/`=`, `!=`. A missing trailing segment is treated as `0` (`"2.2"` vs `"2.2.34"` compares as `"2.2.0"` vs `"2.2.34"`); a non-numeric segment is a DSL error, not a silent `false`.
+  - `base64_decode(s)` — standard base64 decode; malformed input is a DSL error.
 - **Operators:** `==`, `!=`, `<`, `>` (comparisons), `&&`, `\|\|`, unary `!` (logical), parentheses for grouping. `!a && b` parses as `(!a) && b`, same as most C-family languages — confirmed against a real upstream template (`http-missing-security-headers.yaml`) that relies on exactly this precedence.
 - **String literals** support backslash-escaped quotes (`"name=\"value\""`) and `\\`, matching how real templates embed a quote inside a DSL string argument.
 

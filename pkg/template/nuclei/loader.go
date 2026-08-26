@@ -112,6 +112,18 @@ func validate(tmpl *Template) error {
 		}
 		tmpl.flowAST = ast
 	}
+	// knownExtractorNames accumulates every extractor Name seen so far —
+	// seeded with the current request's own names before that request's
+	// matchers/extractors are checked (so a same-request reference like
+	// apache-httpd-eol.yaml's compare_versions(version, ...) resolves),
+	// then carried forward unmodified into later requests (so a
+	// cross-request reference like google-iap-detect.yaml's request 2
+	// dsl: ["email"], extracted by request 1, resolves too). See
+	// nuclei.Executor's tryPath/tryRawIteration for the matching runtime
+	// behavior — this is purely the load-time "does this expression
+	// type-check" counterpart, real values are never known this early.
+	knownExtractorNames := map[string]string{}
+
 	for i, req := range tmpl.HTTP {
 		// payloads: is also legitimately used with a plain path:-based
 		// request, not just raw: (real example: upstream's
@@ -131,7 +143,12 @@ func validate(tmpl *Template) error {
 		if len(req.Raw) == 0 && len(req.Path) == 0 {
 			return fmt.Errorf("http[%d]: no path", i)
 		}
-		dslCtx := rawIndexedDSLContext(req.Raw)
+		for _, e := range req.Extractors {
+			if e.Name != "" {
+				knownExtractorNames[e.Name] = ""
+			}
+		}
+		dslCtx := requestDSLContext(req.Raw, knownExtractorNames)
 		for j, m := range req.Matchers {
 			if m.Internal && tmpl.Flow == "" {
 				return fmt.Errorf("http[%d].matchers[%d]: uses internal: true outside a flow: template — flow-control-only matcher has nothing to gate without flow:, see docs/10-implementation-plan-ph1b.md", i, j)
@@ -147,6 +164,34 @@ func validate(tmpl *Template) error {
 		}
 	}
 	return nil
+}
+
+// requestDSLContext builds the dsl.Context used to validate one request's
+// matchers/extractors: rawIndexedDSLContext's body_N/header_N/status_code_N
+// entries (same-block raw: correlation), plus a dummy entry for every name
+// in knownExtractorNames (same-request-or-earlier extractor binding — see
+// validate's knownExtractorNames comment). Both mechanisms are independent
+// and additive; either can be empty without affecting the other.
+//
+// The dummy value is "0", not "" — an extractor's real value is an
+// arbitrary string, but a real template might immediately feed it into
+// compare_versions(), which needs to actually parse its dummy input as
+// dot-separated numeric segments to confirm the expression type-checks
+// (found live: apache-httpd-eol.yaml's compare_versions(version, ...)
+// errored against an empty-string dummy — "0" parses cleanly as a version
+// while still being a harmless placeholder for any string-only function).
+func requestDSLContext(raw []string, knownExtractorNames map[string]string) dsl.Context {
+	ctx := rawIndexedDSLContext(raw)
+	if len(knownExtractorNames) == 0 {
+		return ctx
+	}
+	if ctx.Vars == nil {
+		ctx.Vars = make(map[string]string, len(knownExtractorNames))
+	}
+	for name := range knownExtractorNames {
+		ctx.Vars[name] = "0"
+	}
+	return ctx
 }
 
 // rawIndexedDSLContext builds a dsl.Context with a zero-valued body_N/

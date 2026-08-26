@@ -179,3 +179,65 @@ func TestDSLEval_Base64PyMMH3PythonCrossCheck(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "545616131", val)
 }
+
+// TestDSLEval_CompareVersions mirrors real corpus usage (grep across
+// .nuclei-templates-cache/http): single-constraint checks like real
+// upstream's apache-httpd-eol.yaml (compare_versions(version, '<=2.2.34'))
+// and confluence-eol.yaml, plus the one real dual-constraint range check
+// (">= 12.0.0", "< 14.0.0") — ANDed, both must hold.
+func TestDSLEval_CompareVersions(t *testing.T) {
+	tests := []struct {
+		expr string
+		want bool
+	}{
+		{`compare_versions("2.2.34", "<=2.2.34")`, true},
+		{`compare_versions("2.2.35", "<=2.2.34")`, false},
+		{`compare_versions("8.8.99", "<= 8.8.99")`, true},
+		{`compare_versions("13.0.0", ">= 12.0.0", "< 14.0.0")`, true},
+		{`compare_versions("14.0.0", ">= 12.0.0", "< 14.0.0")`, false}, // fails the second constraint
+		{`compare_versions("11.0.0", ">= 12.0.0", "< 14.0.0")`, false}, // fails the first constraint
+		{`compare_versions("2.2", "<=2.2.34")`, true},                 // short version, padded with 0 -> 2.2.0 <= 2.2.34
+		{`compare_versions("2.2.34", "==2.2.34")`, true},
+		{`compare_versions("2.2.34", "!=2.2.35")`, true},
+		{`compare_versions("2.2.34", ">2.2.0")`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			val, err := dsl.Eval(tt.expr, dsl.Context{})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, val)
+		})
+	}
+}
+
+func TestDSLEval_CompareVersionsInvalidSegment(t *testing.T) {
+	_, err := dsl.Eval(`compare_versions("2.2.x", "<=2.2.34")`, dsl.Context{})
+	require.Error(t, err)
+}
+
+// TestDSLEval_Base64Decode mirrors real upstream usage
+// (base64_decode(base64_content)) — a single-arg decode, paired with the
+// same-request extractor binding this function was added alongside (see
+// docs/10-implementation-plan-ph1b.md's extractor->DSL binding note).
+func TestDSLEval_Base64Decode(t *testing.T) {
+	val, err := dsl.Eval(`base64_decode("aGVsbG8gd29ybGQ=")`, dsl.Context{})
+	require.NoError(t, err)
+	assert.Equal(t, "hello world", val)
+}
+
+func TestDSLEval_Base64DecodeInvalidInput(t *testing.T) {
+	_, err := dsl.Eval(`base64_decode("not valid base64!!")`, dsl.Context{})
+	require.Error(t, err)
+}
+
+// TestDSLEval_ExtractorNameAsIdentifier locks in the mechanism itself (not
+// just the two new functions): an extractor's Name, bound via Context.Vars
+// exactly like a native-format chain var, resolves as a bare DSL
+// identifier — this is what nuclei.Executor's tryPath/tryRawIteration now
+// populate from chainVars + a request's own freshly extracted values.
+func TestDSLEval_ExtractorNameAsIdentifier(t *testing.T) {
+	ctx := dsl.Context{Vars: map[string]string{"version": "2.2.34"}}
+	val, err := dsl.Eval(`compare_versions(version, "<=2.2.34")`, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
