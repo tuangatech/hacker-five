@@ -119,7 +119,8 @@ Project plan split by concern under [docs/](docs/):
 9. [Follow-Up: Security Review, Expansion Strategy & Protocol Scope](docs/follow-up.md) — security review notes, open-source/VDP expansion plan, XBOW research, non-HTTP protocol assessment
 10. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI and DVWA bring-up, account/token minting, per-target setup steps and caveats
 11. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
-12. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
+12. [Authorized Targets Registry](docs/22-authorized-targets.md) — living list of vetted real targets (policy, scope, safe harbor, fit for HackerFive), so vetting isn't repeated
+13. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
 
 See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo. Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a vulnerability in HackerFive itself (not a finding it produced against some other target)? See [SECURITY.md](SECURITY.md).
 

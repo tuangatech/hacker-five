@@ -84,5 +84,6 @@ export HACKERFIVE_AUTH_TOKEN="..."   # only if the in-scope paths require it
 ## See also
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — authorization, legal/ethical rules, the HackerOne joining workflow this doc assumes is already done
 - [20-setup-testing-targets.md](20-setup-testing-targets.md) — local lab targets for validating the tool itself, before ever pointing it at something real
+- [22-authorized-targets.md](22-authorized-targets.md) — living registry of real targets already vetted against step 1's authorization rules, so the vetting isn't repeated per scan
 - [follow-up.md](follow-up.md) — VDP/disclose.io expansion decision (§2), and the open rate-limit-default/scope-enforcement/Retry-After gaps referenced above (§1)
 - [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — Nuclei-compatible template sync/pinning (Step 2) and the vAPI corpus-size finding referenced in §3 above (Step 4)
