@@ -127,3 +127,80 @@ func TestIDORDetector(t *testing.T) {
 		})
 	}
 }
+
+// TestIDORDetector_AuthHeaderOption proves idor.WithAuthHeader controls which
+// header carries the token and how its value is shaped — the mechanism
+// docs/10-implementation-plan-ph1b.md's Future Enhancement #6 adds to unlock
+// vAPI ("Authorization-Token: base64(user:pass)", no "Bearer" prefix) as a
+// second real IDOR target beyond crAPI's plain Bearer-token scheme.
+func TestIDORDetector_AuthHeaderOption(t *testing.T) {
+	const token = "sometoken"
+
+	cases := []struct {
+		name        string
+		opts        []idor.Option
+		wantHeader  string
+		wantValue   string
+		otherHeader string // asserted absent (empty) when non-empty
+	}{
+		{
+			name:       "no options: default Authorization: Bearer <token>",
+			opts:       nil,
+			wantHeader: "Authorization",
+			wantValue:  "Bearer " + token,
+		},
+		{
+			name:       "vAPI shape: custom header, no Bearer prefix",
+			opts:       []idor.Option{idor.WithAuthHeader("Authorization-Token", "{token}")},
+			wantHeader: "Authorization-Token",
+			wantValue:  token,
+		},
+		{
+			name:        "partial override: name only, format stays default",
+			opts:        []idor.Option{idor.WithAuthHeader("X-Auth", "")},
+			wantHeader:  "X-Auth",
+			wantValue:   "Bearer " + token,
+			otherHeader: "Authorization",
+		},
+		{
+			name:       "partial override: format only, name stays default",
+			opts:       []idor.Option{idor.WithAuthHeader("", "Token {token}")},
+			wantHeader: "Authorization",
+			wantValue:  "Token " + token,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotValue string
+			var gotOtherAbsent bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotValue = r.Header.Get(tc.wantHeader)
+				if tc.otherHeader != "" {
+					gotOtherAbsent = r.Header.Get(tc.otherHeader) == ""
+				}
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"denied"}`))
+			}))
+			defer srv.Close()
+
+			client := httpclient.New(httpclient.Config{
+				Timeout:             5 * time.Second,
+				MaxRedirects:        5,
+				MaxIdleConnsPerHost: 10,
+			})
+			strategy := idor.SequentialIntStrategy{Start: 1, End: 1}
+			detector := idor.New(client, strategy, tc.opts...)
+
+			// Heuristic mode (single token) is enough here — this test only
+			// inspects the outgoing request header, not detection logic.
+			_, err := detector.Run(context.Background(), srv.URL+"/api/users/{{id}}", token, "")
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantValue, gotValue)
+			if tc.otherHeader != "" {
+				assert.True(t, gotOtherAbsent, "expected %s header to be absent", tc.otherHeader)
+			}
+		})
+	}
+}

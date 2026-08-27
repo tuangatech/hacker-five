@@ -74,7 +74,7 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 
 	nucleiTemplates, nativeTemplates := e.loadTemplates()
 	nucleiExec := nuclei.New(e.client)
-	nativeExec := native.New(e.client)
+	nativeExec := native.New(e.client, e.idorOptions()...)
 
 	var (
 		mu       sync.Mutex
@@ -233,7 +233,7 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "idor":
 		endpointTemplate := strings.TrimRight(target, "/") + e.cfg.EndpointTemplate
 		strategy := idor.SequentialIntStrategy{Start: idEnumRangeStart, End: idEnumRangeEnd}
-		detector := idor.New(e.client, strategy)
+		detector := idor.New(e.client, strategy, e.idorOptions()...)
 		return detector.Run(ctx, endpointTemplate, e.cfg.AuthToken, e.cfg.OtherAuthToken)
 	case "misconfig":
 		detector := misconfig.New(e.client)
@@ -241,6 +241,17 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)
 	}
+}
+
+// idorOptions builds the idor.Option set every idor.Detector this Engine
+// constructs is given — both the flag-driven --detector idor path
+// (runDetector) and the template-driven idor-tagged-native-template path
+// (native.Executor.runIDOR, via New). Safe to include unconditionally:
+// idor.WithAuthHeader no-ops on empty strings, so an unset
+// AuthHeaderName/AuthHeaderFormat leaves idor.Detector's own default in
+// place.
+func (e *Engine) idorOptions() []idor.Option {
+	return []idor.Option{idor.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
 }
 
 func hostOf(target string) (string, error) {

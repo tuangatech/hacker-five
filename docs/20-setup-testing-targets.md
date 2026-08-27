@@ -13,7 +13,7 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 | **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
 | **Juice Shop** | `misconfig`; Nuclei-compatible templates | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
-| **vAPI** | `misconfig`; Nuclei-compatible templates | Stateless checks only for now — has a real BOLA (see its own section below) but uses a custom auth-header scheme `idor.Detector` doesn't support yet |
+| **vAPI** | `idor`, `misconfig`; Nuclei-compatible templates | Has a real BOLA (see its own section below), reachable via `idor.Detector`'s configurable auth-header scheme (`--auth-header-name`/`--auth-header-format`) |
 | WebGoat | *(none yet)* | Reserved for Phase 2 — per [03-development-roadmap.md](03-development-roadmap.md), its Week 13-14 (XSS) and Week 15-16 (SQL injection) deliverables don't name a specific test target the way Week 11-12's API-auth work names vAPI/crAPI; WebGoat's general multi-vulnerability lesson set (unlike the API-specific targets above) is the natural fit for those. Not referenced by any implemented detector yet |
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
@@ -206,11 +206,26 @@ cd vapi && docker-compose up -d
 - **phpMyAdmin** (exposed by vAPI's own compose file — a real, separate misconfiguration if scanned on its own): `http://localhost:8001`
 - No database-init step needed — the `db` container's init scripts run automatically on first start.
 
-### Real BOLA exists here too, but isn't tested by HackerFive yet
+### Real BOLA exists here too — now testable via `--detector idor`
 
-Reading vAPI's source confirms a real bug structurally identical to crAPI's: `API1UsersController::show($id)` calls `API1Users::find($id)` with no check that `$id` belongs to the authenticated user (`API5UsersController::show` is the *fixed* counterpart — it adds `->where('id', $id)`, worth comparing). But every vAPI endpoint authenticates via a custom `Authorization-Token: base64(username:password)` header (see `CustomHeaderAuth`), not `Authorization: Bearer <token>` — which `idor.Detector` doesn't support. So `--detector idor` can't test vAPI as-is; only `--detector misconfig` and Nuclei-compatible templates apply here for now (a configurable auth-header scheme is a real Future Enhancement candidate, see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)).
+Reading vAPI's source confirms a real bug structurally identical to crAPI's: `API1UsersController::show($id)` (`routes/api.php`: `GET api1/user/{id}`) calls `API1Users::find($id)` with no check that `$id` belongs to the authenticated user (`API5UsersController::show` is the *fixed* counterpart — it adds `->where('id', $id)`, worth comparing). Every vAPI endpoint authenticates via a custom `Authorization-Token: base64(username:password)` header, not `Authorization: Bearer <token>` — `idor.Detector` now supports this via a configurable auth-header scheme (Future Enhancement #6, see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)).
 
-### What HackerFive needs
+**Getting two account tokens:** unlike crAPI's `crapi_setup.sh`, there's no scripted signup for vAPI — sign up two real, unrelated accounts via vAPI's web UI (`http://localhost:8000`), then base64-encode each `username:password` pair yourself:
+```bash
+export VAPI_OWNER_TOKEN=$(printf '%s' 'owner@example.com:password1' | base64)
+export VAPI_OTHER_TOKEN=$(printf '%s' 'other@example.com:password2' | base64)
+```
+
+```bash
+cd ~/projects/hacker-five
+./hackerfive scan -t http://localhost:8000 --detector idor \
+  --endpoint '/api1/user/{{id}}' \
+  --auth-header-name 'Authorization-Token' --auth-header-format '{token}' \
+  --auth-token "$VAPI_OWNER_TOKEN" --other-auth-token "$VAPI_OTHER_TOKEN"
+```
+Not yet live-verified against a running vAPI instance from this project's Windows-side checkout (no Docker there) — run this (or `tests/integration/vapi_auth_test.go`'s `TestIDORAgainstVAPI`, gated behind `VAPI_BASE_URL`/`VAPI_OWNER_TOKEN`/`VAPI_OTHER_TOKEN`) from this native clone and update this note with the real result once confirmed.
+
+### What HackerFive needs (misconfig + templates)
 
 ```bash
 cd ~/projects/hacker-five
@@ -242,7 +257,7 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 | crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
 | DVWA | None | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 | Juice Shop | None | — | None — ready as soon as the container responds |
-| vAPI | None | — | None — `docker-compose.yml`'s DB init runs automatically |
+| vAPI | `VAPI_OWNER_TOKEN`, `VAPI_OTHER_TOKEN` for `--detector idor` (each `base64(username:password)`) — none for `--detector misconfig` | Sign up two accounts via vAPI's web UI, base64-encode each `username:password` yourself (no scripted signup like crAPI's) | None — `docker-compose.yml`'s DB init runs automatically |
 
 ## See also
 - [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under

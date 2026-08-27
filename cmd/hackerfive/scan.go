@@ -22,6 +22,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		endpointTemplate string
 		authToken        string
 		otherAuthToken   string
+		authHeaderName   string
+		authHeaderFormat string
 		insecure         bool
 	)
 
@@ -56,6 +58,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				Insecure:         insecure,
 				AuthToken:        authToken,
 				OtherAuthToken:   otherAuthToken,
+				AuthHeaderName:   authHeaderName,
+				AuthHeaderFormat: authHeaderFormat,
 			}
 			if err := cfg.Validate(); err != nil {
 				return err
@@ -89,6 +93,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")
 	cmd.Flags().StringVar(&otherAuthToken, "other-auth-token", "", "second account token for IDOR baseline mode (env: HACKERFIVE_OTHER_AUTH_TOKEN)")
+	cmd.Flags().StringVar(&authHeaderName, "auth-header-name", "", `HTTP header name for the IDOR auth token (default "Authorization")`)
+	cmd.Flags().StringVar(&authHeaderFormat, "auth-header-format", "", `header value template for the IDOR auth token, must contain "{token}" (default "Bearer {token}")`)
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification — lab targets only, never the default")
 
 	return cmd

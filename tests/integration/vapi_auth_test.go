@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/template/nuclei"
@@ -19,14 +21,8 @@ import (
 // against a live vAPI instance. Opt-in: skipped unless VAPI_BASE_URL is set
 // (see docs/20-setup-testing-targets.md's vAPI section for bringing it up).
 //
-// IDOR is deliberately NOT tested here, despite vAPI having a real BOLA
-// (API1UsersController::show — no check that the requested id belongs to
-// the authenticated user, confirmed by reading its source). Every vAPI
-// endpoint authenticates via a custom "Authorization-Token:
-// base64(user:pass)" header, not "Authorization: Bearer <token>", which
-// idor.Detector doesn't support — a real gap, recorded as a Future
-// Enhancement candidate (configurable auth-header scheme) in
-// docs/10-implementation-plan-ph1b.md rather than solved here.
+// IDOR is covered separately, by TestIDORAgainstVAPI below — see that test's
+// doc comment for the auth-header scheme this needed (Future Enhancement #6).
 func TestVAPI(t *testing.T) {
 	baseURL := os.Getenv("VAPI_BASE_URL")
 	if baseURL == "" {
@@ -93,4 +89,52 @@ func TestVAPI(t *testing.T) {
 		// most security headers by default).
 		require.NotEmpty(t, findingIDs, "expected at least one Nuclei-template finding against vAPI")
 	})
+}
+
+// TestIDORAgainstVAPI runs the real IDOR detector against a live vAPI
+// instance, exercising Future Enhancement #6 (configurable auth-header
+// scheme, docs/10-implementation-plan-ph1b.md). Reading vAPI's source
+// confirms a real bug structurally identical to crAPI's:
+// API1UsersController::show (routes/api.php: "GET api1/user/{id}") calls
+// API1Users::find($id) with no check that $id belongs to the authenticated
+// user (API5UsersController::show is the *fixed* counterpart — it adds
+// ->where('id', $id)). But every vAPI endpoint authenticates via a custom
+// "Authorization-Token: base64(username:password)" header, not
+// "Authorization: Bearer <token>" — idor.Detector.fetch hardcoded the latter
+// until WithAuthHeader made it configurable.
+//
+// Opt-in: skipped unless VAPI_BASE_URL, VAPI_OWNER_TOKEN, and
+// VAPI_OTHER_TOKEN are set. VAPI_*_TOKEN are each an already-computed
+// base64(username:password) value for one real vAPI account — e.g.
+// `printf '%s' 'owner@example.com:password' | base64` — not raw
+// credentials, matching every other *_TOKEN env var this project uses.
+// There's no known-safe scripted signup for vAPI accounts (unlike
+// tests/integration/scripts/crapi_setup.sh for crAPI), so both accounts must
+// be created manually via vAPI's web UI first.
+func TestIDORAgainstVAPI(t *testing.T) {
+	baseURL := os.Getenv("VAPI_BASE_URL")
+	ownerToken := os.Getenv("VAPI_OWNER_TOKEN")
+	otherToken := os.Getenv("VAPI_OTHER_TOKEN")
+	if baseURL == "" || ownerToken == "" || otherToken == "" {
+		t.Skip("set VAPI_BASE_URL, VAPI_OWNER_TOKEN, and VAPI_OTHER_TOKEN to run this test (each token is base64(username:password) for a real vAPI account)")
+	}
+
+	client := httpclient.New(httpclient.Config{
+		Timeout:             10 * time.Second,
+		MaxRedirects:        5,
+		MaxIdleConnsPerHost: 10,
+	}, httpclient.WithRetry(3, 500*time.Millisecond))
+
+	strategy := idor.SequentialIntStrategy{Start: 1, End: 20}
+	detector := idor.New(client, strategy, idor.WithAuthHeader("Authorization-Token", "{token}"))
+
+	endpointTemplate := baseURL + "/api1/user/{{id}}"
+	findings, err := detector.Run(context.Background(), endpointTemplate, ownerToken, otherToken)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, findings, "expected at least one IDOR finding against vAPI's api1/user/{id} BOLA")
+	for _, f := range findings {
+		assert.Equal(t, "idor", f.Type)
+		assert.Equal(t, "high", f.Confidence)
+	}
 }

@@ -3,6 +3,7 @@ package scanner
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,15 @@ type Config struct {
 
 	AuthToken      string // primary/"owner" account token — from --auth-token or HACKERFIVE_AUTH_TOKEN, never hardcoded
 	OtherAuthToken string // second, unrelated account token used for IDOR baseline comparison; optional, but required for high-confidence IDOR findings
+
+	// AuthHeaderName/AuthHeaderFormat override idor.Detector's default
+	// "Authorization: Bearer <token>" scheme — some real targets (e.g. vAPI,
+	// see docs/10-implementation-plan-ph1b.md's Future Enhancement #6) use a
+	// different header name and/or value shape. "" means "use
+	// idor.Detector's own default" for that half. AuthHeaderFormat, if
+	// non-empty, must contain the literal placeholder "{token}".
+	AuthHeaderName   string
+	AuthHeaderFormat string
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.
@@ -51,6 +61,9 @@ func (c Config) Validate() error {
 	}
 	if c.Detector == "idor" && c.EndpointTemplate == "" {
 		return fmt.Errorf("validating config: idor detector requires --endpoint")
+	}
+	if c.AuthHeaderFormat != "" && !strings.Contains(c.AuthHeaderFormat, "{token}") {
+		return fmt.Errorf("validating config: --auth-header-format must contain a {token} placeholder, got %q", c.AuthHeaderFormat)
 	}
 	if c.ProxyURL != "" {
 		if _, err := url.Parse(c.ProxyURL); err != nil {

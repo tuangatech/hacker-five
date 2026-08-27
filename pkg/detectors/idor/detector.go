@@ -11,11 +11,20 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/vars"
+)
+
+// DefaultAuthHeaderName/DefaultAuthHeaderFormat are the header name/value
+// shape used unless overridden via WithAuthHeader — plain Bearer-token auth,
+// what every target this project has tested against besides vAPI uses.
+const (
+	DefaultAuthHeaderName   = "Authorization"
+	DefaultAuthHeaderFormat = "Bearer {token}"
 )
 
 // Detector ties an ID enumeration Strategy and an HTTP client together to
@@ -28,15 +37,48 @@ type Detector struct {
 	// its consecutive-error threshold, instead of burning the rest of the ID
 	// range in retries against a target that's gone down mid-enumeration.
 	hostErrors *hosterrors.Cache
+
+	authHeaderName   string
+	authHeaderFormat string
+}
+
+// Option configures a Detector at construction time.
+type Option func(*Detector)
+
+// WithAuthHeader overrides the header name and/or value format fetch uses to
+// carry a candidate token — real targets don't all speak
+// "Authorization: Bearer <token>" (e.g. vAPI's
+// "Authorization-Token: base64(username:password)", see
+// docs/10-implementation-plan-ph1b.md's Future Enhancement #6). format must
+// contain the literal placeholder "{token}", replaced with the real token at
+// request time — not a fmt verb, so a malformed user-supplied format string
+// can't misinterpret its own token as a format directive. Either argument
+// left "" keeps that half at its default, so a caller overriding just the
+// name (or just the format) doesn't need to know the other's default value.
+func WithAuthHeader(name, format string) Option {
+	return func(d *Detector) {
+		if name != "" {
+			d.authHeaderName = name
+		}
+		if format != "" {
+			d.authHeaderFormat = format
+		}
+	}
 }
 
 // New constructs a Detector.
-func New(client *httpclient.Client, strategy Strategy) *Detector {
-	return &Detector{
-		client:     client,
-		strategy:   strategy,
-		hostErrors: hosterrors.New(hosterrors.DefaultThreshold),
+func New(client *httpclient.Client, strategy Strategy, opts ...Option) *Detector {
+	d := &Detector{
+		client:           client,
+		strategy:         strategy,
+		hostErrors:       hosterrors.New(hosterrors.DefaultThreshold),
+		authHeaderName:   DefaultAuthHeaderName,
+		authHeaderFormat: DefaultAuthHeaderFormat,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // idSample is one candidate ID's request/response outcome.
@@ -258,7 +300,7 @@ func (d *Detector) fetch(ctx context.Context, reqURL, token string) (Signature, 
 		return Signature{}, "", "", fmt.Errorf("building request: %w", err)
 	}
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set(d.authHeaderName, strings.Replace(d.authHeaderFormat, "{token}", token, 1))
 	}
 
 	resp, err := d.client.Do(req)

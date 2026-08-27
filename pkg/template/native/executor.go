@@ -18,12 +18,17 @@ import (
 
 // Executor runs one parsed native Template against one target.
 type Executor struct {
-	client *httpclient.Client
+	client   *httpclient.Client
+	idorOpts []idor.Option
 }
 
-// New constructs an Executor.
-func New(client *httpclient.Client) *Executor {
-	return &Executor{client: client}
+// New constructs an Executor. idorOpts is threaded through to every
+// idor.Detector this Executor builds for an idor-tagged template (see
+// runIDOR) — e.g. idor.WithAuthHeader, so a scan-wide non-Bearer auth scheme
+// applies to template-driven IDOR templates the same way it applies to the
+// flag-driven --detector idor path (see scanner.Engine).
+func New(client *httpclient.Client, idorOpts ...idor.Option) *Executor {
+	return &Executor{client: client, idorOpts: idorOpts}
 }
 
 // Run executes tmpl against target. idor-tagged templates route through the
@@ -54,7 +59,7 @@ func (e *Executor) runIDOR(ctx context.Context, target string, tmpl *Template, o
 		return nil, fmt.Errorf("native: template %s: %w", tmpl.ID, err)
 	}
 	strategy := idor.SequentialIntStrategy{Start: minID, End: maxID}
-	detector := idor.New(e.client, strategy)
+	detector := idor.New(e.client, strategy, e.idorOpts...)
 	return detector.Run(ctx, endpointTemplate, ownerToken, otherToken)
 }
 

@@ -79,6 +79,19 @@ func TestConfigValidate(t *testing.T) {
 			mutate:  func(c scanner.Config) scanner.Config { c.ProxyURL = "://not-a-url"; return c },
 			wantErr: "invalid --proxy URL",
 		},
+		{
+			name:    "auth header format missing token placeholder",
+			mutate:  func(c scanner.Config) scanner.Config { c.AuthHeaderFormat = "Token xyz"; return c },
+			wantErr: "--auth-header-format must contain a {token} placeholder",
+		},
+		{
+			name: "auth header format with placeholder is valid",
+			mutate: func(c scanner.Config) scanner.Config {
+				c.AuthHeaderName = "Authorization-Token"
+				c.AuthHeaderFormat = "{token}"
+				return c
+			},
+		},
 	}
 
 	for _, tc := range cases {
