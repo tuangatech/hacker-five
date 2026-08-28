@@ -15,7 +15,7 @@ import (
 // is and why it's included), not synthetic fixtures. LoadDir recurses, so
 // this picks up both the original four samples and the dvwa-php/ batch —
 // dvwa-php's own load/reject counts are asserted precisely by
-// TestNucleiDVWAPHPSamples_LoadRealUpstreamTemplates; this test only checks
+// TestNucleiDVWAPHPSamples_LoadTemplates; this test only checks
 // that the original four are still present and still well-formed among
 // whatever else the tree recurses into.
 func TestNucleiSamples_LoadRealUpstreamTemplates(t *testing.T) {

@@ -26,15 +26,22 @@ import (
 // missing-cookie-samesite-strict.yaml was added later (Future Enhancement
 // #3) — one of DVWA's real "4 findings, all genuine" from Step 2's full
 // synced-corpus run, previously missing from this curated set.
-func TestNucleiDVWAPHPSamples_LoadRealUpstreamTemplates(t *testing.T) {
+//
+// dvwa-xss-reflected.yaml/dvwa-sqli-error-based.yaml are first-party
+// HackerFive-authored (not upstream, unlike the rest of this directory) —
+// added 2026-08-28 targeting DVWA's actual known-vulnerable query params
+// (?name=, ?id=), closing the gap the generic xss/sqli samples (see
+// ../xss/, ../sqli/) can't reach on their own. Live-verified real result
+// documented in this directory's README.
+func TestNucleiDVWAPHPSamples_LoadTemplates(t *testing.T) {
 	templates, errs := nuclei.LoadDir("../../templates/nuclei-samples/dvwa-php")
 
 	require.Empty(t, errs)
 
-	require.Len(t, templates, 6)
+	require.Len(t, templates, 8)
 	var ids []string
 	for _, tmpl := range templates {
 		ids = append(ids, tmpl.ID)
 	}
-	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing", "missing-cookie-samesite-strict"}, ids)
+	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing", "missing-cookie-samesite-strict", "dvwa-xss-reflected", "dvwa-sqli-error-based"}, ids)
 }

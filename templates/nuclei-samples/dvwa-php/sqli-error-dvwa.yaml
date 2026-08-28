@@ -1,0 +1,28 @@
+id: dvwa-sqli-error-based
+
+info:
+  name: DVWA Error-based SQL Injection (id parameter)
+  author: hackerfive
+  severity: critical
+  description: |
+    DVWA's SQL Injection challenge (/vulnerabilities/sqli/) reflects a real
+    MariaDB syntax error for an injected "id" query parameter. Requires an
+    authenticated DVWA session (login + Security level: Low) — this
+    template carries no credential itself; supply the session cookie at
+    scan time via --header "Cookie: PHPSESSID=<value>; security=low". Live-
+    verified 2026-08-28 against a real DVWA instance, see this directory's
+    README.md.
+  classification:
+    cwe-id: CWE-89
+  tags: sqli,dvwa
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/vulnerabilities/sqli/?id=1%27&Submit=Submit"
+
+    matchers:
+      - type: regex
+        part: body
+        regex:
+          - "check the manual that (corresponds to|fits) your (MySQL|MariaDB) server version"

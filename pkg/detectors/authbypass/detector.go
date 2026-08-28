@@ -238,6 +238,33 @@ func (d *Detector) checkJWTWeakSecret(_ context.Context, target, _, ownerToken, 
 	return nil, nil
 }
 
+// probeBody pairs one encoding of the fixed rate-limit-probe credential pair
+// (rules.go's rateLimitProbeUsername/Password) with the Content-Type it
+// needs.
+type probeBody struct {
+	Body        string
+	ContentType string
+}
+
+// rateLimitProbeBodies returns the same probe credential pair encoded both
+// as a form body and as JSON — checkRateLimitSignal tries both shapes per
+// candidate login path during discovery. Real login endpoints commonly
+// require one or the other; a form-encoded body against a JSON-only API
+// (live-verified against crAPI's real /identity/api/auth/login, see
+// docs/11-implementation-plan-ph2.md Step 5) returns 415 Unsupported Media
+// Type, not a real invalid-credential rejection — without trying the JSON
+// shape too, that 415 would be misread as "reached the login endpoint" and
+// the resulting finding would describe a request the target's real login
+// logic never actually saw.
+func rateLimitProbeBodies() []probeBody {
+	form := url.Values{"username": {rateLimitProbeUsername}, "password": {rateLimitProbePassword}}.Encode()
+	jsonBody := fmt.Sprintf(`{"username":%q,"password":%q}`, rateLimitProbeUsername, rateLimitProbePassword)
+	return []probeBody{
+		{form, "application/x-www-form-urlencoded"},
+		{jsonBody, "application/json"},
+	}
+}
+
 // checkRateLimitSignal tries each LoginPaths entry until one responds, then
 // fires a fixed, capped number of requests (rateLimitProbeCount) using a
 // single, deliberately-invalid credential pair — never a real
@@ -245,18 +272,27 @@ func (d *Detector) checkJWTWeakSecret(_ context.Context, target, _, ownerToken, 
 // docs/11-implementation-plan-ph2.md Step 1. Flags when none of those
 // requests shows any throttling signal (429, or a Retry-After header).
 func (d *Detector) checkRateLimitSignal(ctx context.Context, target, host, _, _ string, _ []string) ([]detectors.Finding, error) {
-	var loginPath string
+	var loginPath, probeBody, probeContentType string
 	for _, candidate := range d.loginPaths {
-		form := url.Values{"username": {rateLimitProbeUsername}, "password": {rateLimitProbePassword}}.Encode()
-		_, resp, _, err := d.doRequestBody(ctx, http.MethodPost, target, host, candidate, "", form)
-		if err != nil {
-			continue
+		for _, pb := range rateLimitProbeBodies() {
+			_, resp, _, err := d.doRequestBody(ctx, http.MethodPost, target, host, candidate, "", pb.Body, pb.ContentType)
+			if err != nil {
+				continue
+			}
+			// 404: this path doesn't exist. 415: this path exists but
+			// rejects this body shape — try the other shape before giving
+			// up on the path entirely (see rateLimitProbeBodies' doc
+			// comment for why a form-encoded probe against a JSON-only API
+			// would otherwise be misread as "reached the login endpoint").
+			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnsupportedMediaType {
+				continue
+			}
+			loginPath, probeBody, probeContentType = candidate, pb.Body, pb.ContentType
+			break
 		}
-		if resp.StatusCode == http.StatusNotFound {
-			continue
+		if loginPath != "" {
+			break
 		}
-		loginPath = candidate
-		break
 	}
 	if loginPath == "" {
 		return nil, nil // no reachable login endpoint found — nothing to probe
@@ -267,8 +303,7 @@ func (d *Detector) checkRateLimitSignal(ctx context.Context, target, host, _, _ 
 	var lastResp *http.Response
 	var lastBody []byte
 	for i := 0; i < rateLimitProbeCount; i++ {
-		form := url.Values{"username": {rateLimitProbeUsername}, "password": {rateLimitProbePassword}}.Encode()
-		req, resp, body, err := d.doRequestBody(ctx, http.MethodPost, target, host, loginPath, "", form)
+		req, resp, body, err := d.doRequestBody(ctx, http.MethodPost, target, host, loginPath, "", probeBody, probeContentType)
 		if err != nil {
 			continue
 		}
@@ -403,16 +438,18 @@ func (d *Detector) checkBrokenSession(ctx context.Context, target, host, ownerTo
 // doRequest fires one bodyless request and records the outcome against
 // hostErrors. Mirrors misconfig.Detector.doRequest's shape.
 func (d *Detector) doRequest(ctx context.Context, method, target, host, path, token string) (*http.Request, *http.Response, []byte, error) {
-	return d.doRequestBody(ctx, method, target, host, path, token, "")
+	return d.doRequestBody(ctx, method, target, host, path, token, "", "")
 }
 
-// doRequestBody is doRequest's form-body variant, used by the rate-limit and
-// broken-session checks.
-func (d *Detector) doRequestBody(ctx context.Context, method, target, host, path, token, formBody string) (*http.Request, *http.Response, []byte, error) {
+// doRequestBody is doRequest's body-carrying variant, used by the rate-limit
+// and broken-session checks. contentType is only set as a header when body
+// is non-empty; ignored otherwise. Callers with a fixed body shape (like
+// checkBrokenSession's bodyless logout) can pass "", "".
+func (d *Detector) doRequestBody(ctx context.Context, method, target, host, path, token, reqBody, contentType string) (*http.Request, *http.Response, []byte, error) {
 	fullURL := target + path
 	var bodyReader io.Reader
-	if formBody != "" {
-		bodyReader = strings.NewReader(formBody)
+	if reqBody != "" {
+		bodyReader = strings.NewReader(reqBody)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
 	if err != nil {
@@ -421,8 +458,8 @@ func (d *Detector) doRequestBody(ctx context.Context, method, target, host, path
 	if token != "" {
 		req.Header.Set(d.authHeaderName, strings.Replace(d.authHeaderFormat, "{token}", token, 1))
 	}
-	if formBody != "" {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if reqBody != "" && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 
 	resp, err := d.client.Do(req)

@@ -107,7 +107,7 @@ Real, live-verified result (2026-08-28): **2 critical findings**, both `alg: non
   --protected-paths '/identity/api/v2/user/dashboard' \
   --login-paths '/identity/api/auth/login'
 ```
-Real result (2026-08-28): `checkRateLimitSignal` now correctly reaches `/identity/api/auth/login` (`authbypass-no-rate-limit-identity-api-auth-login`) instead of a nonexistent `/login`. One further caveat this surfaced: crAPI's real login expects a JSON body, but the check's probe is fixed form-encoded, so the real response is `415 Unsupported Media Type`, not a genuine invalid-credential rejection — the path is now correct, the probe's request shape still isn't a fully faithful test against a JSON-only API (tracked in [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Step 5).
+Real result (2026-08-28): `checkRateLimitSignal` now correctly reaches `/identity/api/auth/login` (`authbypass-no-rate-limit-identity-api-auth-login`) instead of a nonexistent `/login`. **Also fixed**: the check now tries both a form-encoded and a JSON body per candidate path (crAPI's real login is JSON-only and returned `415 Unsupported Media Type` for the old fixed form-encoded probe) — the real response is now a genuine `400` from crAPI's own schema validation, not a content-type rejection. Residual, accepted gap: the probe's field name is the generic `username`, not crAPI's real `email`, so it's testing throttle-by-request-volume against a validation-error path rather than a literal wrong-password rejection — matching every target's exact JSON schema is out of scope for a generic bounded probe (see [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Step 5).
 
 ### Teardown / reset
 
@@ -158,13 +158,15 @@ No tokens, no `--endpoint` — misconfig runs its full built-in rule table again
 ./hackerfive scan -t http://localhost --detector misconfig --tags xss,sqli
 ```
 Live-verified (2026-08-28): **0 findings**, but not because DVWA lacks these bugs — its `/vulnerabilities/xss_r/?name=` and `/vulnerabilities/sqli/?id=` pages are real, confirmed live via direct `curl` with a manually-obtained session cookie (`security=low`): the SQLi page returns a genuine MariaDB syntax error for a `'` payload, and the XSS page reflects `"><injectable>` completely unescaped. Manually confirmed HackerFive's own matcher/DSL engine correctly flags both (via a throwaway, uncommitted template using the same session cookie) — **the detection logic is proven sound**. Two structural gaps block automated coverage of DVWA specifically, both true of Juice Shop too (see below) and tracked as follow-up work in [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Step 5:
-1. `xss-uri-reflected.yaml`/`error-based-sql-injection.yaml` (the curated upstream generic templates) probe path-appended payloads (`{{BaseURL}}/'`), not named query params (`?id=`, `?name=`) — a different technique than DVWA's actual bug shape. **Still true** — writing real DVWA-specific templates targeting `?id=`/`?name=` hasn't been done yet.
-2. ~~Even a template written against the right params can't reach DVWA's vulnerable pages at all: they're gated behind a `PHPSESSID` login session, and nuclei-format templates have no mechanism to carry any CLI-supplied credential/cookie into a request.~~ **Fixed and live-verified (2026-08-28)**: `--header 'Name: Value'` (repeatable) now applies a static header to every template-driven request. Proven against a real, freshly-obtained DVWA session, cookie supplied purely via the CLI flag (never baked into the template):
+1. ~~`xss-uri-reflected.yaml`/`error-based-sql-injection.yaml` (the curated upstream generic templates) probe path-appended payloads (`{{BaseURL}}/'`), not named query params (`?id=`, `?name=`) — a different technique than DVWA's actual bug shape.~~ **Fixed (2026-08-28)**: `templates/nuclei-samples/dvwa-php/{xss-reflected-dvwa,sqli-error-dvwa}.yaml` target the real params directly — see below.
+2. ~~Even a template written against the right params can't reach DVWA's vulnerable pages at all: they're gated behind a `PHPSESSID` login session, and nuclei-format templates have no mechanism to carry any CLI-supplied credential/cookie into a request.~~ **Fixed (2026-08-28)**: `--header 'Name: Value'` (repeatable) now applies a static header to every template-driven request.
+
+**Both gaps closed — real DVWA-specific templates, live-verified:**
 ```bash
-./hackerfive scan -t http://localhost --detector misconfig --templates /path/to/a-real-param-shaped-template \
+./hackerfive scan -t http://localhost --detector misconfig --tags xss,sqli \
   --header "Cookie: PHPSESSID=<real session id>; security=low"
 ```
-This closes gap 2 — gap 1 (writing the actual DVWA/Juice-Shop-specific templates that use it) is the remaining work before the ≥20/≥10 XSS/SQLi metrics can be re-measured for real.
+Real result (2026-08-28): **1 XSS finding + 1 SQLi finding**, via the two first-party templates in `templates/nuclei-samples/dvwa-php/` (see that directory's README for detail). Neither doc03's ≥20 XSS nor ≥10 SQLi target is met yet — what's proven now is the technique works end-to-end against a real target; reaching the full metric would mean covering more of DVWA's pages/params, not a new mechanism.
 
 ### Teardown / reset
 

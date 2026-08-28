@@ -16,3 +16,21 @@ Fetched 2026-08-24. Four of five are from the curated `http/technologies`/`http/
 | `missing-cookie-samesite-strict.yaml` | ✅ 1 finding | Added 2026-08-27 (Future Enhancement #3) — was already one of the "4 findings, all genuine" from Step 2's full synced-corpus run against DVWA (see docs/10-implementation-plan-ph1b.md), but hadn't been copied into this curated set until now. DVWA's session cookie lacks `SameSite=Strict` |
 
 This run is real evidence the parser, matcher/extractor engine, and executor all work correctly end-to-end against a live target — four genuine, specific findings and one correctly-empty result from the original run. All six of this batch's templates now load cleanly — see `tests/unit/nuclei_dvwa_php_samples_test.go`.
+
+## First-party templates: DVWA-specific XSS/SQLi (2026-08-28)
+
+Unlike the six templates above (real, unmodified upstream), `xss-reflected-dvwa.yaml` and `sqli-error-dvwa.yaml` are **first-party, HackerFive-authored** — written to close a real gap [../xss/](../xss/) and [../sqli/](../sqli/)'s generic upstream templates left open (see those directories' READMEs and [docs/11-implementation-plan-ph2.md](../../../docs/11-implementation-plan-ph2.md) Step 5): the generic templates probe path-appended payloads, but DVWA's actual bugs are in named query params (`?name=`, `?id=`), gated behind a session cookie neither template engine could carry until `--header` was added.
+
+Both target DVWA's real, known-vulnerable endpoints directly and carry **no credential of their own** — the session cookie is supplied at scan time via `--header`, the same way `--auth-token` supplies IDOR/authbypass's credentials.
+
+| File | What it checks | Live result (2026-08-28) |
+|---|---|---|
+| `xss-reflected-dvwa.yaml` | `/vulnerabilities/xss_r/?name=` reflects `"><injectable>` unescaped | ✅ 1 finding |
+| `sqli-error-dvwa.yaml` | `/vulnerabilities/sqli/?id=` returns a real MariaDB syntax error for a `'` payload | ✅ 1 finding |
+
+```bash
+# Obtain a session cookie first (see docs/20-setup-testing-targets.md's DVWA section:
+# log in as admin/password, set Security level to Low), then:
+./hackerfive scan -t http://localhost --detector misconfig --tags xss,sqli \
+  --header "Cookie: PHPSESSID=<value>; security=low"
+```

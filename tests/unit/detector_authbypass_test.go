@@ -158,10 +158,11 @@ func TestAuthBypassJWTAlgNone_NoFinding(t *testing.T) {
 // docs/follow-up.md requires: the weak-secret check must never send the
 // candidate secrets to the server. Proven black-box here by counting total
 // requests the mock server receives — with empty protectedPaths and no
-// otherToken, only checkRateLimitSignal's login-path discovery loop (one
-// request per authbypass.LoginPaths entry, all 404) can generate traffic;
-// if the weak-secret check made even one network call, the count would be
-// higher than len(authbypass.LoginPaths).
+// otherToken, only checkRateLimitSignal's login-path discovery loop can
+// generate traffic: two requests (form-encoded, then JSON — see
+// rateLimitProbeBodies) per authbypass.LoginPaths entry, all 404. If the
+// weak-secret check made even one network call, the count would be higher
+// than 2*len(authbypass.LoginPaths).
 func TestAuthBypassJWTWeakSecret_Hit(t *testing.T) {
 	owner := signedJWT(t, "secret") // "secret" is in authbypass.WeakJWTSecrets
 
@@ -180,7 +181,7 @@ func TestAuthBypassJWTWeakSecret_Hit(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "critical", got[0].Severity)
 
-	assert.Equal(t, int64(len(authbypass.LoginPaths)), atomic.LoadInt64(&requestCount),
+	assert.Equal(t, int64(2*len(authbypass.LoginPaths)), atomic.LoadInt64(&requestCount),
 		"weak-secret check must make zero network requests — any extra request beyond the login-path discovery loop means it leaked onto the wire")
 }
 
@@ -222,6 +223,39 @@ func TestAuthBypassRateLimitSignal_NoThrottling_Hit(t *testing.T) {
 	// One discovery request + the fixed probe count, never more.
 	wantMax := int64(11)
 	assert.LessOrEqual(t, atomic.LoadInt64(&loginRequests), wantMax)
+}
+
+// TestAuthBypassRateLimitSignal_JSONOnlyLogin_FallsBackToJSON proves the
+// crAPI-shaped gap docs/11-implementation-plan-ph2.md Step 5 found live:
+// a login endpoint that only accepts JSON (rejects form-encoded with 415)
+// must still be correctly discovered and probed, not misread via a 415
+// response as either "not found" or "found but never throttled".
+func TestAuthBypassRateLimitSignal_JSONOnlyLogin_FallsBackToJSON(t *testing.T) {
+	var formAttempts, jsonAttempts int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/login" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Content-Type") == "application/json" {
+			atomic.AddInt64(&jsonAttempts, 1)
+			w.WriteHeader(http.StatusUnauthorized) // "invalid credentials", never throttled
+			return
+		}
+		atomic.AddInt64(&formAttempts, 1)
+		w.WriteHeader(http.StatusUnsupportedMediaType) // rejects form-encoded outright
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", "", nil)
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "authbypass-no-rate-limit-")
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Evidence["request"], "application/json")
+	assert.Greater(t, atomic.LoadInt64(&formAttempts), int64(0), "form-encoded shape should have been tried and correctly rejected first")
+	assert.Greater(t, atomic.LoadInt64(&jsonAttempts), int64(1), "JSON shape should have been used for the actual probe loop, not just discovery")
 }
 
 func TestAuthBypassRateLimitSignal_Throttled_NoFinding(t *testing.T) {

@@ -1,0 +1,38 @@
+id: dvwa-xss-reflected
+
+info:
+  name: DVWA Reflected XSS (name parameter)
+  author: hackerfive
+  severity: low
+  description: |
+    DVWA's Reflected XSS challenge (/vulnerabilities/xss_r/) echoes the
+    "name" query parameter back into the page without escaping. Requires an
+    authenticated DVWA session (login + Security level: Low) — this
+    template carries no credential itself; supply the session cookie at
+    scan time via --header "Cookie: PHPSESSID=<value>; security=low". Live-
+    verified 2026-08-28 against a real DVWA instance, see this directory's
+    README.md.
+  classification:
+    cwe-id: CWE-79
+  tags: xss,dvwa
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/vulnerabilities/xss_r/?name=%22%3E%3Cinjectable%3E"
+
+    matchers-condition: and
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "\"><injectable>"
+
+      - type: word
+        part: content_type
+        words:
+          - "text/html"
+
+      - type: status
+        status:
+          - 200
