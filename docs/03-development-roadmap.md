@@ -387,5 +387,6 @@ Community growth (contributors, stars, template submissions, bounty income) is a
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for Phase 1a (Weeks 1-4)
 - [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — file-by-file build plan for Phase 1b (Weeks 5-10)
 - [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) — file-by-file build plan for Phase 2 (Weeks 11-18)
+- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — file-by-file build plan for Phase 3 (Weeks 19-26)
 - [14-web-ui-and-template-sync.md](14-web-ui-and-template-sync.md) — design doc behind Phase 4's Web UI + template-sync work
 - [22-authorized-targets.md](22-authorized-targets.md) — the vetted real-target registry Milestone 5's real-world validation draws from
