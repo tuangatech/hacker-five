@@ -38,15 +38,23 @@ import (
 // DVWA's stored-XSS challenge (/vulnerabilities/xss_s/), a single POST
 // that both stores and immediately reflects the payload in the same
 // response, so no separate reload step is needed.
+//
+// dvwa-sqli-blind-boolean.yaml, also first-party, added the same day —
+// DVWA's blind-SQLi challenge (/vulnerabilities/sqli_blind/), a
+// raw:-based two-request boolean differential (tautology vs
+// contradiction), correlated via body_1/body_2/status_code_1/
+// status_code_2 DSL variables. Exercised the raw:-request path of the
+// --header fix (WithHeaders previously only applied to path:-based
+// requests, see pkg/template/nuclei/executor.go's tryRawIteration).
 func TestNucleiDVWAPHPSamples_LoadTemplates(t *testing.T) {
 	templates, errs := nuclei.LoadDir("../../templates/nuclei-samples/dvwa-php")
 
 	require.Empty(t, errs)
 
-	require.Len(t, templates, 9)
+	require.Len(t, templates, 10)
 	var ids []string
 	for _, tmpl := range templates {
 		ids = append(ids, tmpl.ID)
 	}
-	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing", "missing-cookie-samesite-strict", "dvwa-xss-reflected", "dvwa-sqli-error-based", "dvwa-xss-stored"}, ids)
+	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing", "missing-cookie-samesite-strict", "dvwa-xss-reflected", "dvwa-sqli-error-based", "dvwa-xss-stored", "dvwa-sqli-blind-boolean"}, ids)
 }

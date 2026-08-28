@@ -1,0 +1,40 @@
+id: dvwa-sqli-blind-boolean
+
+info:
+  name: DVWA Blind SQL Injection (boolean-based, id parameter)
+  author: hackerfive
+  severity: high
+  description: |
+    DVWA's Blind SQL Injection challenge (/vulnerabilities/sqli_blind/) is
+    vulnerable to a classic boolean-based differential: injecting a
+    tautology (`' AND '1'='1`) into the "id" parameter returns "User ID
+    exists in the database.", while a contradiction (`' AND '1'='2`)
+    returns "User ID is MISSING from the database." with a real HTTP 404
+    status (DVWA's own app-level "not found" signal, not a routing
+    artifact — confirmed live: the "MISSING" body renders normally, just
+    under a 404 status) — no timing needed, the two responses for the same
+    underlying row are simply different in both body and status.
+    Fires both requests via raw:, correlating their bodies through the
+    body_1/body_2 DSL variables (see docs/10-implementation-plan-ph1b.md's
+    raw:/payloads: note). Requires an authenticated DVWA session
+    (login + Security level: Low) — this template carries no credential
+    itself; supply the session cookie at scan time via --header
+    "Cookie: PHPSESSID=<value>; security=low". Live-verified 2026-08-28
+    against a real DVWA instance, see this directory's README.md.
+  classification:
+    cwe-id: CWE-89
+  tags: sqli,dvwa
+
+http:
+  - raw:
+      - |
+        GET /vulnerabilities/sqli_blind/?id=1%27+AND+%271%27%3D%271&Submit=Submit HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /vulnerabilities/sqli_blind/?id=1%27+AND+%271%27%3D%272&Submit=Submit HTTP/1.1
+        Host: {{Hostname}}
+
+    matchers:
+      - type: dsl
+        dsl:
+          - 'status_code_1 == 200 && contains(body_1, "exists in the database") && status_code_2 == 404 && contains(body_2, "MISSING from the database")'

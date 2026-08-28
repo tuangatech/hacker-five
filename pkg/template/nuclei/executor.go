@@ -411,6 +411,14 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 		if err != nil {
 			return detectors.Finding{}, false, false, nil
 		}
+		// Same baseline-not-override semantics as tryPath: a raw: entry's own
+		// header line (already parsed into httpReq.Header by buildRawRequest)
+		// wins over --header on a literal name conflict.
+		for k, v := range e.extraHeaders {
+			if httpReq.Header.Get(k) == "" {
+				httpReq.Header.Set(k, v)
+			}
+		}
 		resp, err := e.client.Do(httpReq)
 		if err != nil {
 			return detectors.Finding{}, false, false, nil

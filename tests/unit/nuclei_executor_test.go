@@ -262,6 +262,86 @@ func TestExecutorRun_WithHeaders_TemplateHeaderWins(t *testing.T) {
 	assert.Equal(t, "template-value", gotCookie)
 }
 
+// TestExecutorRun_WithHeaders_AppliedToRawRequest is the raw:-based
+// counterpart to TestExecutorRun_WithHeaders_AppliedToRequest — WithHeaders
+// was only wired into tryPath's request builder, not tryRaw's, so any
+// raw:-based template (needed for e.g. boolean-based blind SQLi's
+// two-request differential, which path:'s try-each-until-match shape can't
+// express) silently couldn't carry a session cookie via --header at all.
+// The server here only serves the vulnerable-looking content when it sees
+// the cookie, so a finding can only come from WithHeaders' value actually
+// reaching the raw: request.
+func TestExecutorRun_WithHeaders_AppliedToRawRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "PHPSESSID=abc123; security=low" {
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("User ID exists in the database."))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "raw-header.yaml", `
+id: raw-header-style
+info:
+  name: Raw header style
+  severity: medium
+http:
+  - raw:
+      - |
+        GET /vulnerabilities/sqli_blind/?id=1 HTTP/1.1
+        Host: {{Hostname}}
+    matchers:
+      - type: word
+        words:
+          - "exists in the database"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	exec := nuclei.New(newExecutorClient()).WithHeaders(map[string]string{"Cookie": "PHPSESSID=abc123; security=low"})
+	findings, err := exec.Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "WithHeaders' Cookie must have reached the raw: request for the session-gated content to be visible at all")
+}
+
+// TestExecutorRun_WithHeaders_RawTemplateHeaderWins proves the raw: path
+// follows the same "baseline, not an override" contract as tryPath: a
+// header line the raw: text itself sets wins over WithHeaders' baseline on
+// a literal name conflict.
+func TestExecutorRun_WithHeaders_RawTemplateHeaderWins(t *testing.T) {
+	var gotCookie string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "raw-header-override.yaml", `
+id: raw-header-override-style
+info:
+  name: Raw header override style
+  severity: info
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        Cookie: template-value
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	exec := nuclei.New(newExecutorClient()).WithHeaders(map[string]string{"Cookie": "cli-baseline-value"})
+	_, err := exec.Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	assert.Equal(t, "template-value", gotCookie)
+}
+
 func TestExecutorRun_MultiPathStopsAtFirstMatch(t *testing.T) {
 	var hits []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
