@@ -156,7 +156,6 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] Detects 8+ IDOR issues in crAPI (100% accuracy)
 - [ ] Detects 15+ misconfiguration issues in DVWA (<5% false positives)
 - [ ] Scans 100 targets in <2 minutes
-- [ ] GitHub repo with 50+ stars
 - [ ] Documentation complete and clear
 
 ---
@@ -165,7 +164,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Add stateful detection (authentication, session management) and improve coverage of common web vulnerabilities.
 
-**Note on GitHub Action:** once the CLI output schema is stable (post v0.1.0), build `hackerfive/scan-action` as a thin wrapper around the existing Docker image. Treated as a parallel/stretch item, not a blocking Phase 2 deliverable.
+**Note on GitHub Action:** once the CLI output schema is stable (post v0.1.0), build `hackerfive/scan-action` as a thin wrapper around the existing Docker image. Treated as a parallel/stretch item, not a blocking Phase 2 deliverable. **Status: not started** — no `scan-action` repository exists yet; still open, and not a blocker for Phase 2, 3, or 4 work.
 
 #### Week 11-12: API Auth Bypass Detector
 - [ ] Implement JWT testing:
@@ -217,8 +216,6 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] Detects 10+ API auth issues
 - [ ] Detects 20+ XSS issues across test targets
 - [ ] Detects 10+ SQL injection issues
-- [ ] GitHub repo with 200+ stars
-- [ ] Published in awesome-security lists
 
 ---
 
@@ -258,25 +255,63 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] Finding deduplication across targets
 - [ ] Integration with HackerOne API (report submission automation)
 - [ ] Markdown/HTML/HackerOne-JSON-schema `Exporter` implementations (doc 02 §5) — deferred here from Phase 1b's v0.1.0 (see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 5); built together with the HackerOne API integration since it's the first point three concrete output formats are actually needed at once
-- [ ] Dashboard/web UI (optional, nice-to-have)
 
 **Note on HackerOne API integration:** treat this as report-drafting assistance, not unattended submission. It needs its own auth handling (API token or OAuth2, depending on endpoint), is subject to H1's per-endpoint rate limits, and requires a hand-authored mapping from `Finding` fields to H1's report schema (title, severity/CVSS, weakness/CWE) — none of which is a quick wrapper around the API. The exporters above feed that mapping directly, and should apply the same default-redact-sensitive-evidence policy `follow-up.md` calls for on HTML/Markdown output.
 
-#### Week 26: Release & Community Building
-- [ ] Release v1.0.0 with all Phase 3 features
+#### Week 26: Release
+- [ ] Release **v0.3.0** with all Phase 3 features (not v1.0.0 — see [Versioning note](#versioning-note) below: v1.0.0 is gated on real-world validation, not a fixed week)
 - [ ] Write blog posts on Prompt Injection detection
-- [ ] Launch community template repository
-- [ ] Evaluate template signing now that third-party submissions are actually accepted (see "Future Considerations" in [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — premature before this point)
-- [ ] Organize first community contribution
 
 **Phase 3 Success Metrics:**
-- [ ] 500+ GitHub stars
-- [ ] 50+ community-contributed templates
-- [ ] First bug bounties reported using the tool
-- [ ] Featured in HackerOne tool ecosystem (if applicable)
-- [ ] 100+ active users
+- [ ] Prompt injection detector working against test LLM labs
+- [ ] SSRF detector working (blind SSRF via callback service)
+- [ ] 10+ business logic templates delivered
 
 ---
+
+### Phase 4: Web UI & Upgradeable Templates (Weeks 27-32) — v0.4.0
+
+**Goal:** Ship the local-only web UI and fix template-sync's biggest usability gap (synced templates lost on every binary upgrade) — the last usability work before Phase 5's real-world validation gate. Full design in [14-web-ui-and-template-sync.md](14-web-ui-and-template-sync.md); this section is the roadmap-level schedule, not a re-derivation of the design.
+
+#### Week 27: Template Sync CLI + Engine Streaming Hooks
+- [ ] `pkg/templatesync`: Go port of `scripts/sync-nuclei-templates.sh`, writing into a persistent OS user-config directory (`os.UserConfigDir()`) instead of inside the release folder — matches upstream Nuclei's own `~/.config/nuclei-templates` convention (see doc14's "Template sync command")
+- [ ] `hackerfive templates sync` / `templates list` subcommands — cross-platform, no WSL/bash dependency (fixes the Windows gap the current shell script has)
+- [ ] `--templates` flag becomes repeatable, defaulting to both `./templates/` (bundled) and the persistent synced directory
+- [ ] `scanner.Engine` gains optional `WithFindingCallback`/`WithLogCallback` hooks — additive, CLI batch behavior unchanged (see doc14's "Live findings and logs: a real engine gap")
+
+**Deliverable:** template sync runs natively on Windows/macOS/Linux; synced templates survive a binary upgrade with zero manual copying
+
+#### Week 28-30: Local Web Server (`pkg/webui`)
+- [ ] `hackerfive serve` subcommand (`--port`, `--host`, loopback-only by default)
+- [ ] `pkg/webui` core: `http.Server`, routing, CSRF middleware, `go:embed`-ed templates/static assets (htmx + htmx SSE extension, vendored)
+- [ ] New Scan page + async job model (in-memory job store) + SSE-based live progress/findings/logs
+- [ ] Scan Status/Results page
+
+**Deliverable:** `hackerfive serve` opens a browser, runs a scan against a target, and shows findings and warnings/errors live as they're detected — not just a final batch
+
+#### Week 31: Templates Page + Dashboard/History
+- [ ] Templates page: active-template table (bundled vs. synced) + sync panel (pinned commit, category counts, "Sync now")
+- [ ] Dashboard + Scan History pages
+
+**Deliverable:** full 5-page UI (Dashboard, New Scan, Scan Status, Scan History, Templates) working end-to-end
+
+#### Week 32: Hardening & Release
+- [ ] CSRF protection verified; loopback-bind-by-default verified; token-required-on-non-loopback-bind implemented
+- [ ] Manual cross-platform verification (Windows/macOS/Linux): download release, `hackerfive serve`, sync templates, replace with a new release build, confirm templates still listed with no copying
+- [ ] README/docs updated with a Web UI quick-start
+- [ ] Release v0.4.0
+
+**Phase 4 Success Metrics (v0.4.0 release):**
+- [ ] `hackerfive serve` runs on all three released platforms with no separate install step
+- [ ] Live findings and logs stream during a scan (verified by hand against a lab target)
+- [ ] Synced templates confirmed to persist across a binary upgrade (sync → swap binary → templates still listed, no manual file copy)
+- [ ] doc14 reconciled with the actual implementation — any deviations documented there, not left silently stale
+
+---
+
+## Versioning note
+
+`v0.1.0` → `v0.2.0` → `v0.3.0` → `v0.4.0` track feature phases (1 through 4) in order. **`v1.0.0` is deliberately not tied to a phase or a week** — it marks real-world trust, not feature completeness, and is gated on actually using the tool against real, authorized targets and finding real issues with it, not on shipping a checklist of detectors. See [Milestone 5](#milestone-5-v100--real-world-validation-no-fixed-week) below. This mirrors doc05's "Tool Maturity" prerequisites (which already gate HackerOne program eligibility on validated false-positive rate and documentation, not a version number) and is consistent with how mature scanners in this space (e.g. Nuclei) treat 1.0 as a stability/trust signal rather than a feature-count milestone.
 
 ## Timeline & Milestones
 
@@ -284,12 +319,14 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 Kept as a table rather than a hand-drawn Gantt chart — a table only needs one cell changed when a phase's weeks shift, instead of recounting characters across an ASCII diagram (a repeated source of drift in earlier revisions of this doc).
 
-| Phase | Weeks | Duration | Focus |
-|---|---|---|---|
-| 1a | 1-4 | 4 wks | Core engine + IDOR MVP |
-| 1b | 5-10 | 6 wks | Misconfiguration + template engines (Nuclei-compatible + native) + validation + packaging |
-| 2 | 11-18 | 8 wks | Auth bypass, XSS, SQLi, information disclosure |
-| 3 | 19-26 | 8 wks | Prompt injection, SSRF, business logic |
+| Phase | Weeks | Duration | Focus | Ships as |
+|---|---|---|---|---|
+| 1a | 1-4 | 4 wks | Core engine + IDOR MVP | (internal checkpoint) |
+| 1b | 5-10 | 6 wks | Misconfiguration + template engines (Nuclei-compatible + native) + validation + packaging | v0.1.0 |
+| 2 | 11-18 | 8 wks | Auth bypass, XSS, SQLi, information disclosure | v0.2.0 |
+| 3 | 19-26 | 8 wks | Prompt injection, SSRF, business logic | v0.3.0 |
+| 4 | 27-32 | 6 wks | Web UI + upgradeable template sync | v0.4.0 |
+| — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 |
 
 **Parallel tracks** (start weeks are approximate targets, not hard dependencies):
 
@@ -297,46 +334,51 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 |---|---|---|
 | HackerOne profile/program setup | ~Week 15 | Runs alongside late Phase 2 |
 | Active bug bounty hunting | ~Week 19 | Ongoing once v0.2.0 ships |
-| GitHub Action (`scan-action`) | ~Week 11 | Post-v0.1.0, once the CLI output schema is stable |
+| GitHub Action (`scan-action`) | ~Week 11 | Post-v0.1.0, once the CLI output schema is stable. **Not started as of this doc's last update** — no blocker on Phases 2-4, pick up whenever there's spare time |
 
 ### Milestone Checklist
+
+Trimmed to things the project actually controls (built/shipped/verified). Removed external-validation numbers this team can't directly move (star counts, contributor counts, "featured in" mentions, press coverage) — those are outcomes to hope for, not deliverables to plan around.
 
 #### **Internal Checkpoint: Phase 1a (Week 4)**
 - [ ] IDOR-only scanner working end-to-end (see Phase 1a Success Metrics above)
 - [ ] Not a public release — this is the internal go/no-go before starting Phase 1b
 
-#### **Milestone 1: MVP Release (Week 10)**
+#### **Milestone 1: MVP Release (Week 10) — v0.1.0**
 - [ ] v0.1.0 released on GitHub
 - [ ] IDOR detector working (crAPI: 8+ findings)
 - [ ] Misconfiguration detector working (DVWA: 15+ findings)
 - [ ] Documentation complete
-- [ ] 50+ GitHub stars
 
-#### **Milestone 2: Expanded Coverage (Week 18)**
+#### **Milestone 2: Expanded Coverage (Week 18) — v0.2.0**
 - [ ] v0.2.0 released
 - [ ] API auth detector added
 - [ ] XSS detector added
 - [ ] SQLi detector added
 - [ ] 100+ templates in repository
-- [ ] 200+ GitHub stars
 - [ ] HackerOne profile set up, first programs joined
 
-#### **Milestone 3: Specialization (Week 26)**
-- [ ] v1.0.0 released (stable API)
+#### **Milestone 3: Specialization (Week 26) — v0.3.0**
+- [ ] v0.3.0 released
 - [ ] Prompt injection detector added
 - [ ] SSRF detector added
 - [ ] Business logic templates added
-- [ ] 500+ GitHub stars
-- [ ] First bounties earned ($500+)
-- [ ] Featured in security tool lists
 
-#### **Milestone 4: Community (Month 6+)**
-- [ ] 50+ community contributors
-- [ ] 1000+ GitHub stars
-- [ ] $1000+ monthly bounties
-- [ ] Published CVEs using the tool
-- [ ] Speaking engagement or blog post
-- [ ] Sustainable contributor base
+#### **Milestone 4: Web UI & Upgradeable Templates (Week 32) — v0.4.0**
+- [ ] v0.4.0 released
+- [ ] `hackerfive serve` working end-to-end on Linux/macOS/Windows releases
+- [ ] Live findings/logs streaming during a scan
+- [ ] Template sync survives a binary upgrade with no manual file copying
+- [ ] `hackerfive templates sync`/`list` working natively on Windows (no WSL/bash required)
+
+#### **Milestone 5: v1.0.0 — Real-World Validation (no fixed week)**
+Gated on actual usage, not a calendar date — see [Versioning note](#versioning-note):
+- [ ] HackerFive run against at least one real, authorized target from [22-authorized-targets.md](22-authorized-targets.md) (not a lab container)
+- [ ] At least 3 genuine, previously-unknown findings confirmed against real authorized targets — leads triaged and reported, not lab-only results
+- [ ] False-positive rate holds under the <5% target in practice against real targets, not just the lab benchmark suite
+- [ ] v1.0.0 released once the above hold
+
+Community growth (contributors, stars, template submissions, bounty income) is a hoped-for outcome of shipping a genuinely useful tool — not something tracked as a dated milestone here, since none of it is directly controllable by the maintainer's own effort.
 
 ## See also
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — vulnerability classes referenced above
@@ -345,3 +387,5 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for Phase 1a (Weeks 1-4)
 - [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — file-by-file build plan for Phase 1b (Weeks 5-10)
 - [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) — file-by-file build plan for Phase 2 (Weeks 11-18)
+- [14-web-ui-and-template-sync.md](14-web-ui-and-template-sync.md) — design doc behind Phase 4's Web UI + template-sync work
+- [22-authorized-targets.md](22-authorized-targets.md) — the vetted real-target registry Milestone 5's real-world validation draws from
