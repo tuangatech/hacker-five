@@ -264,7 +264,7 @@ Neither doc03's ≥20 XSS nor ≥10 SQLi target is met yet (2 XSS / 2 SQLi, DVWA
 ## Definition of Done (Phase 2, Weeks 11-18)
 
 - [x] `go build ./...`, `go vet ./...`, `golangci-lint run ./...` clean on both macOS/WSL2 (`/mnt/c`) and the native WSL2 clone
-- [ ] GitHub Actions CI green, coverage gate still passing — **not re-checked this session** (only local `go test -race`/`golangci-lint`, not a real CI run)
+- [x] GitHub Actions CI green — confirmed 2026-08-28 via the Actions page: CI #60 passed (42s) on `993f9f0` (HEAD), and every commit back through Phase 2's work (`5fa62b0`, `eb50cee`, `4357747`) is green too. Coverage-gate specifics not individually inspected — only pass/fail confirmed
 - [x] `--scope` allow-list enforced when provided (unit + `Engine`-level tests); omitted-flag behavior confirmed unchanged for lab-target commands — **not yet live-verified with `--scope` actually set** against a real target
 - [x] Auth bypass detector finds real issues in crAPI/vAPI — **16 ≥ the ≥10 target, met.** Itemized in the Success Metrics table above (crAPI: 2 original + 7 breadth `alg:none` findings spanning all three microservices + 1 signature-stripped + 1 missing-auth; vAPI: 2 `api1` token-reuse + 2 `jwt/user` `alg:none`/signature-stripped + 1 `jwt/user` broken-session), each confirmed real and individually live-verified, 4 independently re-confirmed outside the tool via hand-built `curl` requests — but never cleanly re-run as one single combined scan across both targets in one pass, so this is a sum of separate per-target runs, not one report
 - [x] JWT weak-secret check confirmed to make **zero** network requests (offline-only, per follow-up.md's explicit requirement) — locked in by a unit test, not just a design note
@@ -288,7 +288,7 @@ Every *structural* gap this doc's live verification surfaced has a working fix n
 - **False-positive rate**: measured, met (1.4%) — see Success Metrics table above. One real confirmed FP worth a follow-up decision: the upstream `waf-detect.yaml` template's overbroad `(?i)apache` matcher.
 - **Two integration tests** (`tests/integration/authbypass_{crapi,vapi}_test.go`) still not created — this session's verification was ad-hoc `./hackerfive scan` runs, real and reproducible (commands are all documented in doc20) but not a checked-in regression test.
 - **`--scope` not live-verified** with an actual scope file against a real target — only unit/engine-level tests and "omitted still works" are confirmed.
-- **CI not re-confirmed green** after this session's changes — only local build/vet/test/lint.
+- ~~**CI not re-confirmed green**~~ ✅ Confirmed (2026-08-28): CI #60 passed on HEAD (`993f9f0`), and every Phase 2 commit is green.
 - **`v0.2.0` not tagged** — see the Definition-of-Done line above; this is a decision point, not an oversight.
 
 ## See also
