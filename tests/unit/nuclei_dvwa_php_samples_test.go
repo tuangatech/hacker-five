@@ -23,15 +23,18 @@ import (
 // three. apache-mod-negotiation-listing.yaml (raw:/payloads:, single
 // inline-list payload key, plain word/status matchers — no matcher-DSL
 // templating gap) now loads too, see doc10's raw:/payloads: note.
+// missing-cookie-samesite-strict.yaml was added later (Future Enhancement
+// #3) — one of DVWA's real "4 findings, all genuine" from Step 2's full
+// synced-corpus run, previously missing from this curated set.
 func TestNucleiDVWAPHPSamples_LoadRealUpstreamTemplates(t *testing.T) {
 	templates, errs := nuclei.LoadDir("../../templates/nuclei-samples/dvwa-php")
 
 	require.Empty(t, errs)
 
-	require.Len(t, templates, 5)
+	require.Len(t, templates, 6)
 	var ids []string
 	for _, tmpl := range templates {
 		ids = append(ids, tmpl.ID)
 	}
-	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing"}, ids)
+	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing", "missing-cookie-samesite-strict"}, ids)
 }
