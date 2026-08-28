@@ -343,3 +343,5 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — modules being built each phase
 - [04-environment-and-testing.md](04-environment-and-testing.md) — how each week's deliverables get validated
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for Phase 1a (Weeks 1-4)
+- [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — file-by-file build plan for Phase 1b (Weeks 5-10)
+- [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) — file-by-file build plan for Phase 2 (Weeks 11-18)
