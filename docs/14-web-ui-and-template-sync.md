@@ -48,17 +48,25 @@ The reasoning is a direct consequence of this project's existing rules, not a ne
 |---|---|---|
 | Dashboard | `/` | Recent scans (in-memory list), quick links to New Scan / Templates |
 | New Scan | `/scans/new` | Form: target(s), `--detector`, `--tags`, auth tokens, rate-limit/concurrency/proxy, the required authorization checkbox |
-| Scan Status/Results | `/scans/{id}` | Same page transitions from live progress → finding list as the job completes — no navigation away |
+| Scan Status/Results | `/scans/{id}` | Same page transitions from live progress → **findings streaming in** → final finding list as the job completes — no navigation away |
 | Scan History | `/scans` | List of past scans this server process has run |
-| Templates | `/templates` | Table of synced templates (name/category/tags/severity), tag filter, checkboxes feeding the next scan's `--tags` |
+| Templates | `/templates` | Two panels: active-template table and the sync panel — see [Templates page: what to show](#templates-page-what-to-show) |
 
 Five pages; "Sync now" is a fragment/action on the Templates page, not a separate route.
 
 htmx does the interactivity without a JS build step:
 - **Scan submission:** the New Scan form uses `hx-post="/scans" hx-target="#scan-panel"` — the response swaps in the progress panel in place, and `hx-push-url` updates the address bar to `/scans/{id}` so it's bookmarkable.
 - **Live progress:** the **SSE extension** (`hx-ext="sse"`, `sse-connect="/scans/{id}/events"`, `sse-swap="progress"`) rather than polling — Go's `net/http` + `http.Flusher` support SSE with no new backend dependency, and it avoids a poll-every-N-seconds loop. The final SSE event swaps the progress panel for the finding table.
+- **Live findings:** a second SSE event type (`sse-swap="finding"`) appends one row per finding as it's detected, via `hx-swap="beforeend"` — not a single swap-at-the-end. See [Live findings and logs](#live-findings-and-logs-a-real-engine-gap) below; this needs a small engine change, not just a UI wire-up.
+- **Live logs:** a third event type (`sse-swap="log"`) appends into a separate scrolling panel — warnings and errors as they happen (host-error-cache trips, template load rejects, per-target failures), not just a final error count.
 - **Templates page:** the tag filter does `hx-get="/templates?tags=..." hx-target="#template-table"`; "Sync now" is `hx-post="/templates/sync" hx-target="#sync-status"` with `hx-indicator` for a spinner during the (multi-second) git sparse-checkout.
 - **Why this matters beyond v1:** once these `hx-*` attributes and the SSE event stream exist, adding e.g. a cancel-scan button or per-request log tailing is a new SSE event type plus a `hx-target` div — not a framework migration. This is the "prepare for future interactivity" property htmx buys over a plain-form/full-reload design.
+
+### Live findings and logs: a real engine gap
+
+Both "will errors/warnings show in New Scan?" and "are findings shown in real time?" are **yes, by design** — but neither is free with the engine as it stands today. `Engine.Run(ctx)` (`pkg/scanner/engine.go`) currently returns one batch, `([]detectors.Finding, error)`, only after every target and template finishes. Warnings go straight to `os.Stderr` via plain `fmt.Fprintf` (`loadScope`'s missing-`--scope` warning, `loadTemplates`' load-summary line, per-target skip messages) — never returned to the caller — and `pool.Wait()` only surfaces the *first* pooled error in its final message, silently dropping the rest. This is exactly the trigger condition doc02's "Future Considerations → Callback-based streaming results" already named as deferred until something needs it — the web UI is that something.
+
+**Required engine change (small, additive, CLI-safe):** add an optional hook to `scanner.Engine`, e.g. `WithFindingCallback(func(detectors.Finding))` and `WithLogCallback(func(level, msg string))` (or one `WithEventSink(func(Event))`), invoked at the exact points that today just append to the slice or print to stderr — the finding-append in `Run`'s pooled closure, the `fmt.Fprintf` calls in `loadScope`/`loadTemplates`, and the per-target error path. The CLI (`cmd/hackerfive/scan.go`) keeps calling `Run` with no callback and gets today's batch behavior unchanged; only `pkg/webui` wires the callback, so `pkg/scanner` gains no dependency on the web layer.
 
 ### New components / code
 
@@ -91,7 +99,7 @@ Binding a port, even on loopback, is new attack surface a pure CLI tool doesn't 
 
 ### Running it, release-to-release
 
-The key design choice: **web assets (`html/template` files, CSS, `htmx.js`) are `go:embed`-ed into the binary, not shipped as loose files in the release archive.** Only `templates/` (the YAML detection templates, already loose today since they're meant to be user-editable) stays external.
+The key design choice: **web assets (`html/template` files, CSS, `htmx.js`) are `go:embed`-ed into the binary, not shipped as loose files in the release archive.** Only the bundled, project-authored `templates/` (`templates/idor/*.yaml`, `templates/nuclei-samples/*` — already loose today since they're meant to be user-editable and versioned with each release) stays external in the zip.
 
 That choice is what keeps the "download a new release" story identical to today's:
 ```powershell
@@ -105,22 +113,31 @@ That choice is what keeps the "download a new release" story identical to today'
 ```
 No separate "install the web UI" step, no static-asset folder to keep in sync with the binary version, no risk of stale HTML being served against a newer binary. Because the UI is baked into the same artifact `goreleaser` already cross-compiles (doc10), **"update the web UI" and "update the CLI" are the same action: download the new release zip, extract, run.** This is doc02's original "why Go / single static binary" argument extended one layer up, not a new distribution mechanism.
 
+**Synced (upstream) templates need the same property, and get it from a different mechanism** — see [Template sync command's default location](#template-sync-command) below: they live in a persistent OS user directory outside the extracted release folder entirely, so a new release never requires copying anything forward.
+
 ## Template sync command
 
 `scripts/sync-nuclei-templates.sh` already does the core of this (sparse-checkout of `http/exposed-panels`, `http/misconfiguration`, `http/technologies` from a **pinned commit** of upstream `nuclei-templates`, cached in `.nuclei-templates-cache/`, re-run only explicitly via `make templates-sync` — never auto-updated to HEAD, so a compromised upstream commit between pins can't silently reach a scan). Two gaps to close, independent of the UI:
 
 1. **Bash-only today, and this checkout is Windows-first.** The script needs WSL to run (see CLAUDE.md's verification section) — Windows users following the README's native `.exe` path can't run it directly. Promoting it to a Go subcommand (`hackerfive templates sync`, in the new `pkg/templatesync` package — see [New components / code](#new-components--code)) fixes that for free: same `git`-based sparse-checkout logic, cross-compiled into the existing release binary, no bash/WSL dependency. The shell script can stay as-is for CI/dev-container use, or become a thin wrapper.
 2. **No listing/enable-disable surface.** Today "which templates are active" is implicit (whatever's under `--templates ./templates/`). Add `hackerfive templates list [--tags ...]` to enumerate what's synced, with category/tag/severity metadata pulled from each template's `info:` block.
-3. **No default sync location for an end user.** In the dev repo, sync output lands in gitignored `.nuclei-templates-cache/`. For a released binary, default `hackerfive templates sync` to write into `./templates/nuclei-synced/` — inside the same `--templates` root `scan` and the Templates UI page already read from, so there's no new `--templates-cache`-style flag to introduce for v1.
+3. **No default sync location that survives a binary upgrade.** In the dev repo, sync output lands in gitignored `.nuclei-templates-cache/`. Writing synced templates inside the extracted release folder (e.g. `./templates/nuclei-synced/`) would recreate exactly the "copy the folder forward on every upgrade" problem this is meant to solve. **Upstream Nuclei's own convention avoids it:** it downloads templates to `~/.config/nuclei-templates` (XDG config home) — a persistent user directory that lives outside wherever the `nuclei` binary itself is, so replacing the binary never touches it. HackerFive should do the same, via Go's stdlib `os.UserConfigDir()` (already XDG-aware on Linux, `~/Library/Application Support` on macOS, `%AppData%` on Windows — no new dependency): default `hackerfive templates sync` to write into `<UserConfigDir>/hackerfive/nuclei-templates/`.
+   - `--templates` (currently a single `StringVar` flag in `cmd/hackerfive/scan.go`, even though the engine's `Config.TemplatePaths` is already `[]string`) needs to become repeatable, defaulting to **both** `./templates/` (bundled, project-authored) and `<UserConfigDir>/hackerfive/nuclei-templates/` (synced) — loaded together automatically, so a freshly downloaded binary picks up previously-synced templates with zero manual steps.
+   - **No pre-sync category filter for end users.** The sparse-checkout stays limited to the same maintainer-curated categories (`http/exposed-panels`, `http/misconfiguration`, `http/technologies`) the script already pins — not a picker over arbitrary upstream categories. Opening that up would pull in matcher content nobody's vetted against this project's <5% false-positive target (CLAUDE.md: "flag doubtful matchers instead of guessing"), and it's the same trust boundary as the pinned-commit rule one level up — a category is a maintainer decision (bump the list, re-pin, re-review), not a runtime toggle. The only filter exposed in the UI is the existing **post-sync tag filter** over whatever's already in the curated set.
 
-**Preserve the explicit-pin security posture exactly** — this is the one non-negotiable carried over from the existing script's comments: sync must target a pinned commit SHA (bumped deliberately, logged in the command's output), never an implicit `HEAD`/`latest`. The web UI's "Sync now" button calls this same subcommand; it does not add an "auto-update" toggle.
+**Preserve the explicit-pin security posture exactly** — this is the one non-negotiable carried over from the existing script's comments: sync must target a pinned commit SHA (bumped deliberately, logged in the command's output), never an implicit `HEAD`/`latest`. The web UI's "Sync now" button calls this same subcommand; it does not add an "auto-update" toggle, and it does not add a category picker (see above).
 
-The web UI's **Templates page** is then a thin view over these two subcommands: a table of synced templates (name, category, tags, severity) with checkboxes feeding into the next scan's `--tags` filter, and a "Sync now" button showing the pinned commit and category counts (same output the shell script already prints today).
+### Templates page: what to show
+
+Two panels, not one:
+- **Active templates table** — everything currently loaded from `--templates` paths (both the bundled and synced directories): name, format (nuclei-compatible/native), category, tags, severity, and **source** (bundled vs. synced) so it's visible which templates ship with the release vs. came from an upstream sync. Checkboxes feed the next scan's `--tags` selection.
+- **Sync panel** — pinned commit SHA, last-synced timestamp, per-category counts (same numbers the shell script already prints), and the "Sync now" button. No category picker here, per the filter discussion above — sync is one button, not a form.
 
 ## Effort & sequencing
 
 Rough shape, not a committed schedule (doc03 owns actual week numbers if/when this gets scheduled):
 - `pkg/templatesync` + `hackerfive templates sync`/`list` subcommands — small, mostly porting existing bash logic to Go; useful standalone even without the UI (unblocks Windows users today).
+- `scanner.Engine` callback hooks (`WithFindingCallback`/`WithLogCallback`) — small, additive, but a real prerequisite for live findings/logs; see [Live findings and logs](#live-findings-and-logs-a-real-engine-gap). Worth landing before or alongside `pkg/webui`'s scan handlers, not after — the SSE handlers have nothing to stream without it.
 - `pkg/webui` core (`server.go`, CSRF, `embed.go`, layout) + New Scan / Scan Status pages with the SSE job model — the bulk of the effort.
 - Templates page — small once `templates list` exists and `pkg/webui` core is in place, since it's mostly a table + one `hx-post` over data the CLI subcommand already produces.
 - Dashboard / Scan History pages — thin, once the job store and at least one other page exist.
