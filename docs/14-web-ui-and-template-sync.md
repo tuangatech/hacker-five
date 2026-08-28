@@ -68,6 +68,28 @@ Both "will errors/warnings show in New Scan?" and "are findings shown in real ti
 
 **Required engine change (small, additive, CLI-safe):** add an optional hook to `scanner.Engine`, e.g. `WithFindingCallback(func(detectors.Finding))` and `WithLogCallback(func(level, msg string))` (or one `WithEventSink(func(Event))`), invoked at the exact points that today just append to the slice or print to stderr — the finding-append in `Run`'s pooled closure, the `fmt.Fprintf` calls in `loadScope`/`loadTemplates`, and the per-target error path. The CLI (`cmd/hackerfive/scan.go`) keeps calling `Run` with no callback and gets today's batch behavior unchanged; only `pkg/webui` wires the callback, so `pkg/scanner` gains no dependency on the web layer.
 
+### Backpressure and reconnect: one job store, not two buffers
+
+Two follow-on gaps the design above doesn't answer by itself:
+
+- **Backpressure.** The callbacks above fire *synchronously*, inside the same pooled goroutine `runDetector` runs in (`engine.go:104`'s closures). If `pkg/webui` wires a callback straight into a blocking channel send, a slow or disconnected browser tab holds that worker-pool slot open — a UI hiccup becomes a **stalled scan**, not just a stale page, and with the default concurrency of 25, enough stuck subscribers measurably hurts real throughput for everyone, not just the one tab.
+- **Reconnect/replay.** `hx-ext="sse"` reconnects automatically on a dropped connection or a page refresh mid-scan. Without a defined replay story, refreshing 90% through a scan shows an *empty* findings table until the next new finding arrives — reading as "the scan reset," not "the scan resumed."
+
+**Resolution: one `Job` struct is the durable source of truth for both — not a separate ring buffer for backpressure and a separate replay log for reconnect.**
+```go
+type Job struct {
+    ID       string
+    Status   string // "queued" | "running" | "done" | "failed"
+    Findings []detectors.Finding
+    Logs     []LogEntry
+    mu       sync.Mutex
+    subs     []chan Event // live SSE subscribers on the *current* connection only
+}
+```
+- `WithFindingCallback`/`WithLogCallback` append to `Job.Findings`/`Job.Logs` under `mu` **first** — that's what makes the job queryable at all, independent of any SSE connection's state — then publish to every current subscriber in `subs` with a **non-blocking send** (`select { case sub <- event: default: }`). A dropped live push is harmless by construction: it never touches the accumulated `Findings`/`Logs`, so nothing is lost, only a live-UI update is skipped — which the next step immediately fixes.
+- **Initial render, not event replay, is what actually fixes reconnect.** `GET /scans/{id}` — whether it's the first page load or a post-refresh reload — renders the job's current `Findings`/`Logs` directly from the `Job` struct before attaching SSE, then SSE only needs to stream what happens *after* that point. This reuses the exact same accumulation Scan History and the final finding list already need; it doesn't require a second, sequence-numbered event-log-replay mechanism just for reconnect.
+- Net effect: backpressure and reconnect resolve to the same underlying fix — durable accumulation plus best-effort live push — not two separate features that need to be kept in sync with each other.
+
 ### New components / code
 
 **CLI (`cmd/hackerfive/`):**
@@ -78,7 +100,7 @@ Both "will errors/warnings show in New Scan?" and "are findings shown in real ti
 - `server.go` — `http.Server`, routing, CSRF middleware (hand-rolled double-submit-cookie token — stdlib has no CSRF helper, and this stays consistent with the minimal-deps stance rather than pulling in a framework)
 - `handlers_scan.go` — `POST /scans`, `GET /scans/{id}`, `GET /scans/{id}/events` (SSE) — calls straight into existing `pkg/scanner`, no scan logic duplicated here
 - `handlers_templates.go` — `GET /templates`, `POST /templates/sync` — calls the new `pkg/templatesync` package
-- `jobs.go` — in-memory job store (`map[string]*ScanJob`, mutex-guarded), one goroutine per running scan
+- `jobs.go` — in-memory job store (`map[string]*Job`), one goroutine per running scan; `Job` shape and its non-blocking-publish/reconnect design are in [Backpressure and reconnect](#backpressure-and-reconnect-one-job-store-not-two-buffers) above
 - `templates/*.html` — `html/template` layout + per-page files + the SSE-swapped fragments
 - `static/` — CSS, `htmx.min.js`, `htmx-ext-sse.js` (vendored, not CDN-loaded — the binary must work fully offline)
 - `embed.go` — `//go:embed templates static`, the line that makes [Running it](#running-it-release-to-release) below simple
@@ -88,7 +110,7 @@ Both "will errors/warnings show in New Scan?" and "are findings shown in real ti
 ### Async job model
 A scan can run for minutes; the HTTP request that starts it can't just block:
 - `POST /scans` validates the form, starts the scan in a goroutine, returns a job ID immediately.
-- `GET /scans/{id}` (or `/scans/{id}/events` via Server-Sent Events) reports status: queued → running (with progress: requests sent / templates matched) → done/failed.
+- `GET /scans/{id}` renders the job's current status **and** its accumulated `Findings`/`Logs` so far (not just a status string) — see [Backpressure and reconnect](#backpressure-and-reconnect-one-job-store-not-two-buffers) for why this is what makes a page refresh mid-scan safe. `/scans/{id}/events` (SSE) streams anything after that snapshot.
 - Job state lives **in-memory** for v1 (a map keyed by job ID) — acceptable because the server is a local, single-operator process; state loss on restart is a non-issue the same way `hackerfive scan` output today is a non-issue (you just re-run it). Durable history is a deferred concern (see Non-Goals).
 
 ### Attack surface & hardening
@@ -119,7 +141,7 @@ No separate "install the web UI" step, no static-asset folder to keep in sync wi
 
 `scripts/sync-nuclei-templates.sh` already does the core of this (sparse-checkout of `http/exposed-panels`, `http/misconfiguration`, `http/technologies` from a **pinned commit** of upstream `nuclei-templates`, cached in `.nuclei-templates-cache/`, re-run only explicitly via `make templates-sync` — never auto-updated to HEAD, so a compromised upstream commit between pins can't silently reach a scan). Two gaps to close, independent of the UI:
 
-1. **Bash-only today, and this checkout is Windows-first.** The script needs WSL to run (see CLAUDE.md's verification section) — Windows users following the README's native `.exe` path can't run it directly. Promoting it to a Go subcommand (`hackerfive templates sync`, in the new `pkg/templatesync` package — see [New components / code](#new-components--code)) fixes that for free: same `git`-based sparse-checkout logic, cross-compiled into the existing release binary, no bash/WSL dependency. The shell script can stay as-is for CI/dev-container use, or become a thin wrapper.
+1. **Bash-only today, and this checkout is Windows-first — but the real fix still needs `git`, stated explicitly.** The script needs WSL to run (see CLAUDE.md's verification section) — Windows users following the README's native `.exe` path can't run it directly. Promoting it to a Go subcommand (`hackerfive templates sync`, in the new `pkg/templatesync` package — see [New components / code](#new-components--code)) fixes the bash/WSL dependency — but is **not** dependency-free, and an earlier draft of this doc implied otherwise. The script's actual mechanism (`git clone --filter=blob:none --no-checkout` + `sparse-checkout set` + `checkout <sha>`) is a partial-clone + cone-mode sparse-checkout — cross-compiling the *logic* into Go still means shelling out to system `git` via `os/exec`, and Windows doesn't ship `git` by default. **v1 plan:** keep shelling out to system `git`; document `git` on `PATH` as a stated prerequisite for `templates sync` specifically (the rest of the binary stays dependency-free); surface a clear, actionable error if `git` isn't found rather than a raw `exec: "git": executable file not found` stack trace. A pure-Go client (`go-git`) would close this gap for real, but its partial-clone/cone-mode sparse-checkout support is materially less mature than CLI `git` — that's a spike-first item, not something to commit to here, per the same "measure before committing" discipline doc10/11 already apply throughout (e.g. the `raw:`/`payloads:` scope corrections). The shell script can stay as-is for CI/dev-container use, or become a thin wrapper.
 2. **No listing/enable-disable surface.** Today "which templates are active" is implicit (whatever's under `--templates ./templates/`). Add `hackerfive templates list [--tags ...]` to enumerate what's synced, with category/tag/severity metadata pulled from each template's `info:` block.
 3. **No default sync location that survives a binary upgrade.** In the dev repo, sync output lands in gitignored `.nuclei-templates-cache/`. Writing synced templates inside the extracted release folder (e.g. `./templates/nuclei-synced/`) would recreate exactly the "copy the folder forward on every upgrade" problem this is meant to solve. **Upstream Nuclei's own convention avoids it:** it downloads templates to `~/.config/nuclei-templates` (XDG config home) — a persistent user directory that lives outside wherever the `nuclei` binary itself is, so replacing the binary never touches it. HackerFive should do the same, via Go's stdlib `os.UserConfigDir()` (already XDG-aware on Linux, `~/Library/Application Support` on macOS, `%AppData%` on Windows — no new dependency): default `hackerfive templates sync` to write into `<UserConfigDir>/hackerfive/nuclei-templates/`.
    - `--templates` (currently a single `StringVar` flag in `cmd/hackerfive/scan.go`, even though the engine's `Config.TemplatePaths` is already `[]string`) needs to become repeatable, defaulting to **both** `./templates/` (bundled, project-authored) and `<UserConfigDir>/hackerfive/nuclei-templates/` (synced) — loaded together automatically, so a freshly downloaded binary picks up previously-synced templates with zero manual steps.
