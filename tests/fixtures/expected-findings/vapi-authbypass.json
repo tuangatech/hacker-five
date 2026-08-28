@@ -1,0 +1,10 @@
+{
+  "description": "Real, live-verified authbypass finding-ID prefixes for vAPI's api1 module (http://localhost:8000), from docs/11-implementation-plan-ph2.md Step 5 and docs/20-setup-testing-targets.md's vAPI section (2026-08-28): 2 real token-reuse findings via the auth-header fix. jwt/user's findings are not covered here — see the script's own comment for why. The nuclei-* prefixes below aren't authbypass's own output — this scan's default --templates (the small curated set, not $TEMPLATES_DIR's full corpus) run additively on top of any --detector, same as every other measure() call in this script.",
+  "expected_id_prefixes": [
+    "authbypass-token-reuse-",
+    "authbypass-no-rate-limit-",
+    "nuclei-http-missing-security-headers",
+    "nuclei-missing-cookie-samesite-strict",
+    "nuclei-php-detect"
+  ]
+}

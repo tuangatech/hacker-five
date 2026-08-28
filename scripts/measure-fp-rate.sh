@@ -12,6 +12,17 @@
 # JUICESHOP_BASE_URL, and/or VAPI_BASE_URL for whichever targets are up; a
 # target with no env var set is skipped, not failed. See
 # docs/20-setup-testing-targets.md for bringing each one up.
+#
+# Optional, finer-grained additions (each opt-in on its own, skipped if
+# unset rather than failing the whole run):
+#   DVWA_COOKIE          - a PHPSESSID value from a logged-in, Security:Low
+#                           DVWA session, so the xss/sqli templates' real
+#                           session-gated targets actually get exercised
+#                           instead of hitting a 302 login redirect.
+#   VAPI_OWNER_TOKEN/VAPI_OTHER_TOKEN - two vAPI accounts' api1 credentials,
+#                           pre-encoded as base64(username:password), to
+#                           also measure the authbypass detector against
+#                           vAPI (not just misconfig).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -81,11 +92,33 @@ if [ -n "${CRAPI_BASE_URL:-}" ] && [ -n "${CRAPI_OWNER_TOKEN:-}" ] && [ -n "${CR
 		--auth-token "$CRAPI_OWNER_TOKEN" --other-auth-token "$CRAPI_OTHER_TOKEN" \
 		--templates "$TEMPLATES_DIR"
 	ran_any=1
+
+	# Same two accounts, authbypass's own lens — protected-paths list is the
+	# real OpenAPI-spec-driven set docs/11-implementation-plan-ph2.md Step 5
+	# and docs/20-setup-testing-targets.md's crAPI section live-verified
+	# (2026-08-28): 2 identity endpoints plus 8 more spanning community/
+	# workshop, confirmed to trigger real alg:none/token-reuse/missing-auth
+	# findings, not guessed paths.
+	measure "crAPI (authbypass)" "tests/fixtures/expected-findings/crapi-authbypass.json" \
+		scan -t "$CRAPI_BASE_URL" --detector authbypass \
+		--auth-token "$CRAPI_OWNER_TOKEN" --other-auth-token "$CRAPI_OTHER_TOKEN" \
+		--login-paths '/identity/api/auth/login' \
+		--protected-paths '/identity/api/v2/user/dashboard,/identity/api/v2/vehicle/vehicles,/identity/api/v2/user/videos/convert_video,/community/api/v2/community/posts/recent,/workshop/api/shop/products,/workshop/api/shop/orders/all,/workshop/api/management/users/all,/workshop/api/mechanic/,/workshop/api/mechanic/service_requests,/workshop/api/shop/return_qr_code'
+	ran_any=1
 fi
 
 if [ -n "${DVWA_BASE_URL:-}" ]; then
+	dvwa_header=()
+	if [ -n "${DVWA_COOKIE:-}" ]; then
+		# Without a cookie, DVWA's own auth gate hides the xss/sqli templates'
+		# real targets behind a 302 login redirect — measuring FP rate without
+		# it would silently skip exercising them at all, not prove they're
+		# clean. See docs/20-setup-testing-targets.md's DVWA section for how
+		# to obtain one (log in, set Security: Low, read PHPSESSID).
+		dvwa_header=(--header "Cookie: ${DVWA_COOKIE}; security=low")
+	fi
 	measure "DVWA" "tests/fixtures/expected-findings/dvwa.json" \
-		scan -t "$DVWA_BASE_URL" --detector misconfig --templates "$TEMPLATES_DIR"
+		scan -t "$DVWA_BASE_URL" --detector misconfig --templates "$TEMPLATES_DIR" "${dvwa_header[@]}"
 	ran_any=1
 fi
 
@@ -105,6 +138,23 @@ if [ -n "${VAPI_BASE_URL:-}" ]; then
 	measure "vAPI" "tests/fixtures/expected-findings/vapi.json" \
 		scan -t "$VAPI_BASE_URL" --detector misconfig --templates ./templates/
 	ran_any=1
+
+	# vAPI's api1 module uses a custom Authorization-Token: base64(username:password)
+	# header, not a session token — VAPI_OWNER_TOKEN/VAPI_OTHER_TOKEN are
+	# expected pre-encoded that way (see docs/20-setup-testing-targets.md's
+	# vAPI section for how to sign up two accounts and build these).
+	# jwt/user (JustWeakTokenController) needs a different token shape
+	# entirely (a real JWT from its own /vapi/jwt/user registration) so it's
+	# deliberately not included here — measuring it would need a third,
+	# incompatible --auth-header-name/--auth-token pair mid-scan, which this
+	# script's single-scan-per-target shape can't express.
+	if [ -n "${VAPI_OWNER_TOKEN:-}" ] && [ -n "${VAPI_OTHER_TOKEN:-}" ]; then
+		measure "vAPI (authbypass)" "tests/fixtures/expected-findings/vapi-authbypass.json" \
+			scan -t "$VAPI_BASE_URL" --detector authbypass \
+			--auth-token "$VAPI_OWNER_TOKEN" --other-auth-token "$VAPI_OTHER_TOKEN" \
+			--auth-header-name 'Authorization-Token' --auth-header-format '{token}' \
+			--protected-paths '/vapi/api1/user/5,/vapi/api1/user/6'
+	fi
 fi
 
 if [ "$ran_any" -eq 0 ]; then

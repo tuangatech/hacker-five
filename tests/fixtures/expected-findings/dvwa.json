@@ -1,11 +1,16 @@
 {
-  "description": "Real, live-verified finding-ID prefixes for DVWA (http://localhost), from docs/10-implementation-plan-ph1b.md Step 2's 'Full synced-set run' — 4 findings after all three engine fixes.",
+  "description": "Real, live-verified finding-ID prefixes for DVWA (http://localhost), from docs/10-implementation-plan-ph1b.md Step 2's 'Full synced-set run' and docs/11-implementation-plan-ph2.md Step 5's first-party XSS/SQLi templates (2026-08-28). The xss-/sqli- prefixes only fire when DVWA_COOKIE is set — without it they hit a 302 login redirect and contribute no findings, which is not itself a false positive. Deliberately NOT listed here: nuclei-waf-detect, a confirmed real false positive (2026-08-28) — the upstream template's 'apachegeneric' matcher is just the regex `(?i)apache`, matched against the whole response including headers, so any server whose Server header literally says Apache (i.e. almost any Apache-fronted target, WAF or not) trips it. Left unlisted on purpose so the FP-rate script keeps surfacing it.",
   "expected_id_prefixes": [
     "misconfig-missing-header-",
     "misconfig-method-",
     "nuclei-http-missing-security-headers",
     "nuclei-missing-cookie-samesite-strict",
     "nuclei-apache-detect",
-    "nuclei-php-detect"
+    "nuclei-php-detect",
+    "nuclei-dvwa-xss-reflected",
+    "nuclei-dvwa-xss-stored",
+    "nuclei-dvwa-sqli-error-based",
+    "nuclei-dvwa-sqli-blind-boolean",
+    "misconfig-dir-listing-docs"
   ]
 }

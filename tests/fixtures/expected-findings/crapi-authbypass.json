@@ -1,0 +1,12 @@
+{
+  "description": "Real, live-verified authbypass finding-ID prefixes for crAPI (http://localhost:8888), from docs/11-implementation-plan-ph2.md Step 5 and docs/20-setup-testing-targets.md's crAPI section (2026-08-28): 16-finding breadth pass across identity/community/workshop, using crAPI's own OpenAPI spec for --protected-paths, not guessed paths. idor-/nuclei-http-missing-security-headers aren't authbypass's own output — this measure() call passes --auth-token/--other-auth-token, so the default --templates set's idor-tagged native template (and the small curated nuclei set) also fire additively, same as every other measure() call in this script.",
+  "expected_id_prefixes": [
+    "authbypass-jwt-alg-none-",
+    "authbypass-jwt-signature-stripped-",
+    "authbypass-missing-auth-",
+    "authbypass-token-reuse-",
+    "authbypass-no-rate-limit-",
+    "idor-",
+    "nuclei-http-missing-security-headers"
+  ]
+}

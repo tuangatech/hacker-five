@@ -1,9 +1,10 @@
 {
-  "description": "Real, live-verified finding-ID prefixes for vAPI (http://localhost:8000), from docs/10-implementation-plan-ph1b.md Step 4 and docs/20-setup-testing-targets.md's vAPI section. IDOR not included: vAPI's custom Authorization-Token header scheme isn't supported by idor.Detector yet.",
+  "description": "Real, live-verified finding-ID prefixes for vAPI (http://localhost:8000), from docs/10-implementation-plan-ph1b.md Step 4 and docs/20-setup-testing-targets.md's vAPI section (updated 2026-08-28). This fixture covers the plain --detector misconfig run only — no --auth-token, so no idor.Detector output; see vapi-authbypass.json for the separate --detector authbypass measurement.",
   "expected_id_prefixes": [
     "misconfig-missing-header-",
     "misconfig-method-",
     "nuclei-http-missing-security-headers",
-    "nuclei-php-detect"
+    "nuclei-php-detect",
+    "nuclei-missing-cookie-samesite-strict"
   ]
 }
