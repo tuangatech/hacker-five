@@ -27,6 +27,7 @@ Both target DVWA's real, known-vulnerable endpoints directly and carry **no cred
 |---|---|---|
 | `xss-reflected-dvwa.yaml` | `/vulnerabilities/xss_r/?name=` reflects `"><injectable>` unescaped | ✅ 1 finding |
 | `sqli-error-dvwa.yaml` | `/vulnerabilities/sqli/?id=` returns a real MariaDB syntax error for a `'` payload | ✅ 1 finding |
+| `xss-stored-dvwa.yaml` | `/vulnerabilities/xss_s/` (guestbook `mtxMessage` field) reflects `"><injectable>` unescaped in the same POST response that stores it — no separate reload step needed | ✅ 1 finding |
 
 ```bash
 # Obtain a session cookie first (see docs/20-setup-testing-targets.md's DVWA section:

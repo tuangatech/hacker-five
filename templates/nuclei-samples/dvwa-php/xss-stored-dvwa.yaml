@@ -1,0 +1,44 @@
+id: dvwa-xss-stored
+
+info:
+  name: DVWA Stored XSS (guestbook message)
+  author: hackerfive
+  severity: medium
+  description: |
+    DVWA's Stored XSS challenge (/vulnerabilities/xss_s/) echoes the
+    "mtxMessage" guestbook field back into the same response unescaped, at
+    Security level: Low — a single POST both stores and immediately
+    reflects the payload, so no separate reload step is needed. Requires an
+    authenticated DVWA session — this template carries no credential
+    itself; supply the session cookie at scan time via --header
+    "Cookie: PHPSESSID=<value>; security=low". Live-verified 2026-08-28
+    against a real DVWA instance, see this directory's README.md. Higher
+    severity than the reflected variant: the payload persists for every
+    later visitor, not just the requester.
+  classification:
+    cwe-id: CWE-79
+  tags: xss,dvwa
+
+http:
+  - method: POST
+    path:
+      - "{{BaseURL}}/vulnerabilities/xss_s/"
+    headers:
+      Content-Type: application/x-www-form-urlencoded
+    body: 'txtName=hf&mtxMessage=%22%3E%3Cinjectable%3E&btnSign=Sign+Guestbook'
+
+    matchers-condition: and
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "\"><injectable>"
+
+      - type: word
+        part: content_type
+        words:
+          - "text/html"
+
+      - type: status
+        status:
+          - 200

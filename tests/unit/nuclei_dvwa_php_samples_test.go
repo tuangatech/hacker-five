@@ -33,15 +33,20 @@ import (
 // (?name=, ?id=), closing the gap the generic xss/sqli samples (see
 // ../xss/, ../sqli/) can't reach on their own. Live-verified real result
 // documented in this directory's README.
+//
+// dvwa-xss-stored.yaml, also first-party, added later the same day —
+// DVWA's stored-XSS challenge (/vulnerabilities/xss_s/), a single POST
+// that both stores and immediately reflects the payload in the same
+// response, so no separate reload step is needed.
 func TestNucleiDVWAPHPSamples_LoadTemplates(t *testing.T) {
 	templates, errs := nuclei.LoadDir("../../templates/nuclei-samples/dvwa-php")
 
 	require.Empty(t, errs)
 
-	require.Len(t, templates, 8)
+	require.Len(t, templates, 9)
 	var ids []string
 	for _, tmpl := range templates {
 		ids = append(ids, tmpl.ID)
 	}
-	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing", "missing-cookie-samesite-strict", "dvwa-xss-reflected", "dvwa-sqli-error-based"}, ids)
+	assert.ElementsMatch(t, []string{"apache-detect", "php-detect", "dir-listing", "http-missing-security-headers", "apache-mod-negotiation-listing", "missing-cookie-samesite-strict", "dvwa-xss-reflected", "dvwa-sqli-error-based", "dvwa-xss-stored"}, ids)
 }
