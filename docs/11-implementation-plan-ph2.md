@@ -262,19 +262,31 @@ Neither doc03's ≥20 XSS nor ≥10 SQLi target is met yet (1 each, DVWA only) �
 ## Definition of Done (Phase 2, Weeks 11-18)
 
 - [x] `go build ./...`, `go vet ./...`, `golangci-lint run ./...` clean on both macOS/WSL2 (`/mnt/c`) and the native WSL2 clone
-- [ ] GitHub Actions CI green, coverage gate still passing — not re-checked this session
+- [ ] GitHub Actions CI green, coverage gate still passing — **not re-checked this session** (only local `go test -race`/`golangci-lint`, not a real CI run)
 - [x] `--scope` allow-list enforced when provided (unit + `Engine`-level tests); omitted-flag behavior confirmed unchanged for lab-target commands — **not yet live-verified with `--scope` actually set** against a real target
-- [x] Auth bypass detector finds real issues in crAPI/vAPI — **3 real (2 critical + 1 low-confidence), short of the ≥10 target**, honestly measured and root-caused, not padded — see Step 5
+- [x] Auth bypass detector finds real issues in crAPI/vAPI — **still short of the ≥10 target.** 2 critical (crAPI `alg:none`) + 1 low-confidence (crAPI rate-limit, now correctly JSON) + 2 medium/low (vAPI token-reuse, via the auth-header fix) confirmed real and individually live-verified, but never cleanly re-run as one single combined total across both targets with every override applied together — the honest number is "at least 5, probably more with further recon," not a precise final count. See "What's still open" below for the concrete next steps to actually close this gap
 - [x] JWT weak-secret check confirmed to make **zero** network requests (offline-only, per follow-up.md's explicit requirement) — locked in by a unit test, not just a design note
-- [x] Rate-limit-signal check confirmed to send a fixed, capped request count with **one** known-invalid credential, never a real credential-guessing sequence — locked in by a unit test
-- [x] XSS templates measured live against DVWA/Juice Shop — **0 findings, short of the ≥20 target**; detection logic separately proven correct, reachability is the documented blocker
-- [x] SQLi templates measured live against DVWA/Juice Shop — **0 findings, short of the ≥10 target**; same as XSS
-- [x] Information-disclosure rule measured live — 0 findings (no false positive against either target's real, benign comments; no true positive demonstrated yet either)
+- [x] Rate-limit-signal check confirmed to send a fixed, capped request count with **one** known-invalid credential (now tried as both a form-encoded and a JSON body, whichever the target accepts), never a real credential-guessing sequence — locked in by unit tests
+- [x] XSS templates measured live against DVWA/Juice Shop — **1 finding (DVWA only), short of the ≥20 target.** The two generic upstream templates still find 0; a new first-party DVWA-specific template closed the structural (reachability) blocker and found 1 real issue. No Juice-Shop equivalent exists — no known server-reflected XSS surface there for this technique
+- [x] SQLi templates measured live against DVWA/Juice Shop — **1 finding (DVWA only), short of the ≥10 target.** Same pattern as XSS
+- [x] Information-disclosure rule measured live — 0 findings (no false positive against either target's real, benign comments; no true positive demonstrated yet either — still open, see below)
 - [ ] False-positive rate re-measured across all Phase 1+2 detectors combined — **not done this session**
 - [x] No hardcoded credentials/tokens; no request verb beyond what each detector's design calls for; nothing added here writes/destroys target state (per CLAUDE.md's read/enumerate-only rule)
-- [ ] `v0.2.0` tagged and released — **holding** until the Success Metrics gap is closed or explicitly accepted, same call Phase 1b made for DVWA's misconfig number
+- [ ] `v0.2.0` tagged and released — **holding.** Every structural blocker this doc identified is now closed (scope enforcement, configurable login/logout paths and auth-header scheme, template header injection, DVWA-specific templates, crAPI JSON-body probe), but the doc03 Success Metrics themselves are still not met — this is a breadth gap now, not a capability gap, and whether that's enough to tag `v0.2.0` is a call for the user to make, not implied here
 - [x] `docs/template-writing-guide.md` updated with the new XSS/SQLi/sensitive-field template patterns
-- [x] doc03's "Phase 2 Success Metrics" section cross-checked against this doc's real, measured results — recorded honestly above, not silently dropped; three concrete, scoped follow-up items identified (configurable login/logout paths, configurable auth-header scheme for `authbypass`, header/cookie injection for nuclei-format templates) but **not implemented** — a deliberate stop before expanding scope further without checking in
+- [x] doc03's "Phase 2 Success Metrics" section cross-checked against this doc's real, measured results — recorded honestly above; every structural gap identified during live verification has since been fixed and live-verified (configurable login/logout paths, configurable auth-header scheme for `authbypass`, header/cookie injection for nuclei-format templates, the crAPI JSON-body probe gap, and DVWA-specific XSS/SQLi templates) — what's left to hit the actual numeric targets is recon breadth, tracked in `follow-up.md`'s backlog (§5) and "What's still open" below, not a missing mechanism
+
+### What's still open (Phase 2 is not 100% complete)
+
+Every *structural* gap this doc's live verification surfaced has a working fix now — the remaining work is breadth (more recon, more targets covered) and process (tests, CI, release), not new capability:
+
+- **Auth bypass, more breadth**: recon more `--protected-paths` on crAPI (only `/identity/api/v2/user/dashboard`/`/vehicle/vehicles` tried) and vAPI (only `api1`; vAPI has 9 more numbered API challenge modules, several with their own login endpoints `--login-paths` has never been pointed at). vAPI's `jwt/user` module (`JustWeakTokenController`) is a known, real lead — its `JWT::decode($token, $key, array('HS256','none'))` call accepts `'none'` as a valid algorithm, meaning `checkJWTAlgNone` would very likely catch it — but its registration endpoint returned an unexplained `500` in this session, not yet debugged. See `follow-up.md`'s backlog.
+- **XSS/SQLi, more breadth**: only DVWA's `xss_r`/`sqli` pages at one param each are covered. DVWA has more pages (stored XSS, blind SQLi) and Juice Shop still has no server-reflected equivalent found at all — may genuinely not have one reachable by this technique.
+- **False-positive rate**: `scripts/measure-fp-rate.sh` not yet extended to the three new Phase 2 checks.
+- **Two integration tests** (`tests/integration/authbypass_{crapi,vapi}_test.go`) still not created — this session's verification was ad-hoc `./hackerfive scan` runs, real and reproducible (commands are all documented in doc20) but not a checked-in regression test.
+- **`--scope` not live-verified** with an actual scope file against a real target — only unit/engine-level tests and "omitted still works" are confirmed.
+- **CI not re-confirmed green** after this session's changes — only local build/vet/test/lint.
+- **`v0.2.0` not tagged** — see the Definition-of-Done line above; this is a decision point, not an oversight.
 
 ## See also
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — vulnerability classes this plan builds on (note: its Auth-Issues phase numbering is stale relative to doc03, see Objective above)
