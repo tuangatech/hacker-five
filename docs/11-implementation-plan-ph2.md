@@ -6,7 +6,7 @@
 
 Phase 1 (Weeks 1-10, see [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)/[10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)) proved the engine works end-to-end on IDOR and misconfiguration, shipped `v0.1.0`, and closed every doc10 Future Enhancement. Phase 2's job is breadth: add API-specific auth-bypass detection, and extend coverage into two of the most commonly reported web vuln classes (XSS, SQL injection) plus information disclosure, per [03-development-roadmap.md](03-development-roadmap.md)'s Weeks 11-18.
 
-**This plan is written before any Phase 2 code exists** — same discipline doc09 and doc10 followed: a concrete, file-by-file design first, filled in with dated "done" notes as each step is actually built, not written after the fact.
+**This plan was written before any Phase 2 code existed** — same discipline doc09 and doc10 followed: a concrete, file-by-file design first, filled in with dated "done" notes as each step is actually built, not written after the fact. **Status as of 2026-08-28: Steps 0-4 implemented and unit-tested; Step 5 (live verification against real lab targets, `v0.2.0` release) not started** — this Windows checkout has no Docker/live crAPI/vAPI/DVWA/Juice Shop access, so every "done" note below is explicit about what's proven (build/vet/test/lint clean, unit-tested logic) versus what still needs a run in the user's native clone (actual finding counts, the Phase 2 Success Metrics, the two auth-bypass integration tests).
 
 **A real architectural finding worth stating up front, since it changes the shape of this plan versus a literal reading of doc03:** cross-checking doc03 against [doc01](01-overview-and-strategy.md) (vuln-class definitions), [doc02](02-architecture-and-tech-stack.md) (architecture), and [follow-up.md](follow-up.md) (a prior senior-security-engineer review) shows that only Week 11-12 (Auth Bypass) needs a new Go detector package. XSS and SQL injection are explicitly scoped in doc01 as template-based ("build on Nuclei patterns," "template-based patterns + error matching") — and Phase 1b already built exactly the machinery this needs: `raw:`/`payloads:` payload injection plus word/regex matchers (Future Enhancement #1, [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)). Information disclosure similarly turns out to mostly extend the existing `misconfig.Detector` rather than needing a new package — its "internal IPs/hostnames/stack traces" detection already exists as `VerboseErrorPatterns`/`checkVerboseErrors`, built in Phase 1b. So Weeks 13-17 are mostly template curation and small built-in-rule extensions, not three more detector modules — the same "measure the real shape before assuming a bigger build" discipline Phase 1b's own Future Enhancements repeatedly demonstrated (see doc10's extractor-DSL-binding note for the clearest example: an initial "250+ templates" guess collapsed to 1 once actually measured).
 
@@ -16,12 +16,14 @@ Phase 1 (Weeks 1-10, see [09-implementation-plan-ph1a.md](09-implementation-plan
 
 Six chunks, matching doc03's Week 11-18 breakdown, plus one carried-forward gap from `follow-up.md` that this phase is the natural point to close:
 
-0. **Scope enforcement** (Week 11-12, alongside Step 1) — a `--scope` allow-list validated before a target is dispatched. Not in doc03's text; carried forward from `follow-up.md` §1's Critical finding, still open since Phase 1.
-1. **API Auth Bypass Detector** (Week 11-12)
-2. **XSS Detection** (Week 13-14)
-3. **SQL Injection Detection** (Week 15-16)
-4. **Information Disclosure** (Week 17)
-5. **Testing & Release** (Week 18) — v0.2.0
+0. ✅ **Scope enforcement** (Week 11-12, alongside Step 1) — a `--scope` allow-list validated before a target is dispatched. Not in doc03's text; carried forward from `follow-up.md` §1's Critical finding, still open since Phase 1.
+1. ✅ **API Auth Bypass Detector** (Week 11-12)
+2. ✅ **XSS Detection** (Week 13-14)
+3. ✅ **SQL Injection Detection** (Week 15-16)
+4. ✅ **Information Disclosure** (Week 17)
+5. ⬜ **Testing & Release** (Week 18) — v0.2.0 — not started, needs live lab-target access this session doesn't have
+
+(✅ = implemented and unit-tested as of 2026-08-28, not yet live-verified — see each step's own dated note below.)
 
 **Explicitly deferred, named rather than silently dropped:**
 - **DOM-based XSS via Chromedp** (doc03 marks it "Optional" for Week 13-14). Passive/reflected detection via the existing template engine covers the bulk of realistically findable XSS; Chromedp adds a new dependency, the sandboxing requirement `follow-up.md` §4 calls for (isolated container, no filesystem/network egress beyond the target, resource limits), and real engineering cost for a smaller slice of real-world findings. Revisit as its own future item once Phase 2's template-driven XSS work is live and its real yield is measured — same "prove the smaller thing first" pattern as Phase 1b's Future Enhancements.
@@ -40,7 +42,7 @@ Chromedp (`github.com/chromedp/chromedp`, listed as optional in doc02) is **not*
 
 ---
 
-## Step 0: Scope enforcement (`--scope` allow-list) (Week 11-12)
+## Step 0: Scope enforcement (`--scope` allow-list) (Week 11-12) — ✅ implemented (2026-08-28), not live-verified
 
 **Goal:** close `follow-up.md` §1's Critical finding — "No technical scope-enforcement mechanism. The Input Parser design (doc 02) has no described allow-list/scope-file validation." — before Phase 2 starts running more stateful, sequenced checks (auth bypass) against a wider target set than Phase 1's lab-only usage.
 
@@ -69,9 +71,11 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 ```
 Unit tests cover the matching rules directly; no live target needed. Confirm existing documented lab-target commands (README, doc20) still work unmodified with `--scope` omitted, and that a deliberately-mismatched `--scope` file causes a target to be skipped rather than scanned.
 
+**Implemented as designed**, no deviations: `pkg/scanner/scope/scope.go`, wired into `Config.ScopeFile`/`Engine.loadScope`/`Engine.Run`, `--scope` flag in `cmd/hackerfive/scan.go`. `tests/unit/scope_test.go` (7 cases: exact domain, `*.`-wildcard including the wildcard's own base domain, CIDR, comments/blank lines, missing file, default-deny on an unmatched target) plus two `Engine`-level tests in `tests/unit/engine_test.go` (`TestEngineRun_ScopeFile_BlocksUnmatchedTarget`/`AllowsMatchedTarget`) confirming `Run` actually wires enforcement in, not just that `scope.Allowed` works in isolation. `go build`/`vet`/`test -race`/`golangci-lint` all clean. **Not live-verified**: no real-target run has been done with `--scope` set against an authorized target yet.
+
 ---
 
-## Step 1: API Auth Bypass Detector (Week 11-12)
+## Step 1: API Auth Bypass Detector (Week 11-12) — ✅ implemented (2026-08-28), not live-verified
 
 **Goal:** a new detector, peer to `idor`/`misconfig` (doc02's architecture diagram already lists Auth Bypass as a peer Scanner Engine module) — genuinely needs custom Go logic (JWT manipulation, multi-step request sequencing) the template engine can't express, unlike Steps 2-3 below.
 
@@ -85,7 +89,9 @@ Unit tests cover the matching rules directly; no live target needed. Confirm exi
 - **Token reuse across accounts** — reuses IDOR's two-account baseline shape (`ownerToken`/`otherToken`, already in `scanner.Config`): fire a request to an identity-scoped endpoint (e.g. `/me`, `/profile`) with account A's token, confirm it returns account A's identity; same endpoint pattern with account B's token must return account B's identity, not account A's — flags if a token resolves to the wrong account.
 - **Broken session (logout-then-reuse)** — fire a logout request, then re-fire one previously-authenticated request with the same token; flag if it's still accepted.
 
-**Open implementation detail, deliberately not resolved yet:** how the missing-auth check's candidate protected-path list is supplied. Two real options — a new `auth-bypass`-tagged native template (mirrors the existing `idor` tag's pattern in `pkg/template/native`) or a `--protected-paths` flag (mirrors `--endpoint`'s shape). Decide once this step actually starts, via recon against a real target (crAPI/vAPI) the same way Phase 1b's `dvwa-php`/`crapi` template batches were picked after reconning, not guessed now.
+**Open implementation detail, now resolved:** the missing-auth check's candidate protected-path list is supplied via a new `--protected-paths` flag (comma-separated, parsed the same way `--tags` is) — the simpler of the two options this plan originally left open, chosen over a new native-template tag since it needs no new template-engine mechanism and mirrors `--endpoint`'s existing shape. `Config.Validate()` requires it (like idor's `--endpoint`) when `--detector authbypass` is selected. Still no real recon happened (no live crAPI/vAPI access in this session) — the path list itself is user-supplied at scan time, same as `--endpoint` always has been, so this doesn't block implementation the way a hardcoded path guess would have.
+
+**Token-reuse design correction, found by the test suite, not assumed correct up front:** the plan below originally said this check would reuse `idor.Signature`'s fuzzy (size-tolerance + keyword-set) comparison. A test using two different accounts' same-size JSON responses (`{"user":"owner","email":"..."}` vs `{"user":"other","email":"..."}`) proved that tolerance too coarse — both responses landed inside idor's 5%-size/same-keyword-set fallback and were wrongly reported as "identical," which would make this check flag real, correctly-personalized endpoints as bugs. Fixed by comparing raw response bytes directly instead of `idor.Signature` — deliberately higher precision than IDOR's own comparison, since a false positive here (telling a user their app has an auth bug it doesn't have) is worse than the false negative idor's tolerance is designed to avoid. `pkg/detectors/authbypass` no longer imports `idor` at all as a result.
 
 ### Files
 
@@ -97,8 +103,8 @@ Unit tests cover the matching rules directly; no live target needed. Confirm exi
 | `pkg/scanner/engine.go` | New `case "authbypass":` in `runDetector`, mirroring the existing `idor`/`misconfig` cases |
 | `pkg/scanner/config.go` | `recognizedDetectors` gains `"authbypass"`; `Validate()` gains its required-flag checks (mirrors idor's auth-token requirement) |
 | `cmd/hackerfive/scan.go` | `--detector authbypass` becomes a valid value; new flag for the protected-path list once the open question above is resolved |
-| `tests/unit/detector_authbypass_test.go` (new) | Table-driven against `httptest.Server`, one case per check above |
-| `tests/integration/authbypass_crapi_test.go` / `authbypass_vapi_test.go` (new) | Opt-in, build-tag `integration`, mirroring `idor_crapi_test.go`'s pattern |
+| `tests/unit/detector_authbypass_test.go` (new) | Table-driven against `httptest.Server`, 12 cases (hit + no-finding pair per check) |
+| `tests/integration/authbypass_crapi_test.go` / `authbypass_vapi_test.go` | **Not yet created** — deferred until real recon against a live crAPI/vAPI instance is actually possible (see Verification below); doc10/doc11's own precedent is to write the live integration test alongside real recon, not guess its shape blind |
 
 ### Key types/functions
 
@@ -113,9 +119,11 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 ```
 Unit tests prove each check's logic against a mock server (JWT tampering correctness, rate-limit-signal request count staying fixed/capped, token-reuse cross-account detection). Live verification against crAPI/vAPI happens in the user's native clone, same "confirm live once code exists" pattern as every Phase 1b Future Enhancement in this session.
 
+**Implemented**: `pkg/detectors/authbypass/{detector,jwt,rules}.go`, wired into `scanner.Config`/`Engine.runDetector` (new `case "authbypass"`) and `cmd/hackerfive/scan.go` (`--detector authbypass`, `--protected-paths`). `checkBrokenSession` is deliberately last in `Run`'s checks slice — it ends the real session `ownerToken` refers to, which would otherwise poison every check after it that still needs that token valid within the same `Run` call; a mutation this bounded (one non-retried logout) follows the same precedent `misconfig.DefaultCredRule`'s single login POST already established. `go build`/`vet`/`test -race`/`golangci-lint` all clean, 12 new unit tests pass (including one proving `checkJWTWeakSecret` makes exactly zero extra network requests beyond what `checkRateLimitSignal`'s login-path discovery already makes — the offline-only property `follow-up.md` requires, locked in by an assertion, not just a comment). **Not live-verified**: no real crAPI/vAPI run in this session (no Docker on this Windows checkout) — the integration tests and the actual finding counts still need a run in the user's native clone.
+
 ---
 
-## Step 2: XSS Detection (Week 13-14)
+## Step 2: XSS Detection (Week 13-14) — ✅ implemented (2026-08-28), not live-verified
 
 **Goal:** passive/reflected XSS detection via curated templates, not a new Go package — per doc01's own "start with passive detection (build on Nuclei patterns)" scoping, and because Phase 1b's `raw:`/`payloads:` support (Future Enhancement #1) plus the existing word/regex matcher engine already provide everything a reflected-XSS check needs: inject a payload marker into a request (query param, common body field) via `payloads:`, check whether that marker reflects back **unescaped** in the response body via a word/regex matcher.
 
@@ -142,9 +150,11 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 ```
 Plus a regression test mirroring `tests/unit/nuclei_dvwa_php_samples_test.go`'s pattern (load-correctness only) for the new `xss/` directory, and a live run against DVWA/Juice Shop once templates are drafted — real finding count reported once measured, not assumed in advance.
 
+**Implemented**: fetched `xss-uri-reflected.yaml`/`top-xss-params.yaml` directly from `raw.githubusercontent.com` at the pinned commit (verified both exist there before relying on them, rather than assuming the earlier upstream-repo confirmation still held at this exact SHA), read both fully to confirm every field they use (`part: content_type`, `part: header`, `negative: true`, `stop-at-first-match`) is already supported — no new Go code was needed, matching this step's own prediction. `scripts/sync-nuclei-templates.sh`'s `CATEGORIES` widened. New `templates/nuclei-samples/xss/` + README (documents both templates, honest about not-yet-live-verified), `tests/unit/nuclei_xss_samples_test.go` (load-correctness, passes). **Not live-verified**: no DVWA/Juice Shop access in this session.
+
 ---
 
-## Step 3: SQL Injection Detection (Week 15-16)
+## Step 3: SQL Injection Detection (Week 15-16) — ✅ implemented (2026-08-28), not live-verified
 
 **Goal:** error-based SQLi detection via curated templates, same template-driven approach as Step 2 — per doc01's "template-based patterns + error matching" scoping. Inject common SQLi payloads (via `payloads:`), match on known DB-error-message signatures in the response body — the same "match a known signature in the body" mechanism `misconfig.Detector`'s `VerboseErrorPatterns`/`checkVerboseErrors` (Phase 1b) already proved out, just applied to injected-payload responses instead of a malformed-query probe.
 
@@ -162,13 +172,15 @@ Plus a regression test mirroring `tests/unit/nuclei_dvwa_php_samples_test.go`'s 
 
 Same shape as Step 2: build/vet/test clean, a load-correctness regression test for the new template directory, live finding count measured (not assumed) once templates are drafted and run against a real lab target.
 
+**Implemented**: fetched `error-based-sql-injection.yaml` from the pinned commit alongside Step 2's files. Reading it fully mattered here — a naive reading of `matchers-condition: and` across every named `type: regex` entry in the file would wrongly conclude the template could never realistically fire (dozens of different DB-engine regexes could never all match one response simultaneously). The real structure: `matchers:` is only 2 entries (an Adminer-panel false-positive exclusion, and one matcher whose own regex list is internally OR'd across ~30 engines); everything past that — the per-engine named entries — is `extractors:`, used only to report *which* engine matched, not to gate the finding. Documented this explicitly in `templates/nuclei-samples/sqli/README.md` so the next reader doesn't have to re-derive it. New `templates/nuclei-samples/sqli/` + README, `tests/unit/nuclei_sqli_samples_test.go` (load-correctness, passes). **Not live-verified**: no DVWA/Juice Shop access in this session.
+
 ---
 
-## Step 4: Information Disclosure (Week 17)
+## Step 4: Information Disclosure (Week 17) — ✅ implemented (2026-08-28), not live-verified
 
 **Goal:** mostly extends `pkg/detectors/misconfig`, not a new package — "internal IPs/hostnames/stack traces" is already `VerboseErrorPatterns`/`checkVerboseErrors` from Phase 1b. Real remaining scope is narrower than doc01's full list suggests:
 
-- **"Commented code in responses"** — genuinely new: a new built-in rule table for common HTML/JS debug-comment leftovers (`<!-- TODO -->`, `console.log(`, commented-out `<script>` blocks, etc.), checked the same way `VerboseErrorPatterns` is — a new `CommentLeakPatterns []string` + `checkCommentLeaks`, following `checkVerboseErrors`'s exact shape.
+- **"Commented code in responses"** — genuinely new: a new built-in rule table for common debug leftovers inside actual HTML comments (`<!-- TODO -->`, a commented-out `<script>` block, a credential-shaped word inside a comment, etc.), checked the same way `VerboseErrorPatterns` is — a new `CommentLeakPatterns []string` + `checkCommentLeaks`, following `checkVerboseErrors`'s exact shape. (A bare, non-comment-anchored `console.log(` pattern was considered and dropped during implementation — see the dated note below.)
 - **"API responses leaking unnecessary fields"** (internal IDs, timestamps, role info) — **not** built as a generic built-in rule here. What counts as "unnecessary" is inherently target-specific (an internal `_id` field is expected in one API's contract and a leak in another's) — a fixed keyword list would either miss real cases or false-positive constantly. Documented instead as a **template-writing-guide pattern**: a `dsl:` matcher checking for specific, known-sensitive JSON field names, written per-target the same way `templates/idor/*.yaml` are per-target today, not a generic built-in.
 
 ### Files
@@ -187,11 +199,13 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 ```
 Same pattern as Phase 1b's Future Enhancement #4 (directory-listing check) — new unit tests prove the mechanism; live re-verification against DVWA/Juice Shop happens once code exists, reported honestly rather than assumed.
 
+**Implemented, one deliberate narrowing from this plan's original example list**: `CommentLeakPatterns` dropped the bare `console.log(` pattern this doc originally proposed (copied from doc03's own Week 17 wording) — every pattern actually shipped is anchored to being inside an HTML comment (`<!--...`), not a bare substring match anywhere in the body. A plain `console.log(` match has no such anchor and would fire on essentially any JS-heavy production site (any bundled library that logs anything), which is a real false-positive generator, not a genuine "debug leftover" signal — caught during implementation, not measured against a live target, but a design-time call clear enough not to need one (this project's own `<5%` FP goal is the reason, not a guess). `checkCommentLeaks` fetches target root only (no principled path list exists for "where a leftover comment might be," unlike `ExposedPaths`), registered as the 3rd of 8 `misconfig.Detector` checks. `pkg/detectors/misconfig/{rules,detector}.go` updated, `tests/unit/detector_misconfig_test.go` gained a hit case (a real `<!-- TODO -->`) and a false-positive-safety case (a bare `console.log(` outside any comment, confirming the narrowing actually holds). **Not live-verified**: no DVWA/Juice Shop access in this session.
+
 ---
 
-## Step 5: Testing & Release (Week 18)
+## Step 5: Testing & Release (Week 18) — ⬜ not started
 
-**Goal:** validate Phase 2's real yield against live lab targets, ship `v0.2.0`.
+**Goal:** validate Phase 2's real yield against live lab targets, ship `v0.2.0`. Blocked on live target access this session doesn't have (no Docker on this Windows checkout) — everything below is still the plan, not a report of what happened, unlike Steps 0-4 above.
 
 - Integration tests: `authbypass` against crAPI/vAPI (both already have auth flows and known real bugs — vAPI's BOLA work from Phase 1b's Future Enhancement #6 already proves the auth-header/token plumbing needed here); XSS/SQLi templates and the info-disclosure rule against DVWA/Juice Shop.
 - **Phase 2 Success Metrics (doc03: 10+ auth issues, 20+ XSS, 10+ SQLi) get measured live before being claimed in this doc, not assumed from the target numbers.** Same "revise down with reasoning, don't pad" discipline as Phase 1b's DVWA misconfig number (11-12 real vs. a ≥15 target, explicitly documented rather than chased) — if a lab target's real ceiling is lower than doc03's number, that gets recorded honestly here, with reasoning, not silently hit some other way.

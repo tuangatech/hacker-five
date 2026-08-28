@@ -9,8 +9,9 @@ import (
 
 // recognizedDetectors is the set of --detector values accepted.
 var recognizedDetectors = map[string]bool{
-	"idor":      true,
-	"misconfig": true,
+	"idor":       true,
+	"misconfig":  true,
+	"authbypass": true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -40,6 +41,19 @@ type Config struct {
 	// non-empty, must contain the literal placeholder "{token}".
 	AuthHeaderName   string
 	AuthHeaderFormat string
+
+	// ScopeFile is the path from --scope — a target/host allow-list, checked
+	// before each target is dispatched (pkg/scanner/scope). "" means no
+	// enforcement: every existing documented lab-target workflow keeps
+	// working unmodified without this flag (see
+	// docs/11-implementation-plan-ph2.md Step 0's design tradeoff).
+	ScopeFile string
+
+	// ProtectedPaths are candidate endpoint paths (from --protected-paths)
+	// the authbypass detector's missing-authentication check fires an
+	// unauthenticated request against — required for --detector authbypass,
+	// same shape as idor's --endpoint requirement.
+	ProtectedPaths []string
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.
@@ -61,6 +75,12 @@ func (c Config) Validate() error {
 	}
 	if c.Detector == "idor" && c.EndpointTemplate == "" {
 		return fmt.Errorf("validating config: idor detector requires --endpoint")
+	}
+	if c.Detector == "authbypass" && c.AuthToken == "" {
+		return fmt.Errorf("validating config: authbypass detector requires --auth-token (or its env var equivalent)")
+	}
+	if c.Detector == "authbypass" && len(c.ProtectedPaths) == 0 {
+		return fmt.Errorf("validating config: authbypass detector requires --protected-paths")
 	}
 	if c.AuthHeaderFormat != "" && !strings.Contains(c.AuthHeaderFormat, "{token}") {
 		return fmt.Errorf("validating config: --auth-header-format must contain a {token} placeholder, got %q", c.AuthHeaderFormat)

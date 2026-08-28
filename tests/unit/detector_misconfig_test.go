@@ -164,6 +164,32 @@ func TestMisconfigDirListing_NoMarker_NoFinding(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// TestMisconfigCommentLeak_Hit and TestMisconfigCommentLeak_NoFinding cover
+// Phase 2 Step 4's information-disclosure extension
+// (docs/11-implementation-plan-ph2.md) — checkCommentLeaks fetches root only
+// and flags a debug-leftover pattern inside an actual HTML comment.
+func TestMisconfigCommentLeak_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body><!-- TODO: remove before deploy --></body></html>"))
+	})
+
+	got := withPrefix(findings, "misconfig-comment-leak")
+	require.Len(t, got, 1)
+	assert.Equal(t, "low", got[0].Severity)
+	assert.Equal(t, "high", got[0].Confidence)
+}
+
+func TestMisconfigCommentLeak_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body>a real console.log( call in inline JS, not a comment</body></html>"))
+	})
+
+	got := withPrefix(findings, "misconfig-comment-leak")
+	assert.Empty(t, got, "console.log( outside an HTML comment must not be flagged — see rules.go's CommentLeakPatterns doc comment for why the bare pattern was dropped")
+}
+
 func TestMisconfigMissingHeaders_AllAbsent(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

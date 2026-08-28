@@ -1,7 +1,8 @@
 // Package misconfig implements the misconfiguration detector: fixed
-// built-in rule tables (exposed paths, missing security headers, disallowed
-// HTTP methods, CORS misconfiguration, verbose error messages, default
-// credentials) checked against a single target.
+// built-in rule tables (exposed paths, directory listing, comment leaks,
+// missing security headers, disallowed HTTP methods, CORS misconfiguration,
+// verbose error messages, default credentials) checked against a single
+// target.
 package misconfig
 
 import (
@@ -28,11 +29,23 @@ const corsProbeOrigin = "https://hackerfive-cors-probe.invalid"
 const malformedQuery = "?id=%27"
 
 var verboseErrorRegexes = compilePatterns(VerboseErrorPatterns)
+var commentLeakRegexes = compilePatternsCaseInsensitive(CommentLeakPatterns)
 
 func compilePatterns(patterns []string) []*regexp.Regexp {
 	out := make([]*regexp.Regexp, len(patterns))
 	for i, p := range patterns {
 		out[i] = regexp.MustCompile(p)
+	}
+	return out
+}
+
+// compilePatternsCaseInsensitive is compilePatterns' case-insensitive
+// counterpart, used for CommentLeakPatterns — see that var's doc comment for
+// why real markup can't be relied on for consistent casing.
+func compilePatternsCaseInsensitive(patterns []string) []*regexp.Regexp {
+	out := make([]*regexp.Regexp, len(patterns))
+	for i, p := range patterns {
+		out[i] = regexp.MustCompile("(?i)" + p)
 	}
 	return out
 }
@@ -67,6 +80,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 	checks := []func(context.Context, string, string, string) ([]detectors.Finding, error){
 		d.checkExposedPaths,
 		d.checkDirListing,
+		d.checkCommentLeaks,
 		d.checkMissingHeaders,
 		d.checkDisallowedMethods,
 		d.checkCORS,
@@ -154,6 +168,36 @@ func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken 
 		})
 	}
 	return findings, nil
+}
+
+// checkCommentLeaks fetches target root and checks the body for
+// CommentLeakPatterns — debug/development leftovers in HTML comments
+// (Phase 2 Step 4, docs/11-implementation-plan-ph2.md). Root only, not a
+// path list: unlike ExposedPaths' known sensitive-file locations, there's no
+// principled list of "where a leftover comment might be," so this stays a
+// single bounded request rather than guessing at additional paths.
+func (d *Detector) checkCommentLeaks(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, nil, nil)
+	if err != nil {
+		return nil, nil
+	}
+	pattern, matched := matchAny(body, commentLeakRegexes)
+	if !matched {
+		return nil, nil
+	}
+	return []detectors.Finding{{
+		ID:          "misconfig-comment-leak",
+		Type:        "misconfig",
+		Severity:    "low",
+		Confidence:  "high",
+		Target:      target,
+		Description: "response body contains an HTML comment matching a common debug/development leftover pattern",
+		Evidence: map[string]string{
+			"pattern":  pattern,
+			"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+			"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+		},
+	}}, nil
 }
 
 func (d *Detector) checkMissingHeaders(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {

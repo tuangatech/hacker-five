@@ -202,3 +202,59 @@ func TestEngineRun_MultipleTargets(t *testing.T) {
 	}
 	assert.Len(t, hosts, 2, "both targets must produce findings, not just one")
 }
+
+// TestEngineRun_ScopeFile_BlocksUnmatchedTarget confirms Engine.Run actually
+// skips dispatching a target that --scope doesn't cover, per
+// docs/11-implementation-plan-ph2.md Step 0 — the mechanism itself is
+// covered in detail by tests/unit/scope_test.go; this locks in that Run
+// wires it in, not just that scope.Allowed works in isolation.
+func TestEngineRun_ScopeFile_BlocksUnmatchedTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
+	require.NoError(t, os.WriteFile(scopeFile, []byte("totally-different-domain.example\n"), 0o644))
+
+	cfg := scanner.Config{
+		Targets:     []string{server.URL},
+		Concurrency: 5,
+		RateLimit:   50,
+		Timeout:     5 * time.Second,
+		Detector:    "misconfig",
+		ScopeFile:   scopeFile,
+	}
+	require.NoError(t, cfg.Validate())
+
+	findings, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, findings, "a target not covered by --scope must never be dispatched")
+}
+
+// TestEngineRun_ScopeFile_AllowsMatchedTarget is the positive counterpart —
+// a --scope entry that does cover the target lets the scan proceed exactly
+// as if --scope had been omitted.
+func TestEngineRun_ScopeFile_AllowsMatchedTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
+	require.NoError(t, os.WriteFile(scopeFile, []byte("127.0.0.1\n"), 0o644))
+
+	cfg := scanner.Config{
+		Targets:     []string{server.URL},
+		Concurrency: 5,
+		RateLimit:   50,
+		Timeout:     5 * time.Second,
+		Detector:    "misconfig",
+		ScopeFile:   scopeFile,
+	}
+	require.NoError(t, cfg.Validate())
+
+	findings, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+	assert.NotEmpty(t, findings, "a target covered by --scope must be dispatched normally")
+}

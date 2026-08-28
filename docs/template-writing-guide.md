@@ -124,6 +124,63 @@ http:
 - **Two DSL functions exist mainly to make this useful:** `compare_versions(version, constraint...)` (see the `condition:`/DSL reference below) and `base64_decode(s)`.
 - **Not supported:** a *forward* reference (a matcher in an earlier request referencing an extractor `Name` that's only declared in a *later* request) — extraction only ever flows forward, matching real Nuclei and every real sampled template. Payload-bound variables (`payloads:`'s per-iteration value) aren't merged into this DSL context either — a separate, unmeasured gap, not needed by any real template found so far.
 
+### Reflected XSS / error-based SQLi (Phase 2 pattern)
+
+Both are plain `path:`-based templates — no new mechanism, just payload + matcher, same as any other check. See [templates/nuclei-samples/xss/](../templates/nuclei-samples/xss/) and [templates/nuclei-samples/sqli/](../templates/nuclei-samples/sqli/) for real, working examples (sourced from upstream `http/vulnerabilities/generic/`, not hand-written for this guide).
+
+**Reflected XSS** — inject a marker into the URL, check whether it reflects back unescaped:
+```yaml
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/a%22%3E%3Cinjectable%3E"
+    matchers-condition: and
+    matchers:
+      - type: word
+        part: body
+        words: ["\"><injectable>"]
+      - type: word
+        part: content_type
+        words: ["text/html"]
+      - type: status
+        status: [200]
+```
+`part: content_type` matters: a JSON API echoing the marker back inside a string value isn't reflected *HTML* XSS — restricting to `text/html` responses keeps this from false-positiving on APIs that safely serialize whatever you send them.
+
+**Error-based SQLi** — inject a single `'`, match on a known DB error-message signature:
+```yaml
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/'"
+    matchers:
+      - type: regex
+        part: body
+        regex:
+          - "SQL syntax.{0,200}?MySQL"
+          - "PostgreSQL.{0,200}?ERROR"
+          # ... one entry per DB engine's real error-message shape
+        condition: or
+```
+A single matcher with many OR'd patterns, not one matcher per engine — `error-based-sql-injection.yaml` additionally uses per-engine named `extractors:` (not `matchers:`) to report *which* engine matched, without making every engine's pattern part of the pass/fail gate.
+
+**Not built**: DOM-based XSS (needs a real browser — deliberately deferred, see [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md)'s Scope section) and boolean-based/blind SQLi (time-based, optional per the roadmap).
+
+### Sensitive JSON fields in a response (information-disclosure pattern)
+
+No generic built-in rule for this — what counts as "unnecessary" (an internal `_id`, a `role` field, a raw timestamp) is inherently target-specific; a fixed keyword list would either miss real leaks or false-positive on APIs that legitimately expose those fields by design. Write a per-target `dsl:` matcher instead, the same way `templates/idor/*.yaml` are already per-target:
+```yaml
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/users/1"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(body, "internal_notes") || contains(body, "password_hash")'
+```
+Pick the field names by actually reading a real response from the target first — same recon-before-template discipline every `templates/nuclei-samples/*/README.md` batch already documents.
+
 ### Rejected at load time, not silently ignored
 
 A template using any of these fails to load with a named error, rather than running incompletely or wrong:
@@ -140,7 +197,7 @@ A template using any of these fails to load with a named error, rather than runn
 ```bash
 make templates-sync   # scripts/sync-nuclei-templates.sh — pinned commit, never HEAD (supply-chain safety, see doc10 Step 2)
 ```
-Populates `.nuclei-templates-cache/http/{exposed-panels,misconfiguration,technologies}/` (gitignored). Use `--tags` to scope a scan to what's actually relevant to a target's tech stack instead of firing the whole synced corpus — see [21-scanning-real-targets.md](21-scanning-real-targets.md) §3 for the full workflow.
+Populates `.nuclei-templates-cache/http/{exposed-panels,misconfiguration,technologies,vulnerabilities/generic}/` (gitignored) — the last one added in Phase 2 for real, generic XSS/SQLi templates (see [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Steps 2-3). Use `--tags` to scope a scan to what's actually relevant to a target's tech stack instead of firing the whole synced corpus — see [21-scanning-real-targets.md](21-scanning-real-targets.md) §3 for the full workflow.
 
 ---
 

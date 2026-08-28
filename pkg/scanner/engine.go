@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/detectors/authbypass"
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
+	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
 	"github.com/tuangatech/hacker-five/pkg/template/native"
 	"github.com/tuangatech/hacker-five/pkg/template/nuclei"
@@ -72,6 +74,11 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 	hostCache := hosterrors.New(threshold)
 	pool := workerpool.New(ctx, e.cfg.Concurrency, 2*e.cfg.Concurrency)
 
+	sc, err := e.loadScope()
+	if err != nil {
+		return nil, err
+	}
+
 	nucleiTemplates, nativeTemplates := e.loadTemplates()
 	nucleiExec := nuclei.New(e.client)
 	nativeExec := native.New(e.client, e.idorOptions()...)
@@ -83,6 +90,12 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 
 	for _, target := range e.cfg.Targets {
 		target := target
+
+		if sc != nil && !sc.Allowed(target) {
+			fmt.Fprintf(os.Stderr, "skipping %s: not covered by --scope %s\n", target, e.cfg.ScopeFile)
+			continue
+		}
+
 		host, err := hostOf(target)
 		if err != nil {
 			return nil, fmt.Errorf("parsing target %q: %w", target, err)
@@ -137,6 +150,23 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 		return findings, fmt.Errorf("scan completed with %d error(s), first: %w", len(errs), errs[0])
 	}
 	return findings, nil
+}
+
+// loadScope parses e.cfg.ScopeFile, if given. Returns (nil, nil) when
+// ScopeFile is "" — the documented "no enforcement" default (see
+// docs/11-implementation-plan-ph2.md Step 0) — but prints a one-line stderr
+// warning first, so a real-target run without scoping is visibly, not
+// silently, unguarded.
+func (e *Engine) loadScope() (*scope.Scope, error) {
+	if e.cfg.ScopeFile == "" {
+		fmt.Fprintln(os.Stderr, "no --scope file provided — all targets will be scanned without authorization-scope validation")
+		return nil, nil
+	}
+	sc, err := scope.Parse(e.cfg.ScopeFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading --scope: %w", err)
+	}
+	return sc, nil
 }
 
 // loadTemplates parses every template directory in cfg.TemplatePaths once,
@@ -238,6 +268,9 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "misconfig":
 		detector := misconfig.New(e.client)
 		return detector.Run(ctx, target, e.cfg.AuthToken)
+	case "authbypass":
+		detector := authbypass.New(e.client)
+		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.ProtectedPaths)
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)
 	}

@@ -143,3 +143,22 @@ var VerboseErrorPatterns = []string{
 	`\b172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+\b`,
 	`\b192\.168\.\d+\.\d+\b`,
 }
+
+// CommentLeakPatterns match common debug/development leftovers inside HTML
+// comments — information disclosure (Phase 2 Step 4,
+// docs/11-implementation-plan-ph2.md), checked case-insensitively (see
+// checkCommentLeaks) since real markup capitalizes these inconsistently.
+// Deliberately narrower than doc11's original example list: every pattern
+// here is anchored to actually being inside an HTML comment (`<!--...`), not
+// a bare substring match anywhere in the body — doc11's own example
+// included a bare `console.log(` check, but that matches so much real,
+// intentional production JS (any bundled library that logs anything) that
+// it would be a real false-positive generator rather than a genuine "debug
+// leftover" signal; dropped here rather than guessed into the list.
+var CommentLeakPatterns = []string{
+	`<!--[^>]*\bTODO\b`,
+	`<!--[^>]*\bFIXME\b`,
+	`<!--[^>]*\bDEBUG\b`,
+	`<!--[^>]*<script`,                       // a whole commented-out <script> block left in the page
+	`<!--[^>]*(password|secret|api[_-]?key)`, // a credential-shaped word inside a comment
+}

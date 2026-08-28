@@ -92,6 +92,25 @@ func TestConfigValidate(t *testing.T) {
 				return c
 			},
 		},
+		{
+			name:    "authbypass without auth token",
+			mutate:  func(c scanner.Config) scanner.Config { c.Detector = "authbypass"; c.ProtectedPaths = []string{"/admin"}; return c },
+			wantErr: "authbypass detector requires --auth-token",
+		},
+		{
+			name:    "authbypass without protected paths",
+			mutate:  func(c scanner.Config) scanner.Config { c.Detector = "authbypass"; c.AuthToken = "tok"; return c },
+			wantErr: "authbypass detector requires --protected-paths",
+		},
+		{
+			name: "authbypass with token and protected paths is valid",
+			mutate: func(c scanner.Config) scanner.Config {
+				c.Detector = "authbypass"
+				c.AuthToken = "tok"
+				c.ProtectedPaths = []string{"/admin"}
+				return c
+			},
+		},
 	}
 
 	for _, tc := range cases {
