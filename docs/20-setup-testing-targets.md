@@ -307,7 +307,16 @@ The other checks correctly found nothing with the command above: `checkMissingAu
 ```
 Real result (2026-08-28): **2 new real findings**, `authbypass-token-reuse-api1-user-5`/`-6` — `/vapi/api1/user/{id}` returns identical content regardless of which account's token is used (the same underlying BOLA the IDOR run above already found, now also caught through auth-bypass's own token-reuse lens, since the request finally carries a header vAPI's real auth middleware recognizes at all).
 
-**vAPI also ships its own intentional weak-JWT-secret challenge** (`POST /vapi/jwt/user`, `App\Http\Controllers\JustWeakTokenController`) — a *different* auth module from `api1`'s header scheme, worth knowing about for future recon: its secret (`"YouNeverGonnaGetThisOne"`) isn't in `authbypass.WeakJWTSecrets`' dictionary (by design — it's not a common weak secret), but its `JWT::decode($token, $key, array('HS256','none'))` call accepts `'none'` as a valid algorithm, meaning `checkJWTAlgNone` would very likely catch it once a real token is obtained from this module. Not exercised in this session (its registration endpoint returned an unexplained `500` with no PHP error log available to diagnose) — a good target for the next `--protected-paths` recon pass, not a HackerFive gap.
+**vAPI also ships its own intentional weak-JWT-secret challenge** (`POST /vapi/jwt/user` to register, `GET /vapi/jwt/user` with an `Authorization-Token` header to redeem, `App\Http\Controllers\JustWeakTokenController`) — a *different* auth module from `api1`'s header scheme. The earlier session's unexplained `500` on registration was chased down and resolved (2026-08-28): it's not a vAPI bug or a HackerFive gap, just a reused `username` colliding with `justweaktokens`' `UNIQUE` DB constraint — a fresh username registers cleanly and returns `200` with a real JWT.
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/vapi/jwt/user -H 'Content-Type: application/json' \
+  -d '{"username":"<unique-name>","password":"<any>"}' | jq -r .token)
+./hackerfive scan -t http://localhost:8000 --detector authbypass \
+  --auth-token "$TOKEN" --protected-paths /vapi/jwt/user \
+  --auth-header-name 'Authorization-Token' --auth-header-format '{token}'
+```
+Real, live-verified result (2026-08-28): **4 real findings** — `authbypass-jwt-alg-none-vapi-jwt-user` and `authbypass-jwt-signature-stripped-vapi-jwt-user` (both **critical**: the server's `JWT::decode($token, $key, array('HS256','none'))` call really does accept `alg: none`, confirmed independently by hand-forging a `role:admin` token and retrieving the module's flag directly — see doc11 Step 5), `authbypass-broken-session-vapi-jwt-user` (**high**: the token still works after hitting the generic `/logout` guess — this module has no server-side logout at all, so any logout attempt trivially "fails" to invalidate it), and `authbypass-no-rate-limit-login` (**info/needs-triage**, same `/login`-guess mismatch as above — not new signal). One transient run produced only the broken-session finding with no error; a same-second re-run and an isolated direct-`Run()` call both reproduced all 4 findings cleanly, so this was a one-off flake (most likely the local container's own warm-up), not a detector bug — logged as a note, not chased further given it hasn't recurred.
 
 ### Teardown / reset
 
