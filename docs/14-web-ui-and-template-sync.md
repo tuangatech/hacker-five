@@ -37,10 +37,45 @@ The reasoning is a direct consequence of this project's existing rules, not a ne
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) and [22-authorized-targets.md](22-authorized-targets.md) both assume the operator is personally accountable for scope/authorization on each scan. A shared hosted service blurs who's actually running (and responsible for) a given scan.
 - doc02's core "why Go" argument is single-binary distribution with no external dependencies. An embedded server preserves that: `hackerfive serve` opens a browser tab to `localhost:PORT`, same binary, same release artifact, no separate deploy pipeline, no hosting cost, nothing new for the release process (doc10) to package.
 
-### Server design (v1 sketch)
+### Server design (v1)
 - **New subcommand:** `hackerfive serve [--port 8877] [--host 127.0.0.1]`. Default bind is **loopback-only** — binding beyond `127.0.0.1` is opt-in and, per [Attack surface](#attack-surface--hardening) below, should require an explicit acknowledgment the same way `--insecure` (skip TLS verify) already does for scan targets.
-- **Stack:** Go stdlib `net/http` + `html/template`, static assets (CSS/minimal JS) embedded via `go:embed` — no separate frontend build/toolchain, keeping with the "Minimal Dependencies" stance in doc02 §7. If interactivity needs grow (live progress bars, filtering without full page reloads) reach for htmx before reaching for a full SPA framework — same "smallest thing that solves the actual problem" bar as the rest of the stack.
+- **Stack:** Go stdlib `net/http` + `html/template`, static assets (CSS + **htmx**) embedded via `go:embed` — no separate frontend build/toolchain, keeping with the "Minimal Dependencies" stance in doc02 §7. htmx (not a hand-rolled fetch/JS layer, and not a full SPA framework) is the deliberate middle point: server-rendered HTML stays the source of truth, but form submits and live updates swap DOM fragments instead of full page reloads — see [Pages & htmx interaction patterns](#pages--htmx-interaction-patterns) below.
 - **Reuses, doesn't duplicate:** the HTTP handlers call into `pkg/scanner`, `pkg/template`, and `pkg/reporter` exactly as `cmd/hackerfive/scan.go` does today. The server is a new frontend on an unchanged core, per doc02's Scanner Engine module boundary.
+
+### Pages & htmx interaction patterns
+
+| Page | Route | Purpose |
+|---|---|---|
+| Dashboard | `/` | Recent scans (in-memory list), quick links to New Scan / Templates |
+| New Scan | `/scans/new` | Form: target(s), `--detector`, `--tags`, auth tokens, rate-limit/concurrency/proxy, the required authorization checkbox |
+| Scan Status/Results | `/scans/{id}` | Same page transitions from live progress → finding list as the job completes — no navigation away |
+| Scan History | `/scans` | List of past scans this server process has run |
+| Templates | `/templates` | Table of synced templates (name/category/tags/severity), tag filter, checkboxes feeding the next scan's `--tags` |
+
+Five pages; "Sync now" is a fragment/action on the Templates page, not a separate route.
+
+htmx does the interactivity without a JS build step:
+- **Scan submission:** the New Scan form uses `hx-post="/scans" hx-target="#scan-panel"` — the response swaps in the progress panel in place, and `hx-push-url` updates the address bar to `/scans/{id}` so it's bookmarkable.
+- **Live progress:** the **SSE extension** (`hx-ext="sse"`, `sse-connect="/scans/{id}/events"`, `sse-swap="progress"`) rather than polling — Go's `net/http` + `http.Flusher` support SSE with no new backend dependency, and it avoids a poll-every-N-seconds loop. The final SSE event swaps the progress panel for the finding table.
+- **Templates page:** the tag filter does `hx-get="/templates?tags=..." hx-target="#template-table"`; "Sync now" is `hx-post="/templates/sync" hx-target="#sync-status"` with `hx-indicator` for a spinner during the (multi-second) git sparse-checkout.
+- **Why this matters beyond v1:** once these `hx-*` attributes and the SSE event stream exist, adding e.g. a cancel-scan button or per-request log tailing is a new SSE event type plus a `hx-target` div — not a framework migration. This is the "prepare for future interactivity" property htmx buys over a plain-form/full-reload design.
+
+### New components / code
+
+**CLI (`cmd/hackerfive/`):**
+- `serve.go` — new `serve` subcommand (`--port`, `--host`)
+- `templates.go` — new `templates sync` / `templates list` subcommands
+
+**New package `pkg/webui/`:**
+- `server.go` — `http.Server`, routing, CSRF middleware (hand-rolled double-submit-cookie token — stdlib has no CSRF helper, and this stays consistent with the minimal-deps stance rather than pulling in a framework)
+- `handlers_scan.go` — `POST /scans`, `GET /scans/{id}`, `GET /scans/{id}/events` (SSE) — calls straight into existing `pkg/scanner`, no scan logic duplicated here
+- `handlers_templates.go` — `GET /templates`, `POST /templates/sync` — calls the new `pkg/templatesync` package
+- `jobs.go` — in-memory job store (`map[string]*ScanJob`, mutex-guarded), one goroutine per running scan
+- `templates/*.html` — `html/template` layout + per-page files + the SSE-swapped fragments
+- `static/` — CSS, `htmx.min.js`, `htmx-ext-sse.js` (vendored, not CDN-loaded — the binary must work fully offline)
+- `embed.go` — `//go:embed templates static`, the line that makes [Running it](#running-it-release-to-release) below simple
+
+**New package `pkg/templatesync/`:** the Go port of `scripts/sync-nuclei-templates.sh` — see [Template sync command](#template-sync-command).
 
 ### Async job model
 A scan can run for minutes; the HTTP request that starts it can't just block:
@@ -54,12 +89,29 @@ Binding a port, even on loopback, is new attack surface a pure CLI tool doesn't 
 - **No auth token required for the default loopback bind** (matches the trust model of "it's your own machine"), but **require a token** (printed to stdout at startup, Jupyter-notebook-style: `http://127.0.0.1:8877/?token=...`) the moment `--host` is set to anything other than `127.0.0.1`/`::1`.
 - **Rate/target guardrails carry over unchanged** — the UI form still goes through the same `--rate-limit`/`--concurrency` defaults and host-error-cache circuit breaker (doc02 §3) as the CLI; the UI doesn't get to bypass them.
 
+### Running it, release-to-release
+
+The key design choice: **web assets (`html/template` files, CSS, `htmx.js`) are `go:embed`-ed into the binary, not shipped as loose files in the release archive.** Only `templates/` (the YAML detection templates, already loose today since they're meant to be user-editable) stays external.
+
+That choice is what keeps the "download a new release" story identical to today's:
+```powershell
+# same as today — download & extract, no separate UI install step
+.\hackerfive.exe --version
+
+# from inside that same extracted folder, so ./templates/ default still resolves
+.\hackerfive.exe serve
+# → opens the default browser to http://127.0.0.1:8877 and prints the URL
+#   (in case the auto-open is blocked/skipped, e.g. over SSH or a sandboxed shell)
+```
+No separate "install the web UI" step, no static-asset folder to keep in sync with the binary version, no risk of stale HTML being served against a newer binary. Because the UI is baked into the same artifact `goreleaser` already cross-compiles (doc10), **"update the web UI" and "update the CLI" are the same action: download the new release zip, extract, run.** This is doc02's original "why Go / single static binary" argument extended one layer up, not a new distribution mechanism.
+
 ## Template sync command
 
 `scripts/sync-nuclei-templates.sh` already does the core of this (sparse-checkout of `http/exposed-panels`, `http/misconfiguration`, `http/technologies` from a **pinned commit** of upstream `nuclei-templates`, cached in `.nuclei-templates-cache/`, re-run only explicitly via `make templates-sync` — never auto-updated to HEAD, so a compromised upstream commit between pins can't silently reach a scan). Two gaps to close, independent of the UI:
 
-1. **Bash-only today, and this checkout is Windows-first.** The script needs WSL to run (see CLAUDE.md's verification section) — Windows users following the README's native `.exe` path can't run it directly. Promoting it to a Go subcommand (`hackerfive templates sync`) fixes that for free: same `git`-based sparse-checkout logic, cross-compiled into the existing release binary, no bash/WSL dependency. The shell script can stay as-is for CI/dev-container use, or become a thin wrapper.
+1. **Bash-only today, and this checkout is Windows-first.** The script needs WSL to run (see CLAUDE.md's verification section) — Windows users following the README's native `.exe` path can't run it directly. Promoting it to a Go subcommand (`hackerfive templates sync`, in the new `pkg/templatesync` package — see [New components / code](#new-components--code)) fixes that for free: same `git`-based sparse-checkout logic, cross-compiled into the existing release binary, no bash/WSL dependency. The shell script can stay as-is for CI/dev-container use, or become a thin wrapper.
 2. **No listing/enable-disable surface.** Today "which templates are active" is implicit (whatever's under `--templates ./templates/`). Add `hackerfive templates list [--tags ...]` to enumerate what's synced, with category/tag/severity metadata pulled from each template's `info:` block.
+3. **No default sync location for an end user.** In the dev repo, sync output lands in gitignored `.nuclei-templates-cache/`. For a released binary, default `hackerfive templates sync` to write into `./templates/nuclei-synced/` — inside the same `--templates` root `scan` and the Templates UI page already read from, so there's no new `--templates-cache`-style flag to introduce for v1.
 
 **Preserve the explicit-pin security posture exactly** — this is the one non-negotiable carried over from the existing script's comments: sync must target a pinned commit SHA (bumped deliberately, logged in the command's output), never an implicit `HEAD`/`latest`. The web UI's "Sync now" button calls this same subcommand; it does not add an "auto-update" toggle.
 
@@ -68,9 +120,10 @@ The web UI's **Templates page** is then a thin view over these two subcommands: 
 ## Effort & sequencing
 
 Rough shape, not a committed schedule (doc03 owns actual week numbers if/when this gets scheduled):
-- `hackerfive templates sync`/`list` subcommands — small, mostly porting existing bash logic to Go; useful standalone even without the UI (unblocks Windows users today).
-- `hackerfive serve` + start-scan/results pages — the bulk of the effort: async job model, SSE/polling, HTML templates for the finding view.
-- Templates page — small once `templates list` exists, since it's just a table over that data.
+- `pkg/templatesync` + `hackerfive templates sync`/`list` subcommands — small, mostly porting existing bash logic to Go; useful standalone even without the UI (unblocks Windows users today).
+- `pkg/webui` core (`server.go`, CSRF, `embed.go`, layout) + New Scan / Scan Status pages with the SSE job model — the bulk of the effort.
+- Templates page — small once `templates list` exists and `pkg/webui` core is in place, since it's mostly a table + one `hx-post` over data the CLI subcommand already produces.
+- Dashboard / Scan History pages — thin, once the job store and at least one other page exist.
 
 Suggest doing the CLI template-sync subcommand first regardless of UI timing — it's useful on its own and de-risks the "Templates page" piece of the UI later.
 
