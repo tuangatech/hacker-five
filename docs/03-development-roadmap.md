@@ -351,12 +351,12 @@ Trimmed to things the project actually controls (built/shipped/verified). Remove
 - [ ] Documentation complete
 
 #### **Milestone 2: Expanded Coverage (Week 18) — v0.2.0**
-- [ ] v0.2.0 released
-- [ ] API auth detector added
-- [ ] XSS detector added
-- [ ] SQLi detector added
-- [ ] 100+ templates in repository
-- [ ] HackerOne profile set up, first programs joined
+- [x] v0.2.0 released (2026-08-28) — see [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) for the full, honest results
+- [x] API auth detector added — 16 live-verified findings against crAPI/vAPI, doc03's ≥10 target met
+- [x] XSS detector added — working, live-verified (2 real findings against DVWA); doc03's ≥20 breadth target not met, see doc11
+- [x] SQLi detector added — working, live-verified (2 real findings against DVWA, error-based + boolean-blind); doc03's ≥10 breadth target not met, see doc11
+- [ ] 100+ templates in repository — **not met, real gap**: only 27 first-party/curated templates are actually checked into `templates/`. The ~2,500-template upstream corpus (`scripts/sync-nuclei-templates.sh`) is deliberately *synced from a pinned commit at scan time, not vendored/committed* (see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 2) — a real design choice (avoids redistributing upstream content, stays current with a pinned upgrade path) that this milestone item's literal wording didn't anticipate. Worth a future decision: revise this milestone's wording, or treat it as intentionally unmet
+- [ ] HackerOne profile set up, first programs joined — a business/account task outside this project's code, not something a coding session tracks or actions
 
 #### **Milestone 3: Specialization (Week 26) — v0.3.0**
 - [ ] v0.3.0 released
