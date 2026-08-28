@@ -27,6 +27,9 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		insecure         bool
 		scopeFile        string
 		protectedPaths   string
+		loginPaths       string
+		logoutPaths      string
+		headers          []string
 	)
 
 	cmd := &cobra.Command{
@@ -43,6 +46,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			targetList, err := resolveTargets(targets)
 			if err != nil {
 				return fmt.Errorf("resolving targets: %w", err)
+			}
+			extraHeaders, err := parseHeaders(headers)
+			if err != nil {
+				return fmt.Errorf("parsing --header: %w", err)
 			}
 
 			cfg := scanner.Config{
@@ -64,6 +71,9 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				AuthHeaderFormat: authHeaderFormat,
 				ScopeFile:        scopeFile,
 				ProtectedPaths:   parseTags(protectedPaths),
+				LoginPaths:       parseTags(loginPaths),
+				LogoutPaths:      parseTags(logoutPaths),
+				ExtraHeaders:     extraHeaders,
 			}
 			if err := cfg.Validate(); err != nil {
 				return err
@@ -97,11 +107,14 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")
 	cmd.Flags().StringVar(&otherAuthToken, "other-auth-token", "", "second account token for IDOR baseline mode / authbypass token-reuse check (env: HACKERFIVE_OTHER_AUTH_TOKEN)")
-	cmd.Flags().StringVar(&authHeaderName, "auth-header-name", "", `HTTP header name for the IDOR auth token (default "Authorization")`)
-	cmd.Flags().StringVar(&authHeaderFormat, "auth-header-format", "", `header value template for the IDOR auth token, must contain "{token}" (default "Bearer {token}")`)
+	cmd.Flags().StringVar(&authHeaderName, "auth-header-name", "", `HTTP header name for the idor/authbypass auth token (default "Authorization")`)
+	cmd.Flags().StringVar(&authHeaderFormat, "auth-header-format", "", `header value template for the idor/authbypass auth token, must contain "{token}" (default "Bearer {token}")`)
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification — lab targets only, never the default")
 	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to a target allow-list file (one domain/*.domain/CIDR entry per line, # comments); omitted = no enforcement (a warning is printed)")
 	cmd.Flags().StringVar(&protectedPaths, "protected-paths", "", "comma-separated candidate endpoint paths the authbypass detector probes (required for --detector authbypass)")
+	cmd.Flags().StringVar(&loginPaths, "login-paths", "", `comma-separated candidate login paths for authbypass's rate-limit-signal check (default: authbypass's built-in generic guesses, e.g. "/login")`)
+	cmd.Flags().StringVar(&logoutPaths, "logout-paths", "", `comma-separated candidate logout paths for authbypass's broken-session check (default: authbypass's built-in generic guesses, e.g. "/logout")`)
+	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every template-driven request (repeatable) — e.g. a session cookie a login flow issued outside this scan, since template placeholders can't carry one yet`)
 
 	return cmd
 }
@@ -127,6 +140,28 @@ func resolveTargets(value string) ([]string, error) {
 		return targetList, nil
 	}
 	return []string{value}, nil
+}
+
+// parseHeaders turns repeated --header "Name: Value" flags into a map,
+// splitting each entry on its first colon (a header value may itself
+// contain a colon, e.g. a Cookie or URL — Name never does). Rejects an
+// entry with no colon at all outright, rather than silently dropping it,
+// since a malformed --header most likely means the user meant to supply a
+// header and got the syntax wrong — failing fast beats scanning without the
+// header they thought they'd set.
+func parseHeaders(raw []string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	headers := make(map[string]string, len(raw))
+	for _, entry := range raw {
+		name, value, found := strings.Cut(entry, ":")
+		if !found {
+			return nil, fmt.Errorf(`--header %q must be in "Name: Value" form`, entry)
+		}
+		headers[strings.TrimSpace(name)] = strings.TrimSpace(value)
+	}
+	return headers, nil
 }
 
 // parseTags splits a comma-separated --tags value into a trimmed slice,

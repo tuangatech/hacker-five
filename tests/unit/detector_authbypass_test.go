@@ -320,6 +320,110 @@ func TestAuthBypassBrokenSession_Hit(t *testing.T) {
 	assert.Equal(t, "high", got[0].Severity)
 }
 
+// TestAuthBypassLoginPaths_Override proves WithLoginPaths actually changes
+// which candidate path checkRateLimitSignal probes — the real gap
+// docs/11-implementation-plan-ph2.md Step 5 found live against crAPI/vAPI,
+// where none of the fixed defaults (authbypass.LoginPaths) matched either
+// target's real login route. The mock server here only recognizes a
+// custom path none of the defaults would ever reach, so a finding here can
+// only come from the override actually being used, not the built-in list.
+func TestAuthBypassLoginPaths_Override(t *testing.T) {
+	var hitCustomPath, hitDefaultPath int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/identity/api/auth/login":
+			atomic.AddInt64(&hitCustomPath, 1)
+			w.WriteHeader(http.StatusUnauthorized) // never throttled
+		case "/login", "/api/login", "/auth/login":
+			atomic.AddInt64(&hitDefaultPath, 1)
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient(), authbypass.WithLoginPaths([]string{"/identity/api/auth/login"}))
+	findings, err := detector.Run(context.Background(), srv.URL, "", "", nil)
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "authbypass-no-rate-limit-")
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Target, "/identity/api/auth/login")
+	assert.Greater(t, atomic.LoadInt64(&hitCustomPath), int64(0), "override path should have been probed")
+	assert.Equal(t, int64(0), atomic.LoadInt64(&hitDefaultPath), "default login paths should not be probed once overridden")
+}
+
+// TestAuthBypassLogoutPaths_Override is WithLoginPaths' checkBrokenSession
+// counterpart.
+func TestAuthBypassLogoutPaths_Override(t *testing.T) {
+	var loggedOut int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api2/user/logout":
+			atomic.StoreInt64(&loggedOut, 1)
+			w.WriteHeader(http.StatusOK)
+		case "/logout", "/api/logout", "/auth/logout":
+			w.WriteHeader(http.StatusNotFound)
+		case "/profile":
+			if atomic.LoadInt64(&loggedOut) == 1 {
+				w.WriteHeader(http.StatusOK) // still accepted after logout: real bug
+				_, _ = w.Write([]byte("still logged in"))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient(), authbypass.WithLogoutPaths([]string{"/api2/user/logout"}))
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "", []string{"/profile"})
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "authbypass-broken-session-")
+	require.Len(t, got, 1)
+	assert.Equal(t, "/api2/user/logout", got[0].Evidence["logout_path"])
+}
+
+// TestAuthBypassAuthHeader_Override proves WithAuthHeader actually changes
+// the header checkBrokenSession sends ownerToken through — the real gap
+// Step 5 found against vAPI, which authenticates via a custom
+// "Authorization-Token: base64(user:pass)" header, not
+// "Authorization: Bearer <token>". This mock server only ever recognizes
+// the custom header name/value, never "Authorization: Bearer" — so the
+// finding below can only come from the override actually being applied to
+// the outgoing request, not a default that happens to also work.
+func TestAuthBypassAuthHeader_Override(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected default Bearer header sent: %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/logout":
+			w.WriteHeader(http.StatusOK)
+		case "/profile":
+			if r.Header.Get("Authorization-Token") == "owner-b64" {
+				w.WriteHeader(http.StatusOK) // still accepted after "logout": real bug
+				_, _ = w.Write([]byte("still logged in"))
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient(), authbypass.WithAuthHeader("Authorization-Token", "{token}"))
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-b64", "", []string{"/profile"})
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "authbypass-broken-session-")
+	require.Len(t, got, 1)
+}
+
 func TestAuthBypassBrokenSession_NoFinding(t *testing.T) {
 	var loggedOut int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

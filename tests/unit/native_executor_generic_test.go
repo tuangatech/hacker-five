@@ -35,6 +35,34 @@ func TestNativeExecutorRun_SingleRequestMatch(t *testing.T) {
 	assert.Equal(t, "custom", findings[0].Type, "no tags: falls back to \"custom\"")
 }
 
+// TestNativeExecutorRun_WithHeaders_AppliedToRequest is
+// nuclei.Executor's TestExecutorRun_WithHeaders_AppliedToRequest
+// counterpart for the native generic (non-idor-tagged) template path.
+func TestNativeExecutorRun_WithHeaders_AppliedToRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "session=abc123" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte("authenticated content"))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &native.Template{
+		ID:   "cookie-gated",
+		Info: native.Info{Name: "Cookie gated", Severity: "info"},
+		Requests: []native.Request{{
+			Path:     "{{BaseURL}}/",
+			Matchers: []matcher.Matcher{{Type: "word", Words: []string{"authenticated content"}}},
+		}},
+	}
+
+	exec := native.New(newExecutorClient()).WithHeaders(map[string]string{"Cookie": "session=abc123"})
+	findings, err := exec.Run(context.Background(), server.URL, tmpl, "", "")
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "WithHeaders' Cookie must have reached the request for the gated content to be visible at all")
+}
+
 func TestNativeExecutorRun_NoMatchersNeverAFindingButStillExtracts(t *testing.T) {
 	var profileHit bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

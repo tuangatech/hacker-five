@@ -19,9 +19,23 @@ var WeakJWTSecrets = []string{
 	"12345678",
 }
 
+// DefaultAuthHeaderName/DefaultAuthHeaderFormat are the header name/value
+// shape used unless overridden via WithAuthHeader — same values as
+// idor.DefaultAuthHeaderName/Format, duplicated rather than imported so this
+// package still doesn't depend on idor (see checkTokenReuse's doc comment
+// for why that import was deliberately removed).
+const (
+	DefaultAuthHeaderName   = "Authorization"
+	DefaultAuthHeaderFormat = "Bearer {token}"
+)
+
 // LoginPaths are candidate login endpoints for checkRateLimitSignal —
 // tried in order; the first one that responds (not a connection failure) is
 // used. Same fixed-list precedent as misconfig.DefaultCreds' LoginPath.
+// These are generic guesses and won't match every real target's actual
+// routes (live-verified against neither crAPI's nor vAPI's real login paths,
+// see docs/11-implementation-plan-ph2.md Step 5) — override per-target via
+// WithLoginPaths (--login-paths).
 var LoginPaths = []string{"/login", "/api/login", "/auth/login"}
 
 // rateLimitProbeUsername/Password are a single, deliberately-invalid
@@ -36,5 +50,6 @@ const (
 )
 
 // LogoutPaths are candidate logout endpoints for checkBrokenSession — same
-// try-in-order convention as LoginPaths.
+// try-in-order convention as LoginPaths, same "generic guess, override via
+// WithLogoutPaths (--logout-paths)" caveat.
 var LogoutPaths = []string{"/logout", "/api/logout", "/auth/logout"}

@@ -199,6 +199,69 @@ func TestExecutorRun_SinglePathMatch(t *testing.T) {
 	assert.Equal(t, "info", findings[0].Severity)
 }
 
+// TestExecutorRun_WithHeaders_AppliedToRequest proves WithHeaders actually
+// reaches the outgoing request — the real gap docs/11-implementation-plan-ph2.md
+// Step 5 found: DVWA's real XSS/SQLi pages are gated behind a session
+// cookie, and neither template format had any way to carry one in. The
+// server here only serves the vulnerable-looking content when it sees the
+// session cookie, so a finding can only come from WithHeaders' value
+// actually landing on the request.
+func TestExecutorRun_WithHeaders_AppliedToRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "PHPSESSID=abc123; security=low" {
+			w.WriteHeader(http.StatusFound) // simulates DVWA's login redirect
+			return
+		}
+		_, _ = w.Write([]byte(`Hello "><injectable>`))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "dvwa-xss-style",
+		Info: nuclei.Info{Name: "DVWA XSS", Severity: "low"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method: http.MethodGet,
+			Path:   []string{"{{BaseURL}}/vulnerabilities/xss_r/?name=test"},
+			Matchers: []matcher.Matcher{
+				{Type: "word", Words: []string{`"><injectable>`}},
+			},
+		}},
+	}
+
+	exec := nuclei.New(newExecutorClient()).WithHeaders(map[string]string{"Cookie": "PHPSESSID=abc123; security=low"})
+	findings, err := exec.Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "WithHeaders' Cookie must have reached the request for the session-gated content to be visible at all")
+}
+
+// TestExecutorRun_WithHeaders_TemplateHeaderWins proves a template's own
+// Headers: entry overrides WithHeaders' baseline on a literal name
+// conflict, per WithHeaders' documented "baseline, not an override"
+// contract.
+func TestExecutorRun_WithHeaders_TemplateHeaderWins(t *testing.T) {
+	var gotCookie string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "header-override-style",
+		Info: nuclei.Info{Name: "Header override", Severity: "info"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method:  http.MethodGet,
+			Path:    []string{"{{BaseURL}}"},
+			Headers: map[string]string{"Cookie": "template-value"},
+		}},
+	}
+
+	exec := nuclei.New(newExecutorClient()).WithHeaders(map[string]string{"Cookie": "cli-baseline-value"})
+	_, err := exec.Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err)
+	assert.Equal(t, "template-value", gotCookie)
+}
+
 func TestExecutorRun_MultiPathStopsAtFirstMatch(t *testing.T) {
 	var hits []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

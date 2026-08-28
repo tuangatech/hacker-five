@@ -89,6 +89,26 @@ export HACKERFIVE_OTHER_AUTH_TOKEN="$CRAPI_OTHER_TOKEN"
 ```
 Omitting `--other-auth-token`/`HACKERFIVE_OTHER_AUTH_TOKEN` falls back to heuristic mode (low confidence, single account) instead of failing. Requires the mechanic report from the previous step to already exist — without one, this correctly finds nothing.
 
+### Auth bypass exists too — now testable via `--detector authbypass`
+
+Same shell as above ($CRAPI_OWNER_TOKEN/$CRAPI_OTHER_TOKEN still set):
+```bash
+cd ~/projects/hacker-five
+./hackerfive scan -t http://localhost:8888 --detector authbypass \
+  --protected-paths '/identity/api/v2/user/dashboard,/identity/api/v2/vehicle/vehicles'
+```
+Real, live-verified result (2026-08-28): **2 critical findings**, both `alg: none` JWT bypass — `/identity/api/v2/user/dashboard` and `/identity/api/v2/vehicle/vehicles` both accept a token whose header was rewritten to `{"alg":"none"}` with the signature segment dropped, returning the real, personalized response (name/email/vehicle list) rather than rejecting it. Independently confirmed outside the tool with a hand-built tampered token via `curl` — not just the detector's own claim — and cross-checked that a genuinely garbage/malformed token is correctly rejected (`404`), so this isn't "the endpoint accepts anything." The signature-*stripped* variant (header left alone, signature bytes just removed) is correctly rejected — only the `alg: none` header rewrite bypasses verification, a common gap in JWT libraries that don't pin the accepted algorithm.
+
+**Caveat, working as designed — not a bug:** `checkJWTWeakSecret` found nothing (crAPI's real secret isn't in the fixed dictionary — expected, this check is intentionally dictionary-only, not brute force, see [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Step 1). `checkRateLimitSignal`/`checkBrokenSession` also found nothing against crAPI with the command above, but not because crAPI is well-behaved — `authbypass.LoginPaths`/`LogoutPaths` (`/login`, `/api/login`, `/auth/login`, `/logout`, `/api/logout`, `/auth/logout`) don't match crAPI's real path (`/identity/api/auth/login`; crAPI has no server-side logout at all, being stateless-JWT), confirmed via a direct `curl` sweep of all six candidate paths (`404` on every one).
+
+**Fixed and live-verified**: `--login-paths`/`--logout-paths` override these fixed defaults —
+```bash
+./hackerfive scan -t http://localhost:8888 --detector authbypass \
+  --protected-paths '/identity/api/v2/user/dashboard' \
+  --login-paths '/identity/api/auth/login'
+```
+Real result (2026-08-28): `checkRateLimitSignal` now correctly reaches `/identity/api/auth/login` (`authbypass-no-rate-limit-identity-api-auth-login`) instead of a nonexistent `/login`. One further caveat this surfaced: crAPI's real login expects a JSON body, but the check's probe is fixed form-encoded, so the real response is `415 Unsupported Media Type`, not a genuine invalid-credential rejection — the path is now correct, the probe's request shape still isn't a fully faithful test against a JSON-only API (tracked in [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Step 5).
+
 ### Teardown / reset
 
 ```bash
@@ -130,7 +150,21 @@ From your WSL2 terminal, inside `~/projects/hacker-five` (where `./hackerfive` w
 cd ~/projects/hacker-five
 ./hackerfive scan -t http://localhost --detector misconfig
 ```
-No tokens, no `--endpoint` — misconfig runs its full built-in rule table against the target root and its fixed path list directly. As of Future Enhancement #4 ([10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)), this now includes a directory-listing check at `/docs/` (and other common subpaths) — DVWA's own `dir-listing.yaml` sample template only ever checked root, missing DVWA's real directory listing there. Expected to add 1 finding on top of Step 4's live-verified 11 (misconfig + templates combined) — not yet re-run against a live DVWA instance to confirm the exact new total.
+No tokens, no `--endpoint` — misconfig runs its full built-in rule table against the target root and its fixed path list directly. As of Future Enhancement #4 ([10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)), this now includes a directory-listing check at `/docs/` (and other common subpaths) — DVWA's own `dir-listing.yaml` sample template only ever checked root, missing DVWA's real directory listing there. Live-verified (2026-08-28): **12 findings** — the same 11 as Step 4 plus 1 new `misconfig-dir-listing-docs`. `misconfig-comment-leak` (Phase 2 Step 4) did **not** fire — DVWA's root page has HTML comments (`<!--<div id="header">-->`, a commented-out `<img>`), but none match `CommentLeakPatterns`' TODO/FIXME/DEBUG/`<script`/credential-word anchors, correctly not flagged.
+
+### XSS/SQLi templates (`--tags xss,sqli`) — real bugs exist, but unreachable by the shipped generic templates
+
+```bash
+./hackerfive scan -t http://localhost --detector misconfig --tags xss,sqli
+```
+Live-verified (2026-08-28): **0 findings**, but not because DVWA lacks these bugs — its `/vulnerabilities/xss_r/?name=` and `/vulnerabilities/sqli/?id=` pages are real, confirmed live via direct `curl` with a manually-obtained session cookie (`security=low`): the SQLi page returns a genuine MariaDB syntax error for a `'` payload, and the XSS page reflects `"><injectable>` completely unescaped. Manually confirmed HackerFive's own matcher/DSL engine correctly flags both (via a throwaway, uncommitted template using the same session cookie) — **the detection logic is proven sound**. Two structural gaps block automated coverage of DVWA specifically, both true of Juice Shop too (see below) and tracked as follow-up work in [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Step 5:
+1. `xss-uri-reflected.yaml`/`error-based-sql-injection.yaml` (the curated upstream generic templates) probe path-appended payloads (`{{BaseURL}}/'`), not named query params (`?id=`, `?name=`) — a different technique than DVWA's actual bug shape. **Still true** — writing real DVWA-specific templates targeting `?id=`/`?name=` hasn't been done yet.
+2. ~~Even a template written against the right params can't reach DVWA's vulnerable pages at all: they're gated behind a `PHPSESSID` login session, and nuclei-format templates have no mechanism to carry any CLI-supplied credential/cookie into a request.~~ **Fixed and live-verified (2026-08-28)**: `--header 'Name: Value'` (repeatable) now applies a static header to every template-driven request. Proven against a real, freshly-obtained DVWA session, cookie supplied purely via the CLI flag (never baked into the template):
+```bash
+./hackerfive scan -t http://localhost --detector misconfig --templates /path/to/a-real-param-shaped-template \
+  --header "Cookie: PHPSESSID=<real session id>; security=low"
+```
+This closes gap 2 — gap 1 (writing the actual DVWA/Juice-Shop-specific templates that use it) is the remaining work before the ≥20/≥10 XSS/SQLi metrics can be re-measured for real.
 
 ### Teardown / reset
 
@@ -172,7 +206,14 @@ A live run (`./hackerfive scan -t http://localhost:3000 --detector misconfig`) r
 cd ~/projects/hacker-five
 ./hackerfive scan -t http://localhost:3000 --detector misconfig
 ```
-No tokens, no `--endpoint`.
+No tokens, no `--endpoint`. `misconfig-comment-leak` (Phase 2 Step 4) live-verified (2026-08-28): **0 findings** — Juice Shop's root page has no HTML comments matching `CommentLeakPatterns` (the check only fetches root, no principled path list for "where a leftover comment might be").
+
+### XSS/SQLi templates (`--tags xss,sqli`)
+
+```bash
+./hackerfive scan -t http://localhost:3000 --detector misconfig --tags xss,sqli
+```
+Live-verified (2026-08-28): **0 findings**, for different reasons than DVWA's 0 (see DVWA section above for the full explanation of the shared root cause — path-appended vs. param-based payloads). Juice Shop specifically: its most XSS-relevant surface (`/rest/products/search?q=`) returns `Content-Type: application/json`, confirmed via direct `curl` — `xss-uri-reflected.yaml`'s `part: content_type: text/html` matcher deliberately excludes JSON responses (to avoid false-positiving on API payload echoes), so this is the matcher working as designed, not a miss. Juice Shop's actual XSS challenges are predominantly DOM-based (client-side), explicitly deferred pending Chromedp per [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md)'s Scope section.
 
 For the Nuclei-compatible engine (not CLI-wired yet, so via the Go integration test instead):
 ```bash
@@ -218,12 +259,22 @@ export VAPI_OTHER_TOKEN=$(printf '%s' 'other@example.com:password2' | base64)
 
 ```bash
 cd ~/projects/hacker-five
-./hackerfive scan -t http://localhost:8000 --detector idor \
+./hackerfive scan -t http://localhost:8000/vapi --detector idor \
   --endpoint '/api1/user/{{id}}' \
   --auth-header-name 'Authorization-Token' --auth-header-format '{token}' \
   --auth-token "$VAPI_OWNER_TOKEN" --other-auth-token "$VAPI_OTHER_TOKEN"
 ```
-Not yet live-verified against a running vAPI instance from this project's Windows-side checkout (no Docker there) — run this (or `tests/integration/vapi_auth_test.go`'s `TestIDORAgainstVAPI`, gated behind `VAPI_BASE_URL`/`VAPI_OWNER_TOKEN`/`VAPI_OTHER_TOKEN`) from this native clone and update this note with the real result once confirmed.
+**Target must include the `/vapi` prefix** — vAPI's real routes all live under `/vapi/...` (confirmed from its own Postman collection, `postman/vAPI.postman_collection.json`), not at bare `http://localhost:8000/...`. An earlier version of this doc omitted it, which would have made every request 404/500 rather than reach the real endpoint — corrected here after live-verifying (2026-08-28), not caught until an actual run was attempted.
+
+Real, live-verified result (2026-08-28): **6 findings** (`idor-1` through `idor-6`) — `hf_other`'s token retrieved real, personalized user data (`username`/`name`/`course`) for every account ID 1-6, including `hf_owner`'s own account, confirming the real BOLA read directly from source (`API1UsersController::show`, no ownership check).
+
+**Registering accounts via the API directly** (faster than the web UI doc03 originally suggested, and what was actually used for the run above) — `POST /vapi/api1/user` requires all four fields (`username`, `name`, `course`, `password`) even though only `username`/`password` matter for login; omitting `name`/`course` hits a `NOT NULL` DB constraint and returns a bare `500` with no detail (a real vAPI robustness gap, not a HackerFive bug):
+```bash
+curl -s -X POST http://localhost:8000/vapi/api1/user -H 'Content-Type: application/json' \
+  -d '{"username":"hf_owner","name":"HackerFive Owner","course":"n/a","password":"Passw0rd123!"}'
+export VAPI_OWNER_TOKEN=$(printf '%s' 'hf_owner:Passw0rd123!' | base64)
+export VAPI_OTHER_TOKEN=$(printf '%s' 'hf_other:Passw0rd456!' | base64)   # register hf_other the same way first
+```
 
 ### What HackerFive needs (misconfig + templates)
 
@@ -232,6 +283,29 @@ cd ~/projects/hacker-five
 ./hackerfive scan -t http://localhost:8000 --detector misconfig
 ```
 No tokens, no `--endpoint`. Real, live-verified result (2026-08-25): **9 findings** — 4 missing security headers, 3 disallowed methods (`PUT`/`DELETE`/`PATCH` all return `500` rather than `405`/`403` — Laravel's `APP_DEBUG: "true"` in its `docker-compose.yml` means this and any other unhandled path likely also produces a real, verbose stack trace, a live signal for `misconfig`'s verbose-error check), plus 2 from the synced Nuclei-compatible template set (`http-missing-security-headers`, `php-detect`).
+
+### Auth bypass (`--detector authbypass`)
+
+```bash
+cd ~/projects/hacker-five
+./hackerfive scan -t http://localhost:8000/vapi --detector authbypass \
+  --auth-token "$VAPI_OWNER_TOKEN" --other-auth-token "$VAPI_OTHER_TOKEN" \
+  --protected-paths '/api1/user/5,/api1/user/6'
+```
+Real, live-verified result (2026-08-28): **1 low-confidence finding**, `authbypass-no-rate-limit-login` — fired against `/login`, one of `authbypass.LoginPaths`' three fixed candidates, which doesn't exist on vAPI (real routes are `/vapi/api2/user/login`, `/vapi/api4/login`, etc. — none at bare `/login`) and returns a bare `500` for every request. The check correctly reports this at `"confidence": "low"` with its own description flagging "needs manual triage," so it isn't lying, but it also isn't real signal about vAPI's actual login endpoints — one of which (`api9/v2/user/login`) genuinely does have `throttle:5,1` rate-limiting in vAPI's own `routes/api.php`, and others (`api2`, `api4`, `api8`) don't. **This is the same `LoginPaths`/`LogoutPaths` mismatch noted in crAPI's section above** — see [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) Step 5.
+
+The other checks correctly found nothing with the command above: `checkMissingAuth` (a request with no `Authorization` header at all gets a real `403`, not a false `200`), the two JWT checks (vAPI's `api1` scheme is `base64(username:password)` via a custom `Authorization-Token` header, not a JWT — `looksLikeJWT` correctly identifies this and no-ops), and token-reuse/broken-session (also scheme-mismatched — `authbypass.Detector` only sends `Authorization: Bearer <token>` by default).
+
+**Fixed and live-verified**: `authbypass.Detector` now supports the same `--auth-header-name`/`--auth-header-format` override `idor.Detector` already had —
+```bash
+./hackerfive scan -t http://localhost:8000/vapi --detector authbypass \
+  --auth-token "$VAPI_OWNER_TOKEN" --other-auth-token "$VAPI_OTHER_TOKEN" \
+  --protected-paths '/api1/user/5,/api1/user/6' \
+  --auth-header-name 'Authorization-Token' --auth-header-format '{token}'
+```
+Real result (2026-08-28): **2 new real findings**, `authbypass-token-reuse-api1-user-5`/`-6` — `/vapi/api1/user/{id}` returns identical content regardless of which account's token is used (the same underlying BOLA the IDOR run above already found, now also caught through auth-bypass's own token-reuse lens, since the request finally carries a header vAPI's real auth middleware recognizes at all).
+
+**vAPI also ships its own intentional weak-JWT-secret challenge** (`POST /vapi/jwt/user`, `App\Http\Controllers\JustWeakTokenController`) — a *different* auth module from `api1`'s header scheme, worth knowing about for future recon: its secret (`"YouNeverGonnaGetThisOne"`) isn't in `authbypass.WeakJWTSecrets`' dictionary (by design — it's not a common weak secret), but its `JWT::decode($token, $key, array('HS256','none'))` call accepts `'none'` as a valid algorithm, meaning `checkJWTAlgNone` would very likely catch it once a real token is obtained from this module. Not exercised in this session (its registration endpoint returned an unexplained `500` with no PHP error log available to diagnose) — a good target for the next `--protected-paths` recon pass, not a HackerFive gap.
 
 ### Teardown / reset
 
@@ -254,10 +328,10 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 
 | Target | Credentials/tokens HackerFive needs | Where they come from | One-time setup step |
 |---|---|---|---|
-| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
-| DVWA | None | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
+| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) — same tokens also drive `--detector authbypass` | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
+| DVWA | None for `misconfig`; a manually-obtained `PHPSESSID` session cookie for XSS/SQLi (not yet CLI-supportable, see its section above) | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 | Juice Shop | None | — | None — ready as soon as the container responds |
-| vAPI | `VAPI_OWNER_TOKEN`, `VAPI_OTHER_TOKEN` for `--detector idor` (each `base64(username:password)`) — none for `--detector misconfig` | Sign up two accounts via vAPI's web UI, base64-encode each `username:password` yourself (no scripted signup like crAPI's) | None — `docker-compose.yml`'s DB init runs automatically |
+| vAPI | `VAPI_OWNER_TOKEN`, `VAPI_OTHER_TOKEN` for `--detector idor`/`authbypass` (each `base64(username:password)`; target must include the `/vapi` prefix) — none for `--detector misconfig` | `POST /vapi/api1/user` with `username`/`name`/`course`/`password` (faster than the web UI), then base64-encode `username:password` yourself | None — `docker-compose.yml`'s DB init runs automatically |
 
 ## See also
 - [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under

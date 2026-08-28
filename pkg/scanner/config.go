@@ -33,12 +33,16 @@ type Config struct {
 	AuthToken      string // primary/"owner" account token — from --auth-token or HACKERFIVE_AUTH_TOKEN, never hardcoded
 	OtherAuthToken string // second, unrelated account token used for IDOR baseline comparison; optional, but required for high-confidence IDOR findings
 
-	// AuthHeaderName/AuthHeaderFormat override idor.Detector's default
-	// "Authorization: Bearer <token>" scheme — some real targets (e.g. vAPI,
-	// see docs/10-implementation-plan-ph1b.md's Future Enhancement #6) use a
-	// different header name and/or value shape. "" means "use
-	// idor.Detector's own default" for that half. AuthHeaderFormat, if
-	// non-empty, must contain the literal placeholder "{token}".
+	// AuthHeaderName/AuthHeaderFormat override idor.Detector's AND
+	// authbypass.Detector's default "Authorization: Bearer <token>" scheme —
+	// some real targets (e.g. vAPI, see docs/10-implementation-plan-ph1b.md's
+	// Future Enhancement #6) use a different header name and/or value shape.
+	// Applied to whichever detector --detector actually selects; a single
+	// scan run only targets one auth scheme, so sharing these fields (rather
+	// than duplicating a second idor-only/authbypass-only pair) matches how
+	// the rest of Config already works. "" means "use that detector's own
+	// default" for that half. AuthHeaderFormat, if non-empty, must contain
+	// the literal placeholder "{token}".
 	AuthHeaderName   string
 	AuthHeaderFormat string
 
@@ -54,6 +58,25 @@ type Config struct {
 	// unauthenticated request against — required for --detector authbypass,
 	// same shape as idor's --endpoint requirement.
 	ProtectedPaths []string
+
+	// LoginPaths/LogoutPaths (from --login-paths/--logout-paths, comma-
+	// separated) override authbypass.LoginPaths/LogoutPaths' fixed default
+	// candidate lists, which live-verified (docs/11-implementation-plan-ph2.md
+	// Step 5) match neither crAPI's nor vAPI's real routes. Empty means "use
+	// authbypass's own package defaults" for that half.
+	LoginPaths  []string
+	LogoutPaths []string
+
+	// ExtraHeaders (from repeatable --header "Name: Value" flags) are static
+	// HTTP headers applied to every request the Nuclei-compatible and native
+	// template engines fire (pkg/template/{nuclei,native}.Executor.
+	// WithHeaders) — the only way today to carry a session cookie or other
+	// credential a target's login flow issued into a template-driven scan,
+	// since neither template format's variable substitution has a
+	// CLI-supplied placeholder for one (docs/11-implementation-plan-ph2.md
+	// Step 5). Does not affect --detector idor/misconfig/authbypass's own
+	// flag-driven requests, only template-fired ones. nil/empty is a no-op.
+	ExtraHeaders map[string]string
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.

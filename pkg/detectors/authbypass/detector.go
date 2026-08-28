@@ -33,14 +33,71 @@ type Detector struct {
 	// hostErrors stops a run early once the target host crosses its
 	// consecutive-error threshold, same as idor.Detector/misconfig.Detector.
 	hostErrors *hosterrors.Cache
+
+	authHeaderName   string
+	authHeaderFormat string
+	loginPaths       []string
+	logoutPaths      []string
+}
+
+// Option configures a Detector at construction time. Mirrors
+// idor.Option's shape exactly — same convention, not a new pattern.
+type Option func(*Detector)
+
+// WithAuthHeader overrides the header name/value format checkRateLimitSignal
+// and checkBrokenSession use to carry ownerToken — not every real target
+// speaks "Authorization: Bearer <token>" (e.g. vAPI's
+// "Authorization-Token: base64(username:password)"). Same shape and
+// same-argument-left-"" default-preserving behavior as
+// idor.Detector.WithAuthHeader.
+func WithAuthHeader(name, format string) Option {
+	return func(d *Detector) {
+		if name != "" {
+			d.authHeaderName = name
+		}
+		if format != "" {
+			d.authHeaderFormat = format
+		}
+	}
+}
+
+// WithLoginPaths overrides LoginPaths' fixed default candidate list —
+// live-verified (docs/11-implementation-plan-ph2.md Step 5) to match
+// neither crAPI's nor vAPI's real login routes, so checkRateLimitSignal is
+// otherwise a no-op against both of this project's own lab targets. An
+// empty/nil paths leaves LoginPaths' package default in place.
+func WithLoginPaths(paths []string) Option {
+	return func(d *Detector) {
+		if len(paths) > 0 {
+			d.loginPaths = paths
+		}
+	}
+}
+
+// WithLogoutPaths is WithLoginPaths' checkBrokenSession counterpart,
+// overriding LogoutPaths' fixed default.
+func WithLogoutPaths(paths []string) Option {
+	return func(d *Detector) {
+		if len(paths) > 0 {
+			d.logoutPaths = paths
+		}
+	}
 }
 
 // New constructs a Detector.
-func New(client *httpclient.Client) *Detector {
-	return &Detector{
-		client:     client,
-		hostErrors: hosterrors.New(hosterrors.DefaultThreshold),
+func New(client *httpclient.Client, opts ...Option) *Detector {
+	d := &Detector{
+		client:           client,
+		hostErrors:       hosterrors.New(hosterrors.DefaultThreshold),
+		authHeaderName:   DefaultAuthHeaderName,
+		authHeaderFormat: DefaultAuthHeaderFormat,
+		loginPaths:       LoginPaths,
+		logoutPaths:      LogoutPaths,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // Run checks target against every built-in auth-bypass check and returns
@@ -189,7 +246,7 @@ func (d *Detector) checkJWTWeakSecret(_ context.Context, target, _, ownerToken, 
 // requests shows any throttling signal (429, or a Retry-After header).
 func (d *Detector) checkRateLimitSignal(ctx context.Context, target, host, _, _ string, _ []string) ([]detectors.Finding, error) {
 	var loginPath string
-	for _, candidate := range LoginPaths {
+	for _, candidate := range d.loginPaths {
 		form := url.Values{"username": {rateLimitProbeUsername}, "password": {rateLimitProbePassword}}.Encode()
 		_, resp, _, err := d.doRequestBody(ctx, http.MethodPost, target, host, candidate, "", form)
 		if err != nil {
@@ -304,7 +361,7 @@ func (d *Detector) checkBrokenSession(ctx context.Context, target, host, ownerTo
 		return nil, nil
 	}
 	var logoutPath string
-	for _, candidate := range LogoutPaths {
+	for _, candidate := range d.logoutPaths {
 		_, resp, _, err := d.doRequest(ctx, http.MethodPost, target, host, candidate, ownerToken)
 		if err != nil {
 			continue
@@ -362,7 +419,7 @@ func (d *Detector) doRequestBody(ctx context.Context, method, target, host, path
 		return nil, nil, nil, fmt.Errorf("authbypass: building request: %w", err)
 	}
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set(d.authHeaderName, strings.Replace(d.authHeaderFormat, "{token}", token, 1))
 	}
 	if formBody != "" {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

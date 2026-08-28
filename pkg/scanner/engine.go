@@ -80,8 +80,8 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 	}
 
 	nucleiTemplates, nativeTemplates := e.loadTemplates()
-	nucleiExec := nuclei.New(e.client)
-	nativeExec := native.New(e.client, e.idorOptions()...)
+	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders)
+	nativeExec := native.New(e.client, e.idorOptions()...).WithHeaders(e.cfg.ExtraHeaders)
 
 	var (
 		mu       sync.Mutex
@@ -269,7 +269,7 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		detector := misconfig.New(e.client)
 		return detector.Run(ctx, target, e.cfg.AuthToken)
 	case "authbypass":
-		detector := authbypass.New(e.client)
+		detector := authbypass.New(e.client, e.authbypassOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.ProtectedPaths)
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)
@@ -285,6 +285,23 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 // place.
 func (e *Engine) idorOptions() []idor.Option {
 	return []idor.Option{idor.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
+}
+
+// authbypassOptions builds the authbypass.Option set the flag-driven
+// --detector authbypass path applies (runDetector's "authbypass" case).
+// WithAuthHeader is unconditional, same no-op-on-empty-string reasoning as
+// idorOptions; WithLoginPaths/WithLogoutPaths are only appended when
+// non-empty, since authbypass.New's own defaults (LoginPaths/LogoutPaths)
+// already handle the omitted-flag case correctly on their own.
+func (e *Engine) authbypassOptions() []authbypass.Option {
+	opts := []authbypass.Option{authbypass.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
+	if len(e.cfg.LoginPaths) > 0 {
+		opts = append(opts, authbypass.WithLoginPaths(e.cfg.LoginPaths))
+	}
+	if len(e.cfg.LogoutPaths) > 0 {
+		opts = append(opts, authbypass.WithLogoutPaths(e.cfg.LogoutPaths))
+	}
+	return opts
 }
 
 func hostOf(target string) (string, error) {

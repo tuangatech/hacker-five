@@ -42,3 +42,23 @@ func TestParseTags_SplitsAndTrims(t *testing.T) {
 func TestParseTags_DropsEmptyEntries(t *testing.T) {
 	assert.Equal(t, []string{"wordpress"}, parseTags("wordpress,,  "))
 }
+
+func TestParseHeaders_Empty(t *testing.T) {
+	headers, err := parseHeaders(nil)
+	require.NoError(t, err)
+	assert.Nil(t, headers)
+}
+
+func TestParseHeaders_SplitsOnFirstColonAndTrims(t *testing.T) {
+	headers, err := parseHeaders([]string{"Cookie: PHPSESSID=abc; security=low", "X-Custom:value"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"Cookie":   "PHPSESSID=abc; security=low",
+		"X-Custom": "value",
+	}, headers, "a header value may itself contain a colon (e.g. a cookie); only the first colon splits name from value")
+}
+
+func TestParseHeaders_MissingColonIsError(t *testing.T) {
+	_, err := parseHeaders([]string{"not-a-valid-header"})
+	assert.Error(t, err)
+}

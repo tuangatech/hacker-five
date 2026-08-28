@@ -18,8 +18,9 @@ import (
 
 // Executor runs one parsed native Template against one target.
 type Executor struct {
-	client   *httpclient.Client
-	idorOpts []idor.Option
+	client       *httpclient.Client
+	idorOpts     []idor.Option
+	extraHeaders map[string]string
 }
 
 // New constructs an Executor. idorOpts is threaded through to every
@@ -29,6 +30,18 @@ type Executor struct {
 // flag-driven --detector idor path (see scanner.Engine).
 func New(client *httpclient.Client, idorOpts ...idor.Option) *Executor {
 	return &Executor{client: client, idorOpts: idorOpts}
+}
+
+// WithHeaders is nuclei.Executor.WithHeaders' counterpart for the generic
+// (non-idor-tagged) native template path — see its doc comment for the
+// motivating use case and the "template's own Headers: win on conflict"
+// behavior. idor-tagged templates are unaffected (they route through
+// idor.Detector via idorOpts, not tryRequest).
+func (e *Executor) WithHeaders(headers map[string]string) *Executor {
+	if len(headers) > 0 {
+		e.extraHeaders = headers
+	}
+	return e
 }
 
 // Run executes tmpl against target. idor-tagged templates route through the
@@ -134,6 +147,9 @@ func (e *Executor) tryRequest(ctx context.Context, target string, tmpl *Template
 	httpReq, err := http.NewRequestWithContext(ctx, methodOrDefault(req.Method), fullURL, bodyReader(body))
 	if err != nil {
 		return detectors.Finding{}, false, fmt.Errorf("native: building request for template %s: %w", tmpl.ID, err)
+	}
+	for k, v := range e.extraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 	for k, v := range req.Headers {
 		if rv, err := vars.Render(v, renderCtx); err == nil {

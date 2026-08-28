@@ -18,12 +18,36 @@ import (
 
 // Executor runs one parsed Template against one target.
 type Executor struct {
-	client *httpclient.Client
+	client       *httpclient.Client
+	extraHeaders map[string]string
 }
 
 // New constructs an Executor.
 func New(client *httpclient.Client) *Executor {
 	return &Executor{client: client}
+}
+
+// WithHeaders sets static HTTP headers applied to every request this
+// Executor fires via a template's path: entries (tryPath) — raw: requests
+// are unaffected, since their headers are already literal text an author
+// can embed directly in the raw request text, no CLI mechanism needed
+// there. The motivating use case is a session cookie a target's login flow
+// issued outside this scan (e.g. DVWA — see
+// docs/11-implementation-plan-ph2.md Step 5): neither template format's
+// {{}} variable substitution has a CLI-supplied placeholder for one, unlike
+// native's idor-tagged templates, which get AuthToken/OtherAuthToken.
+// Applied before a template's own Headers: map, so a literal name conflict
+// still lets the template win — these are a baseline, not an override. A
+// nil/empty headers map is a no-op, leaving any prior WithHeaders call's
+// value in place. Returns the Executor so it can be chained at the
+// construction call site (mirrors idor.Detector's functional-options
+// pattern in spirit, but as a post-construction setter since there's only
+// one thing to configure here).
+func (e *Executor) WithHeaders(headers map[string]string) *Executor {
+	if len(headers) > 0 {
+		e.extraHeaders = headers
+	}
+	return e
 }
 
 // Run fires every request in tmpl.HTTP, in order, against target — or, for a
@@ -214,6 +238,9 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	httpReq, err := http.NewRequestWithContext(ctx, methodOrDefault(req.Method), fullURL, bodyReader(body))
 	if err != nil {
 		return detectors.Finding{}, false, false, fmt.Errorf("nuclei: building request for template %s: %w", tmpl.ID, err)
+	}
+	for k, v := range e.extraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 	for k, v := range req.Headers {
 		if rv, err := vars.Render(v, renderCtx); err == nil {
