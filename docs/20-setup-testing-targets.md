@@ -99,7 +99,7 @@ cd ~/targets/crAPI/deploy/docker && docker compose down -v   # -v also drops the
 
 ## DVWA (for `--detector misconfig`)
 
-[Damn Vulnerable Web Application](https://github.com/digininja/DVWA) is a stateless PHP/MySQL app — no account tokens needed, since misconfig's checks (exposed paths, missing headers, disallowed methods, CORS, verbose errors, default creds) don't require an authenticated session to probe.
+[Damn Vulnerable Web Application](https://github.com/digininja/DVWA) is a stateless PHP/MySQL app — no account tokens needed, since misconfig's checks (exposed paths, directory listing, missing headers, disallowed methods, CORS, verbose errors, default creds) don't require an authenticated session to probe.
 
 ### Bring it up
 
@@ -130,7 +130,7 @@ From your WSL2 terminal, inside `~/projects/hacker-five` (where `./hackerfive` w
 cd ~/projects/hacker-five
 ./hackerfive scan -t http://localhost --detector misconfig
 ```
-No tokens, no `--endpoint` — misconfig runs its full built-in rule table against the target root and its fixed path list directly.
+No tokens, no `--endpoint` — misconfig runs its full built-in rule table against the target root and its fixed path list directly. As of Future Enhancement #4 ([10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)), this now includes a directory-listing check at `/docs/` (and other common subpaths) — DVWA's own `dir-listing.yaml` sample template only ever checked root, missing DVWA's real directory listing there. Expected to add 1 finding on top of Step 4's live-verified 11 (misconfig + templates combined) — not yet re-run against a live DVWA instance to confirm the exact new total.
 
 ### Teardown / reset
 

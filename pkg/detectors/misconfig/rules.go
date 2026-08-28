@@ -66,6 +66,43 @@ var ExposedPaths = []PathRule{
 	{Path: "/.htpasswd", Keywords: []string{"$apr1$", "{SHA}", "$2y$", "$2a$", "$2b$"}, Severity: "high"},
 }
 
+// DirListingPaths are common subpaths worth a directory-listing probe,
+// beyond just target root ("" is included so misconfig.Detector finds a
+// root listing on its own, without depending on
+// templates/nuclei-samples/dvwa-php/dir-listing.yaml also being loaded via
+// --templates). Found via a real gap: dir-listing.yaml only checks root,
+// but DVWA's actual directory listing lives at /docs/, so this specific,
+// genuine misconfiguration was invisible to a default scan — see
+// docs/10-implementation-plan-ph1b.md's Future Enhancement #4.
+var DirListingPaths = []string{
+	"",
+	"/docs/",
+	"/uploads/",
+	"/backup/",
+	"/backups/",
+	"/files/",
+	"/images/",
+	"/assets/",
+	"/logs/",
+	"/tmp/",
+	"/old/",
+}
+
+// DirListingMarkers are the same directory-listing banner strings
+// templates/nuclei-samples/dvwa-php/dir-listing.yaml already matches on
+// (Apache/nginx "Index of /", Apache-mod_autoindex "Directory listing
+// for ", IIS "[To Parent Directory]", generic "Directory: /") — reused
+// rather than reinvented so the built-in check and the sample template
+// agree on what "looks like a directory listing" means. Matched
+// case-insensitively (see checkDirListing), same as the YAML template's own
+// case-insensitive: true.
+var DirListingMarkers = []string{
+	"Directory listing for ",
+	"Index of /",
+	"[To Parent Directory]",
+	"Directory: /",
+}
+
 // MissingHeaders are common security headers whose absence is worth flagging.
 var MissingHeaders = []HeaderRule{
 	{Name: "Content-Security-Policy", Severity: "medium"},

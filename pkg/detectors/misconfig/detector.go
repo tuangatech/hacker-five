@@ -66,6 +66,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 	var findings []detectors.Finding
 	checks := []func(context.Context, string, string, string) ([]detectors.Finding, error){
 		d.checkExposedPaths,
+		d.checkDirListing,
 		d.checkMissingHeaders,
 		d.checkDisallowedMethods,
 		d.checkCORS,
@@ -110,6 +111,42 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 			Description: fmt.Sprintf("%s returned status %d with sensitive content matching a keyword for an exposed-path rule", rule.Path, resp.StatusCode),
 			Evidence: map[string]string{
 				"path":     rule.Path,
+				"status":   fmt.Sprintf("%d", resp.StatusCode),
+				"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+				"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+			},
+		})
+	}
+	return findings, nil
+}
+
+// checkDirListing probes DirListingPaths (root plus common subpaths) for
+// directory-listing banners — see DirListingPaths' doc comment for why this
+// exists as a built-in check rather than relying solely on
+// templates/nuclei-samples/dvwa-php/dir-listing.yaml, which only checks
+// root.
+func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	var findings []detectors.Finding
+	for _, path := range DirListingPaths {
+		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			continue
+		}
+		if !containsAnyFold(body, DirListingMarkers) {
+			continue
+		}
+		findings = append(findings, detectors.Finding{
+			ID:          fmt.Sprintf("misconfig-dir-listing-%s", sanitizeID(path)),
+			Type:        "misconfig",
+			Severity:    "low",
+			Confidence:  "high",
+			Target:      target + path,
+			Description: fmt.Sprintf("%s returned status %d with a directory-listing banner in the body", pathOrRoot(path), resp.StatusCode),
+			Evidence: map[string]string{
+				"path":     path,
 				"status":   fmt.Sprintf("%d", resp.StatusCode),
 				"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
 				"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
@@ -329,6 +366,30 @@ func containsAny(body []byte, keywords []string) bool {
 		}
 	}
 	return false
+}
+
+// containsAnyFold is containsAny's case-insensitive counterpart — needed for
+// DirListingMarkers, which (unlike ExposedPaths' secret/hash-format
+// keywords) vary in case across real servers (Apache/nginx "Index of /" vs.
+// some configs' "index of /").
+func containsAnyFold(body []byte, keywords []string) bool {
+	s := string(body)
+	for _, kw := range keywords {
+		if strings.Contains(strings.ToLower(s), strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathOrRoot renders "" as "/" for Finding.Description readability — every
+// other caller of sanitizeID/target-joining already treats "" as root
+// correctly, this is purely a display concern.
+func pathOrRoot(path string) string {
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 func matchAny(body []byte, patterns []*regexp.Regexp) (string, bool) {

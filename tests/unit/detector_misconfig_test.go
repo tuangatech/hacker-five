@@ -111,6 +111,59 @@ func TestMisconfigExposedPath_HtpasswdSPAFallback_NoFinding(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// TestMisconfigDirListing_SubpathHit locks in the real gap Future
+// Enhancement #4 closes: templates/nuclei-samples/dvwa-php/dir-listing.yaml
+// only checks root, but DVWA's actual directory listing lives at /docs/ —
+// misconfig.Detector must find it on its own, without any template loaded.
+func TestMisconfigDirListing_SubpathHit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/docs/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html><title>Index of /docs</title><body>Index of /docs</body></html>"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-dir-listing-")
+	require.Len(t, got, 1)
+	assert.Equal(t, "misconfig-dir-listing-docs", got[0].ID)
+	assert.Equal(t, "low", got[0].Severity)
+	assert.Equal(t, "high", got[0].Confidence)
+}
+
+// TestMisconfigDirListing_CaseInsensitiveMarker proves the check matches
+// directory-listing banners regardless of case — real servers don't all
+// render "Index of /" with that exact casing, and the sample YAML template
+// this mirrors already matches case-insensitively.
+func TestMisconfigDirListing_CaseInsensitiveMarker(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/uploads/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("INDEX OF /UPLOADS"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-dir-listing-")
+	require.Len(t, got, 1)
+	assert.Equal(t, "misconfig-dir-listing-uploads", got[0].ID)
+}
+
+// TestMisconfigDirListing_NoMarker_NoFinding mirrors the ExposedPaths
+// false-positive-safety tests: a 200 response alone (no directory-listing
+// banner in the body) must not be flagged.
+func TestMisconfigDirListing_NoMarker_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html>Nothing to see here</html>"))
+	})
+
+	got := withPrefix(findings, "misconfig-dir-listing-")
+	assert.Empty(t, got)
+}
+
 func TestMisconfigMissingHeaders_AllAbsent(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
