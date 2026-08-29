@@ -408,6 +408,101 @@ func TestEngineRun_LogCallback_FiresForDetectorError(t *testing.T) {
 	assert.Contains(t, strings.Join(msgs, "\n"), "running idor detector against", "must log which detector/target failed")
 }
 
+// TestEngineRun_PromptInjectionGuardrail_WarnsWhenConcurrencyTooHigh confirms
+// loadTemplates' cost/latency guardrail (docs/13-implementation-plan-ph4.md
+// Step 1) fires when a loaded template carries the "prompt-injection" tag
+// and --concurrency exceeds the safe default of 5.
+func TestEngineRun_PromptInjectionGuardrail_WarnsWhenConcurrencyTooHigh(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pi.yaml"), []byte(`
+id: pi-check
+info:
+  name: Prompt injection check
+  severity: info
+  tags: prompt-injection
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: status
+        status: [200]
+`), 0o644))
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   25,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, strings.Join(msgs, "\n"), "prompt-injection", "must warn when a prompt-injection-tagged template loads with --concurrency above the safe default")
+}
+
+// TestEngineRun_PromptInjectionGuardrail_SilentAtOrBelowSafeDefault is the
+// negative counterpart: no warning fires at --concurrency 5 (the safe
+// default itself) even with a prompt-injection-tagged template loaded.
+func TestEngineRun_PromptInjectionGuardrail_SilentAtOrBelowSafeDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pi.yaml"), []byte(`
+id: pi-check
+info:
+  name: Prompt injection check
+  severity: info
+  tags: prompt-injection
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: status
+        status: [200]
+`), 0o644))
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	assert.NotContains(t, strings.Join(msgs, "\n"), "prompt-injection", "must not warn when --concurrency is at or below the safe default")
+}
+
 // TestEngineRun_NoCallback_BehaviorUnchanged is a regression guard on the
 // "CLI-safe" claim in doc12's Week 19 design: Run's return value must be
 // identical whether or not a caller ever calls WithFindingCallback/

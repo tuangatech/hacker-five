@@ -32,7 +32,7 @@ Phase 4's job, per [03-development-roadmap.md](03-development-roadmap.md)'s Week
 
 Four chunks, matching doc03's Week 25-31 breakdown, plus release:
 
-1. ⬜ **Prompt Injection Detector** (Week 25-26)
+1. ✅ **Prompt Injection Detector** (Week 25-26) — 2026-08-29, live-verified against a real AIGoat container
 2. ⬜ **SSRF Detector** (Week 27-28)
 3. ⬜ **Business Logic Flaw Templates** (Week 29-30)
 4. ⬜ **Advanced Features** (Week 31) — finding dedup, HackerOne API integration, `Exporter` implementations
@@ -61,7 +61,7 @@ Dev environment (macOS + WSL2/Windows 11) is already covered by [04-environment-
 
 ---
 
-## Step 1: Prompt Injection Detector (Week 25-26) — ⬜ not yet implemented
+## Step 1: Prompt Injection Detector (Week 25-26) — ✅ done (2026-08-29)
 
 ### Design
 
@@ -77,18 +77,25 @@ Template-driven per the Objective's design decision: a template POSTs a crafted 
 
 No new Go package needed unless real template-drafting surfaces a sequencing requirement (e.g. multi-turn conversation state) the existing engine's request-chaining can't already express — the native engine's extractor→later-request binding (used for IDOR's baseline two-account flow) is the candidate mechanism if that need appears.
 
-### Open: test target
+### Test target: AIGoat — resolved (2026-08-29)
 
-No safe, free, self-hostable "AI vulnerable lab" target has been identified yet — unlike crAPI/vAPI/DVWA/Juice Shop's established Docker Compose precedent (see [20-setup-testing-targets.md](20-setup-testing-targets.md)). Testing against a real hosted LLM API would itself introduce a new dependency and a real cost, which this plan's "no new dependency" decision deliberately avoids. **This is Step 1's actual first task, not assumed here**: find a suitable target — a purpose-built prompt-injection playground (Gandalf-style) that's self-hostable, or, failing that, a small first-party deterministic mock chat-endpoint test fixture (a `httptest.Server` that echoes canned "vulnerable" vs. "safe" replies) sufficient for unit/integration testing even without a real live-verification target.
+**[AIGoat](https://github.com/AISecurityConsortium/AIGoat)** (Apache 2.0 app code) is the self-hostable target this step needed. Deliberately-vulnerable, covers the full OWASP LLM Top 10 including labs explicitly named "System Prompt Leakage" (`llm07-1`) and "Data Leakage" (`llm02-1`), runs entirely locally via `docker-compose` backed by Ollama — no external API, no cost. See [20-setup-testing-targets.md](20-setup-testing-targets.md) for the full bring-up.
 
-### Files (anticipated, confirm at implementation time)
-- `templates/nuclei-samples/promptinjection/` (or `templates/native/promptinjection/` if request chaining proves necessary) — new template directory; the field-deployable system-prompt-disclosure check and the lab-only seeded-secret exfiltration variant are separate templates/fixtures, not one mechanism — see Design.
-- `pkg/scanner/engine.go` — `loadTemplates`'s existing load-summary/warning site gains the concurrency guardrail: scan loaded templates for the `prompt-injection` tag, warn to stderr if `--concurrency` exceeds the stated safe default (5) — see Design.
-- `tests/unit/nuclei_promptinjection_samples_test.go` (or equivalent) — load/reject tests, same pattern as every other curated template directory's test file.
-- `docs/20-setup-testing-targets.md` — new section once a real test target is identified.
+This also resolves the mock-fixture fallback originally proposed below differently than expected: AIGoat's `llm07-1` lab ships with a real, intentionally-seeded marker (`AIGOAT_FLAG_LLM07_SYSPROMPT`) baked into its system prompt specifically for this kind of validation — a real self-hosted target you control satisfies "lab-only, validated against a target you control" directly, no synthetic `httptest.Server` mock needed.
 
-### Verification
-Load-test the new templates via `nuclei.LoadDir`/`native.LoadDir` (deterministic, no live target needed). Live-verify against whatever test target Step 1's own recon identifies — flagged as open above, not assumed.
+**Model substitution**: AIGoat defaults to Mistral 7B via Ollama; this build uses **Gemma 3 4B** instead (`ollama.model: "gemma3:4b"` in both `config/config.yml` and the actually-mounted `docker/config.yml`) — smaller/faster, and AIGoat's own docs confirm `ollama.model` is meant to be user-swappable (they suggest `tinyllama` as a lighter alternative), with no challenge design documented as Mistral-specific.
+
+### Files
+- `templates/nuclei-samples/promptinjection/{system-prompt-leak,seeded-secret-exfil}.yaml` + `README.md` — nuclei-compatible format (no request chaining needed: AIGoat's auth token is supplied externally via `--header`, same as DVWA's session-cookie pattern). See that directory's README for the full echo-vs-compliance matcher design, resolved against AIGoat's real default (`prompts/level0/cracky.md`) and lab (`prompts/labs/system_prompt_exposure.md`) system prompt content, not guessed.
+- `pkg/scanner/engine.go` — `loadTemplates` gains the concurrency guardrail (`promptInjectionTag`, `promptInjectionSafeConcurrency = 5` constants, `anyTemplateHasTag` helper): warns to stderr if `--concurrency` exceeds 5 and a loaded template carries the `prompt-injection` tag.
+- `tests/unit/nuclei_promptinjection_samples_test.go` — load test, same pattern as `nuclei_xss_samples_test.go`.
+- `tests/unit/engine_test.go` — two new guardrail tests (fires above the safe default, silent at/below it).
+- `docs/20-setup-testing-targets.md` — new AIGoat section.
+
+### Verification — done (2026-08-29)
+Load-test via `nuclei.LoadDir` — deterministic (`tests/unit/nuclei_promptinjection_samples_test.go`), guardrail unit-tested (`tests/unit/engine_test.go`); `go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean.
+
+**Live-verified against a real AIGoat container** (Gemma 3 4B, CPU-only): both templates fired genuine findings — `seeded-secret-exfil` matched AIGoat's real seeded flag on the first attempt; `system-prompt-leak` initially false-negatived twice, which caught a real bug (not a target-behavior issue): the matcher's persona check used `\b` word-boundary anchors, but a matcher evaluates the *raw, still-JSON-encoded* response body, where an embedded newline is a literal `\n` escape — the trailing `n` is a word character, so `\b` never matched right after the paragraph break every real leak opened with. Fixed by dropping the anchors (see the template's own comment and that directory's README for full detail). Also live-verified: the concurrency guardrail's stderr warning fires correctly at the default `--concurrency 25`. Full command/result in [20-setup-testing-targets.md](20-setup-testing-targets.md)'s AIGoat section.
 
 ---
 
@@ -188,9 +195,9 @@ v0.4.0 release is expected to reuse the existing `goreleaser`/CI pipeline unchan
 
 ## Definition of Done (Phase 4, Weeks 25-32)
 
-- [ ] Prompt injection templates load cleanly and fire against a real or first-party-mock test target, with the echo-vs-compliance matcher gap (Step 1) resolved and documented, not silently left ambiguous
-- [ ] Prompt-injection concurrency guardrail fires a stderr warning when `--concurrency` exceeds the safe default (5) against loaded `prompt-injection`-tagged templates
-- [ ] The field-deployable system-prompt-disclosure check ships as a check a real, uncontrolled target can be tested against — distinct from, and not dependent on, the lab-only seeded-secret exfiltration technique
+- [x] Prompt injection templates load cleanly and fire against a real or first-party-mock test target, with the echo-vs-compliance matcher gap (Step 1) resolved and documented, not silently left ambiguous — 2026-08-29, live-verified against AIGoat
+- [x] Prompt-injection concurrency guardrail fires a stderr warning when `--concurrency` exceeds the safe default (5) against loaded `prompt-injection`-tagged templates — 2026-08-29, live-verified
+- [x] The field-deployable system-prompt-disclosure check ships as a check a real, uncontrolled target can be tested against — distinct from, and not dependent on, the lab-only seeded-secret exfiltration technique — 2026-08-29, live-verified (no `lab_id` needed)
 - [ ] SSRF detector's non-blind checks — including provider-specific metadata headers (GCP/Azure/AWS) and at least the decimal/octal/IPv6-loopback encoded-bypass variants, plus the timing differential — live-verified against a real lab target
 - [ ] SSRF detector's scheme-based checks (`file://`/`gopher://`/`dict://`) live-verified against a real lab target
 - [ ] `--ssrf-param` accepts multiple values in one scan, confirmed against a target with more than one URL-accepting parameter

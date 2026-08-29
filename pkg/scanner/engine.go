@@ -33,6 +33,15 @@ const (
 	// enumeration in Phase 1a — no wordlist/config surface for this yet.
 	idEnumRangeStart = 1
 	idEnumRangeEnd   = 100
+
+	// promptInjectionTag/promptInjectionSafeConcurrency back loadTemplates'
+	// cost/latency guardrail (see docs/13-implementation-plan-ph4.md Step
+	// 1): unlike every other template, a prompt-injection template's
+	// request can trigger a real, metered/compute-heavy LLM inference call
+	// on the target's own backend, so firing the default worker pool at it
+	// imposes real cost/load in a way nothing else here does.
+	promptInjectionTag             = "prompt-injection"
+	promptInjectionSafeConcurrency = 5
 )
 
 // Engine orchestrates a single scan run across every configured target.
@@ -262,9 +271,38 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	}
 	filtered := (loadedNuclei - len(nucleiTemplates)) + (loadedNative - len(nativeTemplates))
 
+	if e.cfg.Concurrency > promptInjectionSafeConcurrency && anyTemplateHasTag(nucleiTemplates, nativeTemplates, promptInjectionTag) {
+		e.warnf("warn", "loaded template(s) tagged %q with --concurrency %d (safe default: %d) — unlike other templates, a prompt-injection request can trigger a real, metered LLM call on the target's backend; consider a lower --concurrency",
+			promptInjectionTag, e.cfg.Concurrency, promptInjectionSafeConcurrency)
+	}
+
 	e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
 		len(nucleiTemplates), len(nativeTemplates), rejected, filtered)
 	return nucleiTemplates, nativeTemplates
+}
+
+// anyTemplateHasTag reports whether any loaded template (either format)
+// carries tag — used by loadTemplates' prompt-injection concurrency
+// guardrail. Shares tagSet/normalizeTag with filterNucleiByTags/
+// filterNativeByTags so "prompt-injection", "Prompt-Injection", etc. all
+// match the same way --tags filtering already does.
+func anyTemplateHasTag(nucleiTemplates []*nuclei.Template, nativeTemplates []*native.Template, tag string) bool {
+	set := tagSet([]string{tag})
+	for _, tmpl := range nucleiTemplates {
+		for _, t := range strings.Split(tmpl.Info.Tags, ",") {
+			if set[normalizeTag(t)] {
+				return true
+			}
+		}
+	}
+	for _, tmpl := range nativeTemplates {
+		for _, t := range tmpl.Tags {
+			if set[normalizeTag(t)] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // filterNucleiByTags keeps only templates whose comma-separated info.tags

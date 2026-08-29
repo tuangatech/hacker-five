@@ -15,6 +15,7 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 | **Juice Shop** | `misconfig`; Nuclei-compatible templates | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
 | **vAPI** | `idor`, `misconfig`; Nuclei-compatible templates | Has a real BOLA (see its own section below), reachable via `idor.Detector`'s configurable auth-header scheme (`--auth-header-name`/`--auth-header-format`) |
 | WebGoat | *(none yet)* | Reserved for Phase 2 — per [03-development-roadmap.md](03-development-roadmap.md), its Week 13-14 (XSS) and Week 15-16 (SQL injection) deliverables don't name a specific test target the way Week 11-12's API-auth work names vAPI/crAPI; WebGoat's general multi-vulnerability lesson set (unlike the API-specific targets above) is the natural fit for those. Not referenced by any implemented detector yet |
+| **AIGoat** | prompt-injection templates | Deliberately-vulnerable LLM chat app (OWASP LLM Top 10) with real, self-hosted "System Prompt Leakage" and "Data Leakage" labs — see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1 |
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
 
@@ -336,6 +337,66 @@ cd ~/targets/vapi && docker-compose down -v
 
 ---
 
+## AIGoat (for prompt-injection templates)
+
+[AIGoat](https://github.com/AISecurityConsortium/AIGoat) (Apache 2.0 app code) is a deliberately-vulnerable LLM shopping-assistant chatbot covering the full OWASP LLM Top 10, self-hosted via Docker + Ollama — no external API, no cost. Used to build and live-verify `templates/nuclei-samples/promptinjection/` (see that directory's README and [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1).
+
+### Bring it up
+
+```bash
+wsl                     # Windows only — drops into the Ubuntu shell; skip on macOS
+mkdir -p ~/targets && cd ~/targets
+git clone https://github.com/AISecurityConsortium/AIGoat.git
+cd AIGoat
+```
+
+**Model substitution — use Gemma 3 4B instead of the default Mistral 7B** (smaller/faster; AIGoat's own docs confirm `ollama.model` is meant to be user-swappable, no challenge design is documented as Mistral-specific). `docker-compose` actually mounts `docker/config.yml` into the backend container, not the top-level `config/config.yml` — edit **both** for consistency, but only `docker/config.yml` matters for the running container:
+```bash
+sed -i 's/model: "mistral"/model: "gemma3:4b"/' config/config.yml docker/config.yml
+```
+
+**Raise the Ollama request timeout** — AIGoat's default (`ollama.timeout: 60` seconds) is tuned for a GPU. A real chat completion on CPU-only Gemma 3 4B genuinely takes 60-90s, so the default timeout cuts it off mid-generation (`Ollama generate failed: ` in the backend log, an empty-string error — confirmed live, 2026-08-29):
+```bash
+sed -i 's/timeout: 60/timeout: 240/' docker/config.yml
+```
+
+**Port conflicts with HackerFive's other lab targets**: AIGoat's backend defaults to host port 8000 (collides with vAPI's `www` container) and its frontend to 3000 (collides with Juice Shop). HackerFive only needs the backend's chat API for template testing, so remap the backend's host port and skip starting the frontend entirely rather than tear down your other running targets:
+```bash
+sed -i 's/"8000:8000"/"18000:8000"/' docker/docker-compose.yml
+docker volume create ollama_models   # external volume — survives "down -v", so the model is only pulled once
+cd docker && docker compose up -d --build ollama backend
+```
+- **API:** `http://localhost:18000` (real container-internal port is still 8000; only the host-side mapping changed)
+- **API docs (Swagger):** `http://localhost:18000/docs`
+- First startup pulls the `gemma3:4b` model automatically (several GB — the same one-time-download tradeoff DVWA/crAPI's image pulls don't have) and seeds demo data (`docker compose logs -f backend` to watch progress).
+- **Demo accounts:** `alice`/`bob`/`charlie`/`frank`, all password `password123`; admin: `admin`/`admin123`.
+
+### What HackerFive needs
+
+```bash
+cd ~/projects/hacker-five
+TOKEN=$(curl -s -X POST http://localhost:18000/api/auth/login/ \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"password123"}' | jq -r .token)
+
+./hackerfive scan -t http://localhost:18000 \
+  --templates templates/nuclei-samples/promptinjection \
+  --header "Authorization: Bearer $TOKEN"
+```
+Same "static token via `--header`" pattern already used for DVWA's session cookie — nuclei-format templates have no chaining mechanism to log in themselves.
+
+**Real, live-verified result (2026-08-29)**: 9 findings — 7 from `misconfig` (missing security headers, disallowed methods accepted) and 2 real prompt-injection leaks from `templates/nuclei-samples/promptinjection/` — both templates genuinely leaked AIGoat's system prompt (admin credentials, database path, internal config) via its Gemma-3-backed `Cracky AI` assistant. See that directory's README for the full result, including a real matcher bug (JSON-escaping vs. `\b` word boundaries) live-testing caught and fixed. The concurrency guardrail correctly warned at the default `--concurrency 25`.
+
+Note on latency: each chat completion takes ~60-90s on CPU-only Gemma 3 4B — raise `--timeout` well above this project's other targets' defaults (`--timeout 200s` used above) or requests will time out before the model finishes generating.
+
+### Teardown / reset
+
+```bash
+cd ~/targets/AIGoat/docker && docker compose down -v   # -v also drops seeded demo data; add `docker volume rm ollama_models` to also force a re-pull of the model
+```
+
+---
+
 ## Other targets (no detector targets these yet)
 
 No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above), so there's no real live-verified result to document, unlike the sections above. Pull the image ahead of time if you want it ready for when Phase 2's XSS/SQLi work lands (see [03-development-roadmap.md](03-development-roadmap.md) Week 13-16) and this graduates to its own section:
@@ -353,10 +414,12 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 | DVWA | None for `misconfig`; a manually-obtained `PHPSESSID` session cookie for XSS/SQLi (not yet CLI-supportable, see its section above) | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 | Juice Shop | None | — | None — ready as soon as the container responds |
 | vAPI | `VAPI_OWNER_TOKEN`, `VAPI_OTHER_TOKEN` for `--detector idor`/`authbypass` (each `base64(username:password)`; target must include the `/vapi` prefix) — none for `--detector misconfig` | `POST /vapi/api1/user` with `username`/`name`/`course`/`password` (faster than the web UI), then base64-encode `username:password` yourself | None — `docker-compose.yml`'s DB init runs automatically |
+| AIGoat | A JWT via `--header "Authorization: Bearer $TOKEN"` for the promptinjection templates | `POST /api/auth/login/` with a demo account (`alice`/`password123`) | `sed` the Ollama model to `gemma3:4b` in both config files and remap the backend's host port before `docker compose up` — see its section above |
 
 ## See also
 - [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — read-only/authorized-target-only constraints these local targets satisfy
+- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the prompt-injection detector work this AIGoat setup validates
 - [21-scanning-real-targets.md](21-scanning-real-targets.md) — the equivalent workflow once you're past these lab targets and scanning a real, authorized one
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — IDOR detector this crAPI setup validates
 - [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — misconfiguration detector this DVWA/Juice Shop setup validates, and the Nuclei-compatible template engine this Juice Shop setup also validates

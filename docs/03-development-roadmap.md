@@ -263,13 +263,13 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Differentiate by targeting emerging and high-value vulnerabilities with minimal automation elsewhere. Full design in [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md).
 
-#### Week 25-26: Prompt Injection Detector
-- [ ] Implement prompt breaking detection (instruction override)
-- [ ] Detect data exfiltration attempts (LLM-based)
-- [ ] Create templates for common LLM apps (ChatGPT API, Anthropic, Hugging Face)
-- [ ] Test against AI vulnerable labs
+#### Week 25-26: Prompt Injection Detector — done (2026-08-29)
+- [x] Implement prompt breaking detection (instruction override) — `templates/nuclei-samples/promptinjection/system-prompt-leak.yaml`
+- [x] Detect data exfiltration attempts (LLM-based) — `seeded-secret-exfil.yaml` (lab-only, per doc13's design split)
+- [ ] ~~Create templates for common LLM apps (ChatGPT API, Anthropic, Hugging Face)~~ — superseded by doc13's actual design decision: one generic, structural-heuristic template that works against any chat-shaped endpoint (live-verified against AIGoat), not per-vendor-API templates. Revisit only if the generic template proves to have a real, measured accuracy ceiling against a specific provider's API shape.
+- [x] Test against AI vulnerable labs — [AIGoat](https://github.com/AISecurityConsortium/AIGoat), see [20-setup-testing-targets.md](20-setup-testing-targets.md)
 
-**Deliverable:** Prompt injection detector with specialized templates
+**Deliverable:** Prompt injection detector with specialized templates — done, see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1
 
 #### Week 27-28: SSRF Detector
 - [ ] Implement blind SSRF detection (DNS/HTTP callbacks)
