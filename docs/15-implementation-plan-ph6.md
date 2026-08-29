@@ -1,202 +1,174 @@
-# Phase 6 Implementation Plan — Weeks 41-48 (Agent Hardening, Ecosystem & Trust)
+# Phase 6 Implementation Plan — Weeks 41-48 (MCP Server & Approval Gate)
 
 > Part of the [HackerFive documentation set](../README.md).
 
+**Renumbered from "Phase 5" during the 2026-08-29 recon-phase restructuring.** This doc originally covered both the recon-independent foundations (eval harness, `Finding`-schema freeze, `PlanTree` data model) and the MCP-server/approval work together. [91-research-recon-phase.md](91-research-recon-phase.md)'s research surfaced a real reason to split them, not just a sizing one: [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md)'s content (now covering recon + the data-model foundations) has zero dependency on an MCP SDK actually working, while everything in this doc depends on it directly. Bundling them meant an SDK risk outside this project's control could stall recon work that has nothing to do with it. This doc keeps the original MCP-server/approval-gate content, renumbered and re-sequenced to build on doc14 instead of building the foundations itself.
+
 ## Objective
 
-[14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) builds the unsafe-to-skip backbone: the MCP server, the `elicitation`-based approval gate, the task tree, and the hard safety blockers (program-policy pre-flight, hard-fail scope). This phase is everything [90-research-hackerbot.md](90-research-hackerbot.md)'s backlog still needs on top of that backbone to reach its own stated Definition of Done — rounding out approval coverage (`AllowWrites` attestation, scope-creep), upgrading observability from a queryable log into a live Web UI view, running the OWASP Agentic Top 10 mapping against a design that, by this point, actually exists, and closing out the template-ecosystem and eval-maturity items that don't block a first agent session but do block calling the feature actually trustworthy.
+[90-research-hackerbot.md](90-research-hackerbot.md) researched how the field's serious 2026 LLM-driven pentesting tools structure themselves and resolved four open design questions (single coordinator, no shell/exec tool, MCP `elicitation`/`tasks` for approval, `Confidence` ≠ `Severity`) plus an eight-group backlog (A-H), later extended by [91-research-recon-phase.md](91-research-recon-phase.md) into a ninth group (R, recon). Scheduled across three phases: [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) (recon + task-tree/schema foundations, no MCP dependency), this phase (the MCP server, human-approval gate, and hard safety blockers — the part that's actually unsafe to skip once an agent exists), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) (hardening/ecosystem polish on top of a backbone this phase builds). **Nothing in Phase 7 should ship before this phase exists.**
 
-**This phase depends on Phase 5 existing, not the other way around** — every step below assumes `pkg/mcpserver`, `Job.PlanTree`, and the `plan`/`elicitation` approval flow are already in place.
+**Ordering relative to Phase 4:** this phase comes *after* [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) (Prompt Injection/SSRF/Business Logic Flaws), not instead of it. Confirmed as a real dependency, not just a scheduling preference: doc90's `findings.export` MCP tool (Step 1 below) needs Phase 4 Step 4's `Exporter`/HackerOne-JSON work, which doesn't exist yet as of this writing (`pkg/reporter` today only has `WriteJSON`, confirmed against the actual tree). By the time this phase starts, Phase 4 will have shipped it.
+
+**Ordering relative to Phase 5:** this phase depends directly on doc14's `ReconResult` schema and `Job.PlanTree` data model existing — Step 2 below seeds the coordinator's first `plan` proposal from a real `ReconResult`, and Step 3 wires `ReconResult.OutOfScope` into the scope-creep gate. Neither is buildable before doc14 ships.
 
 ## Scope
 
-1. ⬜ **Tool surface completion** (Week 41)
-2. ⬜ **Approval & compliance rounding** (Week 42)
-3. ⬜ **Observability upgrade: live Agent tab** (Weeks 43-44)
-4. ⬜ **Live log injection + concurrency ceilings** (Week 45)
-5. ⬜ **OWASP Agentic Top 10 mapping** (Week 46)
-6. ⬜ **Template ecosystem & triage support** (Week 47)
-7. ⬜ **Eval maturity + release** (Week 48) — `v0.6.0`
+1. ⬜ **MCP server** (Weeks 41-42)
+2. ⬜ **Approval gate + spend ceiling** (Week 43)
+3. ⬜ **Hard safety blockers + scope-creep gate + cost-aware prioritization** (Weeks 44-45)
+4. ⬜ **Approval UI: make the plan preview actionable** (Week 46)
+5. ⬜ **Session log + release** (Weeks 47-48) — `v0.6.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-14.)
 
 **Explicitly out of scope for this plan, named rather than silently dropped:**
-- **A general-purpose logic engine for business-logic templates, or any other scope-expansion of Phase 4's detectors** — this phase is agent-integration hardening, not new vulnerability classes.
-- **A fully generic template-authoring DSL for agent-proposed templates** — E2 below is a staging *directory* with human promotion, not an automated review/merge pipeline.
-- **Multi-tenant / hosted-agent-service mode** — doc12's local-only architecture decision (loopback-first, no hosted SaaS) applies to the MCP server exactly as it applies to the Web UI; not revisited here.
+- **A peer-agent mesh of any kind** — Decision 1 (doc90) is a permanent architectural boundary, not a v1 limitation to relax later. A "specialized recon agent" or "specialized exploit agent" is not a future item on this backlog; it's the alternative doc90 evaluated and rejected. (Doc91's research reinforces this further — see doc14's Objective.)
+- **Anything shell/exec-shaped in the MCP tool surface** — Decision 2, same permanence. A future "just let the agent run curl for this one edge case" request gets the same answer every other feature request in this project already gets: add a template or detector, don't add a raw-exec tool. Doc91's research found this is a genuinely conservative position relative to the field (every comparable tool researched gives its agent a shell) — see doc14's Objective for the full finding.
+- **The full Web UI "Agent" tab with live SSE streaming** — deferred to Phase 7 Step 3 (doc90's C1, full version). This phase upgrades doc14's read-only Plan-preview page into an actionable approval surface (Step 4 below) and ships a structured, queryable session log (Step 5) — real, but the live reasoning-trace tab needs an approval mechanism to visualize, which doesn't fully exist until this phase's own Step 2.
+- **OWASP Agentic Top 10 mapping (D4)** — deferred to Phase 7 Step 5; it's a review-and-document pass over a design that needs to actually exist first (this phase builds most of what D4 would be checking).
 
 ## Dependencies used in this plan
 
-**No new dependency for any step in this plan.** Everything here extends types and packages Phase 5 (or earlier phases) already introduced: `pkg/mcpserver`, `pkg/webui`, `pkg/agenttask` (or wherever Phase 5 Step 2 lands `PlanTree`), `pkg/templatesync`. The OWASP mapping (Step 5) is a documentation/review pass, not code. If Step 7's benchmark run surfaces a need for something beyond stdlib (e.g. statistical reporting beyond simple pass/fail counts), verify via pkg.go.dev at that point rather than assuming here — same discipline as every prior phase.
+**New dependency, to be verified at Step 1 kickoff, not assumed here**: an MCP Go SDK. No MCP-related package exists in `go.mod` today. Candidates to check via pkg.go.dev at implementation time (current stable version, import count, maintenance activity, and specifically whether it supports the 2026-07-28 spec's `elicitation`/`tasks` primitives Decision 3 commits to) — same discipline the Phase 2 JWT library and Phase 4's candidate Interactsh client both followed: verify before adding, don't assume a package's maturity from this doc. If no sufficiently mature Go SDK supports `elicitation`/`tasks` yet, that is itself a real finding this step should surface and report honestly (see Step 1's Design), not paper over by hand-rolling a partial MCP implementation. This is precisely the risk this phase's split from doc14 was meant to isolate — a delay here no longer blocks doc14's recon/data-model work, which will already be done.
+
+**No new dependency for Steps 2-5** — pure Go logic and additions to types doc14 already introduced (`Job.PlanTree`, `ReconResult`); a new `pkg/mcpserver` package calls straight into `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon`, duplicating no scan logic, the same boundary doc12 already drew for `pkg/webui`.
 
 ---
 
-## Step 1: Tool Surface Completion (Week 41) — ⬜ not yet implemented
+## Step 1: MCP Server (Weeks 41-42) — ⬜ not yet implemented
 
 ### Design
 
-**A4 — `hackerfive templates list --json`.** Expose the same tag/severity/category data doc12/Week 19 already extract for the Web UI's Templates page, as machine-readable JSON on the CLI directly — useful for any caller (agent or otherwise) that wants template metadata without going through the MCP server's `templates.list` tool.
+**A1 — `pkg/mcpserver/`**, exposing `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon` (doc91's R4, new), and `plan` (built out fully in Step 2) as MCP tools. Calls straight into the existing `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon` packages — no scan logic duplicated, the same boundary doc12 already drew for `pkg/webui`. Consumes the same `Engine.WithFindingCallback`/`WithLogCallback` hooks `pkg/webui` already uses (doc90's A2, already landed in Phase 3) — the MCP server is a second frontend on the unchanged core, not a second implementation of it.
 
-**A5 — tool-list scoping.** Per OWASP's "least agency" principle: an MCP session shouldn't necessarily see every tool Phase 5's `pkg/mcpserver` registers, regardless of what it's doing. A read-only "triage this scan's findings" session and a "plan and (pending approval) run writes-capable business-logic checks" session are different agency levels and should get different tool lists from the server at session-init time, not the same list gated only by a runtime check inside each tool handler. Concretely: the MCP server gains a session-scope concept (e.g. `readonly` vs. `full`) set at connection time, and tool registration/listing filters against it — a `readonly` session never even sees `scan`'s write-capable parameters or `plan`'s approval flow for anything beyond read-only detectors.
+`findings.export` calls into Phase 4 Step 4's `Exporter` implementations (Markdown/HTML/HackerOne-JSON), which will exist by this point per the Objective's ordering decision — if for any reason Phase 4 Step 4 hasn't actually shipped by the time this step starts, `findings.export` ships JSON-only (reusing today's `reporter.WriteJSON`) and gains the other formats once they land, rather than blocking this whole step on it.
+
+`recon` wraps doc14's `pkg/recon` the same way `scan` wraps `pkg/scanner` — schema-validated arguments (target, `--recon-depth`), not a free-form command, per doc91 §5's design constraint.
+
+**Deliberately excludes anything shell/exec-shaped, per Decision 2** — this is the one place in the whole plan where "don't add a tool" is as important a design choice as "add a tool." Every path to a `Finding` still runs through the existing deterministic matcher/extractor engine; the agent selects targets/templates and interprets results, it never crafts a raw request the engine's matchers didn't already validate.
+
+**First real task of this step, not assumed**: verify the MCP Go SDK candidate (see Dependencies above) actually supports `elicitation`/`tasks` per the 2026-07-28 spec before writing `plan`'s scaffolding — Step 2 builds directly on this.
 
 ### Files (anticipated, confirm at implementation time)
-- `cmd/hackerfive/templates.go` — `--json` flag on the existing `templates list` subcommand.
-- `pkg/mcpserver/server.go` — session-scope concept, tool-list filtering at connection/listing time.
-- `tests/unit/templates_json_test.go`, `tests/unit/mcpserver_scoping_test.go`.
+- `pkg/mcpserver/server.go` — MCP server setup, tool registration.
+- `pkg/mcpserver/tools_scan.go` — `scan` tool, wired to `Engine.WithFindingCallback`/`WithLogCallback`.
+- `pkg/mcpserver/tools_templates.go` — `templates.list`, `templates.sync`, calling `pkg/templatesync`.
+- `pkg/mcpserver/tools_findings.go` — `findings.export`, calling `pkg/reporter`.
+- `pkg/mcpserver/tools_recon.go` — `recon` tool, calling `pkg/recon` (doc14).
+- `cmd/hackerfive/mcpserve.go` — new `hackerfive mcp-serve` (or similar) subcommand.
+- `tests/unit/mcpserver_*_test.go` — schema-validated request/response tests per tool, no live target needed.
 
 ### Verification
-Unit tests confirming a `readonly`-scoped session's tool list omits write-capable tool parameters/tools entirely (not just rejects them at call time). Live verification: connect two MCP client sessions with different declared scopes, confirm each sees a different tool list.
+Unit tests per tool against a mock/stub scanner config. A real MCP client (e.g. Claude Desktop or Claude Code configured against this server) can list and call `scan`/`templates.list`/`templates.sync`/`findings.export`/`recon` and get back structured JSON — live-verified before this step is marked done, not just unit-tested.
 
 ---
 
-## Step 2: Approval & Compliance Rounding (Week 42) — ⬜ not yet implemented
+## Step 2: Approval Gate + Spend Ceiling (Week 43) — ⬜ not yet implemented
 
 ### Design
 
-**B2 — turn `AllowWrites` into an attested approval, not a bare boolean.** By this phase, Phase 4's `--allow-writes` flag exists (`scanner.Config.AllowWrites`, doc13 Step 3) and Phase 5's `plan`/`elicitation` flow exists. This step wires them together: the `scan` MCP tool only honors a write-capable business-logic check when the request carries an approval grant tied to a `plan` the human already reviewed via Phase 5's Step 4 — an `elicitation` grant, not a self-asserted flag. **No process, including the agent itself, can set `AllowWrites` for its own call in the same breath it decided it wanted to** — this holds by construction (the grant comes from a separate elicitation round trip the agent doesn't control the content of), not by convention.
+**B1 — `plan` MCP tool, built on native `elicitation`/`tasks`.** The agent proposes a full run (targets, detectors, templates, whether writes are required) and gets back a structured plan snapshot (doc14's `PlanTree`) in `input_required` state — no request sent yet. The human's approval is an `elicitation` response, captured natively by the transport rather than a plan-ID string HackerFive has to mint, store, and trust the agent not to replay. This is doc90's single highest-leverage item: today the CLI just executes, and there is currently no point where a human sees and approves a plan before traffic goes out.
 
-**B3 — document HackerOne submission as a permanent architectural invariant**, not a Phase-4-scoped decision: the `findings.export` tool (Phase 5 Step 3) and the HackerOne `Exporter` (doc13 Step 4) produce a *draft* report a human reviews and submits — this doc states explicitly, for the record, that no code path in this project will ever call HackerOne's submission endpoint without a human clicking submit, regardless of how capable an agent orchestrating the rest of the flow becomes. Worth stating plainly given HackerOne's own CEO had to publicly clarify agentic-feature boundaries after a February 2026 researcher backlash (doc90 §3) — HackerFive holds itself to the same bar preemptively, in writing, before it's ever tested by an incident.
+**R5 — seed the plan from a real `ReconResult`.** The coordinator's *first* `plan` proposal is generated from doc14's `ReconResult` (matched against template tags per doc01's reward-to-effort priors), not from an empty or hand-authored tree — this is the concrete fix for doc90 Group H having no named source for `PlanTree`'s initial leaves, and the reason this step couldn't land before doc14 shipped.
 
-**B4 — scope-creep gate.** If a scan's own recon surfaces hosts/paths outside the original `--targets`/`--scope`, fresh approval is required before the agent can act on the newly discovered surface — a second `elicitation` round trip, not a silent expansion of what the already-approved plan covers.
+**H5 — per-job spend ceiling**, sequenced alongside B1 per doc90's own note (a hard budget cap has a same-day reference implementation to copy — Strix's `--max-budget-usd` — so there's no reason to treat it as a stretch goal). A hard, enforced cap on cumulative agent-attributable cost (LLM token spend the coordinator itself reports, not HackerFive's own request cost) for a `Job` — exceeding it fails the job with a clear reason, it does not just log a warning.
 
 ### Files (anticipated, confirm at implementation time)
-- `pkg/mcpserver/tools_scan.go` — `AllowWrites` gated on an elicitation grant reference, not a request-body boolean.
-- `docs/05-hackerone-and-legal.md` — B3's invariant statement added.
-- `pkg/mcpserver/tools_plan.go` (or `tools_scan.go`) — B4's scope-creep detection and re-elicitation trigger.
-- `tests/unit/allowwrites_attestation_test.go`, `tests/unit/scope_creep_test.go`.
+- `pkg/mcpserver/tools_plan.go` — `plan` tool, `elicitation` request/response handling, seeded from `pkg/recon`'s output.
+- `pkg/webui/jobs.go` (or doc14's shared package) — `Job`/`PlanTree` gains a `SpendCeiling`/`SpendSoFar` pair; the coordinator reports spend increments via a new field on the MCP tool call metadata.
+- `tests/unit/plan_tool_test.go` — approve/reject/timeout paths against a mock elicitation response, including a test confirming the initial tree is seeded from a `ReconResult` fixture, not empty.
+- `tests/unit/spend_ceiling_test.go` — confirms a job hard-fails once the ceiling is crossed, not just logs.
 
 ### Verification
-Unit tests: a `scan` call carrying `AllowWrites=true` without a valid elicitation grant reference is rejected; a scope-creep scenario (mocked recon surfacing an out-of-scope host) triggers a fresh elicitation rather than proceeding. Live verification against a real MCP client for both paths.
+Unit tests for the elicitation round trip (mocked), the ReconResult-seeded initial plan, and the spend-ceiling hard-fail. Live verification: a real MCP client runs `recon` then proposes a plan, a human approves or rejects it via the client's own elicitation UI, and the server only proceeds on approval — confirmed against a real client, not just a mock.
 
 ---
 
-## Step 3: Observability Upgrade — Live Agent Tab (Weeks 43-44) — ⬜ not yet implemented
+## Step 3: Hard Safety Blockers + Scope-Creep Gate + Cost-Aware Prioritization (Weeks 44-45) — ⬜ not yet implemented
 
 ### Design
 
-**C1 (full) — Web UI "Agent" tab.** Phase 5 Step 6 built a structured, persisted session log; this step renders it live in `pkg/webui`, over the same SSE mechanism the existing Scan Status page already uses (doc12) — a new `sse-swap="agent-event"` stream alongside the existing `finding`/`log`/`progress` events, so a human watching a running agent session sees each MCP tool call, its stated reasoning, and its result appear as they happen, not only in a post-hoc log dump. This is, per doc90 §2's most load-bearing lesson (the Thacker/xssdoctor team's own framing), the single highest-leverage item in this entire phase: the difference between a useful hacking agent and an expensive hallucination machine was observability, not model quality or tool count.
+**D2 — program-policy pre-flight check, a hard blocker.** Before any agent-driven run against a real (non-lab) target, check the target's disclosure policy (via [22-authorized-targets.md](22-authorized-targets.md)'s registry, or a fetched `security.txt`/program policy — doc14's Wave 0 already fetches this during recon) for whether automated scanners are disallowed — refuse to proceed if so. This is the one item in doc90's whole backlog with a documented real-world cost of skipping it (XBOW's own program removal, doc90 §2) — implemented as a hard block, not a warning, unlike `--scope`'s existing softer treatment.
 
-**C2 — extend the audit trail doc12 already specifies for the Web UI's authorization checkbox** to also capture agent-specific facts: which MCP session initiated a job, what scope/plan was approved and when, and the elicitation grant references B2 introduced.
+**D3 — hard-fail, not warn, on missing `--scope` for agent-initiated runs.** The CLI's existing "warn, don't silently proceed" behavior for a missing `--scope` (doc02 §3) is the right default for a human at a terminal who typed the command themselves; it's the wrong default for an agent-initiated `scan`/`recon` MCP tool call, where nobody read the warning. Both tools reject the call outright if `--scope`-equivalent isn't set, rather than proceeding with a stderr line nobody's watching.
 
-**C3 — evidence-linked claims.** No agent-drafted report text (via `findings.export` or any future report-drafting surface) without a citation to a specific `Finding.ID` and its evidence — enforced at the exporter level (a draft referencing an ID that doesn't exist in the job's finding set is rejected), not just a style guideline for prompts.
+**B4 — scope-creep gate, first implementation.** doc90's B4 requires fresh approval when a scan's own recon surfaces hosts/paths outside `--targets`/`--scope`; doc14's `ReconResult.OutOfScope` (doc91's R6) is the producer this gate has been missing. Concretely: if `pkg/recon` (via the `recon` tool, or a re-run mid-scan) populates `OutOfScope` with anything, the coordinator cannot silently fold those hosts into the working set — a second `elicitation` round trip (reusing Step 2's `plan` mechanism) is required before anything touches them. Phase 7 Step 2 rounds this out with audit-trail/documentation coverage; this is where the gate first actually exists and blocks something.
+
+**H4 — cost/attempt-aware prioritization.** A per-leaf attempt counter and running spend tracker on doc14's `PlanTree`, applying MAPTA's own measured finding as a concrete rule: rising tool-call count, dollar cost, token count, and elapsed time on one leaf are each independently correlated with *falling* odds of success (r = −0.66, −0.61, −0.59, −0.56 per doc90 §2) — "still grinding after N attempts with no confidence increase" surfaces as a stop-and-escalate signal to the coordinator (via the leaf's `Status`), not a reason to allocate more budget to the same leaf.
 
 ### Files (anticipated, confirm at implementation time)
-- `pkg/webui/handlers_scan.go` — new `agent-event` SSE stream on `/scans/{id}/events`.
-- `pkg/webui/templates/scan_status.html` — Agent tab markup.
-- `pkg/webui/auditlog.go` (or extend the existing authorization-checkbox log site) — C2's extra fields.
-- `pkg/reporter/` — C3's citation-enforcement check on export.
-- `tests/unit/agent_tab_test.go`, `tests/unit/audit_trail_agent_test.go`, `tests/unit/evidence_citation_test.go`.
+- `pkg/mcpserver/tools_scan.go`/`tools_recon.go` — D2/D3 checks added at the top of each tool handler, before any request is fired.
+- `pkg/mcpserver/tools_plan.go` — B4's out-of-scope check and re-elicitation trigger.
+- `pkg/agenttask/` (doc14's `PlanTree` location) — `PlanNode` gains `Attempts`, `Spend`, and the stop-and-escalate signal derived from H4's rule.
+- `tests/unit/preflight_test.go` — D2 (policy-disallowed target rejected) and D3 (missing scope rejected, not warned) cases.
+- `tests/unit/scope_creep_test.go` — a `ReconResult` fixture carrying `OutOfScope` entries triggers a fresh elicitation rather than proceeding.
 
 ### Verification
-Live-verified against a real browser: a running agent session's tool calls and reasoning appear in the Agent tab in real time, matching the persisted session log exactly. Unit test confirms an export referencing a nonexistent `Finding.ID` is rejected.
+Unit tests for both hard-fail paths and the scope-creep trigger. Live verification for D2 needs a real target with a documented no-automated-scanners policy (or a synthetic one for test purposes) — confirm the block actually fires, don't assume from the code alone. Live verification for B4: a recon run against a target whose crawl surfaces a genuinely out-of-scope linked domain (doc91 Wave 3's own example) triggers re-approval before that domain is ever touched.
 
 ---
 
-## Step 4: Live Log Injection + Concurrency Ceilings (Week 45) — ⬜ not yet implemented
+## Step 4: Approval UI — Make the Plan Preview Actionable (Week 46) — ⬜ not yet implemented
 
 ### Design
 
-**C4 — live log injection (stretch).** The Thacker/xssdoctor build (doc90 §2) supports typing directly into a running worker's log to redirect it mid-task without stopping it. A text box on the Agent tab (Step 3) that appends an operator note into the coordinator's next reasoning turn — cheap to add once C1 exists, and directly useful for the "it got distracted, nudge it" scenario doc90 cites as a real, repeatedly-observed need. Lowest priority in this step; descope first if the week runs short.
+Doc14 Step 4 shipped a *read-only* Plan-preview page — useful for inspecting a `PlanTree` the coordinator built, but not yet a way to act on it. This step is where that page becomes the Web UI's own approval surface, for the case where a human is driving a session through HackerFive's own Web UI rather than (or in addition to) an external MCP host like Claude Desktop that renders its own `elicitation` dialog:
 
-**D1 — per-detector concurrency ceilings.** Distinct from Phase 4's prompt-injection-specific concurrency guardrail (doc13 Step 1, a stderr warning) — this is a general ceiling the coordinator's `scan` tool calls respect per detector type, so an agent driving many parallel `scan` calls across a session can't collectively exceed a safe aggregate concurrency against one target even if each individual call's `--concurrency` looks reasonable in isolation.
+- **Approve / Reject / Edit controls per leaf and for the plan as a whole** — an `hx-post` action on the Plan-preview page that resolves the same `elicitation` response Step 2's `plan` tool is waiting on, so a human can approve from either surface (the MCP client's own UI, or HackerFive's Web UI) interchangeably.
+- **A budget/spend gauge** against Step 2's `SpendCeiling`/`SpendSoFar` — a simple progress bar, not a new subsystem; the numbers already exist on `Job` by this step.
+- **An explicit, always-reachable kill switch/pause control** — doc90's OWASP ASI10 mitigation names this as a requirement; this step is where it's actually built, not just referenced. A single button that cancels the job's context (the same `r.Context().Done()` mechanism doc12's SSE unsubscribe path already relies on) and is visible on every page a running job's status appears on, not buried in a menu.
 
 ### Files (anticipated, confirm at implementation time)
-- `pkg/webui/templates/scan_status.html` — C4's injection text box + `hx-post` wiring.
-- `pkg/mcpserver/tools_scan.go` (or a session-level tracker) — D1's aggregate concurrency accounting across concurrent `scan` calls in one session.
-- `tests/unit/concurrency_ceiling_test.go`.
+- `pkg/webui/handlers_plan.go` (new) or extend `handlers_scan.go` — approve/reject/edit endpoints resolving an `elicitation` response.
+- `pkg/webui/templates/plan_preview.html` (doc14's page, extended) — action buttons, budget gauge, kill switch.
+- `tests/unit/plan_ui_test.go` — approve/reject via HTTP produces the same effect as an MCP-client-side elicitation response.
 
 ### Verification
-Unit test: two concurrent `scan` tool calls in the same session against the same target are throttled to the aggregate ceiling, not each independently allowed full concurrency. C4 live-verified by hand: an injected note visibly changes the coordinator's next action in a real session.
+Live-verified against a real browser: approving a plan via the Web UI unblocks a session that's waiting on `elicitation`, exactly as approving via an MCP client's own UI would. The kill switch, clicked mid-scan, is confirmed to actually stop the job (no further findings/logs after the click), not just hide the UI.
 
 ---
 
-## Step 5: OWASP Agentic Top 10 Mapping (Week 46) — ⬜ not yet implemented
+## Step 5: Session Log + Release (Weeks 47-48) — ⬜ not yet implemented — `v0.6.0`
 
 ### Design
 
-**D4.** OWASP published a peer-reviewed Top 10 for agentic applications in December 2025 (ASI01-ASI10). Doc90 §3 Group D already sketches HackerFive-specific mitigations for each risk against the *design*; this step re-walks that same table against the *actual shipped Phase 5/6 code* and records the result — mitigated (cite the file/mechanism), or explicitly accepted as residual risk with a stated reason — matching this project's own "revise down with reasoning, don't pad" discipline. Concretely, confirm or correct each row doc90 already drafted:
+**C1 (minimal) — agent session log.** A structured, append-only record of every MCP tool call, the coordinator's stated reasoning for it (if the calling agent provides one — this is a courtesy field the tool schemas accept, not something HackerFive can force an agent to fill honestly), and the raw result. Persisted per job (reusing `Job`'s existing accumulation pattern from doc12). **Not yet the Web UI's live Agent tab** — that's Phase 7 Step 3's job; this step's deliverable is that the log exists, is queryable, and is complete, even if today it's only inspectable via a CLI dump or the MCP server's own `job.log` equivalent.
 
-| ASI risk | Doc90's proposed mitigation | Confirm against real code |
-|---|---|---|
-| ASI01 Agent Goal Hijack | Untrusted target data, never instructions; D3 hard-fail on missing scope | `pkg/mcpserver/tools_scan.go`'s D3 check (Phase 5 Step 5) |
-| ASI02 Tool Misuse & Exploitation | Decision 2 (no shell/exec tool) + schema-validated tools | `pkg/mcpserver` tool registrations (Phase 5 Step 3) |
-| ASI03 Identity & Privilege Abuse | Short-lived, per-call credentials, never baked into agent context | Confirm `--auth-token`-equivalent handling in `tools_scan.go` doesn't persist beyond one call |
-| ASI04 Agentic Supply Chain Vulnerabilities | Pinned-commit template sync + E2's staging directory | `pkg/templatesync` (existing) + Step 6's `templates/proposed/` (this phase) |
-| ASI05 Unexpected Code Execution | No code-execution tool exists | Confirm against the final Phase 5 tool list |
-| ASI06 Memory & Context Poisoning | `PlanTree` is durable, refreshed state, not open-ended memory | `pkg/agenttask` (Phase 5 Step 2) |
-| ASI07 Insecure Inter-Agent Communication | Moot — single coordinator, no peer-agent channel | Confirm no peer-agent code was introduced anywhere in Phases 5-6 |
-| ASI08 Cascading Agent Failures | Host-error-cache circuit breaker + spend/attempt ceiling | Existing `pkg/scanner/hosterrors` + Phase 5 Step 4's `H5`/Step 5's `H4` |
-| ASI09 Human-Agent Trust Exploitation | Approvals only via audited Web UI controls or MCP `elicitation`, never the agent's own conversational assertion | Phase 5 Step 4's `plan` tool + this phase's Step 2 (`B2`) |
-| ASI10 Rogue Agents | Kill switch/pause (Agent tab) + policy pre-flight hard blocker | Step 3's Agent tab (does it need an explicit pause/cancel action? confirm and add if missing) + Phase 5 Step 5's `D2` |
+Full integration testing across Steps 1-4 together (a real MCP client running a recon → plan → approve → scan → findings.export round trip against a lab target), then release.
 
 ### Files (anticipated, confirm at implementation time)
-- `docs/90-research-hackerbot.md` — D4's row updated from "proposed mitigation" to "confirmed against `<file>`" or "residual risk: `<reason>`" per row.
+- `pkg/agenttask/sessionlog.go` (or peer to `Job`) — the append-only log type.
+- `tests/integration/agent_e2e_test.go` — full round trip against a lab target via a real or scripted MCP client.
 
 ### Verification
-Every row in the table above is checked against real code (a file path and line, not a restated intention) and recorded with either a confirmation or a stated residual-risk reason. Pay particular attention to ASI10 — if the Agent tab (Step 3) doesn't yet have an explicit pause/cancel control, add one during this step rather than recording ASI10 as mitigated when it isn't.
+The full round trip (recon → plan proposal → human approval via elicitation or the Web UI → scan execution with live findings/logs → findings.export) works end-to-end against at least one lab target (crAPI or DVWA), live-verified, not just unit-tested piecewise.
 
 ---
-
-## Step 6: Template Ecosystem & Triage Support (Week 47) — ⬜ not yet implemented
-
-### Design
-
-**E1 — generated `templates/index.json`.** A machine-readable index of every loaded template's `info:` metadata (name/severity/tags/description) plus source (bundled/synced), generated at `templates sync`/`templates list` time — gives an agent (or A4's `--json` output) one flat file to reason over instead of parsing individual YAML files.
-
-**E2 — agent-proposed templates land in `templates/proposed/`**, never directly in a trusted path (`./templates/` or the synced directory). A future "agent drafts a new detection template based on what it observed" capability — not built in this phase, but the staging convention is: any such template is written only to `templates/proposed/`, requires explicit human promotion (a file move, or a `hackerfive templates promote <name>` command if that turns out to be worth building) before it's ever loaded into a real scan.
-
-**F1 — triage-assist mode on the existing `Exporter` output.** A mode that annotates exported findings with the agent's own triage notes (severity-context, likely false-positive flags) as a clearly-labeled *additional* field, never altering the underlying deterministic `Finding.Severity`/`Confidence` — consistent with this phase's repeated theme of agent output being additive/advisory, never authoritative over detector-set fields.
-
-**F2 — structured feedback capture.** When a human overrides or dismisses an agent-surfaced finding/triage note during review, capture that decision in a structured, queryable form (not just "the user closed the tab") — useful raw material for Step 7's eval-maturity work and any future tuning of the coordinator's own prioritization logic.
-
-### Files (anticipated, confirm at implementation time)
-- `pkg/templatesync/index.go` — E1's `templates/index.json` generation.
-- `templates/proposed/` — new, empty (gitkept) directory; `pkg/template` loader confirmed to never auto-load from it.
-- `pkg/reporter/triageassist.go` — F1's annotation layer.
-- `pkg/webui/handlers_scan.go` (or a new `feedback.go`) — F2's capture endpoint.
-- `tests/unit/template_index_test.go`, `tests/unit/proposed_dir_isolation_test.go`, `tests/unit/triage_assist_test.go`.
-
-### Verification
-Unit test confirming `templates/proposed/` is never picked up by the default `--templates` load path (mirrors the isolation guarantee `templates/nuclei-samples/` already needs, but inverted — proposed is deliberately *excluded* by default). Triage-assist output verified to never mutate the underlying `Finding` struct it annotates.
-
----
-
-## Step 7: Eval Maturity + Release (Week 48) — ⬜ not yet implemented — `v0.6.0`
-
-### Design
-
-**G1 (maturity) — the real benchmark run.** Phase 5 Step 1 built the harness stub and ran it with zero agent involvement to get a baseline. This step runs the same fixed challenge set against the lab targets *with* a real MCP-client-driven agent session (plan → approve → scan → triage), tracking agent-driven false-positive/false-negative rate **separately from** the underlying detectors' own already-measured rate (Phase 2's 1.4%, doc11) — an agent could in principle introduce its own error mode (bad target/template selection, premature triage dismissal) even with zero change to detector accuracy itself. Full cost accounting per run (dollar cost, tool-call count, wall-clock time), modeled on MAPTA/Cyber-AutoAgent's published discipline, not a bespoke scoring rubric.
-
-Full integration testing across the whole Phase 5+6 stack, then release.
-
-### Files (anticipated, confirm at implementation time)
-- `tests/eval/agent_run.go` (or extend Phase 5's harness) — real MCP-client-driven run against the fixed challenge set.
-- `docs/90-research-hackerbot.md` — G1's row updated with real measured numbers, not left as a backlog item.
-
-### Verification
-The benchmark actually runs against all four lab targets with a real agent session, and the resulting fp/fn numbers (and their delta from Phase 5 Step 1's detector-only baseline) are recorded honestly — met, or not met with a stated reason, same "revise down with reasoning, don't pad" discipline every prior phase's real numbers followed (doc11's XSS/SQLi shortfall, doc13's own upcoming Phase 4 metrics).
 
 ## Definition of Done (Phase 6, Weeks 41-48)
 
-This phase, combined with Phase 5, closes out doc90's full "Hacker-in-the-Loop Ready" Definition of Done:
-- [ ] `hackerfive templates list --json` ships; MCP sessions get scoped tool lists based on declared agency level (read-only vs. full), confirmed by live-verifying two differently-scoped sessions see different tool lists
-- [ ] `AllowWrites` is only honored on a `scan` call carrying a valid elicitation grant reference tied to an approved plan — confirmed no code path lets an agent set it for itself
-- [ ] HackerOne submission's permanent human-in-the-loop invariant is documented in `docs/05-hackerone-and-legal.md`
-- [ ] A scope-creep scenario triggers fresh elicitation rather than silent expansion, live-verified
-- [ ] The Web UI's Agent tab streams every MCP tool call and its reasoning live, matching the persisted session log exactly
-- [ ] `findings.export` (and any future report-drafting surface) rejects a draft citing a nonexistent `Finding.ID`
-- [ ] Aggregate per-target concurrency across concurrent `scan` calls in one session is throttled to a stated ceiling
-- [ ] All ten OWASP Agentic Top 10 risks (D4) are checked against real shipped code (file/line cited) and recorded as mitigated or accepted residual risk with a stated reason
-- [ ] `templates/proposed/` exists, is confirmed never auto-loaded by the default `--templates` path, and requires explicit human promotion
-- [ ] Triage-assist annotations never mutate `Finding.Severity`/`Confidence`
-- [ ] Agent-driven false-positive/false-negative rate is measured live against all four lab targets, tracked separately from detector-level rate, with full cost accounting recorded
+- [ ] `pkg/mcpserver` exposes `scan`/`templates.list`/`templates.sync`/`findings.export`/`recon`/`plan` and nothing shell/exec-shaped; live-verified against a real MCP client
+- [ ] The `plan` tool's human approval is captured via MCP `elicitation`, not a hand-rolled plan-ID flag; live-verified against a real client's own approval UI
+- [ ] A coordinator's first `plan` proposal is demonstrably seeded from a real `ReconResult`, not an empty or hand-authored tree
+- [ ] A per-job spend ceiling hard-fails a job when crossed, not just logs
+- [ ] A program-policy pre-flight check (D2) hard-blocks an agent-driven run against a target whose disclosure policy disallows automated scanners
+- [ ] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command
+- [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and triggers a fresh `elicitation` round trip before it's touched, live-verified
+- [ ] Cost/attempt-aware prioritization (H4) surfaces a stop-and-escalate signal on a `PlanTree` leaf after repeated low-yield attempts
+- [ ] The Web UI's Plan-preview page supports Approve/Reject/Edit, a budget gauge, and an always-reachable kill switch that actually stops a running job
+- [ ] A structured, persisted agent session log exists and is queryable per job, even without a live Web UI view yet
+- [ ] A full recon → plan → approve → scan → export round trip is live-verified end-to-end against at least one lab target
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason
 
 ## See also
-- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the MCP server, approval gate, and task-tree backbone this phase hardens
-- [90-research-hackerbot.md](90-research-hackerbot.md) — the full research and backlog this plan and doc14 together schedule
-- [03-development-roadmap.md](03-development-roadmap.md) — full Phase 1-6 roadmap this plan is a slice of
-- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — the Web UI SSE/audit-trail precedent Step 3/C2 extend
-- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the `--allow-writes` flag and HackerOne `Exporter` this phase's Step 2 attests to and exports through
-- [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — gains B3's permanent submission-invariant statement
+- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon package, `Finding`-schema freeze, and `PlanTree` foundations this phase builds on
+- [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog (Groups A-H) this plan schedules the MCP-server/approval half of
+- [91-research-recon-phase.md](91-research-recon-phase.md) — Group R, the recon research this phase's Steps 1-3 wire into the MCP server and approval gate
+- [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — the hardening/ecosystem/trust phase that follows this one
+- [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — `Finding`/`Exporter`/`Engine` design this plan builds on
+- [03-development-roadmap.md](03-development-roadmap.md) — full Phase 1-7 roadmap this plan is a slice of
+- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — the `WithFindingCallback`/`WithLogCallback` hooks and `Job` model this plan reuses and extends
+- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the `Exporter`/HackerOne-JSON work `findings.export` depends on, and the `--allow-writes` flag Phase 7's B2 attests to
+- [22-authorized-targets.md](22-authorized-targets.md) — the registry D2's policy pre-flight check reads from
