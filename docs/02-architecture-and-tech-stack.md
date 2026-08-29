@@ -110,6 +110,7 @@
 - Live findings/logs stream to the browser via Server-Sent Events, backed by `Engine`'s `WithFindingCallback`/`WithLogCallback` hooks (see Scanner Engine, below) — this is what "Callback-based streaming results," formerly listed under Future Considerations, actually became once something needed it.
 - CSRF via a hand-rolled double-submit cookie (no third-party framework, consistent with the Minimal Dependencies stance below); a non-loopback bind requires a one-time bootstrap token, exchanged on first use for an `HttpOnly` session cookie.
 - Full design in [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md).
+- **Planned, not yet built: a third frontend for LLM agents.** [90-research-hackerbot.md](90-research-hackerbot.md) researched how other LLM-driven pentesting tools structure themselves and resolved the open design questions (a single coordinator, no shell/exec-shaped tool, MCP `elicitation`/`tasks` for human approval); [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) and [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) schedule it as Phase 5-6. Like the Web UI, it's designed as a third frontend over this same unmodified Scanner Engine (an MCP server in `pkg/mcpserver/`, not a second implementation of it) — this section stays a stub rather than a full write-up until that phase actually ships, matching how this doc already treats Phase 4's still-unbuilt detectors.
 
 #### 8. **Dependencies (Minimal)**
 ```
@@ -293,3 +294,4 @@ Deferred because the trigger condition for needing them hasn't happened yet — 
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — the detectors this architecture must support
 - [03-development-roadmap.md](03-development-roadmap.md) — build order for these modules
 - [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — full Web UI and template-sync design behind the components summarized here
+- [90-research-hackerbot.md](90-research-hackerbot.md), [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — planned MCP server / agent-integration design (Phase 5-6, not yet built) that will extend this architecture once that work starts

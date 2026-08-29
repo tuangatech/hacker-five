@@ -27,7 +27,15 @@
       "Bash(git add *)",
       "Bash(git check-ignore *)",
       "Bash(grep -n \"^hackerfive$\" /Users/tuan.tran/Tuan/weekend/hacker-five/docs/04-environment-and-testing.md)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(sed -i '' 's/doc15/doc90/g; s/Doc15/Doc90/g' docs/90-research-hackerbot.md && rtk grep -n \"doc90\\\\|Doc90\" docs/90-research-hackerbot.md)",
+      "Bash(git commit -m ' *)",
+      "Bash(echo \"exit: $?\")"
+    ],
+    "additionalDirectories": [
+      "/Users/tuan.tran/Tuan/weekend/hacker-five/docs"
     ]
   }
 }
