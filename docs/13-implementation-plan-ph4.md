@@ -26,6 +26,8 @@ Phase 4's job, per [03-development-roadmap.md](03-development-roadmap.md)'s Week
 2. **Business Logic Flaws vs. CLAUDE.md's read/enumerate-only rule (doc03 Week 29-30).** Price manipulation and payment race-condition checks need a real *write* (place an order, fire a concurrent burst) to actually prove — `follow-up.md`'s own Critical finding ("Contradiction between read/enumerate only and two planned detectors") left this half explicitly unresolved, pending this phase. **Decision: opt-in flag, any target.** A new `--allow-writes` flag gates every mutating check; without it, those checks are skipped with a visible stderr warning (mirroring `--scope`'s existing "warn, don't silently proceed unguarded" pattern), usable against any target — lab or real, authorized — at the user's own explicit, per-run consent. See Step 3, and the CLAUDE.md addendum this decision requires.
 3. **Prompt Injection's implementation shape (doc03 Week 25-26).** doc01 rates this "3-4 weeks, requires understanding of LLM behavior" — structurally unlike every existing detector, which matches HTTP status/header/body patterns, not a model's free-text reply. **Decision: template-driven, no new dependency.** Reuse the existing matcher/extractor engine — POST an adversarial prompt, match a marker string in the model's text reply — mirroring how Phase 2 reframed XSS/SQLi as template work rather than new Go packages. See Step 1 for the real gap this surfaces and the open test-target question.
 
+**Forward-compatibility with the future agent/hacker-in-the-loop work ([90-research-hackerbot.md](90-research-hackerbot.md)), stated explicitly rather than left ambiguous:** this phase builds and ships **none** of doc90's Groups A/B/C/H — no MCP server, no task tree, no agent orchestration, no elicitation-based approval. That work is unscheduled, its own future phase, and Phase 4 runs entirely standalone via the CLI with zero dependency on it existing. What Phase 4 already happens to be compatible with, at no extra cost here: `Finding.Confidence` (used by SSRF's timing-differential check, Step 2) is already a field distinct from `Finding.Severity` — exactly the separation doc90's Decision 4 needs before any future schema freeze, so this phase's new checks just need to keep using the existing low/medium/high convention, not invent a new one. The new `scanner.Config` fields this phase adds (`SSRFParams`, `OOBServer`, `AllowWrites`) are typed and `Option`-func-configurable the same way every existing field is — also what makes them trivially schema-validate-able for a future MCP tool (doc90 Decision 2) with no redesign needed later. And `AllowWrites bool` staying a bare boolean at the `Config` level is correct as-is, not a gap: a future attested-approval layer (doc90 B2) belongs above the engine, not baked into it — the same way a human's `--allow-writes` flag today is just the final signal after *they've* already decided to consent.
+
 ## Scope
 
 Four chunks, matching doc03's Week 25-31 breakdown, plus release:
@@ -156,12 +158,17 @@ Unit tests against mock servers, including the `--allow-writes`-absent skip-with
 - `Exporter` interface: `Export(*Finding) error`, one implementation per format — Markdown, HTML, HackerOne-JSON. Reuses `pkg/detectors/evidence.go`'s existing redaction convention (`redactedHeaders`) for HTML/Markdown output, per `follow-up.md`'s "redact sensitive evidence by default" recommendation, already implemented for Phase 1b's evidence capture.
 - HackerOne API client: a hand-authored mapping from `Finding` fields to H1's report schema (title, severity/CVSS, weakness/CWE) — genuinely needs its own auth handling (API token via env var only, per CLAUDE.md's credential rule — never hardcoded) and respects H1's per-endpoint rate limits. **Report-drafting assistance, not unattended submission** — doc03's own explicit framing, carried forward unchanged: this generates a report a human reviews and submits, it does not submit on its own.
 
+### CLAUDE.md addendum required
+
+Add a line to CLAUDE.md's Rules section stating that HackerOne report submission is a **permanent architectural invariant** — report-drafting assistance only, never unattended/automatic submission — not a Phase-4-scoped decision a future contributor (human or agent) could quietly "improve" into auto-submission later. Motivated directly by [90-research-hackerbot.md](90-research-hackerbot.md)'s B3: HackerOne's own February 2026 "Responsible AI" update, and the CEO's public clarification after a researcher-trust incident, are concrete evidence of how fast trust erodes once an agentic feature's boundaries aren't crisp and stated up front — HackerFive should hold itself to the same bar preemptively, before any agent integration exists, not after. Same treatment Step 3 already gives `--allow-writes`; a real doc change this step's implementation should make, not just a design note.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/reporter/exporter.go` — the `Exporter` interface.
 - `pkg/reporter/{markdown,html,hackerone}.go` — one file per format.
 - `pkg/reporter/dedup.go` — exact-`Finding.ID` suppression.
 - `pkg/hackerone/client.go` (or similar) — the API client, separate from the exporter so the H1-JSON *format* (usable standalone, e.g. for manual copy-paste) doesn't require an API token to produce.
 - `cmd/hackerfive/scan.go` — `--export-format`, `--h1-program` (or similar) flags.
+- `CLAUDE.md` — the Rules-section addendum above.
 
 ### Verification
 Unit tests for each `Exporter` against fixed `Finding` inputs (deterministic — no live target needed), including a redaction test confirming sensitive evidence stays redacted in HTML/Markdown output. HackerOne API client tested against a mock server for the request-shape/auth-header logic; real submission flow verified manually (own account, a genuine draft report field-mapping needs human judgment, not further automated).
@@ -193,6 +200,7 @@ v0.4.0 release is expected to reuse the existing `goreleaser`/CI pipeline unchan
 - [ ] Finding dedup (exact-`Finding.ID` case) unit-tested and confirmed against a real overlapping-findings scan
 - [ ] All three `Exporter` implementations (Markdown/HTML/HackerOne-JSON) produce correct, redaction-respecting output against real `Finding` data
 - [ ] HackerOne API client authenticates and builds a correct draft report against a real (own) account, submission remaining a manual, human-reviewed step
+- [ ] CLAUDE.md's Rules section updated with the HackerOne report-drafting-only invariant (Step 4) — permanent, not Phase-4-scoped
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] Phase 4 Success Metrics measured live and recorded honestly (met, or not met with a stated reason) — not assumed
 - [ ] `v0.4.0` tagged and released, or explicitly held with a stated reason (same as `v0.2.0`'s open status)
@@ -206,3 +214,4 @@ v0.4.0 release is expected to reuse the existing `goreleaser`/CI pipeline unchan
 - [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — the Web UI + template-sync work that precedes this phase, unblocked independently of it
 - [20-setup-testing-targets.md](20-setup-testing-targets.md) — crAPI bring-up this plan's Business Logic Flaw testing assumes; gains new sections for the prompt-injection and SSRF test targets once identified
 - [22-authorized-targets.md](22-authorized-targets.md) — real-target registry; Business Logic Flaw checks against a real target (not just crAPI) would need `--allow-writes` used with real caution, per that registry's own authorization scope
+- [90-research-hackerbot.md](90-research-hackerbot.md) — the future agent/hacker-in-the-loop work this phase is deliberately forward-compatible with but does not build (see the Objective's "Forward-compatibility" note) — source of Step 4's CLAUDE.md addendum requirement
