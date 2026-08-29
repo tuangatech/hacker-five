@@ -57,6 +57,25 @@ The zip/tarball bundles `templates/`, so as long as you run the binary from insi
 
 Once you have an actual authorized target — a HackerOne program or a published VDP/`security.txt` policy, not a lab container — [docs/21-scanning-real-targets.md](docs/21-scanning-real-targets.md) walks through the rest: finding one, the recon to run before scanning, building a Nuclei template set that fits that target's tech stack instead of firing the full synced corpus, and conservative `--rate-limit`/`--concurrency` settings for a live program.
 
+## Web UI
+
+Prefer a browser over flags? `hackerfive serve` runs a local-only web UI on top of the same scanner core:
+```bash
+./hackerfive serve
+# → opens http://127.0.0.1:8877 in your default browser and prints the URL
+#   (in case the auto-open is blocked/skipped, e.g. over SSH)
+```
+Loopback-only by default (`--port`/`--host` to change) — nothing you scan or any token you enter ever leaves your machine. Binding beyond `127.0.0.1` requires the access token printed on startup (`?token=...`), exchanged for a session cookie on first use.
+
+From there: **New Scan** (the same targets/detector/flags as the CLI, in a form) starts a scan and streams findings/logs live as they're detected; **Scan Status** is bookmarkable and safe to refresh mid-scan; **Scan History** and **Dashboard** list past runs from this session; **Templates** shows what's currently loaded (bundled vs. synced), lets you filter by tag, and has a "Sync now" button for the same corpus sync described below.
+
+For scripted/headless use, the equivalent CLI subcommands work without the web UI:
+```bash
+./hackerfive templates sync   # fetch the pinned upstream Nuclei-templates corpus
+./hackerfive templates list   # show what's currently active, --tags to filter
+```
+Synced templates land in a persistent per-user directory (`os.UserConfigDir()` — e.g. `%AppData%\hackerfive\` on Windows, `~/.config/hackerfive/` on Linux) outside the extracted release folder, so upgrading to a new `hackerfive` release never requires re-syncing or copying anything forward.
+
 ## Building & Local Testing
 
 For contributing to HackerFive, or trying it out against local lab targets (crAPI, DVWA, Juice Shop) before ever pointing it at something real.

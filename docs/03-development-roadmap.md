@@ -223,39 +223,39 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Ship the local-only web UI and fix template-sync's biggest usability gap (synced templates lost on every binary upgrade). Swapped ahead of the Specialization phase (now Phase 4) at the user's request, since a UI makes `v0.2.0`'s existing detectors easier to exercise day-to-day; neither phase depends on the other. Full design in [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md); this section is the roadmap-level schedule, not a re-derivation of the design.
 
-#### Week 19: Template Sync CLI + Engine Streaming Hooks
-- [ ] `pkg/templatesync`: Go port of `scripts/sync-nuclei-templates.sh`, writing into a persistent OS user-config directory (`os.UserConfigDir()`) instead of inside the release folder — matches upstream Nuclei's own `~/.config/nuclei-templates` convention (see doc12's "Template sync command")
-- [ ] `hackerfive templates sync` / `templates list` subcommands — cross-platform, no WSL/bash dependency (fixes the Windows gap the current shell script has)
-- [ ] `--templates` flag becomes repeatable, defaulting to both `./templates/` (bundled) and the persistent synced directory
-- [ ] `scanner.Engine` gains optional `WithFindingCallback`/`WithLogCallback` hooks — additive, CLI batch behavior unchanged (see doc12's "Live findings and logs: a real engine gap")
+#### Week 19: Template Sync CLI + Engine Streaming Hooks — ✅ done (2026-08-28)
+- [x] `pkg/templatesync`: Go port of `scripts/sync-nuclei-templates.sh`, writing into a persistent OS user-config directory (`os.UserConfigDir()`) instead of inside the release folder — matches upstream Nuclei's own `~/.config/nuclei-templates` convention (see doc12's "Template sync command")
+- [x] `hackerfive templates sync` / `templates list` subcommands — cross-platform, no WSL/bash dependency (fixes the Windows gap the current shell script has)
+- [x] `--templates` flag becomes repeatable, defaulting to both `./templates/` (bundled) and the persistent synced directory
+- [x] `scanner.Engine` gains optional `WithFindingCallback`/`WithLogCallback` hooks — additive, CLI batch behavior unchanged (see doc12's "Live findings and logs: a real engine gap")
 
 **Deliverable:** template sync runs natively on Windows/macOS/Linux; synced templates survive a binary upgrade with zero manual copying
 
-#### Week 20-22: Local Web Server (`pkg/webui`)
-- [ ] `hackerfive serve` subcommand (`--port`, `--host`, loopback-only by default)
-- [ ] `pkg/webui` core: `http.Server`, routing, CSRF middleware, `go:embed`-ed templates/static assets (htmx + htmx SSE extension, vendored)
-- [ ] New Scan page + async job model (in-memory job store) + SSE-based live progress/findings/logs
-- [ ] Scan Status/Results page
+#### Week 20-22: Local Web Server (`pkg/webui`) — ✅ done (2026-08-28)
+- [x] `hackerfive serve` subcommand (`--port`, `--host`, loopback-only by default)
+- [x] `pkg/webui` core: `http.Server`, routing, CSRF middleware, `go:embed`-ed templates/static assets (htmx + htmx SSE extension, vendored)
+- [x] New Scan page + async job model (in-memory job store) + SSE-based live progress/findings/logs
+- [x] Scan Status/Results page
 
 **Deliverable:** `hackerfive serve` opens a browser, runs a scan against a target, and shows findings and warnings/errors live as they're detected — not just a final batch
 
-#### Week 23: Templates Page + Dashboard/History
-- [ ] Templates page: active-template table (bundled vs. synced) + sync panel (pinned commit, category counts, "Sync now")
-- [ ] Dashboard + Scan History pages
+#### Week 23: Templates Page + Dashboard/History — ✅ done (2026-08-28)
+- [x] Templates page: active-template table (bundled vs. synced) + sync panel (pinned commit, category counts, "Sync now")
+- [x] Dashboard + Scan History pages
 
 **Deliverable:** full 5-page UI (Dashboard, New Scan, Scan Status, Scan History, Templates) working end-to-end
 
-#### Week 24: Hardening & Release
-- [ ] CSRF protection verified; loopback-bind-by-default verified; token-required-on-non-loopback-bind implemented
-- [ ] Manual cross-platform verification (Windows/macOS/Linux): download release, `hackerfive serve`, sync templates, replace with a new release build, confirm templates still listed with no copying
-- [ ] README/docs updated with a Web UI quick-start
-- [ ] Release v0.3.0
+#### Week 24: Hardening & Release — ✅ done (2026-08-28)
+- [x] CSRF protection verified; loopback-bind-by-default verified; token-required-on-non-loopback-bind implemented — re-verified live against a native Windows binary (not just WSL): forged `POST /scans` rejected (403), `--host 0.0.0.0` required the printed token once then worked via cookie alone
+- [x] Manual cross-platform verification (Windows/Linux — see Milestone 3's macOS note above): download-shaped release folders (binary + `templates/`), `hackerfive serve`, sync templates, replace with a differently-versioned binary, confirm templates still listed with no copying
+- [x] README/docs updated with a Web UI quick-start
+- [x] Release v0.3.0
 
 **Phase 3 Success Metrics (v0.3.0 release):**
-- [ ] `hackerfive serve` runs on all three released platforms with no separate install step
-- [ ] Live findings and logs stream during a scan (verified by hand against a lab target)
-- [ ] Synced templates confirmed to persist across a binary upgrade (sync → swap binary → templates still listed, no manual file copy)
-- [ ] doc12 reconciled with the actual implementation — any deviations documented there, not left silently stale
+- [x] `hackerfive serve` runs on all three released platforms with no separate install step — Windows and Linux manually verified against release-shaped binaries; macOS via CI only (see Milestone 3 note)
+- [x] Live findings and logs stream during a scan (verified by hand against a lab target)
+- [x] Synced templates confirmed to persist across a binary upgrade (sync → swap binary → templates still listed, no manual file copy)
+- [x] doc12 reconciled with the actual implementation — any deviations documented there, not left silently stale
 
 ---
 
@@ -359,11 +359,11 @@ Trimmed to things the project actually controls (built/shipped/verified). Remove
 - [ ] HackerOne profile set up, first programs joined — a business/account task outside this project's code, not something a coding session tracks or actions
 
 #### **Milestone 3: Web UI & Upgradeable Templates (Week 24) — v0.3.0**
-- [ ] v0.3.0 released
-- [ ] `hackerfive serve` working end-to-end on Linux/macOS/Windows releases
-- [ ] Live findings/logs streaming during a scan
-- [ ] Template sync survives a binary upgrade with no manual file copying
-- [ ] `hackerfive templates sync`/`list` working natively on Windows (no WSL/bash required)
+- [x] v0.3.0 released
+- [x] `hackerfive serve` working end-to-end on Linux/Windows — manually verified against goreleaser-shaped release binaries (native Windows .exe, and a cross-compiled linux/amd64 binary run under WSL); macOS relies on CI's `macos-latest` build/test/lint pass (already green), not a manual download-and-run — no Mac hardware available in this environment, stated rather than assumed
+- [x] Live findings/logs streaming during a scan
+- [x] Template sync survives a binary upgrade with no manual file copying — verified directly: synced templates via one binary (`v0.3.0-verify-a`), then listed correctly by a second, differently-versioned binary (`v0.3.0-verify-b`) pointed at the same persistent `%AppData%\hackerfive\nuclei-templates`, with zero re-sync or copying
+- [x] `hackerfive templates sync`/`list` working natively on Windows (no WSL/bash required) — git itself is still a stated prerequisite for `templates sync` specifically (see doc12's "Template sync command" §1)
 
 #### **Milestone 4: Specialization (Week 32) — v0.4.0**
 - [ ] v0.4.0 released
