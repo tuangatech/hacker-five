@@ -309,9 +309,99 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 ---
 
+### Phase 5: Agent Interface & Approval Backbone (Weeks 33-40) — Hacker-in-the-Loop, Part 1
+
+**Goal:** Make HackerFive addressable by an LLM agent, safely — an MCP server, an `elicitation`-based human-approval gate, a task tree, and the hard safety blockers (program-policy pre-flight, hard-fail scope) that a human-at-a-terminal workflow could get away with only warning about. Full design in [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), which schedules the research and backlog captured in [90-research-hackerbot.md](90-research-hackerbot.md). Comes after Phase 4, not swapped ahead of it — real dependency, not just scheduling preference: the `findings.export` MCP tool needs Phase 4's `Exporter`/HackerOne-JSON work.
+
+#### Week 33: Foundations — ⬜ not started
+- [ ] Ratify Decisions 1-4 (single coordinator, no shell/exec tool, MCP `elicitation`/`tasks`, task-tree-leaf `Confidence` distinct from `Finding.Confidence`)
+- [ ] Eval harness stub against lab targets (crAPI, DVWA, vAPI, Juice Shop) — detector-only baseline, no agent yet
+
+**Deliverable:** committed design decisions; a working baseline benchmark with zero agent involvement
+
+#### Week 34-35: Finding Schema Freeze + Task-Tree Data Model — ⬜ not started
+- [ ] Freeze/publish `docs/schema/finding.schema.json`, `Severity`/`Confidence` documented as detector-set, never agent-writable
+- [ ] `Job.PlanTree`: leaf-only-mutation task tree, leaf-level `Confidence` bands (High/Medium/Low)
+
+**Deliverable:** a versioned wire schema and a task-tree data model with a tested mutation guard
+
+#### Week 36-37: MCP Server — ⬜ not started
+- [ ] Verify an MCP Go SDK supports `elicitation`/`tasks` (new dependency, confirm via pkg.go.dev before adding)
+- [ ] `pkg/mcpserver`: `scan`, `templates.list`, `templates.sync`, `findings.export` tools — no shell/exec-shaped tool anywhere in the server
+
+**Deliverable:** a real MCP client can list and call these tools against a lab target, live-verified
+
+#### Week 38: Approval Gate + Spend Ceiling — ⬜ not started
+- [ ] `plan` MCP tool built on native `elicitation`/`tasks` — no request sent without human approval
+- [ ] Per-job spend ceiling, hard-enforced (not just logged)
+
+**Deliverable:** a plan proposal only proceeds after a real client's own approval UI grants it
+
+#### Week 39: Hard Safety Blockers + Prioritization — ⬜ not started
+- [ ] Program-policy pre-flight check — hard blocker, not a warning
+- [ ] Hard-fail (not warn) on missing scope for agent-initiated runs
+- [ ] Cost/attempt-aware prioritization (MAPTA's measured spend/success correlation) drives a stop-and-escalate signal per task-tree leaf
+
+**Deliverable:** an agent-driven run against a disallowed or unscoped target refuses outright
+
+#### Week 40: Session Log + Release — ⬜ not started
+- [ ] Structured, persisted agent session log (queryable, not yet the live Web UI view)
+- [ ] Full plan → approve → scan → export round trip live-verified against a lab target
+- [ ] Release **v0.5.0**
+
+**Phase 5 Success Metrics:**
+- [ ] MCP server live-verified against a real client with no shell/exec-shaped tool present
+- [ ] Human approval via `elicitation` confirmed to gate every plan before traffic goes out
+- [ ] Program-policy pre-flight and missing-scope hard blockers both confirmed live
+
+---
+
+### Phase 6: Agent Hardening, Ecosystem & Trust (Weeks 41-48) — Hacker-in-the-Loop, Part 2
+
+**Goal:** Round the Phase 5 backbone out to doc90's full "Hacker-in-the-Loop Ready" Definition of Done — full `AllowWrites` attestation, a live Web UI Agent tab, the OWASP Agentic Top 10 mapping against real shipped code, template-ecosystem staging, and a real agent-driven benchmark run. Full design in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md). Depends on Phase 5, not the reverse.
+
+#### Week 41: Tool Surface Completion — ⬜ not started
+- [ ] `hackerfive templates list --json`
+- [ ] MCP tool-list scoping by session agency level (read-only vs. full)
+
+#### Week 42: Approval & Compliance Rounding — ⬜ not started
+- [ ] `AllowWrites` only honored with an attested elicitation grant tied to an approved plan
+- [ ] HackerOne submission documented as a permanent human-in-the-loop invariant
+- [ ] Scope-creep gate: fresh approval required when recon surfaces out-of-scope hosts/paths
+
+#### Week 43-44: Observability Upgrade — ⬜ not started
+- [ ] Web UI "Agent" tab streams every MCP tool call and its reasoning live, over SSE
+- [ ] Audit trail extended with agent-specific facts (session, approved plan, grant references)
+- [ ] Evidence-linked claims: a report draft citing a nonexistent `Finding.ID` is rejected
+
+#### Week 45: Live Log Injection + Concurrency Ceilings — ⬜ not started
+- [ ] Live log injection on the Agent tab (stretch)
+- [ ] Aggregate per-target concurrency ceiling across concurrent `scan` calls in one session
+
+#### Week 46: OWASP Agentic Top 10 Mapping — ⬜ not started
+- [ ] All ten ASI01-10 risks checked against real shipped code (file/line cited), each mitigated or accepted as residual risk with a stated reason
+
+#### Week 47: Template Ecosystem & Triage Support — ⬜ not started
+- [ ] Generated `templates/index.json`
+- [ ] `templates/proposed/` staging directory, confirmed never auto-loaded
+- [ ] Triage-assist mode on `Exporter` output (annotation only, never mutates `Finding`)
+- [ ] Structured feedback capture on human override/dismissal of agent triage notes
+
+#### Week 48: Eval Maturity + Release — ⬜ not started
+- [ ] Real agent-driven benchmark run against all four lab targets, fp/fn rate tracked separately from detector-level rate, full cost accounting recorded honestly
+- [ ] Release **v0.6.0**
+
+**Phase 6 Success Metrics:**
+- [ ] `AllowWrites` attestation and scope-creep gate both live-verified
+- [ ] Agent tab live-verified streaming real tool calls/reasoning in a browser
+- [ ] OWASP Agentic Top 10 mapping recorded against real code, not restated intentions
+- [ ] Agent-driven fp/fn rate measured and reported honestly, with its delta from Phase 5's detector-only baseline
+
+---
+
 ## Versioning note
 
-`v0.1.0` → `v0.2.0` → `v0.3.0` → `v0.4.0` track feature phases (1 through 4) in order. **`v1.0.0` is deliberately not tied to a phase or a week** — it marks real-world trust, not feature completeness, and is gated on actually using the tool against real, authorized targets and finding real issues with it, not on shipping a checklist of detectors. See [Milestone 5](#milestone-5-v100--real-world-validation-no-fixed-week) below. This mirrors doc05's "Tool Maturity" prerequisites (which already gate HackerOne program eligibility on validated false-positive rate and documentation, not a version number) and is consistent with how mature scanners in this space (e.g. Nuclei) treat 1.0 as a stability/trust signal rather than a feature-count milestone.
+`v0.1.0` → `v0.2.0` → `v0.3.0` → `v0.4.0` → `v0.5.0` → `v0.6.0` track feature phases (1 through 6) in order. **`v1.0.0` is deliberately not tied to a phase or a week** — it marks real-world trust, not feature completeness, and is gated on actually using the tool against real, authorized targets and finding real issues with it, not on shipping a checklist of detectors. See [Milestone 7](#milestone-7-v100--real-world-validation-no-fixed-week) below. This mirrors doc05's "Tool Maturity" prerequisites (which already gate HackerOne program eligibility on validated false-positive rate and documentation, not a version number) and is consistent with how mature scanners in this space (e.g. Nuclei) treat 1.0 as a stability/trust signal rather than a feature-count milestone.
 
 ## Timeline & Milestones
 
@@ -326,6 +416,8 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 | 2 | 11-18 | 8 wks | Auth bypass, XSS, SQLi, information disclosure | v0.2.0 |
 | 3 | 19-24 | 6 wks | Web UI + upgradeable template sync | v0.3.0 |
 | 4 | 25-32 | 8 wks | Prompt injection, SSRF, business logic | v0.4.0 |
+| 5 | 33-40 | 8 wks | Agent interface & approval backbone (MCP server, elicitation-based approval, task tree, hard safety blockers) | v0.5.0 |
+| 6 | 41-48 | 8 wks | Agent hardening, ecosystem & trust (AllowWrites attestation, live Agent tab, OWASP Agentic Top 10 mapping, eval maturity) | v0.6.0 |
 | — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 |
 
 **Parallel tracks** (start weeks are approximate targets, not hard dependencies):
@@ -371,7 +463,20 @@ Trimmed to things the project actually controls (built/shipped/verified). Remove
 - [ ] SSRF detector added
 - [ ] Business logic templates added
 
-#### **Milestone 5: v1.0.0 — Real-World Validation (no fixed week)**
+#### **Milestone 5: Agent Interface & Approval Backbone (Week 40) — v0.5.0**
+- [ ] v0.5.0 released
+- [ ] MCP server (`scan`/`templates.list`/`templates.sync`/`findings.export`) live-verified against a real MCP client, no shell/exec-shaped tool present
+- [ ] `plan`/`elicitation`-based human approval gate confirmed to block traffic until a human approves
+- [ ] Program-policy pre-flight and missing-scope hard blockers both live-verified
+
+#### **Milestone 6: Agent Hardening, Ecosystem & Trust (Week 48) — v0.6.0**
+- [ ] v0.6.0 released
+- [ ] `AllowWrites` attestation and scope-creep gate both live-verified
+- [ ] Web UI Agent tab live-verified streaming real tool calls/reasoning
+- [ ] OWASP Agentic Top 10 mapping recorded against real shipped code
+- [ ] Agent-driven false-positive/false-negative rate measured against lab targets, tracked separately from detector-level rate
+
+#### **Milestone 7: v1.0.0 — Real-World Validation (no fixed week)**
 Gated on actual usage, not a calendar date — see [Versioning note](#versioning-note):
 - [ ] HackerFive run against at least one real, authorized target from [22-authorized-targets.md](22-authorized-targets.md) (not a lab container)
 - [ ] At least 3 genuine, previously-unknown findings confirmed against real authorized targets — leads triaged and reported, not lab-only results
@@ -389,4 +494,7 @@ Community growth (contributors, stars, template submissions, bounty income) is a
 - [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) — file-by-file build plan for Phase 2 (Weeks 11-18)
 - [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — design + implementation plan for Phase 3's Web UI + template-sync work (Weeks 19-24)
 - [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — file-by-file build plan for Phase 4 (Weeks 25-32)
-- [22-authorized-targets.md](22-authorized-targets.md) — the vetted real-target registry Milestone 5's real-world validation draws from
+- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — file-by-file build plan for Phase 5 (Weeks 33-40)
+- [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — file-by-file build plan for Phase 6 (Weeks 41-48)
+- [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog Phases 5-6 schedule
+- [22-authorized-targets.md](22-authorized-targets.md) — the vetted real-target registry Milestone 7's real-world validation draws from
