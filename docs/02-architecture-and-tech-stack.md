@@ -242,7 +242,7 @@ Deferred because the trigger condition for needing them hasn't happened yet — 
 
 - **Callback-based streaming results:** findings are returned as a batch (`[]Finding`) today. Revisit once a single scan run against many templates/targets makes "nothing shown until the whole scan finishes" a real UX problem — not needed at Phase 1-3 scan sizes.
 - **In-memory template cache:** only pays off when the same process re-parses the same templates across multiple scan jobs — true for a long-running service, not a single-shot CLI invocation. No action unless HackerFive grows a persistent service mode, which isn't currently planned.
-- **Template signing:** relevant once the community template repository (Milestone 4 / Phase 3 Week 26 in [03-development-roadmap.md](03-development-roadmap.md)) actually accepts third-party submissions. Premature while templates are either project-authored or pulled from the pinned upstream `nuclei-templates` commit.
+- **Template signing:** relevant once a community template repository actually accepts third-party submissions — no such milestone exists yet in [03-development-roadmap.md](03-development-roadmap.md). Premature while templates are either project-authored or pulled from the pinned upstream `nuclei-templates` commit.
 - **Auto-generated `SYNTAX-REFERENCE.md` (docgen):** the hand-written template-writing guide (Phase 1b packaging step) covers this need for now. Auto-generation from code solves a scale-of-external-contributors problem this project doesn't have yet.
 
 ## See also

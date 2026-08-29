@@ -219,11 +219,51 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 ---
 
-### Phase 3: Specialization (Weeks 19-26) — Prompt Injection + SSRF + Logic Flaws
+### Phase 3: Web UI & Upgradeable Templates (Weeks 19-24) — v0.3.0
 
-**Goal:** Differentiate by targeting emerging and high-value vulnerabilities with minimal automation elsewhere.
+**Goal:** Ship the local-only web UI and fix template-sync's biggest usability gap (synced templates lost on every binary upgrade). Swapped ahead of the Specialization phase (now Phase 4) at the user's request, since a UI makes `v0.2.0`'s existing detectors easier to exercise day-to-day; neither phase depends on the other. Full design in [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md); this section is the roadmap-level schedule, not a re-derivation of the design.
 
-#### Week 19-20: Prompt Injection Detector
+#### Week 19: Template Sync CLI + Engine Streaming Hooks
+- [ ] `pkg/templatesync`: Go port of `scripts/sync-nuclei-templates.sh`, writing into a persistent OS user-config directory (`os.UserConfigDir()`) instead of inside the release folder — matches upstream Nuclei's own `~/.config/nuclei-templates` convention (see doc12's "Template sync command")
+- [ ] `hackerfive templates sync` / `templates list` subcommands — cross-platform, no WSL/bash dependency (fixes the Windows gap the current shell script has)
+- [ ] `--templates` flag becomes repeatable, defaulting to both `./templates/` (bundled) and the persistent synced directory
+- [ ] `scanner.Engine` gains optional `WithFindingCallback`/`WithLogCallback` hooks — additive, CLI batch behavior unchanged (see doc12's "Live findings and logs: a real engine gap")
+
+**Deliverable:** template sync runs natively on Windows/macOS/Linux; synced templates survive a binary upgrade with zero manual copying
+
+#### Week 20-22: Local Web Server (`pkg/webui`)
+- [ ] `hackerfive serve` subcommand (`--port`, `--host`, loopback-only by default)
+- [ ] `pkg/webui` core: `http.Server`, routing, CSRF middleware, `go:embed`-ed templates/static assets (htmx + htmx SSE extension, vendored)
+- [ ] New Scan page + async job model (in-memory job store) + SSE-based live progress/findings/logs
+- [ ] Scan Status/Results page
+
+**Deliverable:** `hackerfive serve` opens a browser, runs a scan against a target, and shows findings and warnings/errors live as they're detected — not just a final batch
+
+#### Week 23: Templates Page + Dashboard/History
+- [ ] Templates page: active-template table (bundled vs. synced) + sync panel (pinned commit, category counts, "Sync now")
+- [ ] Dashboard + Scan History pages
+
+**Deliverable:** full 5-page UI (Dashboard, New Scan, Scan Status, Scan History, Templates) working end-to-end
+
+#### Week 24: Hardening & Release
+- [ ] CSRF protection verified; loopback-bind-by-default verified; token-required-on-non-loopback-bind implemented
+- [ ] Manual cross-platform verification (Windows/macOS/Linux): download release, `hackerfive serve`, sync templates, replace with a new release build, confirm templates still listed with no copying
+- [ ] README/docs updated with a Web UI quick-start
+- [ ] Release v0.3.0
+
+**Phase 3 Success Metrics (v0.3.0 release):**
+- [ ] `hackerfive serve` runs on all three released platforms with no separate install step
+- [ ] Live findings and logs stream during a scan (verified by hand against a lab target)
+- [ ] Synced templates confirmed to persist across a binary upgrade (sync → swap binary → templates still listed, no manual file copy)
+- [ ] doc12 reconciled with the actual implementation — any deviations documented there, not left silently stale
+
+---
+
+### Phase 4: Specialization (Weeks 25-32) — Prompt Injection + SSRF + Logic Flaws
+
+**Goal:** Differentiate by targeting emerging and high-value vulnerabilities with minimal automation elsewhere. Full design in [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md).
+
+#### Week 25-26: Prompt Injection Detector
 - [ ] Implement prompt breaking detection (instruction override)
 - [ ] Detect data exfiltration attempts (LLM-based)
 - [ ] Create templates for common LLM apps (ChatGPT API, Anthropic, Hugging Face)
@@ -231,7 +271,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Deliverable:** Prompt injection detector with specialized templates
 
-#### Week 21-22: SSRF Detector
+#### Week 27-28: SSRF Detector
 - [ ] Implement blind SSRF detection (DNS/HTTP callbacks)
 - [ ] Implement internal network detection (127.0.0.1, 10.0.0.0/8)
 - [ ] Create templates for common SSRF vectors
@@ -239,7 +279,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Deliverable:** SSRF detector with callback-based validation
 
-#### Week 23-24: Business Logic Flaw Templates
+#### Week 29-30: Business Logic Flaw Templates
 - [ ] Create templates for common logic flaws:
   - Price manipulation (e-commerce)
   - Race conditions (payment processing)
@@ -250,7 +290,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Deliverable:** 10+ business logic templates
 
-#### Week 25: Advanced Features
+#### Week 31: Advanced Features
 - [ ] Multi-target scanning orchestration
 - [ ] Finding deduplication across targets
 - [ ] Integration with HackerOne API (report submission automation)
@@ -258,54 +298,14 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Note on HackerOne API integration:** treat this as report-drafting assistance, not unattended submission. It needs its own auth handling (API token or OAuth2, depending on endpoint), is subject to H1's per-endpoint rate limits, and requires a hand-authored mapping from `Finding` fields to H1's report schema (title, severity/CVSS, weakness/CWE) — none of which is a quick wrapper around the API. The exporters above feed that mapping directly, and should apply the same default-redact-sensitive-evidence policy `follow-up.md` calls for on HTML/Markdown output.
 
-#### Week 26: Release
-- [ ] Release **v0.3.0** with all Phase 3 features (not v1.0.0 — see [Versioning note](#versioning-note) below: v1.0.0 is gated on real-world validation, not a fixed week)
+#### Week 32: Release
+- [ ] Release **v0.4.0** with all Phase 4 features (not v1.0.0 — see [Versioning note](#versioning-note) below: v1.0.0 is gated on real-world validation, not a fixed week)
 - [ ] Write blog posts on Prompt Injection detection
 
-**Phase 3 Success Metrics:**
+**Phase 4 Success Metrics:**
 - [ ] Prompt injection detector working against test LLM labs
 - [ ] SSRF detector working (blind SSRF via callback service)
 - [ ] 10+ business logic templates delivered
-
----
-
-### Phase 4: Web UI & Upgradeable Templates (Weeks 27-32) — v0.4.0
-
-**Goal:** Ship the local-only web UI and fix template-sync's biggest usability gap (synced templates lost on every binary upgrade) — the last usability work before Phase 5's real-world validation gate. Full design in [14-web-ui-and-template-sync.md](14-web-ui-and-template-sync.md); this section is the roadmap-level schedule, not a re-derivation of the design.
-
-#### Week 27: Template Sync CLI + Engine Streaming Hooks
-- [ ] `pkg/templatesync`: Go port of `scripts/sync-nuclei-templates.sh`, writing into a persistent OS user-config directory (`os.UserConfigDir()`) instead of inside the release folder — matches upstream Nuclei's own `~/.config/nuclei-templates` convention (see doc14's "Template sync command")
-- [ ] `hackerfive templates sync` / `templates list` subcommands — cross-platform, no WSL/bash dependency (fixes the Windows gap the current shell script has)
-- [ ] `--templates` flag becomes repeatable, defaulting to both `./templates/` (bundled) and the persistent synced directory
-- [ ] `scanner.Engine` gains optional `WithFindingCallback`/`WithLogCallback` hooks — additive, CLI batch behavior unchanged (see doc14's "Live findings and logs: a real engine gap")
-
-**Deliverable:** template sync runs natively on Windows/macOS/Linux; synced templates survive a binary upgrade with zero manual copying
-
-#### Week 28-30: Local Web Server (`pkg/webui`)
-- [ ] `hackerfive serve` subcommand (`--port`, `--host`, loopback-only by default)
-- [ ] `pkg/webui` core: `http.Server`, routing, CSRF middleware, `go:embed`-ed templates/static assets (htmx + htmx SSE extension, vendored)
-- [ ] New Scan page + async job model (in-memory job store) + SSE-based live progress/findings/logs
-- [ ] Scan Status/Results page
-
-**Deliverable:** `hackerfive serve` opens a browser, runs a scan against a target, and shows findings and warnings/errors live as they're detected — not just a final batch
-
-#### Week 31: Templates Page + Dashboard/History
-- [ ] Templates page: active-template table (bundled vs. synced) + sync panel (pinned commit, category counts, "Sync now")
-- [ ] Dashboard + Scan History pages
-
-**Deliverable:** full 5-page UI (Dashboard, New Scan, Scan Status, Scan History, Templates) working end-to-end
-
-#### Week 32: Hardening & Release
-- [ ] CSRF protection verified; loopback-bind-by-default verified; token-required-on-non-loopback-bind implemented
-- [ ] Manual cross-platform verification (Windows/macOS/Linux): download release, `hackerfive serve`, sync templates, replace with a new release build, confirm templates still listed with no copying
-- [ ] README/docs updated with a Web UI quick-start
-- [ ] Release v0.4.0
-
-**Phase 4 Success Metrics (v0.4.0 release):**
-- [ ] `hackerfive serve` runs on all three released platforms with no separate install step
-- [ ] Live findings and logs stream during a scan (verified by hand against a lab target)
-- [ ] Synced templates confirmed to persist across a binary upgrade (sync → swap binary → templates still listed, no manual file copy)
-- [ ] doc14 reconciled with the actual implementation — any deviations documented there, not left silently stale
 
 ---
 
@@ -324,8 +324,8 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 | 1a | 1-4 | 4 wks | Core engine + IDOR MVP | (internal checkpoint) |
 | 1b | 5-10 | 6 wks | Misconfiguration + template engines (Nuclei-compatible + native) + validation + packaging | v0.1.0 |
 | 2 | 11-18 | 8 wks | Auth bypass, XSS, SQLi, information disclosure | v0.2.0 |
-| 3 | 19-26 | 8 wks | Prompt injection, SSRF, business logic | v0.3.0 |
-| 4 | 27-32 | 6 wks | Web UI + upgradeable template sync | v0.4.0 |
+| 3 | 19-24 | 6 wks | Web UI + upgradeable template sync | v0.3.0 |
+| 4 | 25-32 | 8 wks | Prompt injection, SSRF, business logic | v0.4.0 |
 | — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 |
 
 **Parallel tracks** (start weeks are approximate targets, not hard dependencies):
@@ -358,18 +358,18 @@ Trimmed to things the project actually controls (built/shipped/verified). Remove
 - [ ] 100+ templates in repository — **not met, real gap**: only 27 first-party/curated templates are actually checked into `templates/`. The ~2,500-template upstream corpus (`scripts/sync-nuclei-templates.sh`) is deliberately *synced from a pinned commit at scan time, not vendored/committed* (see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 2) — a real design choice (avoids redistributing upstream content, stays current with a pinned upgrade path) that this milestone item's literal wording didn't anticipate. Worth a future decision: revise this milestone's wording, or treat it as intentionally unmet
 - [ ] HackerOne profile set up, first programs joined — a business/account task outside this project's code, not something a coding session tracks or actions
 
-#### **Milestone 3: Specialization (Week 26) — v0.3.0**
+#### **Milestone 3: Web UI & Upgradeable Templates (Week 24) — v0.3.0**
 - [ ] v0.3.0 released
-- [ ] Prompt injection detector added
-- [ ] SSRF detector added
-- [ ] Business logic templates added
-
-#### **Milestone 4: Web UI & Upgradeable Templates (Week 32) — v0.4.0**
-- [ ] v0.4.0 released
 - [ ] `hackerfive serve` working end-to-end on Linux/macOS/Windows releases
 - [ ] Live findings/logs streaming during a scan
 - [ ] Template sync survives a binary upgrade with no manual file copying
 - [ ] `hackerfive templates sync`/`list` working natively on Windows (no WSL/bash required)
+
+#### **Milestone 4: Specialization (Week 32) — v0.4.0**
+- [ ] v0.4.0 released
+- [ ] Prompt injection detector added
+- [ ] SSRF detector added
+- [ ] Business logic templates added
 
 #### **Milestone 5: v1.0.0 — Real-World Validation (no fixed week)**
 Gated on actual usage, not a calendar date — see [Versioning note](#versioning-note):
@@ -387,6 +387,6 @@ Community growth (contributors, stars, template submissions, bounty income) is a
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for Phase 1a (Weeks 1-4)
 - [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — file-by-file build plan for Phase 1b (Weeks 5-10)
 - [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) — file-by-file build plan for Phase 2 (Weeks 11-18)
-- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — file-by-file build plan for Phase 3 (Weeks 19-26)
-- [14-web-ui-and-template-sync.md](14-web-ui-and-template-sync.md) — design doc behind Phase 4's Web UI + template-sync work
+- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — design + implementation plan for Phase 3's Web UI + template-sync work (Weeks 19-24)
+- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — file-by-file build plan for Phase 4 (Weeks 25-32)
 - [22-authorized-targets.md](22-authorized-targets.md) — the vetted real-target registry Milestone 5's real-world validation draws from
