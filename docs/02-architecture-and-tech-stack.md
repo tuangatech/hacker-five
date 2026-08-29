@@ -21,7 +21,7 @@
 
   Why that split is worth the extra layer, rather than just hardcoding every check into the engine:
   - **New checks ship fast.** Adding a check is writing a YAML file, not writing and testing new Go code — turnaround for "can we also check for X" drops from a code change + release cycle to editing a text file.
-  - **We don't have to invent detection knowledge from scratch.** The security community already maintains a large, actively updated library of these recipes (Nuclei's `nuclei-templates` project) covering thousands of known exposed panels, misconfigurations, and technology fingerprints. Because our engine speaks a compatible template format, we can pull in that existing, vetted work directly instead of re-researching and re-writing detection logic ourselves for everything that's already publicly known.
+  - **We don't have to invent detection knowledge from scratch.** The security community already maintains a large, actively updated library of these recipes (Nuclei's `nuclei-templates` project) covering thousands of known exposed panels, misconfigurations, and technology fingerprints. Because our engine speaks a compatible template format, we can pull in that existing, vetted work directly instead of re-researching and re-writing detection logic ourselves for everything that's already publicly known. Concretely, via `pkg/templatesync` and `hackerfive templates sync`/`list`: a `git`-based sparse-checkout of a maintainer-curated, deliberately **pinned commit** (never `HEAD`/latest — a compromised upstream commit landing between pins can't silently reach a scan) into a persistent per-user config directory (`os.UserConfigDir()`) that survives a binary upgrade with zero manual copying. `--templates` loads both this synced directory and the project-authored `templates/` bundled with each release, together — see [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md)'s "Template sync command" for the full design.
   - **Non-engineers can contribute checks.** A template is a readable text file, not a pull request against the scanner's internals — a security researcher who knows *what* to check for doesn't need to know Go, or how the scanner is built, to add *how* to check for it.
   - **One engine, many apps and many bug types.** The same underlying request/compare logic works for crAPI's IDOR bug, DVWA's exposed paths, or a future customer's app — what changes between them is only which template file is loaded, not the program itself.
 
@@ -104,7 +104,14 @@
 - Flag parsing and validation
 - Help documentation auto-generation
 
-#### 7. **Dependencies (Minimal)**
+#### 7. **Web UI: Local-Only Embedded Server (Optional)**
+- `hackerfive serve` runs a local, loopback-only-by-default web server (Go stdlib `net/http` + `html/template`, no separate frontend build/toolchain) over the same, unmodified Scanner Engine below — a second interface to the engine, not a second implementation of it. Never a substitute for the CLI: CI/scripted use and full-flag-control power users keep using `hackerfive scan` directly.
+- Interactivity via **htmx** (vendored, `go:embed`-ed alongside the CLI into the same cross-compiled binary — no separate install step, no hosted/cloud mode) rather than a hand-rolled JS layer or a full SPA framework: server-rendered HTML stays the source of truth, form submits/live updates swap DOM fragments instead of full page reloads.
+- Live findings/logs stream to the browser via Server-Sent Events, backed by `Engine`'s `WithFindingCallback`/`WithLogCallback` hooks (see Scanner Engine, below) — this is what "Callback-based streaming results," formerly listed under Future Considerations, actually became once something needed it.
+- CSRF via a hand-rolled double-submit cookie (no third-party framework, consistent with the Minimal Dependencies stance below); a non-loopback bind requires a one-time bootstrap token, exchanged on first use for an `HttpOnly` session cookie.
+- Full design in [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md).
+
+#### 8. **Dependencies (Minimal)**
 ```
 - github.com/spf13/cobra (CLI)
 - gopkg.in/yaml.v3 (YAML parsing)
@@ -116,7 +123,7 @@ Matcher/regex matching uses the standard library `regexp` (RE2) — it's arm64-n
 
 The misconfig detector's templates are pulled from upstream `nuclei-templates`, whose own engine is Go's stdlib `regexp` — so every regex matcher that ships there is already RE2-safe by construction; no audit needed. The one place a PCRE-only pattern could actually show up is the HackerFive-native IDOR baseline-comparison format (no Nuclei equivalent, see template example above) — if a future IDOR regex matcher needs a backreference or lookahead, that's the trigger to add `regexp2` for that matcher only, not switch the whole engine.
 
-#### 8. **Development Tools**
+#### 9. **Development Tools**
 - **Testing:** Go's built-in `testing` package + testify for assertions; native `testing.F` fuzz targets for the HTTP client and response parsers (the scanner parses untrusted target responses, which is attack surface for the tool itself, not just the target)
 - **Build:** a `Makefile` wrapping `build`/`test`/`lint`/`fuzz`/`integration` targets, so the commands used throughout this doc set have one canonical entry point instead of being copy-pasted per doc
 - **Error handling:** wrap errors with context via stdlib `fmt.Errorf("...: %w", err)` and inspect with `errors.Is`/`errors.As` — no custom error-context package; that solves a debugging-at-scale problem this project doesn't have yet
@@ -124,7 +131,7 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 - **Documentation:** MkDocs (similar to Nuclei docs)
 - **CI/CD:** GitHub Actions
 - **Docker:** Multi-stage build for production image
-- **Releases:** goreleaser for cross-compiled Linux/macOS/Windows binaries, backing the installation guide in the Phase 1b packaging step
+- **Releases:** goreleaser for cross-compiled Linux/macOS/Windows binaries, backing the installation guide in the Phase 1b packaging step. The Web UI's templates/CSS/JS are `go:embed`-ed into that same cross-compiled binary (see Web UI, above) — "update the web UI" and "update the CLI" are the same release action, no separate frontend deploy.
 
 ### Development & Testing Stack
 
@@ -143,11 +150,13 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 ### High-Level Overview
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    HackerFive CLI                          │
-│  (Command: hackerfive scan --targets urls.txt --templates) │
-└────────────────────┬─────────────────────────────────────────┘
-                     │
+┌───────────────────────────────┐   ┌──────────────────────────────────┐
+│         HackerFive CLI         │   │   HackerFive Web UI (optional)    │
+│  (hackerfive scan -t ...)      │   │  (hackerfive serve — htmx + SSE)  │
+└────────────────┬────────────────┘   └────────────────┬───────────────┘
+                 │                                      │
+                 └──────────────────┬───────────────────┘
+                                    │
       ┌──────────────┼──────────────┐
       │              │              │
    ┌──▼──┐       ┌───▼────┐    ┌───▼─────┐
@@ -216,6 +225,7 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 - **Template Runner:** Parses YAML, executes requests, applies matchers
 - **Matcher Engine:** Regex, word, status code, size, JSON extraction
 - **Extractor Engine:** Pull dynamic values from responses for chaining requests
+- **Streaming hooks:** optional `WithFindingCallback`/`WithLogCallback` on `Engine` — additive; the CLI's batch behavior (`Run` returning `([]Finding, error)` only once everything finishes) is unchanged when unset. The Web UI (below) is what actually consumes these, for live SSE updates mid-scan.
 
 **Detector solutions, in plain English:**
 
@@ -240,7 +250,6 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 
 Deferred because the trigger condition for needing them hasn't happened yet — revisit if the trigger occurs, not on a fixed date.
 
-- **Callback-based streaming results:** findings are returned as a batch (`[]Finding`) today. Revisit once a single scan run against many templates/targets makes "nothing shown until the whole scan finishes" a real UX problem — not needed at Phase 1-3 scan sizes.
 - **In-memory template cache:** only pays off when the same process re-parses the same templates across multiple scan jobs — true for a long-running service, not a single-shot CLI invocation. No action unless HackerFive grows a persistent service mode, which isn't currently planned.
 - **Template signing:** relevant once a community template repository actually accepts third-party submissions — no such milestone exists yet in [03-development-roadmap.md](03-development-roadmap.md). Premature while templates are either project-authored or pulled from the pinned upstream `nuclei-templates` commit.
 - **Auto-generated `SYNTAX-REFERENCE.md` (docgen):** the hand-written template-writing guide (Phase 1b packaging step) covers this need for now. Auto-generation from code solves a scale-of-external-contributors problem this project doesn't have yet.
@@ -248,3 +257,4 @@ Deferred because the trigger condition for needing them hasn't happened yet — 
 ## See also
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — the detectors this architecture must support
 - [03-development-roadmap.md](03-development-roadmap.md) — build order for these modules
+- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — full Web UI and template-sync design behind the components summarized here
