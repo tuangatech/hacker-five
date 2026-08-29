@@ -39,6 +39,56 @@ const (
 type Engine struct {
 	cfg    Config
 	client *httpclient.Client
+
+	findingCB func(detectors.Finding)
+	logCB     func(level, msg string)
+}
+
+// WithFindingCallback registers fn to be invoked for every finding as its
+// batch becomes available during Run (see emitFinding's granularity note),
+// in addition to Run's existing return value — additive, not a replacement.
+// The CLI (cmd/hackerfive/scan.go) never calls this, so its batch-only
+// behavior is unchanged; only pkg/webui wires it, per
+// docs/12-implementation-plan-ph3.md's "Live findings and logs" design.
+func (e *Engine) WithFindingCallback(fn func(detectors.Finding)) *Engine {
+	e.findingCB = fn
+	return e
+}
+
+// WithLogCallback registers fn to be invoked alongside every stderr warning
+// Run already prints (level is "warn" for scope/skip/summary notices, "error"
+// for a failed detector run against one target) — additive, stderr output is
+// unchanged either way. See docs/12-implementation-plan-ph3.md's "Live
+// findings and logs" design.
+func (e *Engine) WithLogCallback(fn func(level, msg string)) *Engine {
+	e.logCB = fn
+	return e
+}
+
+// warnf prints a stderr warning exactly as Run always has, then also invokes
+// logCB if one is registered — the single seam every stderr call site in this
+// file now goes through, so CLI output never changes regardless of whether a
+// caller (pkg/webui) is also listening.
+func (e *Engine) warnf(level, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintln(os.Stderr, msg)
+	if e.logCB != nil {
+		e.logCB(level, msg)
+	}
+}
+
+// emitFinding invokes findingCB if one is registered. Called once per
+// finding in each batch a detector or template run returns — not per
+// individual HTTP response, since every detector's Run already returns
+// ([]detectors.Finding, error) as one batch. True per-response streaming
+// inside a single detector call would mean touching every detector's
+// internals; per-batch granularity is still a large usability win over
+// waiting for the whole multi-target scan, and is what
+// docs/12-implementation-plan-ph3.md's Week 19 scope covers.
+func (e *Engine) emitFinding(f detectors.Finding) {
+	if e.findingCB != nil {
+		e.findingCB(f)
+	}
 }
 
 // New constructs an Engine from a validated Config.
@@ -92,7 +142,7 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 		target := target
 
 		if sc != nil && !sc.Allowed(target) {
-			fmt.Fprintf(os.Stderr, "skipping %s: not covered by --scope %s\n", target, e.cfg.ScopeFile)
+			e.warnf("warn", "skipping %s: not covered by --scope %s", target, e.cfg.ScopeFile)
 			continue
 		}
 
@@ -109,9 +159,13 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 			results, err := e.runDetector(ctx, target)
 			if err != nil {
 				hostCache.RecordError(host)
+				e.warnf("error", "running %s detector against %s: %v", e.cfg.Detector, target, err)
 				return fmt.Errorf("running %s detector against %s: %w", e.cfg.Detector, target, err)
 			}
 			hostCache.RecordSuccess(host)
+			for _, f := range results {
+				e.emitFinding(f)
+			}
 
 			// Templates are additive on top of the built-in detector, not an
 			// alternative to it (see docs/10-implementation-plan-ph1b.md
@@ -126,12 +180,18 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 				if err != nil {
 					continue // one bad template shouldn't abort the whole target's scan
 				}
+				for _, f := range fs {
+					e.emitFinding(f)
+				}
 				results = append(results, fs...)
 			}
 			for _, tmpl := range nativeTemplates {
 				fs, err := nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
 				if err != nil {
 					continue
+				}
+				for _, f := range fs {
+					e.emitFinding(f)
 				}
 				results = append(results, fs...)
 			}
@@ -159,7 +219,7 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 // silently, unguarded.
 func (e *Engine) loadScope() (*scope.Scope, error) {
 	if e.cfg.ScopeFile == "" {
-		fmt.Fprintln(os.Stderr, "no --scope file provided — all targets will be scanned without authorization-scope validation")
+		e.warnf("warn", "no --scope file provided — all targets will be scanned without authorization-scope validation")
 		return nil, nil
 	}
 	sc, err := scope.Parse(e.cfg.ScopeFile)
@@ -202,7 +262,7 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	}
 	filtered := (loadedNuclei - len(nucleiTemplates)) + (loadedNative - len(nativeTemplates))
 
-	fmt.Fprintf(os.Stderr, "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)\n",
+	e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
 		len(nucleiTemplates), len(nativeTemplates), rejected, filtered)
 	return nucleiTemplates, nativeTemplates
 }

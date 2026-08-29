@@ -29,6 +29,7 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVarP(&flags.output, "output", "o", "", "output file path (default: stdout)")
 
 	cmd.AddCommand(newScanCmd(flags))
+	cmd.AddCommand(newTemplatesCmd())
 
 	return cmd
 }

@@ -9,12 +9,18 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/reporter"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
+	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
+
+// defaultBundledTemplatesDir is the project-authored template directory
+// bundled with every release — --templates' default, and cmd/hackerfive/
+// templates.go's "bundled" source label's directory.
+const defaultBundledTemplatesDir = "./templates/"
 
 func newScanCmd(root *rootFlags) *cobra.Command {
 	var (
 		targets          string
-		templatesPath    string
+		templatesPaths   []string
 		tags             string
 		concurrency      int
 		rateLimit        int
@@ -52,9 +58,24 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				return fmt.Errorf("parsing --header: %w", err)
 			}
 
+			// Only auto-append the synced templates directory when --templates
+			// was left at its default — an explicit --templates value from the
+			// user replaces the default entirely and is not extended, matching
+			// normal flag-override semantics (see
+			// docs/12-implementation-plan-ph3.md's "Template sync command" §3).
+			// Silently skipped if 'hackerfive templates sync' was never run —
+			// os.Stat failing just means there's nothing to add.
+			if !cmd.Flags().Changed("templates") {
+				if syncedDir, err := templatesync.DefaultSyncDir(); err == nil {
+					if _, statErr := os.Stat(syncedDir); statErr == nil {
+						templatesPaths = append(templatesPaths, syncedDir)
+					}
+				}
+			}
+
 			cfg := scanner.Config{
 				Targets:          targetList,
-				TemplatePaths:    []string{templatesPath},
+				TemplatePaths:    templatesPaths,
 				Tags:             parseTags(tags),
 				Concurrency:      concurrency,
 				RateLimit:        rateLimit,
@@ -99,7 +120,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&targets, "targets", "t", "", "target URL, or path to a file with one target per line (required)")
-	cmd.Flags().StringVar(&templatesPath, "templates", "./templates/", "template directory")
+	cmd.Flags().StringArrayVar(&templatesPaths, "templates", []string{defaultBundledTemplatesDir}, "template directory (repeatable); left at its default, the synced directory from 'hackerfive templates sync' is auto-appended if present")
 	cmd.Flags().StringVar(&tags, "tags", "", "comma-separated tags — only load templates carrying at least one (default: no filtering)")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "worker pool size")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 50, "requests/sec across the whole scan")

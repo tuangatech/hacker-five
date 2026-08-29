@@ -7,12 +7,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 )
 
@@ -257,4 +260,175 @@ func TestEngineRun_ScopeFile_AllowsMatchedTarget(t *testing.T) {
 	findings, err := scanner.New(cfg).Run(context.Background())
 	require.NoError(t, err)
 	assert.NotEmpty(t, findings, "a target covered by --scope must be dispatched normally")
+}
+
+// TestEngineRun_FindingCallback_FiresPerBatch confirms WithFindingCallback
+// receives every finding Run's return value carries — per doc12's Week 19
+// design, granularity is per detector/template batch, not per individual
+// HTTP response, but every finding in every batch must still reach the
+// callback.
+func TestEngineRun_FindingCallback_FiresPerBatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound) // no security headers -> misconfig findings
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := scanner.Config{
+		Targets:     []string{server.URL},
+		Concurrency: 5,
+		RateLimit:   50,
+		Timeout:     5 * time.Second,
+		Detector:    "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var callbackFindings []detectors.Finding
+	findings, err := scanner.New(cfg).WithFindingCallback(func(f detectors.Finding) {
+		mu.Lock()
+		callbackFindings = append(callbackFindings, f)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t, findings, callbackFindings, "every finding in Run's return value must also have reached the callback")
+	assert.NotEmpty(t, callbackFindings, "callback must have fired at least once")
+}
+
+// TestEngineRun_LogCallback_FiresForKnownSites confirms WithLogCallback fires
+// for each of the log sites doc12 names: the missing-–scope warning, the
+// per-target scope-skip message, and loadTemplates' load-summary line.
+// Stderr output itself is unchanged in every case (warnf always prints
+// first) — not re-asserted here since it's identical to the pre-existing,
+// still-passing tests above that never set a callback at all.
+func TestEngineRun_LogCallback_FiresForKnownSites(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
+	require.NoError(t, os.WriteFile(scopeFile, []byte("totally-different-domain.example\n"), 0o644))
+
+	cfg := scanner.Config{
+		Targets:     []string{server.URL},
+		Concurrency: 5,
+		RateLimit:   50,
+		Timeout:     5 * time.Second,
+		Detector:    "misconfig",
+		ScopeFile:   scopeFile,
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var levels, msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		levels = append(levels, level)
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	joined := strings.Join(msgs, "\n")
+	assert.Contains(t, joined, "not covered by --scope", "must log the per-target scope-skip message")
+	assert.Contains(t, joined, "loaded 0 nuclei-compatible, 0 native templates", "must log loadTemplates' summary line")
+	assert.NotEmpty(t, levels)
+	for _, level := range levels {
+		assert.Contains(t, []string{"warn", "info", "error"}, level, "level must be one of the documented values")
+	}
+}
+
+// TestEngineRun_LogCallback_FiresForScopeOmitted covers the third named
+// site — loadScope's warning when --scope itself is never set — separately
+// from the scope-skip test above, since setting ScopeFile at all suppresses
+// this particular warning.
+func TestEngineRun_LogCallback_FiresForScopeOmitted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := scanner.Config{
+		Targets:     []string{server.URL},
+		Concurrency: 5,
+		RateLimit:   50,
+		Timeout:     5 * time.Second,
+		Detector:    "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, strings.Join(msgs, "\n"), "no --scope file provided", "must log loadScope's missing-scope warning")
+}
+
+// TestEngineRun_LogCallback_FiresForDetectorError covers the fourth site
+// doc12 names — the per-target error path — which previously had no stderr
+// output at all (see engine.go's warnf call site added for this). A
+// malformed --endpoint (invalid URL escape) makes idor.Detector.Run fail
+// before any request is even sent, a cheap, deterministic way to force
+// runDetector's error branch without relying on network failure timing.
+func TestEngineRun_LogCallback_FiresForDetectorError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := scanner.Config{
+		Targets:          []string{server.URL},
+		Concurrency:      5,
+		RateLimit:        50,
+		Timeout:          5 * time.Second,
+		Detector:         "idor",
+		EndpointTemplate: "/%zz-invalid-escape",
+		AuthToken:        "token",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var levels, msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		levels = append(levels, level)
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.Error(t, err, "a malformed --endpoint must still fail Run the same way it does without a callback")
+
+	require.NotEmpty(t, levels)
+	assert.Contains(t, levels, "error", "the detector-error site must log at \"error\" level")
+	assert.Contains(t, strings.Join(msgs, "\n"), "running idor detector against", "must log which detector/target failed")
+}
+
+// TestEngineRun_NoCallback_BehaviorUnchanged is a regression guard on the
+// "CLI-safe" claim in doc12's Week 19 design: Run's return value must be
+// identical whether or not a caller ever calls WithFindingCallback/
+// WithLogCallback — cmd/hackerfive/scan.go never does, so this locks in that
+// its behavior never silently changes as callbacks are added elsewhere.
+func TestEngineRun_NoCallback_BehaviorUnchanged(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := scanner.Config{
+		Targets:     []string{server.URL},
+		Concurrency: 5,
+		RateLimit:   50,
+		Timeout:     5 * time.Second,
+		Detector:    "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	findings, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+	assert.NotEmpty(t, findings)
 }
