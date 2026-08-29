@@ -1,0 +1,8 @@
+{{define "fragment_job_row"}}<tr>
+<td><a href="/scans/{{.ID}}">{{.ID}}</a></td>
+<td>{{.Target}}</td>
+<td><span class="status-badge">{{.Status}}</span></td>
+<td>{{.FindingCount}}</td>
+<td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+</tr>
+{{end}}

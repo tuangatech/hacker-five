@@ -1,0 +1,12 @@
+{{define "fragment_sync_status"}}<p>Pinned commit: <code>{{.PinnedCommit}}</code> (<a href="https://github.com/projectdiscovery/nuclei-templates" target="_blank" rel="noopener">upstream nuclei-templates</a>)</p>
+{{if .Error}}<p class="error">Sync failed: {{.Error}}</p>
+{{else if .JustSynced}}<p>Synced just now into <code>{{.SyncedDir}}</code>.</p>
+{{else if .LastSynced}}<p>Last synced: {{.LastSynced.Format "2006-01-02 15:04:05"}} — <code>{{.SyncedDir}}</code></p>
+{{else}}<p>Never synced. Click "Sync now" to fetch the pinned upstream categories.</p>
+{{end}}
+{{if .CategoryCounts}}<table>
+<thead><tr><th>Category</th><th>Templates</th></tr></thead>
+<tbody>{{range .Categories}}<tr><td>{{.}}</td><td>{{index $.CategoryCounts .}}</td></tr>{{end}}</tbody>
+</table>
+{{end}}
+{{end}}

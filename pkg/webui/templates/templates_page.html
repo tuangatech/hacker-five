@@ -1,0 +1,37 @@
+{{define "fragment_template_table"}}<table>
+<thead><tr><th>ID</th><th>Name</th><th>Format</th><th>Severity</th><th>Tags</th><th>Source</th></tr></thead>
+<tbody>
+{{range .Entries}}<tr>
+<td>{{.ID}}</td>
+<td>{{.Name}}</td>
+<td>{{.Format}}</td>
+<td>{{.Severity}}</td>
+<td>{{range .Tags}}<a class="tag-link" href="/scans/new?tags={{.}}">{{.}}</a> {{end}}</td>
+<td>{{.Source}}</td>
+</tr>
+{{else}}<tr><td colspan="6">No templates match{{if .Tags}} the tag filter "{{.Tags}}"{{else}} — has "hackerfive templates sync" been run yet?{{end}}.</td></tr>
+{{end}}
+</tbody>
+</table>
+<p>{{len .Entries}} templates{{if .Rejected}}, {{.Rejected}} rejected{{end}}.</p>
+{{end}}
+{{define "templates_page.html"}}{{template "header" .}}
+<h1>Templates</h1>
+
+<h2>Active Templates</h2>
+<label for="tag-filter">Filter by tag</label>
+<input type="text" id="tag-filter" name="tags" value="{{.Table.Tags}}" placeholder="e.g. exposed-panels"
+  hx-get="/templates/table" hx-target="#template-table" hx-swap="innerHTML"
+  hx-trigger="keyup changed delay:400ms, search" hx-include="this">
+<div id="template-table">{{template "fragment_template_table" .Table}}</div>
+
+<h2>Sync</h2>
+<form hx-post="/templates/sync" hx-target="#sync-status" hx-indicator="#sync-indicator">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<button type="submit">Sync now</button>
+<span id="sync-indicator" class="htmx-indicator">Syncing…</span>
+</form>
+<div id="sync-status">{{template "fragment_sync_status" .Sync}}</div>
+
+{{template "footer" .}}
+{{end}}

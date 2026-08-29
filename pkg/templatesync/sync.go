@@ -81,6 +81,20 @@ func Sync(ctx context.Context, destDir string) (*Result, error) {
 		}
 	}
 
+	counts, err := CategoryCounts(destDir)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Result{Commit: PinnedCommit, CategoryCounts: counts}, nil
+}
+
+// CategoryCounts counts each of Categories' .yaml/.yml files under destDir —
+// the same per-category numbers Sync returns right after running, exposed
+// separately so a caller can display them for a corpus synced by an earlier,
+// separate process (e.g. pkg/webui's Templates page rendering counts from a
+// prior `hackerfive templates sync` CLI run).
+func CategoryCounts(destDir string) (map[string]int, error) {
 	counts := make(map[string]int, len(Categories))
 	for _, category := range Categories {
 		n, err := countTemplateFiles(filepath.Join(destDir, category))
@@ -89,8 +103,7 @@ func Sync(ctx context.Context, destDir string) (*Result, error) {
 		}
 		counts[category] = n
 	}
-
-	return &Result{Commit: PinnedCommit, CategoryCounts: counts}, nil
+	return counts, nil
 }
 
 // countTemplateFiles counts .yaml/.yml files recursively under dir — same

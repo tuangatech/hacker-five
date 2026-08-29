@@ -1,0 +1,12 @@
+{{define "scan_history.html"}}{{template "header" .}}
+<h1>Scan History</h1>
+{{if .Jobs}}
+<table>
+<thead><tr><th>ID</th><th>Target(s)</th><th>Status</th><th>Findings</th><th>Started</th></tr></thead>
+<tbody>{{range .Jobs}}{{template "fragment_job_row" .}}{{end}}</tbody>
+</table>
+{{else}}
+<p>No scans yet. <a href="/scans/new">Start one</a>.</p>
+{{end}}
+{{template "footer" .}}
+{{end}}

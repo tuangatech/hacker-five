@@ -121,3 +121,38 @@ func TestJobStore_GetUnknownID(t *testing.T) {
 	_, ok := store.Get("nope")
 	assert.False(t, ok)
 }
+
+// TestJobStore_List_MostRecentFirst is Dashboard/Scan History's ordering
+// contract — the newest scan must appear first, not last.
+func TestJobStore_List_MostRecentFirst(t *testing.T) {
+	store := newJobStore()
+	store.Add(newTestJob("first"))
+	store.Add(newTestJob("second"))
+	store.Add(newTestJob("third"))
+
+	got := store.List()
+	require.Len(t, got, 3)
+	assert.Equal(t, []string{"third", "second", "first"}, []string{got[0].ID, got[1].ID, got[2].ID})
+}
+
+// TestJobStore_List_ReflectsLiveState confirms List() reads each job's
+// current status/finding count, not a stale value captured at Add time.
+func TestJobStore_List_ReflectsLiveState(t *testing.T) {
+	store := newJobStore()
+	j := newTestJob("job-1")
+	store.Add(j)
+
+	j.SetRunning()
+	j.AppendFinding(detectors.Finding{ID: "f1"})
+	j.AppendFinding(detectors.Finding{ID: "f2"})
+
+	got := store.List()
+	require.Len(t, got, 1)
+	assert.Equal(t, StatusRunning, got[0].Status)
+	assert.Equal(t, 2, got[0].FindingCount)
+}
+
+func TestJobStore_List_Empty(t *testing.T) {
+	store := newJobStore()
+	assert.Empty(t, store.List())
+}

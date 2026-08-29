@@ -50,6 +50,7 @@ func (h *handlers) newScanForm(w http.ResponseWriter, r *http.Request) {
 	data := NewScanData{
 		CSRFToken:   token,
 		Detector:    "misconfig",
+		Tags:        r.URL.Query().Get("tags"), // prefilled via the Templates page's tag links (docs/12-implementation-plan-ph3.md design decision 1)
 		RateLimit:   defaultRateLimit,
 		Concurrency: defaultConcurrency,
 		Timeout:     defaultTimeout.String(),

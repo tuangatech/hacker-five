@@ -1,0 +1,18 @@
+{{define "dashboard.html"}}{{template "header" .}}
+<h1>HackerFive</h1>
+<p>Local scanning web UI. <a href="/scans/new">Start a new scan →</a></p>
+
+<h2>Recent Scans</h2>
+{{if .RecentJobs}}
+<table>
+<thead><tr><th>ID</th><th>Target(s)</th><th>Status</th><th>Findings</th><th>Started</th></tr></thead>
+<tbody>{{range .RecentJobs}}{{template "fragment_job_row" .}}{{end}}</tbody>
+</table>
+{{if .HasMore}}<p><a href="/scans">View all scans →</a></p>{{end}}
+{{else}}
+<p>No scans yet. <a href="/scans/new">Start one</a>.</p>
+{{end}}
+
+<p><a href="/templates">Manage templates →</a></p>
+{{template "footer" .}}
+{{end}}

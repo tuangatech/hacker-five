@@ -47,15 +47,17 @@ func New(opts Options) (*Server, error) {
 	h := &handlers{tmpl: tmpl, store: newJobStore()}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		executeTemplate(w, tmpl, "dashboard_placeholder.html", nil)
-	})
+	mux.HandleFunc("GET /{$}", h.dashboard)
+	mux.HandleFunc("GET /scans", h.scanHistory)
 	mux.HandleFunc("GET /scans/new", h.newScanForm)
 	mux.HandleFunc("GET /scans/new/detector-fields", h.detectorFields)
 	mux.HandleFunc("POST /scans", h.startScan)
 	mux.HandleFunc("GET /scans/{id}", h.scanStatus)
 	mux.HandleFunc("GET /scans/{id}/export.json", h.exportJSON)
 	mux.HandleFunc("GET /scans/{id}/events", h.scanEvents)
+	mux.HandleFunc("GET /templates", h.templatesPage)
+	mux.HandleFunc("GET /templates/table", h.templateTable)
+	mux.HandleFunc("POST /templates/sync", h.syncTemplates)
 
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {

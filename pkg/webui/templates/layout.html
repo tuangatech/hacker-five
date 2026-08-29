@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HackerFive</title>
+<!-- htmx's own default responseHandling never swaps a 4xx/5xx response into
+     the DOM, only 2xx/3xx — so rerenderFormWithErrors' 422 validation-error
+     re-render would otherwise silently do nothing in a real browser. This is
+     htmx's own documented override for exactly that case: 422 still swaps,
+     while still firing as an error event so nothing about error detection
+     changes. -->
+<meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true,"error":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}'>
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/htmx.min.js"></script>
 <script src="/static/htmx-ext-sse.js"></script>
@@ -13,6 +20,8 @@
 <nav>
 <a href="/">Dashboard</a>
 <a href="/scans/new">New Scan</a>
+<a href="/scans">Scan History</a>
+<a href="/templates">Templates</a>
 </nav>
 </header>
 {{end}}

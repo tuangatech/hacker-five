@@ -3,6 +3,7 @@ package webui
 import (
 	"html/template"
 	"sync"
+	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 )
@@ -50,8 +51,9 @@ type Event struct {
 // GET /scans/{id}/events streams live, per doc12's "Backpressure and
 // reconnect: one job store, not two buffers" design.
 type Job struct {
-	ID     string
-	Target string // display only — the raw target list the form submitted, joined
+	ID        string
+	Target    string    // display only — the raw target list the form submitted, joined
+	CreatedAt time.Time // set once at creation — drives Dashboard/Scan History ordering and display
 
 	mu       sync.Mutex
 	status   string
@@ -69,6 +71,7 @@ func newJob(id, target string, renderFinding func(detectors.Finding) template.HT
 	return &Job{
 		ID:             id,
 		Target:         target,
+		CreatedAt:      time.Now(),
 		status:         StatusQueued,
 		renderFinding:  renderFinding,
 		renderLog:      renderLog,
@@ -231,4 +234,43 @@ func (s *JobStore) Get(id string) (*Job, bool) {
 	defer s.mu.Unlock()
 	j, ok := s.jobs[id]
 	return j, ok
+}
+
+// JobSummary is the row shape Dashboard and Scan History both render — see
+// fragment_job_row.html.
+type JobSummary struct {
+	ID           string
+	Target       string
+	Status       string
+	FindingCount int
+	CreatedAt    time.Time
+}
+
+// List returns every stored job's summary, most-recent-first. Each job's own
+// mu is locked briefly per entry (matching Snapshot's per-job locking
+// discipline) rather than holding the store lock for the whole walk.
+func (s *JobStore) List() []JobSummary {
+	s.mu.Lock()
+	order := append([]string(nil), s.order...)
+	s.mu.Unlock()
+
+	summaries := make([]JobSummary, 0, len(order))
+	for i := len(order) - 1; i >= 0; i-- {
+		s.mu.Lock()
+		j, ok := s.jobs[order[i]]
+		s.mu.Unlock()
+		if !ok {
+			continue
+		}
+		j.mu.Lock()
+		summaries = append(summaries, JobSummary{
+			ID:           j.ID,
+			Target:       j.Target,
+			Status:       j.status,
+			FindingCount: len(j.findings),
+			CreatedAt:    j.CreatedAt,
+		})
+		j.mu.Unlock()
+	}
+	return summaries
 }
