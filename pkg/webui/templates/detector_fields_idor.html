@@ -1,0 +1,5 @@
+{{define "detector_fields_idor"}}{{$db := "{{"}}{{$de := "}}"}}<div id="detector-fields">
+<label for="endpoint">Endpoint template (--endpoint, required)</label>
+<input type="text" id="endpoint" name="endpoint" value="{{.Endpoint}}" placeholder="/workshop/api/mechanic/mechanic_report?report_id={{$db}}id{{$de}}" required>
+</div>
+{{end}}

@@ -6,6 +6,12 @@ import (
 	"path/filepath"
 )
 
+// DefaultBundledDir is the project-authored template directory bundled with
+// every release — shared by cmd/hackerfive/scan.go's --templates default
+// and pkg/webui's New Scan handler, so both resolve the same "bundled"
+// source without duplicating the literal path.
+const DefaultBundledDir = "./templates/"
+
 // DefaultSyncDir returns the persistent OS user-config directory synced
 // templates should live in — outside the extracted release folder entirely,
 // so a binary upgrade never requires copying anything forward. Matches

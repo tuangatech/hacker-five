@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
 func TestNewTemplatesCmd_RegistersSyncAndListSubcommands(t *testing.T) {
@@ -42,12 +44,12 @@ func TestDefaultTemplateDirsWithLabels_Invariants(t *testing.T) {
 
 	require.Equal(t, len(dirs), len(labels))
 	require.GreaterOrEqual(t, len(dirs), 1)
-	assert.Equal(t, defaultBundledTemplatesDir, dirs[0])
+	assert.Equal(t, templatesync.DefaultBundledDir, dirs[0])
 	assert.Equal(t, "bundled", labels[0])
 
 	if len(dirs) == 2 {
 		assert.Equal(t, "synced", labels[1])
-		assert.NotEqual(t, defaultBundledTemplatesDir, dirs[1])
+		assert.NotEqual(t, templatesync.DefaultBundledDir, dirs[1])
 	} else {
 		assert.Len(t, dirs, 1, "defaultTemplateDirsWithLabels must return either 1 (bundled only) or 2 (bundled + synced) entries")
 	}

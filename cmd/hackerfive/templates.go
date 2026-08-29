@@ -99,7 +99,7 @@ func newTemplatesListCmd() *cobra.Command {
 // actually been run (os.Stat succeeds), so a fresh install with no sync
 // history behaves exactly as before this command existed.
 func defaultTemplateDirsWithLabels() (dirs, labels []string) {
-	dirs = []string{defaultBundledTemplatesDir}
+	dirs = []string{templatesync.DefaultBundledDir}
 	labels = []string{"bundled"}
 
 	if syncedDir, err := templatesync.DefaultSyncDir(); err == nil {

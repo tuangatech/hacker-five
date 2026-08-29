@@ -1,0 +1,20 @@
+{{define "fragment_scan_status_body"}}<h1>Scan {{.JobID}}</h1>
+<p>Target(s): <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a></p>
+
+<div hx-ext="sse" sse-connect="/scans/{{.JobID}}/events">
+<h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
+
+<h2>Findings</h2>
+<table>
+<thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Confidence</th><th>Target</th><th>Description</th></tr></thead>
+<tbody id="findings" sse-swap="finding" hx-swap="beforeend">{{.FindingRowsHTML}}</tbody>
+</table>
+
+<h2>Logs</h2>
+<div id="logs" sse-swap="log" hx-swap="beforeend">{{.LogLinesHTML}}</div>
+</div>
+{{end}}
+{{define "scan_status.html"}}{{template "header" .}}
+{{template "fragment_scan_status_body" .}}
+{{template "footer" .}}
+{{end}}
