@@ -247,6 +247,41 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 - CVSS calculation (if applicable)
 - Output formatting
 
+## Code Walkthrough: Main Files & Flow
+
+A guided tour through the main files, for orienting in the actual codebase rather than this doc's diagrams.
+
+### 1. Entry point
+[`cmd/hackerfive/main.go`](../cmd/hackerfive/main.go) — sets up signal handling, hands off to Cobra's root command (`newRootCmd()` in [`root.go`](../cmd/hackerfive/root.go)).
+
+### 2. CLI commands (`cmd/hackerfive/`)
+- [`scan.go`](../cmd/hackerfive/scan.go) — the `hackerfive scan` command. Parses flags into a `scanner.Config`, validates it, builds a `scanner.Engine`, runs it, and writes the result via `reporter.WriteJSON`. This is the clearest map of "what a scan does": targets → templates → detector → auth → scope → output.
+- [`serve.go`](../cmd/hackerfive/serve.go) — `hackerfive serve`, starts the embedded web UI (`webui.New(...).ListenAndServe(...)`).
+- [`templates.go`](../cmd/hackerfive/templates.go) — `hackerfive templates sync|list`, wraps `pkg/templatesync`.
+
+### 3. Scan orchestration (`pkg/scanner/`)
+- [`engine.go`](../pkg/scanner/engine.go) — the core. `Engine.Run` loads scope (`scope.Parse`), loads templates (`nuclei.LoadDir`/`native.LoadDir`), spins up a `workerpool`, and per target: runs the selected built-in detector (`runDetector` → idor/misconfig/authbypass) then runs every loaded template on top (templates are *additive*, not an alternative). `WithFindingCallback`/`WithLogCallback` are the hooks `pkg/webui` uses for live SSE streaming — the CLI path never sets them, so CLI behavior is unaffected.
+- [`config.go`](../pkg/scanner/config.go) — `Config` struct + `Validate()`, the single source of truth for what a scan needs (e.g. `idor` requires `--endpoint` + an auth token, `authbypass` requires `--protected-paths`).
+- Supporting subpackages: `httpclient` (retry/rate-limit-wrapped HTTP client), `ratelimit`, `workerpool` (bounded concurrency), `scope` (target allow-list), `hosterrors` (circuit-breaker per host).
+
+### 4. Detectors (`pkg/detectors/`)
+- [`types.go`](../pkg/detectors/types.go) — the shared `Finding` struct every detector emits and the reporter/web UI consume.
+- `idor/`, `misconfig/`, `authbypass/` — one package each, each exposing `New(...)` + `Run(ctx, ...) ([]Finding, error)`.
+
+### 5. Templates (`pkg/template/`)
+Two parallel engines, both loaded and run by the engine for every target:
+- `nuclei/` — parses/executes Nuclei-compatible YAML templates.
+- `native/` — HackerFive's own richer template format (used for e.g. tagged IDOR checks), with `dsl/`, `extractor/`, `matcher/` as its building blocks.
+- `templatesync/` — `git`-based sync of the community template corpus into a persistent OS config dir (survives binary upgrades — see [`sync.go`](../pkg/templatesync/sync.go)).
+
+### 6. Output (`pkg/reporter/`)
+[`output.go`](../pkg/reporter/output.go) — trivially small: `WriteJSON` serializes `[]Finding` to JSON (empty slice, never `null`).
+
+### 7. Web UI (`pkg/webui/`)
+[`server.go`](../pkg/webui/server.go) is the map of this package: routes dashboard/scan-history/new-scan/scan-status(SSE)/templates pages, wrapped in CSRF + non-loopback-token middleware. It's a pure frontend — every handler ultimately calls the same `scanner.Engine`/`templatesync` that the CLI calls, no scan logic is duplicated. `jobs.go` (`JobStore`/`Job`) tracks async scan jobs; `handlers_scan.go`, `handlers_dashboard.go`, `handlers_templates.go` are the per-page handlers.
+
+**Suggested reading order** to trace one scan end-to-end: [`scan.go`](../cmd/hackerfive/scan.go) → [`config.go`](../pkg/scanner/config.go) → [`engine.go`](../pkg/scanner/engine.go) → one detector (e.g. [`pkg/detectors/idor`](../pkg/detectors/idor)) → [`output.go`](../pkg/reporter/output.go). Then [`server.go`](../pkg/webui/server.go) → [`handlers_scan.go`](../pkg/webui/handlers_scan.go) to see how the web UI wraps the same engine asynchronously.
+
 ## Future Considerations (Not Yet Scoped)
 
 Deferred because the trigger condition for needing them hasn't happened yet — revisit if the trigger occurs, not on a fixed date.
