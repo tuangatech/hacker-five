@@ -2,7 +2,7 @@
 
 Open-source, high-performance vulnerability scanner (Go) built to support bug bounty hunting on HackerOne and similar platforms.
 
-HackerFive is the scanner. crAPI, DVWA and Juice Shop are the targets.
+HackerFive is the scanner. crAPI, DVWA, Juice Shop, vAPI, and AIGoat are the lab targets it's validated against — see [Test Targets](#test-targets).
 
 Repo: https://github.com/tuangatech/hacker-five
 
@@ -23,6 +23,7 @@ Repo: https://github.com/tuangatech/hacker-five
   - **Nuclei-compatible** (`pkg/template/nuclei`) — a defined, fail-loudly subset of real upstream `nuclei-templates` (`scripts/sync-nuclei-templates.sh` syncs a pinned commit); supports `raw:`/`payloads:` (single/multi-entry, cross-request correlation) and `flow:` (boolean compositions of `http(N)`) within a documented v1 scope, and rejects disallowed protocol blocks and out-of-band/OAST matchers outright at load time rather than silently mis-evaluating them — see [docs/template-writing-guide.md](docs/template-writing-guide.md) for the exact boundaries. Real reflected-XSS/error-based-SQLi/blind-SQLi/stored-XSS samples ship under `templates/nuclei-samples/`.
   - **Native YAML** (`pkg/template/native`) — HackerFive's own format, sharing the same matcher/extractor engine. `idor`-tagged templates (`templates/idor/*.yaml`) route through the real `idor.Detector`, so a YAML file can supply what `--endpoint` used to.
   - **`--header 'Name: Value'`** (repeatable) — static headers applied to every template-driven request (both formats), the primary use for a session cookie a target's login flow issued outside the scan (e.g. DVWA), since template placeholders can't carry one yet.
+  - **Prompt injection** (`templates/nuclei-samples/promptinjection/`, tag `prompt-injection`) — a field-deployable system-prompt-extraction check for any chat-shaped LLM endpoint, plus a lab-only seeded-secret variant for validating the detector itself; live-verified against [AIGoat](https://github.com/AISecurityConsortium/AIGoat) (see [Test Targets](#test-targets)). Every request here can trigger a real, metered LLM call on the target's backend — loading a `prompt-injection`-tagged template with `--concurrency` above 5 (the safe default) prints a stderr warning.
 - **`--scope`** — an optional target allow-list file (one domain/`*.domain`/CIDR entry per line, `#` comments). Omitted by default (every existing documented command keeps working unmodified) but prints a warning when it is; given, enforcement is strict default-deny.
 
 ## Using HackerFive
@@ -78,7 +79,7 @@ Synced templates land in a persistent per-user directory (`os.UserConfigDir()` �
 
 ## Building & Local Testing
 
-For contributing to HackerFive, or trying it out against local lab targets (crAPI, DVWA, Juice Shop) before ever pointing it at something real.
+For contributing to HackerFive, or trying it out against local lab targets before ever pointing it at something real.
 
 ### Build from Source
 
@@ -96,12 +97,17 @@ make build
 ./hackerfive --version
 ```
 
-### Setting Up a Target
+### Test Targets
 
-Full walkthrough (Docker bring-up, account/token minting, one-time setup steps, and a per-detector caveat about DVWA's login form) lives in [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md). Short version:
+Full walkthrough for every target below (Docker bring-up, account/token minting, one-time setup steps, and per-target caveats) lives in [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md). Short version:
 
-- **crAPI** (for `--detector idor`): `docker compose up -d`, then `source tests/integration/scripts/crapi_setup.sh` to mint two account tokens.
-- **DVWA** (for `--detector misconfig`): `docker run -d -p 80:80 vulnerables/web-dvwa`, then click "Create / Reset Database" once at `http://localhost/setup.php`. No tokens needed.
+| Target | What it's for | One-line bring-up |
+|---|---|---|
+| **crAPI** | `--detector idor` — real cross-account BOLA | `docker compose up -d`, then `source tests/integration/scripts/crapi_setup.sh` to mint two account tokens |
+| **DVWA** | `--detector misconfig` | `docker run -d -p 80:80 vulnerables/web-dvwa`, then click "Create / Reset Database" once at `http://localhost/setup.php`. No tokens needed |
+| **Juice Shop** | `--detector misconfig`; Nuclei-compatible templates | `docker run -d -p 3000:3000 bkimminich/juice-shop`. No tokens needed |
+| **vAPI** | `--detector idor`/`misconfig`/`authbypass` — real BOLA, custom `Authorization-Token` auth scheme | `git clone https://github.com/roottusk/vapi.git && cd vapi && docker-compose up -d` |
+| **AIGoat** | Prompt-injection templates — deliberately-vulnerable LLM chatbot (OWASP LLM Top 10), self-hosted via Ollama | `git clone https://github.com/AISecurityConsortium/AIGoat.git`, then follow doc20's model/port setup before `docker compose up -d --build` |
 
 ### Quick Start
 
@@ -128,7 +134,7 @@ Once a target is up (crAPI with tokens exported, and/or `export DVWA_BASE_URL=ht
 go test -tags=integration ./tests/integration/... -v
 ```
 
-**crAPI/DVWA/Juice Shop are self-contained local Docker targets built for this purpose — never point `--endpoint` or `-t` at a live/external host with these lab credentials/assumptions.** See [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md).
+**crAPI/DVWA/Juice Shop/vAPI/AIGoat are self-contained local Docker targets built for this purpose — never point `--endpoint` or `-t` at a live/external host with these lab credentials/assumptions.** See [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md).
 
 ## Docs
 
@@ -148,7 +154,7 @@ Project plan split by concern under [docs/](docs/):
 12. [Phase 5 Implementation Plan (Weeks 33-40)](docs/14-implementation-plan-ph5.md) — MCP server, elicitation-based approval gate, task tree, hard safety blockers for agent-driven scans
 13. [Phase 6 Implementation Plan (Weeks 41-48)](docs/15-implementation-plan-ph6.md) — `AllowWrites` attestation, live Web UI Agent tab, OWASP Agentic Top 10 mapping, eval maturity
 14. [Follow-Up: Security Review, Expansion Strategy & Protocol Scope](docs/follow-up.md) — security review notes, open-source/VDP expansion plan, XBOW research, non-HTTP protocol assessment
-15. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI and DVWA bring-up, account/token minting, per-target setup steps and caveats
+15. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI, DVWA, Juice Shop, vAPI and AIGoat bring-up, account/token minting, per-target setup steps and caveats
 16. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
 17. [Authorized Targets Registry](docs/22-authorized-targets.md) — living list of vetted real targets (policy, scope, safe harbor, fit for HackerFive), so vetting isn't repeated
 18. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
