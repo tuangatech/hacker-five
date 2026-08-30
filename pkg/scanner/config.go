@@ -9,9 +9,11 @@ import (
 
 // recognizedDetectors is the set of --detector values accepted.
 var recognizedDetectors = map[string]bool{
-	"idor":       true,
-	"misconfig":  true,
-	"authbypass": true,
+	"idor":          true,
+	"misconfig":     true,
+	"authbypass":    true,
+	"ssrf":          true,
+	"businesslogic": true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -77,6 +79,53 @@ type Config struct {
 	// Step 5). Does not affect --detector idor/misconfig/authbypass's own
 	// flag-driven requests, only template-fired ones. nil/empty is a no-op.
 	ExtraHeaders map[string]string
+
+	// SSRFParams are candidate query parameter names (from repeatable
+	// --ssrf-param) the ssrf detector's non-blind and scheme-based checks
+	// fire against — required for --detector ssrf, same shape as
+	// authbypass's ProtectedPaths requirement. A real target rarely exposes
+	// exactly one URL-accepting parameter name ("webhook", "callback",
+	// "image_url" are all common), so this is genuinely repeatable
+	// (StringArrayVar), not a single comma-separated flag — see
+	// docs/13-implementation-plan-ph4.md Step 2.
+	SSRFParams []string
+
+	// OOBServers are the base URL(s) of Interactsh-protocol server(s) (from
+	// repeatable --oob-server) the ssrf detector's blind callback check
+	// polls for interactions, tried in order with automatic fallback. Empty
+	// (the default) skips that check silently — the non-blind/scheme-based
+	// checks still run without it. Never a silent public default — cmd/
+	// hackerfive/scan.go only ever populates this from an explicit
+	// --oob-server value (including the "public" shorthand, an explicit
+	// opt-in), per docs/13-implementation-plan-ph4.md's design tension 1
+	// (avoiding target-request-data leakage to a third party outside the
+	// engagement's authorized scope, unless the user explicitly accepts
+	// that tradeoff).
+	OOBServers []string
+
+	// AllowWrites (from --allow-writes) gates every mutating check the
+	// businesslogic detector's Run performs — coupon self-mint/apply, the
+	// concurrent-fire apply race. Absent (the default, false), those checks
+	// are skipped with a stderr warning printed once per scan
+	// (pkg/scanner/engine.go), not a Validate()-time error — unset is a
+	// normal, expected mode (a read-only run against --detector
+	// businesslogic simply finds nothing), same treatment as ScopeFile's
+	// absence. This is CLAUDE.md's one explicit, opt-in exception to the
+	// read/enumerate-only rule, scoped specifically to this flag/detector.
+	AllowWrites bool
+
+	// CouponMintPath/CouponApplyPath (from --coupon-mint-path/
+	// --coupon-apply-path) override businesslogic.DefaultCouponMintPath/
+	// DefaultCouponApplyPath for a target other than crAPI. "" preserves
+	// that half's package default.
+	CouponMintPath  string
+	CouponApplyPath string
+
+	// RaceConcurrency (from --race-concurrency) overrides
+	// businesslogic.DefaultRaceConcurrency — how many simultaneous requests
+	// the apply-race check's last-byte-sync client fires. 0 preserves the
+	// package default.
+	RaceConcurrency int
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.
@@ -104,6 +153,12 @@ func (c Config) Validate() error {
 	}
 	if c.Detector == "authbypass" && len(c.ProtectedPaths) == 0 {
 		return fmt.Errorf("validating config: authbypass detector requires --protected-paths")
+	}
+	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 {
+		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param")
+	}
+	if c.Detector == "businesslogic" && c.AuthToken == "" {
+		return fmt.Errorf("validating config: businesslogic detector requires --auth-token (or its env var equivalent)")
 	}
 	if c.AuthHeaderFormat != "" && !strings.Contains(c.AuthHeaderFormat, "{token}") {
 		return fmt.Errorf("validating config: --auth-header-format must contain a {token} placeholder, got %q", c.AuthHeaderFormat)

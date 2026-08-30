@@ -11,8 +11,10 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/detectors/authbypass"
+	"github.com/tuangatech/hacker-five/pkg/detectors/businesslogic"
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
@@ -137,6 +139,7 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.warnIfWritesUngated()
 
 	nucleiTemplates, nativeTemplates := e.loadTemplates()
 	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders)
@@ -236,6 +239,19 @@ func (e *Engine) loadScope() (*scope.Scope, error) {
 		return nil, fmt.Errorf("loading --scope: %w", err)
 	}
 	return sc, nil
+}
+
+// warnIfWritesUngated mirrors loadScope's "warn, don't silently proceed"
+// shape exactly: if --detector businesslogic was selected without
+// --allow-writes, every mutating check in that detector's Run will
+// self-gate to a silent no-op (see businesslogic.Detector.Run) — this is
+// the one place that gets surfaced to the user, once per scan, so a
+// businesslogic run that finds nothing because writes were never allowed
+// doesn't look identical to one that genuinely found nothing.
+func (e *Engine) warnIfWritesUngated() {
+	if e.cfg.Detector == "businesslogic" && !e.cfg.AllowWrites {
+		e.warnf("warn", "--allow-writes not set — businesslogic's mutating checks (coupon self-mint/apply, apply-race) will be skipped; pass --allow-writes to run them")
+	}
 }
 
 // loadTemplates parses every template directory in cfg.TemplatePaths once,
@@ -369,6 +385,12 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "authbypass":
 		detector := authbypass.New(e.client, e.authbypassOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.ProtectedPaths)
+	case "ssrf":
+		detector := ssrf.New(e.client, e.ssrfOptions()...)
+		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.OOBServers)
+	case "businesslogic":
+		detector := businesslogic.New(e.client, e.businesslogicOptions()...)
+		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.AllowWrites)
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)
 	}
@@ -398,6 +420,29 @@ func (e *Engine) authbypassOptions() []authbypass.Option {
 	}
 	if len(e.cfg.LogoutPaths) > 0 {
 		opts = append(opts, authbypass.WithLogoutPaths(e.cfg.LogoutPaths))
+	}
+	return opts
+}
+
+// ssrfOptions builds the ssrf.Option set the flag-driven --detector ssrf
+// path applies. WithAuthHeader is unconditional, same no-op-on-empty-string
+// reasoning as idorOptions/authbypassOptions.
+func (e *Engine) ssrfOptions() []ssrf.Option {
+	return []ssrf.Option{ssrf.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
+}
+
+// businesslogicOptions builds the businesslogic.Option set the flag-driven
+// --detector businesslogic path applies. WithAuthHeader/WithInsecure are
+// unconditional, same no-op-on-empty-string/pure-passthrough reasoning as
+// idorOptions/ssrfOptions.
+func (e *Engine) businesslogicOptions() []businesslogic.Option {
+	opts := []businesslogic.Option{
+		businesslogic.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat),
+		businesslogic.WithInsecure(e.cfg.Insecure),
+		businesslogic.WithCouponPaths(e.cfg.CouponMintPath, e.cfg.CouponApplyPath),
+	}
+	if e.cfg.RaceConcurrency > 0 {
+		opts = append(opts, businesslogic.WithRaceConcurrency(e.cfg.RaceConcurrency))
 	}
 	return opts
 }

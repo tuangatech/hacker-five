@@ -10,7 +10,7 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 
 | Target | Detector it supports | Why |
 |---|---|---|
-| **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
+| **crAPI** | `idor`, `authbypass`, `businesslogic` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug; also has a real coupon-flow business-logic bug (unearned credit + a TOCTOU race) |
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
 | **Juice Shop** | `misconfig`; Nuclei-compatible templates | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
 | **vAPI** | `idor`, `misconfig`; Nuclei-compatible templates | Has a real BOLA (see its own section below), reachable via `idor.Detector`'s configurable auth-header scheme (`--auth-header-name`/`--auth-header-format`) |
@@ -18,6 +18,8 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 | **AIGoat** | prompt-injection templates | Deliberately-vulnerable LLM chat app (OWASP LLM Top 10) with real, self-hosted "System Prompt Leakage" and "Data Leakage" labs — see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1 |
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
+
+**Gotcha, hit twice (2026-08-29) verifying the SSRF detector against vAPI: `./hackerfive scan` always loads and runs the full template set additively, regardless of `--detector`.** Per [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md), templates are additive, not an alternative to the selected detector — the default `--templates ./templates/` (plus any synced corpus) fires all ~3190 nuclei-compatible templates at the target on top of whatever `--detector` you asked for. A command meant to isolate one detector's real behavior (e.g. timing an SSRF live-verification run) will instead also run the entire template corpus unless you explicitly opt out — turning an expected ~4-minute run into 50+ minutes, twice mistaken for a hang before the cause was found (a `SIGQUIT` goroutine dump showed the process genuinely busy inside `nuclei.Executor.Run`, not stuck). **To test one detector in isolation, always pass either `--templates <empty-or-nonexistent-dir>` or a `--tags` filter that matches nothing** — every per-detector command in this doc that isn't explicitly testing templates too should do this if timing/isolation matters.
 
 **Where to clone target repos:** targets like crAPI are separate, unrelated git repos — never clone them *inside* the `hacker-five` checkout (their own `.git` would end up nested in yours). Use a sibling directory instead, e.g. `~/targets/`, next to wherever `hacker-five` itself lives (`~/projects/hacker-five` per [04-environment-and-testing.md](04-environment-and-testing.md)):
 ```bash
@@ -119,6 +121,24 @@ Real result (2026-08-28): `checkRateLimitSignal` now correctly reaches `/identit
 Real, live-verified result (2026-08-28): **16 findings**, and the `alg:none` bypass turns out to be systemic, not isolated to `identity` — **7 of the 8 new paths** (all but `videos/convert_video`, which correctly rejected the tampered token — a real negative control, not every endpoint is vulnerable) accept the same `alg:none`-rewritten token across all three separate microservices (`identity`, `community`, `workshop`), meaning whatever JWT library each service uses shares the same unpinned-algorithm gap. Independently re-confirmed outside the tool on two of the seven (`/community/api/v2/community/posts/recent`, `/workshop/api/shop/products`) via hand-built `curl` requests: no-header → `401`, valid token → `200`, hand-forged `alg:none` token → `200` on both — not just the detector's own claim. `/workshop/api/shop/return_qr_code` additionally has no auth requirement at all (`checkMissingAuth`, high) and accepts the signature-*stripped* variant too, not just `alg:none`.
 
 The run also flagged 7 `token-reuse` findings (medium, "needs manual triage" — the check's own hedge for a plausibly-shared/non-personalized endpoint). Manually triaged two: `/workshop/api/shop/orders/all` returned `{"orders":[]}` for both accounts — inconclusive, both throwaway accounts simply have no orders, not proof either way. `/workshop/api/management/users/all` is the real one: a plain `hackerfive-owner` account (never granted any admin role) gets a full user-table dump — every account's email, phone number, and credit balance, `admin@example.com` included — from an endpoint whose path implies it should be admin-only. That's a standalone broken-function-level-authorization finding in its own right, not just "two tokens match."
+
+### Business Logic (`--detector businesslogic`) — real coupon flow, unearned credit + a live race condition
+
+crAPI's coupon flow spans two microservices: `POST /community/api/v2/coupon/new-coupon` (Go, no admin/role check — any authenticated user can mint an arbitrary `coupon_code`/`amount`) and `POST /workshop/api/shop/apply_coupon` (Python, never cross-checks the client-supplied `amount` against the coupon's real stored value). Requires `--allow-writes` — this is the one detector in the project that performs mutating requests, see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 3 and `CLAUDE.md`'s Rules section for why that's a bounded, explicit exception, not a rule violation.
+
+```bash
+cd ~/projects/hacker-five
+export CRAPI_BASE_URL=http://localhost:8888
+source tests/integration/scripts/crapi_setup.sh
+
+./hackerfive scan -t http://localhost:8888 --detector businesslogic --allow-writes \
+  --auth-token "$CRAPI_OWNER_TOKEN" --templates /tmp/empty-templates
+```
+(`--templates` disabled per this doc's own gotcha note above — this run needs to be timed/isolated.)
+
+Real, live-verified result (2026-08-30): **`businesslogic-coupon-self-mint-credit` fires every run** (critical, high confidence) — a self-minted coupon with `amount: 999999` is accepted and adds real, unearned credit (`{"credit":2000098.0,"message":"Coupon successfully applied!"}` on one run, real evidence in the finding's own request/response pairs). Pre-confirmed via direct `curl` before any detector code existed, then reproduced identically through the real detector.
+
+**`businesslogic-coupon-apply-race` (high, high confidence) — real, but intermittent against the live target, reported honestly**: `ApplyCouponView`'s own check-then-act (a raw-SQL `SELECT` for "already applied," then an `INSERT`, no visible transaction/locking) is exploited via a first-party last-byte-sync raw-connection client (`pkg/detectors/businesslogic/raceclient.go`) firing 15 simultaneous apply requests for one coupon. 5 live runs: 4 fired (`successful_applies`: 15, 2, 2, and one earlier unrecorded run), 1 did not. Real network timing against a live target varies more than this technique's own loopback-only unit tests (which fire reliably) — a real, sometimes-missed finding, not a flaky test result to explain away.
 
 ### Teardown / reset
 
@@ -329,6 +349,26 @@ TOKEN=$(curl -s -X POST http://localhost:8000/vapi/jwt/user -H 'Content-Type: ap
 ```
 Real, live-verified result (2026-08-28): **4 real findings** — `authbypass-jwt-alg-none-vapi-jwt-user` and `authbypass-jwt-signature-stripped-vapi-jwt-user` (both **critical**: the server's `JWT::decode($token, $key, array('HS256','none'))` call really does accept `alg: none`, confirmed independently by hand-forging a `role:admin` token and retrieving the module's flag directly — see doc11 Step 5), `authbypass-broken-session-vapi-jwt-user` (**high**: the token still works after hitting the generic `/logout` guess — this module has no server-side logout at all, so any logout attempt trivially "fails" to invalidate it), and `authbypass-no-rate-limit-login` (**info/needs-triage**, same `/login`-guess mismatch as above — not new signal). One transient run produced only the broken-session finding with no error; a same-second re-run and an isolated direct-`Run()` call both reproduced all 4 findings cleanly, so this was a one-off flake (most likely the local container's own warm-up), not a detector bug — logged as a note, not chased further given it hasn't recurred.
 
+### SSRF (`--detector ssrf`) — real vulnerability, via `/vapi/serversurfer`
+
+vAPI's "ServerSurfer" exercise (`GET /vapi/serversurfer?url=<url>`) fetches whatever URL it's given server-side and returns `{"success":..., "data":"<base64 of the fetched response>"}` — real, no login required. Point HackerFive directly at that endpoint (not just `/vapi`):
+```bash
+./hackerfive scan -t http://localhost:8000/vapi/serversurfer --detector ssrf --ssrf-param url
+```
+Real, live-verified result (2026-08-29): **`ssrf-scheme-based-url-file` fires** — `file:///etc/passwd` returns a real `200` with the actual file's base64-encoded content. Other payloads' real behavior, useful context if results look different on a re-run:
+- Plain `127.0.0.1` is blocklisted (`403 "Whoa!!! Not Allowed!!"`) — correctly produces no finding.
+- Decimal (`2130706433`)/octal (`0177.0.0.1`) bypass that blocklist (no 403) but the fetch itself returns `500`, not `200` — real evidence the filter is naive, but not independently provable as a working fetch on this specific deployment.
+- Hex (`0x7f000001`) and both IPv6 forms hang vAPI's own backend indefinitely rather than completing — HackerFive's own `--timeout` correctly bounds this and treats it as no finding, not a hang or crash on our side.
+- `gopher://`/`dict://` are blocklisted the same as plain `127.0.0.1`.
+
+**A real gotcha this surfaced**: firing every encoded-bypass variant in one run can leave vAPI's small worker pool tied up for several minutes afterward (each hang gets retried 3× by HackerFive's own shared retry middleware) — if you see fewer findings than expected, wait a minute and re-run rather than assuming a detector bug; `pkg/detectors/ssrf` no longer shares the other detectors' host-error circuit breaker for exactly this reason (see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 2).
+
+**Blind OOB check** (`--oob-server`) — self-hosted server bring-up and a real round trip against a local stand-in target are in the [Interactsh Server](#interactsh-server-self-hosted-oob-callback-receiver-for---detector-ssrf---oob-server) section below. **Live-verified directly against real vAPI (2026-08-30)**, no self-hosted server needed for this run:
+```bash
+./hackerfive scan -t http://localhost:8000/vapi/serversurfer --detector ssrf --ssrf-param url --oob-server public
+```
+Real result: `ssrf-oob-callback-url` (critical, high confidence) — vAPI's container made a real outbound HTTP request to `oast.live` (one of `ssrf.PublicInteractshServers`, the public pool `--oob-server public` expands to — see below and [follow-up.md](follow-up.md) §1 for the leak tradeoff this opts into), correlated and decrypted correctly. This also closes the earlier "Dockerized target can't reach a host-published OOB server" gap: the fix was never a Docker-networking workaround, it was giving `--oob-server` a real, publicly-resolvable hostname — the container's already-normal internet DNS handles the rest.
+
 ### Teardown / reset
 
 ```bash
@@ -397,6 +437,38 @@ cd ~/targets/AIGoat/docker && docker compose down -v   # -v also drops seeded de
 
 ---
 
+## Interactsh Server (self-hosted OOB callback receiver, for `--detector ssrf --oob-server`)
+
+Not a target `hackerfive scan` points at — it's the callback receiver `pkg/detectors/ssrf`'s blind check polls for evidence a target's server actually made an outbound request. HackerFive never depends on the public Interactsh service; per [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md)'s Step 2 design tension, `--oob-server` only ever takes a URL you're self-hosting. `pkg/detectors/ssrf/oob_client.go` is a first-party client speaking the real Interactsh HTTP protocol, so any real `interactsh-server` deployment works here, not a HackerFive-specific service.
+
+### Bring it up (local, for testing)
+
+```bash
+docker pull projectdiscovery/interactsh-server:latest
+docker run -d --name oob-server -p 8082:8082 \
+  projectdiscovery/interactsh-server:latest -domain localhost -skip-acme -http-port 8082
+```
+- `-skip-acme` disables TLS/ACME registration — fine for local testing, never for a real deployment reachable by an actual authorized target.
+- `-domain localhost` only works because `*.localhost` auto-resolves to loopback on most modern OSes (glibc/systemd-resolved, Windows 10+/11, macOS) without any DNS server needed — confirmed live in this environment (`getent hosts test123.localhost` → `::1`, no `/etc/hosts` entry required). A real deployment against a real target needs a real domain you control, with DNS delegated to this server, the same as public Interactsh needs — `localhost` is a local-testing shortcut, not what production use looks like.
+
+### Real, live-verified round trip (2026-08-29)
+
+Ran the actual SSRF detector (not the unit test's fake server) against a throwaway local stand-in "vulnerable" server (a few lines of `net/http` doing `http.Get(r.URL.Query().Get("url"))`, not committed) on the same host as the interactsh-server above:
+```bash
+./hackerfive scan -t 'http://127.0.0.1:9091/probe' --detector ssrf --ssrf-param url --oob-server http://localhost:8082
+```
+Real result: `ssrf-oob-callback-url` (**critical**, confidence **high**) — a genuine correlation ID + nonce our client generated, a real HTTP request the real `interactsh-server` binary captured (`Host: 042511096a29e1a7095768488585e7706.localhost:8082`), and a real RSA-OAEP(SHA-256)+AES-256-CTR decrypt of the server's actual encrypted response — not the mock server `tests/unit/detector_ssrf_test.go` uses. This proves the client/server protocol and crypto are correct against the genuine upstream implementation, closing that part of [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md)'s Step 2 Definition of Done.
+
+**Gap this surfaced, closed 2026-08-30**: the stand-in target above ran directly on the host, sharing the same network namespace/loopback as the interactsh-server's published port. A real Dockerized lab target (vAPI, crAPI) does not — confirmed live: `*.localhost` resolves inside vAPI's own container too (`docker exec vapi-check-www-1 getent hosts test123.localhost` → `::1`), but that `::1` is the *container's own* loopback, not the host's, so a payload host built from `--oob-server http://localhost:8082` would try to reach port 8082 inside vAPI's own network namespace — nothing listens there. Docker's per-container network isolation, not a detector bug. The fix predicted here (option 1 — a real, publicly-resolvable hostname, same as any genuine self-hosted-OOB use against a real target needs anyway) is now confirmed working, via the `--oob-server public` opt-in's own real result against vAPI — see this doc's vAPI SSRF section above. A genuinely self-hosted server on a real public IP (not the local-only DNS-override workaround this section originally floated as option 2) would work the identical way — the container's own internet DNS resolves any real hostname correctly with zero Docker-network configuration.
+
+### Teardown
+
+```bash
+docker rm -f oob-server
+```
+
+---
+
 ## Other targets (no detector targets these yet)
 
 No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above), so there's no real live-verified result to document, unlike the sections above. Pull the image ahead of time if you want it ready for when Phase 2's XSS/SQLi work lands (see [03-development-roadmap.md](03-development-roadmap.md) Week 13-16) and this graduates to its own section:
@@ -410,7 +482,7 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 
 | Target | Credentials/tokens HackerFive needs | Where they come from | One-time setup step |
 |---|---|---|---|
-| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) — same tokens also drive `--detector authbypass` | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
+| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) — same tokens also drive `--detector authbypass`/`businesslogic` (the latter also needs `--allow-writes`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
 | DVWA | None for `misconfig`; a manually-obtained `PHPSESSID` session cookie for XSS/SQLi (not yet CLI-supportable, see its section above) | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 | Juice Shop | None | — | None — ready as soon as the container responds |
 | vAPI | `VAPI_OWNER_TOKEN`, `VAPI_OTHER_TOKEN` for `--detector idor`/`authbypass` (each `base64(username:password)`; target must include the `/vapi` prefix) — none for `--detector misconfig` | `POST /vapi/api1/user` with `username`/`name`/`course`/`password` (faster than the web UI), then base64-encode `username:password` yourself | None — `docker-compose.yml`'s DB init runs automatically |
@@ -419,7 +491,7 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 ## See also
 - [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — read-only/authorized-target-only constraints these local targets satisfy
-- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the prompt-injection detector work this AIGoat setup validates
+- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the prompt-injection detector work this AIGoat setup validates, and the SSRF detector work this vAPI/Interactsh-Server setup validates
 - [21-scanning-real-targets.md](21-scanning-real-targets.md) — the equivalent workflow once you're past these lab targets and scanning a real, authorized one
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — IDOR detector this crAPI setup validates
 - [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — misconfiguration detector this DVWA/Juice Shop setup validates, and the Nuclei-compatible template engine this Juice Shop setup also validates
