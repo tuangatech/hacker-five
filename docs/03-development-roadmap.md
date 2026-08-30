@@ -311,10 +311,10 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 ### Phase 5: Recon & Orchestration Foundations (Weeks 33-40)
 
-**Goal:** Build the pieces every later agent-integration phase needs that don't depend on an MCP server actually working — a recon phase (`pkg/recon/`), a frozen `Finding` schema, and a `Job.PlanTree` data model, plus read-only Web UI views of both. Full design in [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), which schedules [90-research-hackerbot.md](90-research-hackerbot.md)'s recon-independent backlog items and all of [91-research-recon-phase.md](91-research-recon-phase.md)'s Group R that doesn't need the MCP server. Comes after Phase 4, not swapped ahead of it — the `findings.export` MCP tool (Phase 6) needs Phase 4's `Exporter`/HackerOne-JSON work. **Split out from what was originally a single "Phase 5" specifically so the MCP Go SDK's unverified `elicitation`/`tasks` support (Phase 6's real risk) can't stall this phase's independently-shippable work.**
+**Goal:** Build the pieces every later agent-integration phase needs that don't depend on an MCP server actually working — a recon phase (`pkg/recon/`), a frozen `Finding` schema, a `Job.PlanTree` data model, **and a deterministic decision engine (`pkg/fingerprint` + a capability registry, doc90 Decision 6/Group I) that populates real `PlanTree` leaves from a plain `hackerfive scan`/`recon` run, with zero LLM or agent involvement** — plus read-only Web UI views. Full design in [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), which schedules [90-research-hackerbot.md](90-research-hackerbot.md)'s recon-independent backlog items (Groups R and I1-I3) and all of [91-research-recon-phase.md](91-research-recon-phase.md)'s Group R that doesn't need the MCP server. Comes after Phase 4, not swapped ahead of it — the `findings.export` MCP tool (Phase 6) needs Phase 4's `Exporter`/HackerOne-JSON work. **Split out from what was originally a single "Phase 5" specifically so the MCP Go SDK's unverified `elicitation`/`tasks` support (Phase 6's real risk) can't stall this phase's independently-shippable work** — and the decision engine belongs here for the same reason: it's deterministic, testable, and useful standalone, with no MCP dependency at all.
 
 #### Week 33: Foundations — ⬜ not started
-- [ ] Ratify Decisions 1-4 (single coordinator, no shell/exec tool — including for recon — MCP `elicitation`/`tasks`, task-tree-leaf `Confidence` distinct from `Finding.Confidence`)
+- [ ] Ratify Decisions 1-6 (single coordinator, no shell/exec tool — including for recon — MCP `elicitation`/`tasks`, task-tree-leaf `Confidence` distinct from `Finding.Confidence`, stateless/tiered LLM invocation, deterministic-first dispatch)
 - [ ] Eval harness stub against lab targets (crAPI, DVWA, vAPI, Juice Shop) — detector-only baseline, no agent yet
 
 **Deliverable:** committed design decisions; a working baseline benchmark with zero agent involvement
@@ -325,12 +325,17 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Deliverable:** a versioned wire schema and a task-tree data model with a tested mutation guard
 
-#### Week 36-37: Recon Package — ⬜ not started
+#### Week 36-37: Recon Package + Decision Engine — ⬜ not started
 - [ ] `pkg/recon/`: Waves 0-4 (zero-touch, passive, active-low-noise, application-layer mapping, aggregation), `--scope` cross-check running immediately after Wave 1, before any active probe
 - [ ] `ReconResult` schema, frozen and versioned
 - [ ] `hackerfive recon` CLI subcommand, usable standalone
+- [ ] `pkg/fingerprint`: tech-signature detection (header/body/favicon/port) enriching `ReconResult.TechStack` — doc90 I2
+- [ ] Capability registry (`pkg/registry`) + deterministic decision engine: matches a `TechFact` against the registry to populate real `PlanTree` leaves, no LLM/agent required — doc90 I1/I3
+- [ ] Generated `templates/index.json` — doc14 R9, pulled forward from what was originally Phase 7 Week 55, since the decision engine needs it now
 
-**Deliverable:** `hackerfive recon` runs against a lab target and produces a schema-valid `ReconResult`; `--recon-depth passive` confirmed to never send an active probe
+**Note:** this week's scope grew after the 2026-08-30 hybrid-architecture direction (deterministic decision engine now, LLM only as a later fallback) — full design in doc14 R7-R9; revisit the 2-week estimate at implementation time rather than assume it still fits, same "revise down with reasoning, don't pad" discipline this project already applies elsewhere.
+
+**Deliverable:** `hackerfive recon` runs against a lab target and produces a schema-valid `ReconResult`; `--recon-depth passive` confirmed to never send an active probe; the decision engine resolves a real target's fingerprint to matched detectors/templates as actual `PlanTree` leaves, live-verified with zero LLM calls
 
 #### Week 38: Recon + Plan-Preview Web UI — ⬜ not started
 - [ ] Recon results page (`pkg/webui`) — browse a `ReconResult`, independent of any agent
@@ -346,24 +351,26 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] `hackerfive recon` live-verified against a lab target, producing a schema-valid, correctly-labeled `ReconResult`
 - [ ] `Job.PlanTree` mutation guard confirmed to reject shape-changing updates
 - [ ] Both new Web UI pages confirmed live in a browser
+- [ ] The decision engine (`pkg/fingerprint` + registry) resolves at least one real lab target's fingerprint to matched `PlanTree` leaves with zero LLM calls, live-verified
 
 ---
 
 ### Phase 6: MCP Server & Approval Gate (Weeks 41-48) — Hacker-in-the-Loop, Part 1
 
-**Goal:** Make HackerFive addressable by an LLM agent, safely — an MCP server (including a `recon` tool wrapping Phase 5's package), an `elicitation`-based human-approval gate seeded from a real `ReconResult`, the hard safety blockers (program-policy pre-flight, hard-fail scope, scope-creep gate), and an actionable Web UI approval surface (approve/reject/edit, a budget gauge, a kill switch) on top of Phase 5's read-only plan preview. Full design in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md). Depends on Phase 5, not the reverse.
+**Goal:** Make HackerFive addressable by an LLM agent, safely — an MCP server (including a `recon` tool wrapping Phase 5's package, plus `tools.search`/`templates.search` over Phase 5's capability registry), an `elicitation`-based human-approval gate seeded from a real `ReconResult`, the tiered LLM fallback (doc90 I4) for the cases Phase 5's deterministic decision engine can't resolve, the hard safety blockers (program-policy pre-flight, hard-fail scope, scope-creep gate), and an actionable Web UI approval surface (approve/reject/edit, a budget gauge, a kill switch) on top of Phase 5's read-only plan preview. Full design in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md). Depends on Phase 5, not the reverse.
 
 #### Week 41-42: MCP Server — ⬜ not started
 - [ ] Verify an MCP Go SDK supports `elicitation`/`tasks` (new dependency, confirm via pkg.go.dev before adding)
-- [ ] `pkg/mcpserver`: `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon` tools — no shell/exec-shaped tool anywhere in the server
+- [ ] `pkg/mcpserver`: `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon`, `tools.search`, `templates.search` tools — no shell/exec-shaped tool anywhere in the server; the last two expose Phase 5's registry via search, not one MCP tool per detector/recon-tool/template (doc90 I1)
 
 **Deliverable:** a real MCP client can list and call these tools against a lab target, live-verified
 
-#### Week 43: Approval Gate + Spend Ceiling — ⬜ not started
+#### Week 43: Approval Gate + Spend Ceiling + Tiered LLM Fallback — ⬜ not started
 - [ ] `plan` MCP tool built on native `elicitation`/`tasks`, seeded from a real `ReconResult` — no request sent without human approval
 - [ ] Per-job spend ceiling, hard-enforced (not just logged)
+- [ ] Tiered LLM fallback (local small model + frontier via OpenRouter, doc90 Decision 5/I4): invoked only when Phase 5's decision engine has no registry match for a `PlanTree` leaf; one stateless, schema-validated input/output call per leaf, never a persistent session
 
-**Deliverable:** a plan proposal — grounded in real recon facts, not an empty tree — only proceeds after a real client's own approval UI grants it
+**Deliverable:** a plan proposal — grounded in real recon facts, not an empty tree — only proceeds after a real client's own approval UI grants it; a leaf the decision engine couldn't resolve is confirmed, live, to trigger exactly one tiered LLM call, not a fallback path available at any time
 
 #### Week 44-45: Hard Safety Blockers + Scope-Creep Gate + Prioritization — ⬜ not started
 - [ ] Program-policy pre-flight check — hard blocker, not a warning
@@ -389,6 +396,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] MCP server live-verified against a real client with no shell/exec-shaped tool present
 - [ ] Human approval via `elicitation` (or the Web UI's own approval controls) confirmed to gate every plan before traffic goes out
 - [ ] Program-policy pre-flight, missing-scope, and scope-creep hard blockers all confirmed live
+- [ ] The tiered LLM fallback triggers only on a confirmed decision-engine miss, live-verified, with every call logged as a single input/output pair tied to one `PlanTree` leaf
 
 ---
 
@@ -418,7 +426,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] All ten ASI01-10 risks checked against real shipped code (file/line cited), each mitigated or accepted as residual risk with a stated reason
 
 #### Week 55: Template Ecosystem & Triage Support — ⬜ not started
-- [ ] Generated `templates/index.json`
+- [ ] ~~Generated `templates/index.json`~~ — moved to Phase 5 Week 36-37 (doc14 R9); the decision engine needs it several phases earlier than this week
 - [ ] `templates/proposed/` staging directory, confirmed never auto-loaded
 - [ ] Triage-assist mode on `Exporter` output (annotation only, never mutates `Finding`)
 - [ ] Structured feedback capture on human override/dismissal of agent triage notes
@@ -452,8 +460,8 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 | 2 | 11-18 | 8 wks | Auth bypass, XSS, SQLi, information disclosure | v0.2.0 |
 | 3 | 19-24 | 6 wks | Web UI + upgradeable template sync | v0.3.0 |
 | 4 | 25-32 | 8 wks | Prompt injection, SSRF, business logic | v0.4.0 |
-| 5 | 33-40 | 8 wks | Recon & orchestration foundations (`pkg/recon`, `Finding` schema freeze, `PlanTree` data model, read-only recon/plan-preview UI) | v0.5.0 |
-| 6 | 41-48 | 8 wks | MCP server & approval gate (elicitation-based approval seeded from recon, hard safety blockers, actionable approval UI) | v0.6.0 |
+| 5 | 33-40 | 8 wks | Recon & orchestration foundations (`pkg/recon`, `Finding` schema freeze, `PlanTree` data model, deterministic decision engine + capability registry, read-only recon/plan-preview UI) | v0.5.0 |
+| 6 | 41-48 | 8 wks | MCP server & approval gate (elicitation-based approval seeded from recon, `tools.search`/`templates.search`, tiered LLM fallback, hard safety blockers, actionable approval UI) | v0.6.0 |
 | 7 | 49-56 | 8 wks | Agent hardening, ecosystem & trust (AllowWrites attestation, live Agent tab, OWASP Agentic Top 10 mapping, eval maturity) | v0.7.0 |
 | — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 |
 
@@ -506,6 +514,7 @@ Trimmed to things the project actually controls (built/shipped/verified). Remove
 - [ ] `--recon-depth passive` confirmed, live, to never send an active probe
 - [ ] `Job.PlanTree` mutation guard confirmed to reject shape-changing updates
 - [ ] Recon-results and Plan-preview Web UI pages both confirmed live in a browser, read-only
+- [ ] Deterministic decision engine (`pkg/fingerprint` + registry) populates real `PlanTree` leaves from a plain, non-agent `hackerfive scan`/`recon` run, zero LLM calls, live-verified
 
 #### **Milestone 6: MCP Server & Approval Gate (Week 48) — v0.6.0**
 - [ ] v0.6.0 released
@@ -513,6 +522,7 @@ Trimmed to things the project actually controls (built/shipped/verified). Remove
 - [ ] `plan`/`elicitation`-based human approval gate — seeded from a real `ReconResult` — confirmed to block traffic until a human approves
 - [ ] Program-policy pre-flight, missing-scope, and scope-creep hard blockers all live-verified
 - [ ] Web UI approval controls (approve/reject/edit, budget gauge, kill switch) confirmed live
+- [ ] Tiered LLM fallback (local + OpenRouter) confirmed to trigger only on a decision-engine miss, never as a standing parallel path
 
 #### **Milestone 7: Agent Hardening, Ecosystem & Trust (Week 56) — v0.7.0**
 - [ ] v0.7.0 released

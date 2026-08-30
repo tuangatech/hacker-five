@@ -6,7 +6,7 @@
 
 ## Objective
 
-[90-research-hackerbot.md](90-research-hackerbot.md) researched how the field's serious 2026 LLM-driven pentesting tools structure themselves and resolved four open design questions (single coordinator, no shell/exec tool, MCP `elicitation`/`tasks` for approval, `Confidence` ≠ `Severity`) plus an eight-group backlog (A-H), later extended by [91-research-recon-phase.md](91-research-recon-phase.md) into a ninth group (R, recon). Scheduled across three phases: [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) (recon + task-tree/schema foundations, no MCP dependency), this phase (the MCP server, human-approval gate, and hard safety blockers — the part that's actually unsafe to skip once an agent exists), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) (hardening/ecosystem polish on top of a backbone this phase builds). **Nothing in Phase 7 should ship before this phase exists.**
+[90-research-hackerbot.md](90-research-hackerbot.md) researched how the field's serious 2026 LLM-driven pentesting tools structure themselves and resolved six open design questions (single coordinator, no shell/exec tool, MCP `elicitation`/`tasks` for approval, `Confidence` ≠ `Severity`, and — added 2026-08-30, per the user's hybrid-architecture direction — a stateless/tiered LLM invocation model and deterministic-first dispatch) plus an eight-group backlog (A-H), extended by [91-research-recon-phase.md](91-research-recon-phase.md) into a ninth (Group R, recon) and by the same 2026-08-30 direction into a tenth (Group I, decision engine). Scheduled across three phases: [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) (recon, task-tree/schema foundations, **and the deterministic decision engine/capability registry** — Group I1-I3, no MCP dependency), this phase (the MCP server, `tools.search`/`templates.search` over that registry, the tiered LLM fallback for what the registry can't resolve — Group I4, human-approval gate, and hard safety blockers — the part that's actually unsafe to skip once an agent exists), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) (hardening/ecosystem polish on top of a backbone this phase builds). **Nothing in Phase 7 should ship before this phase exists.**
 
 **Ordering relative to Phase 4:** this phase comes *after* [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) (Prompt Injection/SSRF/Business Logic Flaws), not instead of it. Confirmed as a real dependency, not just a scheduling preference: doc90's `findings.export` MCP tool (Step 1 below) needs Phase 4 Step 4's `Exporter`/HackerOne-JSON work, which doesn't exist yet as of this writing (`pkg/reporter` today only has `WriteJSON`, confirmed against the actual tree). By the time this phase starts, Phase 4 will have shipped it.
 
@@ -32,7 +32,9 @@
 
 **New dependency, to be verified at Step 1 kickoff, not assumed here**: an MCP Go SDK. No MCP-related package exists in `go.mod` today. Candidates to check via pkg.go.dev at implementation time (current stable version, import count, maintenance activity, and specifically whether it supports the 2026-07-28 spec's `elicitation`/`tasks` primitives Decision 3 commits to) — same discipline the Phase 2 JWT library and Phase 4's candidate Interactsh client both followed: verify before adding, don't assume a package's maturity from this doc. If no sufficiently mature Go SDK supports `elicitation`/`tasks` yet, that is itself a real finding this step should surface and report honestly (see Step 1's Design), not paper over by hand-rolling a partial MCP implementation. This is precisely the risk this phase's split from doc14 was meant to isolate — a delay here no longer blocks doc14's recon/data-model work, which will already be done.
 
-**No new dependency for Steps 2-5** — pure Go logic and additions to types doc14 already introduced (`Job.PlanTree`, `ReconResult`); a new `pkg/mcpserver` package calls straight into `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon`, duplicating no scan logic, the same boundary doc12 already drew for `pkg/webui`.
+**Second new dependency, for Step 2's tiered LLM fallback (doc90 Decision 5/I4), verified at that step's kickoff, not assumed here**: a local-model runtime client and an OpenRouter client. Per doc02 §8's own updated Dependencies section, both are candidates for a plain `net/http` REST client rather than an SDK (OpenRouter's API is OpenAI-chat-completion-compatible; a local runtime like Ollama exposes the same shape over its own REST endpoint) — apply the `interactsh-client` lesson (doc02 §8) before adding anything heavier: check the real transitive footprint with a scratch `go get`, don't trust a client library's doc page.
+
+**No new dependency for Steps 3-5** — pure Go logic and additions to types doc14 already introduced (`Job.PlanTree`, `ReconResult`, the capability registry); a new `pkg/mcpserver` package calls straight into `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon`/`pkg/registry`, duplicating no scan logic, the same boundary doc12 already drew for `pkg/webui`.
 
 ---
 
@@ -40,7 +42,9 @@
 
 ### Design
 
-**A1 — `pkg/mcpserver/`**, exposing `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon` (doc91's R4, new), and `plan` (built out fully in Step 2) as MCP tools. Calls straight into the existing `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon` packages — no scan logic duplicated, the same boundary doc12 already drew for `pkg/webui`. Consumes the same `Engine.WithFindingCallback`/`WithLogCallback` hooks `pkg/webui` already uses (doc90's A2, already landed in Phase 3) — the MCP server is a second frontend on the unchanged core, not a second implementation of it.
+**A1 — `pkg/mcpserver/`**, exposing `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon` (doc91's R4, new), `tools.search`/`templates.search` (new, doc90 I1), and `plan` (built out fully in Step 2) as MCP tools. Calls straight into the existing `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon`/`pkg/registry` packages — no scan logic duplicated, the same boundary doc12 already drew for `pkg/webui`. Consumes the same `Engine.WithFindingCallback`/`WithLogCallback` hooks `pkg/webui` already uses (doc90's A2, already landed in Phase 3) — the MCP server is a second frontend on the unchanged core, not a second implementation of it.
+
+**`tools.search`/`templates.search` — the answer to "should every detector/recon-tool/template be its own MCP tool": no.** Both are thin query wrappers over doc14's `pkg/registry` (I1) and `templates/index.json` (R9) — an agent calls `tools.search("wordpress")` and gets back matching registry entries (name/description/when-to-use), not a fixed MCP tool per capability. This is the same search-then-fetch shape this project's own tool ecosystem already uses for large catalogs, applied to HackerFive's own capability list instead of designing something bespoke.
 
 `findings.export` calls into Phase 4 Step 4's `Exporter` implementations (Markdown/HTML/HackerOne-JSON), which will exist by this point per the Objective's ordering decision — if for any reason Phase 4 Step 4 hasn't actually shipped by the time this step starts, `findings.export` ships JSON-only (reusing today's `reporter.WriteJSON`) and gains the other formats once they land, rather than blocking this whole step on it.
 
@@ -56,6 +60,7 @@
 - `pkg/mcpserver/tools_templates.go` — `templates.list`, `templates.sync`, calling `pkg/templatesync`.
 - `pkg/mcpserver/tools_findings.go` — `findings.export`, calling `pkg/reporter`.
 - `pkg/mcpserver/tools_recon.go` — `recon` tool, calling `pkg/recon` (doc14).
+- `pkg/mcpserver/tools_registry.go` — `tools.search`/`templates.search`, calling `pkg/registry` (doc14 I1) and `templates/index.json` (doc14 R9).
 - `cmd/hackerfive/mcpserve.go` — new `hackerfive mcp-serve` (or similar) subcommand.
 - `tests/unit/mcpserver_*_test.go` — schema-validated request/response tests per tool, no live target needed.
 
@@ -70,18 +75,22 @@ Unit tests per tool against a mock/stub scanner config. A real MCP client (e.g. 
 
 **B1 — `plan` MCP tool, built on native `elicitation`/`tasks`.** The agent proposes a full run (targets, detectors, templates, whether writes are required) and gets back a structured plan snapshot (doc14's `PlanTree`) in `input_required` state — no request sent yet. The human's approval is an `elicitation` response, captured natively by the transport rather than a plan-ID string HackerFive has to mint, store, and trust the agent not to replay. This is doc90's single highest-leverage item: today the CLI just executes, and there is currently no point where a human sees and approves a plan before traffic goes out.
 
-**R5 — seed the plan from a real `ReconResult`.** The coordinator's *first* `plan` proposal is generated from doc14's `ReconResult` (matched against template tags per doc01's reward-to-effort priors), not from an empty or hand-authored tree — this is the concrete fix for doc90 Group H having no named source for `PlanTree`'s initial leaves, and the reason this step couldn't land before doc14 shipped.
+**R5 — seed the plan from a real `ReconResult` — largely already done by doc14's R8, this step's job shrinks to exposing it.** Doc14's decision engine (R8) already turns a `ReconResult` into real `PlanTree` leaves with zero agent involvement, deterministically, before this phase even starts. This step's actual remaining work: the `plan` tool returns *that* tree (not an empty one, and not a second, redundant seeding implementation) in `input_required` state for `elicitation`, and — new since the 2026-08-30 hybrid direction — resolves any leaf R8 left visibly unresolved (no registry match) via the tiered LLM fallback below, *before* presenting the final tree for human approval. A leaf the agent or the tool itself invents out of nothing, bypassing both R8 and the fallback, is exactly the "hallucinated plan" doc90's PentestGPT-derived leaf-mutation guard already exists to catch.
+
+**I4 — tiered LLM fallback (doc90 Decision 5/6), invoked only on an R8 registry miss.** For each `PlanTree` leaf R8 left unresolved, one stateless call to the appropriate model tier: a local small model for the routine case (does this unmatched fingerprint still look worth a generic template category), a frontier model via OpenRouter for the rare case nothing in the synced template corpus covers at all — the new-template-authoring path. Each call: build a prompt from that single leaf's `TechFact`/context, get back a schema-validated decision (`{use_existing_tag: string}` or `{draft_template: <nuclei-compatible YAML>}` or `{escalate_to_human: reason}`), apply it as a leaf mutation, done — no conversation carried to the next leaf, no session held open. A drafted template is **untrusted input**: it goes through the *same* rejection pipeline already built for Phase 1b's untrusted-template loading (reject `code:`/`javascript:`/`headless:`/`file:` blocks at load time) and lands in `templates/proposed/` (doc90 E2, Phase 7) for human review — it is never eligible to run against a live target from this step alone, `elicitation` approval (B1, this step) is still required either way. Every call is logged as a single input→output pair tied to its leaf (Step 5's session log format), the same as any other tool call — this is the concrete, auditable shape doc90 Decision 5 describes, not an abstraction.
 
 **H5 — per-job spend ceiling**, sequenced alongside B1 per doc90's own note (a hard budget cap has a same-day reference implementation to copy — Strix's `--max-budget-usd` — so there's no reason to treat it as a stretch goal). A hard, enforced cap on cumulative agent-attributable cost (LLM token spend the coordinator itself reports, not HackerFive's own request cost) for a `Job` — exceeding it fails the job with a clear reason, it does not just log a warning.
 
 ### Files (anticipated, confirm at implementation time)
-- `pkg/mcpserver/tools_plan.go` — `plan` tool, `elicitation` request/response handling, seeded from `pkg/recon`'s output.
+- `pkg/mcpserver/tools_plan.go` — `plan` tool, `elicitation` request/response handling, resolving R8's decision-engine output (doc14) plus any I4 fallback resolutions before presenting for approval.
+- `pkg/llmfallback/{tiers,localmodel,openrouter}.go` — the tiered fallback client and its schema-in/schema-out call, invoked per unresolved `PlanTree` leaf.
 - `pkg/webui/jobs.go` (or doc14's shared package) — `Job`/`PlanTree` gains a `SpendCeiling`/`SpendSoFar` pair; the coordinator reports spend increments via a new field on the MCP tool call metadata.
-- `tests/unit/plan_tool_test.go` — approve/reject/timeout paths against a mock elicitation response, including a test confirming the initial tree is seeded from a `ReconResult` fixture, not empty.
+- `tests/unit/plan_tool_test.go` — approve/reject/timeout paths against a mock elicitation response, including a test confirming the initial tree is seeded from a real (doc14 R8) decision-engine output, not empty and not re-derived.
+- `tests/unit/llmfallback_test.go` — confirms the fallback fires only for a leaf R8 left unresolved (mocked model responses), never for an already-matched leaf; confirms a drafted template is rejected at load time if it contains a disallowed block.
 - `tests/unit/spend_ceiling_test.go` — confirms a job hard-fails once the ceiling is crossed, not just logs.
 
 ### Verification
-Unit tests for the elicitation round trip (mocked), the ReconResult-seeded initial plan, and the spend-ceiling hard-fail. Live verification: a real MCP client runs `recon` then proposes a plan, a human approves or rejects it via the client's own elicitation UI, and the server only proceeds on approval — confirmed against a real client, not just a mock.
+Unit tests for the elicitation round trip (mocked), the decision-engine-seeded initial plan, the tiered-fallback trigger condition, and the spend-ceiling hard-fail. Live verification: a real MCP client runs `recon` then proposes a plan, a human approves or rejects it via the client's own elicitation UI, and the server only proceeds on approval — confirmed against a real client, not just a mock. Separately, live-verify the fallback fires exactly once per unresolved leaf against a real local model and, for the new-template case, a real OpenRouter call.
 
 ---
 
@@ -148,9 +157,11 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 
 ## Definition of Done (Phase 6, Weeks 41-48)
 
-- [ ] `pkg/mcpserver` exposes `scan`/`templates.list`/`templates.sync`/`findings.export`/`recon`/`plan` and nothing shell/exec-shaped; live-verified against a real MCP client
+- [ ] `pkg/mcpserver` exposes `scan`/`templates.list`/`templates.sync`/`findings.export`/`recon`/`tools.search`/`templates.search`/`plan` and nothing shell/exec-shaped; live-verified against a real MCP client
 - [ ] The `plan` tool's human approval is captured via MCP `elicitation`, not a hand-rolled plan-ID flag; live-verified against a real client's own approval UI
-- [ ] A coordinator's first `plan` proposal is demonstrably seeded from a real `ReconResult`, not an empty or hand-authored tree
+- [ ] A coordinator's first `plan` proposal is demonstrably seeded from doc14's real decision-engine output (R8), not an empty, hand-authored, or redundantly-re-derived tree
+- [ ] The tiered LLM fallback (I4) fires only on a confirmed decision-engine miss — never as a standing parallel path — with every call logged as one stateless input→output pair per `PlanTree` leaf
+- [ ] An LLM-drafted template is confirmed, live, to go through the existing untrusted-template rejection pipeline and land in `templates/proposed/`, never running against a live target without separate human promotion
 - [ ] A per-job spend ceiling hard-fails a job when crossed, not just logs
 - [ ] A program-policy pre-flight check (D2) hard-blocks an agent-driven run against a target whose disclosure policy disallows automated scanners
 - [ ] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command
@@ -163,8 +174,8 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 - [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason
 
 ## See also
-- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon package, `Finding`-schema freeze, and `PlanTree` foundations this phase builds on
-- [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog (Groups A-H) this plan schedules the MCP-server/approval half of
+- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon package, `Finding`-schema freeze, `PlanTree` foundations, and the decision engine/registry (R7-R9, Group I1-I3) this phase's `tools.search`/`templates.search`/tiered-fallback work builds directly on
+- [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog (Groups A-I, plus R for recon) this plan schedules the MCP-server/approval half of; Decisions 5-6 and Group I4 are this phase's direct scope
 - [91-research-recon-phase.md](91-research-recon-phase.md) — Group R, the recon research this phase's Steps 1-3 wire into the MCP server and approval gate
 - [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — the hardening/ecosystem/trust phase that follows this one
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — `Finding`/`Exporter`/`Engine` design this plan builds on

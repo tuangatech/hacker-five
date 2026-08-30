@@ -26,6 +26,8 @@ Repo: https://github.com/tuangatech/hacker-five
   - **Prompt injection** (`templates/nuclei-samples/promptinjection/`, tag `prompt-injection`) — a field-deployable system-prompt-extraction check for any chat-shaped LLM endpoint, plus a lab-only seeded-secret variant for validating the detector itself; live-verified against [AIGoat](https://github.com/AISecurityConsortium/AIGoat) (see [Test Targets](#test-targets)). Every request here can trigger a real, metered LLM call on the target's backend — loading a `prompt-injection`-tagged template with `--concurrency` above 5 (the safe default) prints a stderr warning.
 - **`--scope`** — an optional target allow-list file (one domain/`*.domain`/CIDR entry per line, `#` comments). Omitted by default (every existing documented command keeps working unmodified) but prints a warning when it is; given, enforcement is strict default-deny.
 
+Full capability inventory — every detector/recon-tool/template category, shipped and planned — lives in [doc01's Capabilities at a Glance](docs/01-overview-and-strategy.md#capabilities-at-a-glance), not duplicated here to avoid the two lists drifting apart.
+
 ## Using HackerFive
 
 For running scans against a target — just a downloaded binary, no Go toolchain needed. Contributing to HackerFive, or want to try it against a local lab target first? See [Building & Local Testing](#building--local-testing) below instead.
@@ -140,7 +142,7 @@ go test -tags=integration ./tests/integration/... -v
 
 Project plan split by concern under [docs/](docs/):
 
-1. [Overview & Strategy](docs/01-overview-and-strategy.md) — mission, market analysis, target vulnerability classes
+1. [Overview & Strategy](docs/01-overview-and-strategy.md) — mission, market analysis, target vulnerability classes, capability inventory (detectors/recon tools/template categories)
 2. [Architecture & Tech Stack](docs/02-architecture-and-tech-stack.md) — Go/YAML/Cobra stack, system design
 3. [Development Roadmap](docs/03-development-roadmap.md) — Phase 1 (1a/1b)/2/3/4/5/6/7 plan, timeline, milestones
 4. [Environment & Testing](docs/04-environment-and-testing.md) — dev setup, testing strategy
@@ -151,15 +153,15 @@ Project plan split by concern under [docs/](docs/):
 9. [Phase 2 Implementation Plan (Weeks 11-18)](docs/11-implementation-plan-ph2.md) — API auth-bypass detector, XSS/SQLi templates, `--scope` enforcement; `v0.2.0` results
 10. [Phase 3 Implementation Plan (Weeks 19-24)](docs/12-implementation-plan-ph3.md) — local-only web UI (`hackerfive serve`) and upgradeable template sync; `v0.3.0` results
 11. [Phase 4 Implementation Plan (Weeks 25-32)](docs/13-implementation-plan-ph4.md) — Prompt Injection, SSRF, and Business Logic Flaw detectors
-12. [Phase 5 Implementation Plan (Weeks 33-40)](docs/14-implementation-plan-ph5.md) — recon package, `Finding`-schema freeze, task-tree data model, read-only recon/plan-preview UI (no MCP dependency)
-13. [Phase 6 Implementation Plan (Weeks 41-48)](docs/15-implementation-plan-ph6.md) — MCP server, elicitation-based approval gate seeded from recon, hard safety blockers, actionable approval UI
+12. [Phase 5 Implementation Plan (Weeks 33-40)](docs/14-implementation-plan-ph5.md) — recon package, `Finding`-schema freeze, task-tree data model, a deterministic decision engine + capability registry, read-only recon/plan-preview UI (no MCP dependency)
+13. [Phase 6 Implementation Plan (Weeks 41-48)](docs/15-implementation-plan-ph6.md) — MCP server, `tools.search`/`templates.search`, elicitation-based approval gate seeded from recon, tiered LLM fallback, hard safety blockers, actionable approval UI
 14. [Phase 7 Implementation Plan (Weeks 49-56)](docs/16-implementation-plan-ph7.md) — `AllowWrites` attestation, live Web UI Agent tab, OWASP Agentic Top 10 mapping, eval maturity
 15. [Follow-Up: Security Review, Expansion Strategy & Protocol Scope](docs/follow-up.md) — security review notes, open-source/VDP expansion plan, XBOW research, non-HTTP protocol assessment
 16. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI, DVWA, Juice Shop, vAPI and AIGoat bring-up, account/token minting, per-target setup steps and caveats
 17. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
 18. [Authorized Targets Registry](docs/22-authorized-targets.md) — living list of vetted real targets (policy, scope, safe harbor, fit for HackerFive), so vetting isn't repeated
 19. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
-20. [Agent Integration Research: "Hacker-in-the-Loop"](docs/90-research-hackerbot.md) — research behind Phases 6-7: how other LLM-driven pentesting tools structure themselves, and the design decisions/backlog this project scheduled from it
+20. [Agent Integration Research: "Hacker-in-the-Loop"](docs/90-research-hackerbot.md) — research behind Phases 5-7: how other LLM-driven pentesting tools structure themselves (including a deterministic-first, tiered-LLM-fallback hybrid model), and the design decisions/backlog this project scheduled from it
 21. [Recon Phase Research](docs/91-research-recon-phase.md) — research behind Phase 5's recon package: how comparable agentic pentesting tools perform reconnaissance, and the wave-based design scheduled from it
 
 See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo. Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a vulnerability in HackerFive itself (not a finding it produced against some other target)? See [SECURITY.md](SECURITY.md).
