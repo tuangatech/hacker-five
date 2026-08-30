@@ -19,6 +19,8 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
 
+**Gotcha, hit twice (2026-08-29) verifying the SSRF detector against vAPI: `./hackerfive scan` always loads and runs the full template set additively, regardless of `--detector`.** Per [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md), templates are additive, not an alternative to the selected detector — the default `--templates ./templates/` (plus any synced corpus) fires all ~3190 nuclei-compatible templates at the target on top of whatever `--detector` you asked for. A command meant to isolate one detector's real behavior (e.g. timing an SSRF live-verification run) will instead also run the entire template corpus unless you explicitly opt out — turning an expected ~4-minute run into 50+ minutes, twice mistaken for a hang before the cause was found (a `SIGQUIT` goroutine dump showed the process genuinely busy inside `nuclei.Executor.Run`, not stuck). **To test one detector in isolation, always pass either `--templates <empty-or-nonexistent-dir>` or a `--tags` filter that matches nothing** — every per-detector command in this doc that isn't explicitly testing templates too should do this if timing/isolation matters.
+
 **Where to clone target repos:** targets like crAPI are separate, unrelated git repos — never clone them *inside* the `hacker-five` checkout (their own `.git` would end up nested in yours). Use a sibling directory instead, e.g. `~/targets/`, next to wherever `hacker-five` itself lives (`~/projects/hacker-five` per [04-environment-and-testing.md](04-environment-and-testing.md)):
 ```bash
 mkdir -p ~/targets && cd ~/targets
@@ -343,7 +345,7 @@ Real, live-verified result (2026-08-29): **`ssrf-scheme-based-url-file` fires** 
 
 **A real gotcha this surfaced**: firing every encoded-bypass variant in one run can leave vAPI's small worker pool tied up for several minutes afterward (each hang gets retried 3× by HackerFive's own shared retry middleware) — if you see fewer findings than expected, wait a minute and re-run rather than assuming a detector bug; `pkg/detectors/ssrf` no longer shares the other detectors' host-error circuit breaker for exactly this reason (see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 2).
 
-**Blind OOB check** (`--oob-server`) needs a self-hosted Interactsh-protocol server (e.g. `interactsh-server`'s Docker image) — not yet brought up/live-verified as of 2026-08-29; the protocol/crypto correctness is proven by `tests/unit/detector_ssrf_test.go`'s real encrypted round trip against a fake server.
+**Blind OOB check** (`--oob-server`) needs a self-hosted Interactsh-protocol server — see the new [Interactsh Server](#interactsh-server-self-hosted-oob-callback-receiver-for---detector-ssrf---oob-server) section below for bring-up and a real live-verified round trip. That section also covers a genuine, still-open gap: the round trip proven there uses a local stand-in target, not vAPI directly — vAPI's own container can't reach a `--oob-server` on the host the same simple way, see that section's caveat.
 
 ### Teardown / reset
 
@@ -413,6 +415,38 @@ cd ~/targets/AIGoat/docker && docker compose down -v   # -v also drops seeded de
 
 ---
 
+## Interactsh Server (self-hosted OOB callback receiver, for `--detector ssrf --oob-server`)
+
+Not a target `hackerfive scan` points at — it's the callback receiver `pkg/detectors/ssrf`'s blind check polls for evidence a target's server actually made an outbound request. HackerFive never depends on the public Interactsh service; per [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md)'s Step 2 design tension, `--oob-server` only ever takes a URL you're self-hosting. `pkg/detectors/ssrf/oob_client.go` is a first-party client speaking the real Interactsh HTTP protocol, so any real `interactsh-server` deployment works here, not a HackerFive-specific service.
+
+### Bring it up (local, for testing)
+
+```bash
+docker pull projectdiscovery/interactsh-server:latest
+docker run -d --name oob-server -p 8082:8082 \
+  projectdiscovery/interactsh-server:latest -domain localhost -skip-acme -http-port 8082
+```
+- `-skip-acme` disables TLS/ACME registration — fine for local testing, never for a real deployment reachable by an actual authorized target.
+- `-domain localhost` only works because `*.localhost` auto-resolves to loopback on most modern OSes (glibc/systemd-resolved, Windows 10+/11, macOS) without any DNS server needed — confirmed live in this environment (`getent hosts test123.localhost` → `::1`, no `/etc/hosts` entry required). A real deployment against a real target needs a real domain you control, with DNS delegated to this server, the same as public Interactsh needs — `localhost` is a local-testing shortcut, not what production use looks like.
+
+### Real, live-verified round trip (2026-08-29)
+
+Ran the actual SSRF detector (not the unit test's fake server) against a throwaway local stand-in "vulnerable" server (a few lines of `net/http` doing `http.Get(r.URL.Query().Get("url"))`, not committed) on the same host as the interactsh-server above:
+```bash
+./hackerfive scan -t 'http://127.0.0.1:9091/probe' --detector ssrf --ssrf-param url --oob-server http://localhost:8082
+```
+Real result: `ssrf-oob-callback-url` (**critical**, confidence **high**) — a genuine correlation ID + nonce our client generated, a real HTTP request the real `interactsh-server` binary captured (`Host: 042511096a29e1a7095768488585e7706.localhost:8082`), and a real RSA-OAEP(SHA-256)+AES-256-CTR decrypt of the server's actual encrypted response — not the mock server `tests/unit/detector_ssrf_test.go` uses. This proves the client/server protocol and crypto are correct against the genuine upstream implementation, closing that part of [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md)'s Step 2 Definition of Done.
+
+**Real, still-open gap this surfaced**: the stand-in target above ran directly on the host, sharing the same network namespace/loopback as the interactsh-server's published port. A real Dockerized lab target (vAPI, crAPI) does not — confirmed live: `*.localhost` resolves inside vAPI's own container too (`docker exec vapi-check-www-1 getent hosts test123.localhost` → `::1`), but that `::1` is the *container's own* loopback, not the host's, so a payload host built from `--oob-server http://localhost:8082` would try to reach port 8082 inside vAPI's own network namespace — nothing listens there. Docker's per-container network isolation, not a detector bug. Two real fixes, neither attempted yet: (1) the production-realistic one — a real domain you control with DNS delegated to this server, same as any genuine self-hosted-OOB use against an authorized real target would need anyway; (2) a local-only workaround — run `interactsh-server`'s own DNS service and point the target container's resolver at it for the correlation domain specifically. Tracked as open in doc13's Definition of Done, not silently assumed solved by the round trip above.
+
+### Teardown
+
+```bash
+docker rm -f oob-server
+```
+
+---
+
 ## Other targets (no detector targets these yet)
 
 No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above), so there's no real live-verified result to document, unlike the sections above. Pull the image ahead of time if you want it ready for when Phase 2's XSS/SQLi work lands (see [03-development-roadmap.md](03-development-roadmap.md) Week 13-16) and this graduates to its own section:
@@ -435,7 +469,7 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 ## See also
 - [04-environment-and-testing.md](04-environment-and-testing.md) — Docker/WSL2/Mac dev environment these targets run under
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — read-only/authorized-target-only constraints these local targets satisfy
-- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the prompt-injection detector work this AIGoat setup validates
+- [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the prompt-injection detector work this AIGoat setup validates, and the SSRF detector work this vAPI/Interactsh-Server setup validates
 - [21-scanning-real-targets.md](21-scanning-real-targets.md) — the equivalent workflow once you're past these lab targets and scanning a real, authorized one
 - [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) — IDOR detector this crAPI setup validates
 - [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — misconfiguration detector this DVWA/Juice Shop setup validates, and the Nuclei-compatible template engine this Juice Shop setup also validates
