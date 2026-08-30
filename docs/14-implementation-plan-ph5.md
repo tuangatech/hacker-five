@@ -6,11 +6,12 @@
 
 ## Objective
 
-Doc90's proposed agent flow (plan → approve → scan → triage) has no step that produces the facts a coordinator would actually reason from, and no data model for the plan itself to live in — doc91 §1 makes the case directly: an LLM reasoning about a target it hasn't looked at yet reasons from priors, not facts. This phase builds the three foundations everything else in Phases 6-7 depends on:
+Doc90's proposed agent flow (plan → approve → scan → triage) has no step that produces the facts a coordinator would actually reason from, and no data model for the plan itself to live in — doc91 §1 makes the case directly: an LLM reasoning about a target it hasn't looked at yet reasons from priors, not facts. This phase builds the four foundations everything else in Phases 6-7 depends on:
 
 1. **A recon phase** (`pkg/recon/`) that narrows the template search space, grounds the coordinator's first plan in observed facts instead of hallucination, and produces the signal doc90's B4 scope-creep gate has been missing a producer for.
 2. **A frozen `Finding` schema** an external MCP client can depend on without the wire shape changing later.
 3. **A `Job.PlanTree` data model** doc90's Group H names but never gave a concrete shape or a data source to seed from.
+4. **A deterministic decision engine + capability registry** (`pkg/fingerprint`, `pkg/registry` — doc90 Decision 6/Group I, added 2026-08-30) that actually populates #3's `PlanTree` from #1's `ReconResult`, with zero LLM or agent involvement — the concrete answer to "how does a fingerprinted technology turn into a chosen detector/template" that doc91's original draft left implicitly assigned to "the coordinator" (i.e., an LLM). This is also what makes #3 real infrastructure rather than a data type nothing populates until Phase 6.
 
 **Real architectural finding from cross-checking doc90 against the actual codebase, not transcribed blind:** doc90's Decision 4 and its Group H items (H2/H3) assumed `Finding.Confidence` doesn't exist yet and proposed adding it as "the field the agent does get to set." **It already exists** (`pkg/detectors/types.go`): `Finding.Confidence string` — `"high"` for cross-account baseline evidence, `"low"` for a single-account heuristic needing manual triage — and it's already detector-set, not agent-writable, exactly like `Severity`. Doc90's underlying goal (agent-writable confidence, distinct from deterministic severity) is still correct, but the field must not be `Finding.Confidence` — that name is taken and already carries a different, narrower meaning (evidence quality of the match, not the agent's success-probability estimate for a candidate it hasn't run yet). This plan's Step 2 puts the agent-set, Cyber-AutoAgent-banded confidence on the task-tree leaf (`PlanTree` node, not `Finding`) instead. This is, if anything, a stronger version of Decision 4 than doc90 drafted: *two* `Finding` fields (`Severity` and `Confidence`) are already deterministic and agent-proof, not one.
 
@@ -20,7 +21,7 @@ Doc90's proposed agent flow (plan → approve → scan → triage) has no step t
 
 1. ⬜ **Foundations: ratify design decisions + eval harness stub** (Week 33)
 2. ⬜ **Finding schema freeze + task-tree data model** (Weeks 34-35)
-3. ⬜ **Recon package** (Weeks 36-37)
+3. ⬜ **Recon package + decision engine** (Weeks 36-37)
 4. ⬜ **Recon + Plan-preview Web UI** (Week 38)
 5. ⬜ **Integration testing + release** (Weeks 39-40) — `v0.5.0`
 
@@ -30,9 +31,10 @@ Doc90's proposed agent flow (plan → approve → scan → triage) has no step t
 - **A peer-agent mesh of any kind** — Decision 1 (doc90) is a permanent architectural boundary, not a v1 limitation to relax later.
 - **Anything shell/exec-shaped, in the MCP tool surface or the recon tool** — Decision 2, same permanence; doc91 §5's design-tension callout explains why recon specifically doesn't get a carve-out despite the field's near-universal practice of giving recon a shell. (This governs what's exposed *to an agent*, not `pkg/recon`'s own internal use of fixed, named-binary subprocess calls per the Dependencies section above — the same distinction `pkg/templatesync`'s scoped `git` call already established.)
 - **The MCP server itself, the `plan`/`elicitation` approval flow, and anything that requires an agent to actually be calling HackerFive** — that's Phase 6 ([15-implementation-plan-ph6.md](15-implementation-plan-ph6.md)); this phase produces the data (`ReconResult`, `PlanTree`) Phase 6 consumes, it doesn't consume it itself.
-- **An actionable (approve/reject) version of the Plan-preview UI page** — this phase's Step 4 ships a *read-only* view of a `PlanTree`, since there's no live coordinator populating one yet, only test fixtures. Making it actionable is Phase 6 Step 4, once there's a real elicitation flow to resolve.
+- **An actionable (approve/reject) version of the Plan-preview UI page** — this phase's Step 4 ships a *read-only* view of a `PlanTree`. **Updated 2026-08-30:** that tree is now real (Step 3's R8 decision engine populates it from a real `ReconResult`, no agent needed), but there's still no `elicitation` flow to approve/reject against — making the page actionable is still Phase 6 Step 4's job, just against real data sooner than originally planned.
 - **A live Web UI Agent tab with SSE-streamed reasoning** — Phase 7 Step 3; nothing to stream yet.
 - **ffuf (parameter/endpoint fuzzing) and gau/waybackurls (passive historical-URL discovery)** — the 2026-08-29 tool-stack survey flagged both as reasonable Go-native additions, but ffuf's request volume needs to be reconciled with the existing rate limiter before it's safe to schedule, and neither is load-bearing for Steps 1-5 above. Backlogged for a later Step within this phase if time allows, or Phase 7, rather than silently dropped.
+- **Any LLM invocation of any kind, at any tier.** Decision 5/6 (doc90) is explicit that the deterministic decision engine (this phase) and the tiered LLM fallback (Phase 6) are separate, sequenced concerns. A `TechFact`/leaf the registry can't match stays a visibly unresolved `PlanTree` leaf — logged, inspectable, never silently escalated to a local or frontier model from this phase's code. That's Phase 6 Step 2's job (doc15).
 
 ## Dependencies used in this plan
 
@@ -46,7 +48,7 @@ Doc90's proposed agent flow (plan → approve → scan → triage) has no step t
 
 No code changes to `pkg/scanner`/`pkg/detectors` this week — this step is deliberately sequenced first per doc90's own sequencing note ("G1 first, even before A1/B1: without it, every claim this effort makes about agent quality is unfalsifiable from day one").
 
-- **Ratify Decisions 1-4** as committed project design, recorded in this doc (not re-litigated per step): single coordinator (no peer-agent mesh), no shell/exec-shaped MCP tool (including for recon, per doc91's finding above), MCP `elicitation`/`tasks` for approval, and the corrected Decision 4 (task-tree-leaf `Confidence`, not `Finding.Confidence` — see Objective above).
+- **Ratify Decisions 1-6** as committed project design, recorded in this doc (not re-litigated per step): single coordinator (no peer-agent mesh), no shell/exec-shaped MCP tool (including for recon, per doc91's finding above), MCP `elicitation`/`tasks` for approval, the corrected Decision 4 (task-tree-leaf `Confidence`, not `Finding.Confidence` — see Objective above), and Decisions 5-6 (stateless/tiered LLM invocation, deterministic-first dispatch — see Step 3's R7-R9).
 - **G1 — eval harness stub.** A minimal, scriptable harness that runs the *existing* CLI (no agent yet — there's nothing to evaluate an agent against until Phase 6 exists) against the lab targets already used throughout this project (crAPI, DVWA, vAPI, Juice Shop, per [20-setup-testing-targets.md](20-setup-testing-targets.md)) and records a fixed challenge set with a binary pass/fail per challenge — modeled on the MAPTA/Cyber-AutoAgent published discipline doc90 cites, not a bespoke rubric invented here. This stub's job in this phase is narrow: prove the harness itself works and produces a baseline (today's detector-only fp/fn rate) before an agent is introduced later. Phase 7 Step 7 (G1 maturity) extends this into the actual agent-driven benchmark.
 
 ### Files (anticipated, confirm at implementation time)
@@ -77,7 +79,7 @@ Unit tests: schema round-trips real `Finding` values from each existing detector
 
 ---
 
-## Step 3: Recon Package (Weeks 36-37) — ⬜ not yet implemented
+## Step 3: Recon Package + Decision Engine (Weeks 36-37) — ⬜ not yet implemented
 
 ### Design
 
@@ -91,17 +93,29 @@ Full design already captured in [91-research-recon-phase.md](91-research-recon-p
 
 **R3 — `hackerfive recon` CLI subcommand**, usable standalone (no agent required) — `--recon-depth passive|active|full`, `-o recon.json`. Useful on its own for a human operator, not just as future agent infrastructure; this is the one artifact of this step a user can exercise directly without anything from Phase 6 existing.
 
-**R4-R6** (the `recon` MCP tool, wiring `ReconResult` into `PlanTree` seeding, and wiring `OutOfScope` into the scope-creep gate) are explicitly **not** this step's job — each needs the MCP server or the `plan` tool to exist first, and are scheduled in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Steps 1-3.
+**R7 — `pkg/fingerprint`: tech-signature detection (doc90 Decision 6/I2).** Added 2026-08-30 per the user's hybrid-architecture direction — deterministic tools first, LLM reasoning reserved for what the deterministic layer can't cover. Header/body/favicon/port signature matching, modeled directly on HexStrike AI's `TechnologyDetector` (its source was read directly for this design, not just its docs): a static table maps observable signals (response headers, body substrings, favicon hash, `port_services` for well-known ports) to a product name. Consumes Wave 2's `httpx` output (Dependencies section above) and enriches `ReconResult.TechStack`'s `TechFact` entries — this doesn't replace httpx's own `-tech-detect`, it's the deterministic *decision* layer built on top of what httpx observes, same relationship HexStrike's own detector has to its recon tools.
+
+**R8 — Capability registry + deterministic decision engine (doc90 Decision 6/I1/I3).** A static, versioned registry (`pkg/registry/`) cataloguing every dispatchable capability — built-in detectors (`idor`/`misconfig`/`authbypass`/`ssrf`/`businesslogic`/`promptinjection`), recon tools (the six named in Dependencies, plus `pkg/oob`), and template categories (tags pulled from the synced `nuclei-templates` corpus plus HackerFive-native ones) — each entry carrying `name`, `description`, `when_to_use`/`when_not_to_use`, `cost/risk`, `inputs_required` (doc01's [Capabilities at a Glance](01-overview-and-strategy.md#capabilities-at-a-glance) is this registry's seed data, written by hand until this exists). The decision engine itself is a plain lookup: for each `TechFact` R7 produced, find the registry entry it maps to and emit the matched detectors/tags as real `Job.PlanTree` leaves (Step 2's data model) — no LLM call anywhere in this path. **This is what actually populates a live `PlanTree` from a plain, non-agent `hackerfive scan`/`recon` run** — a genuine upgrade on this doc's own original framing of Phase 5 as producing only a read-only, test-fixture-only tree (see Step 4's Design, updated below). A `TechFact` with no registry match is left as an explicit, logged "unresolved" leaf, not silently dropped and not sent to an LLM — Decision 6 requires the miss to be visible and inspectable before Phase 6's tiered fallback (I4) ever gets to act on it.
+
+**R9 — Template index (`templates/index.json`), pulled forward from what was originally scheduled as Phase 7's Week 55 (doc16).** R8's registry needs template metadata (tags, associated tech, severity) to match against; generating that index only once, in Phase 7, would leave Phase 5/6's decision engine and Phase 6's `templates.search` MCP tool with nothing to query. Generated from the synced `nuclei-templates` corpus (`pkg/templatesync`) plus `templates/` — doc16's Week 55 is updated to reflect this move (its remaining scope there is `templates/proposed/` staging and triage-assist only).
+
+**Schedule note, named rather than glossed over:** R7-R9 are new scope added to this step after this doc was first written — the original Weeks 36-37 estimate was sized for R1-R3/R1b alone. Revisit the estimate at implementation time; this project's own discipline (doc11's XSS/SQLi shortfall) is to report a real slip with a stated reason rather than pad the number to fit.
+
+**R4-R6** (the `recon` MCP tool and wiring `OutOfScope` into the scope-creep gate) are explicitly **not** this step's job — each needs the MCP server or the `plan` tool to exist first, and are scheduled in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Steps 1-3. **R5 (wiring `ReconResult` into `PlanTree` seeding) is now substantially satisfied by R8** — the decision engine already produces a real, `ReconResult`-seeded `PlanTree` with no agent involved; Phase 6's remaining job for R5 shrinks to exposing that same tree via the `plan` MCP tool and gating it behind `elicitation`, not re-deriving the seeding logic.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/recon/{detector,passive,active,crawl,aggregate}.go`
 - `pkg/oob/interactsh.go` — the first-party Interactsh-protocol client, extracted/promoted from Phase 4's `pkg/detectors/ssrf/oob_client.go` (or built fresh, same approach, if Phase 4 Step 2 hasn't shipped yet) — correlation-ID generation, callback polling, callback-received channel, per-client-keypair decryption.
+- `pkg/fingerprint/{detector,signatures}.go` — R7: header/body/favicon/port signature tables and matching logic.
+- `pkg/registry/{registry,decisionengine}.go` — R8: the capability catalog and the `TechFact`→`PlanTree`-leaf lookup.
+- `templates/index.json` (generated, not hand-authored) + the generator command/script — R9.
 - `cmd/hackerfive/recon.go`
 - `docs/schema/recon-result.schema.json`
 - `tests/unit/recon_*_test.go` — including a test confirming Wave 2+ steps never fire when `--recon-depth passive` is set, a test confirming an out-of-scope host discovered in Wave 1 receives zero active probes in Wave 2/3 (the ordering fix, live-verified per doc91's own Definition of Done), a test confirming each wave degrades to a logged warning (not a hard failure) when its binary is absent, and `tests/unit/recon_oob_test.go` confirming a self-issued callback is received within the test's timeout.
+- `tests/unit/fingerprint_test.go`, `tests/unit/registry_test.go` — including a test confirming a `TechFact` with no registry entry produces an explicit unresolved leaf, not a silent drop and not any call to an LLM.
 
 ### Verification
-`hackerfive recon` runs standalone against a lab target and produces a `ReconResult` matching the frozen schema, with Wave 0-4 facts each carrying a source and confidence label. `--recon-depth passive` confirmed, live, to never send a single active probe to the target. The OOB infrastructure confirmed working standalone: a self-issued test request to its generated correlation URL is observed via the callback channel.
+`hackerfive recon` runs standalone against a lab target and produces a `ReconResult` matching the frozen schema, with Wave 0-4 facts each carrying a source and confidence label. `--recon-depth passive` confirmed, live, to never send a single active probe to the target. The OOB infrastructure confirmed working standalone: a self-issued test request to its generated correlation URL is observed via the callback channel. The decision engine confirmed, live, to resolve a real lab target's fingerprint (e.g. a known crAPI/DVWA component) to matched `PlanTree` leaves with zero LLM calls, and to leave an unrecognized `TechFact` as a visibly unresolved leaf rather than dropping it.
 
 ---
 
@@ -112,7 +126,7 @@ Full design already captured in [91-research-recon-phase.md](91-research-recon-p
 Two new, purely additive pages in `pkg/webui`, both read-only — the point of this step is giving a human something to look at that validates Steps 2-3's data models, before Phase 6 makes either page actionable:
 
 - **Recon results page** (`/recon`, or a tab on an existing page) — runs/browses a `ReconResult` (via `pkg/recon` directly, same boundary doc12 already drew for `pkg/scanner`): hosts, endpoints, tech stack, and the `OutOfScope` list, each fact rendered with its source/confidence label. Useful standalone, independent of any agent — a human operator gets a recon-results browser for free out of this phase.
-- **Plan-preview page** (`/plan-preview` or similar) — renders a `PlanTree` (from a test fixture or a manually-constructed tree for now, since nothing populates one from a live coordinator yet) as a tree/list view: each leaf's target, detector/template, rationale, and `Confidence` band. No approve/reject controls yet — those need a real `elicitation` flow to resolve against, which is Phase 6 Step 4's job.
+- **Plan-preview page** (`/plan-preview` or similar) — renders a `PlanTree` as a tree/list view: each leaf's target, detector/template, rationale, and `Confidence` band. **Updated 2026-08-30:** Step 3's R8 decision engine now produces a real, `ReconResult`-seeded `PlanTree` with zero agent involvement, so this page renders that real tree (from a real or lab `hackerfive recon` run) rather than only a hand-built test fixture — test fixtures remain useful for edge cases (deeply nested leaves, every `Confidence` band represented) but are no longer the only source. No approve/reject controls yet — those need a real `elicitation` flow to resolve against, which is Phase 6 Step 4's job; an unresolved leaf (R8, no registry match) renders with a distinct "needs a decision" badge rather than looking like a normal pending leaf.
 
 Both use the existing Go stdlib `net/http` + `html/template` + htmx stack (doc02 §7) — no new dependency, no client-side framework. A `PlanTree` is a nested list with a status/confidence badge per row; htmx's existing `hx-get`/fragment-swap pattern (already used for the Templates page's tag filter, doc12) covers everything this step needs.
 
@@ -131,14 +145,14 @@ Live-verified against a real browser: a `hackerfive recon` run's output renders 
 
 ### Design
 
-Full integration testing across Steps 1-4 together — recon CLI against a real lab target, schema round-trips, `PlanTree` mutation guards, both new Web UI pages — then release. No MCP client, no agent session; that round trip is Phase 6 Step 5's job.
+Full integration testing across Steps 1-4 together — recon CLI against a real lab target, schema round-trips, `PlanTree` mutation guards, the decision engine resolving a real fingerprint end-to-end, both new Web UI pages — then release. No MCP client, no agent session, no LLM call anywhere in this phase; that round trip is Phase 6 Step 5's job.
 
 ### Verification
-`hackerfive recon` against crAPI/DVWA produces a real, schema-valid `ReconResult` with correctly-labeled facts. The Web UI's Recon and Plan-preview pages both render real data end-to-end. `go build`/`go vet`/`go test -race`/`golangci-lint` all clean.
+`hackerfive recon` against crAPI/DVWA produces a real, schema-valid `ReconResult` with correctly-labeled facts, and the decision engine turns it into real `PlanTree` leaves with zero LLM involvement. The Web UI's Recon and Plan-preview pages both render real data end-to-end. `go build`/`go vet`/`go test -race`/`golangci-lint` all clean.
 
 ## Definition of Done (Phase 5, Weeks 33-40)
 
-- [ ] Design Decisions 1-4 (with the Objective's correction to Decision 4, and doc91's shell-tool finding) are recorded as committed design, not open questions
+- [ ] Design Decisions 1-6 (with the Objective's correction to Decision 4, doc91's shell-tool finding, and Decisions 5-6's LLM-invocation-model/deterministic-dispatch split) are recorded as committed design, not open questions
 - [ ] `tests/eval/` runs a fixed, MAPTA/Cyber-AutoAgent-style challenge set against the lab targets with zero agent involvement, producing a baseline pass/fail report
 - [ ] `docs/schema/finding.schema.json` is published and frozen; it documents `Severity`/`Confidence` as detector-set, never agent-writable
 - [ ] `Job.PlanTree` exists in `pkg/agenttask`, mutates only at leaves, and a shape-changing mutation is rejected and tested
@@ -149,13 +163,17 @@ Full integration testing across Steps 1-4 together — recon CLI against a real 
 - [ ] Recon requests are confirmed to respect the existing rate-limit/concurrency defaults and host-error-cache circuit breaker
 - [ ] Each wave's ProjectDiscovery binary prerequisite (subfinder/tlsx/dnsx/naabu/httpx/katana) is documented in doc04; a missing binary degrades that wave to a logged warning, not a hard failure
 - [ ] OOB callback infrastructure (interactsh) generates a correlation URL and confirms a self-issued test callback is received — standalone, not yet wired into any detector
-- [ ] The Web UI's Recon and Plan-preview pages both render real data end-to-end, read-only
+- [ ] `pkg/fingerprint` (R7) enriches `ReconResult.TechStack` with at least one real, live-verified tech-signature match against a lab target
+- [ ] The capability registry + decision engine (R8) resolves that match to real `PlanTree` leaves with zero LLM calls, live-verified; a `TechFact` with no registry entry produces a visibly unresolved leaf, not a silent drop
+- [ ] `templates/index.json` (R9) is generated from the synced corpus and consumed by the decision engine's template-tag matching
+- [ ] The Web UI's Recon and Plan-preview pages both render real data end-to-end — Plan-preview showing a real, decision-engine-populated tree, not only a hand-built fixture
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.5.0` tagged and released, or explicitly held with a stated reason
 
 ## See also
 - [91-research-recon-phase.md](91-research-recon-phase.md) — the full recon research and Group R backlog this phase schedules the MCP-independent half of
-- [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog (Groups A-H) this plan and doc15/doc16 together schedule
+- [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog (Groups A-I, plus R for recon) this plan and doc15/doc16 together schedule; Decisions 5-6 and Group I1-I3 (registry, fingerprinting, deterministic dispatch) are this phase's direct scope
+- [01-overview-and-strategy.md](01-overview-and-strategy.md) — Capabilities at a Glance, the hand-written seed data R8's registry formalizes
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — the MCP server/approval-gate phase that consumes this phase's `ReconResult` and `PlanTree`
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — `Finding`/`Exporter`/`Engine` design and the Web UI stack this plan builds on
 - [03-development-roadmap.md](03-development-roadmap.md) — full Phase 1-7 roadmap this plan is a slice of

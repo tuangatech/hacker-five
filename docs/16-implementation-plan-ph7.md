@@ -115,15 +115,15 @@ Unit test: two concurrent `scan` tool calls in the same session against the same
 
 ### Design
 
-**D4.** OWASP published a peer-reviewed Top 10 for agentic applications in December 2025 (ASI01-ASI10). Doc90 §3 Group D already sketches HackerFive-specific mitigations for each risk against the *design*; this step re-walks that same table against the *actual shipped Phase 5-7 code* and records the result — mitigated (cite the file/mechanism), or explicitly accepted as residual risk with a stated reason — matching this project's own "revise down with reasoning, don't pad" discipline. Concretely, confirm or correct each row doc90 already drafted:
+**D4.** OWASP published a peer-reviewed Top 10 for agentic applications in December 2025 (ASI01-ASI10). Doc90 §3 Group D already sketches HackerFive-specific mitigations for each risk against the *design*; this step re-walks that same table against the *actual shipped Phase 5-7 code* and records the result — mitigated (cite the file/mechanism), or explicitly accepted as residual risk with a stated reason — matching this project's own "revise down with reasoning, don't pad" discipline. **This pass must also cover the decision engine and tiered LLM fallback added 2026-08-30 (doc90 Decision 5/6, Group I)** — new surface that didn't exist when Group D was first drafted, called out specifically in ASI04/ASI05 below. Concretely, confirm or correct each row doc90 already drafted:
 
 | ASI risk | Doc90's proposed mitigation | Confirm against real code |
 |---|---|---|
 | ASI01 Agent Goal Hijack | Untrusted target data, never instructions; D3 hard-fail on missing scope | `pkg/mcpserver/tools_scan.go`'s D3 check (Phase 6 Step 3) |
 | ASI02 Tool Misuse & Exploitation | Decision 2 (no shell/exec tool) + schema-validated tools | `pkg/mcpserver` tool registrations (Phase 6 Step 1) |
 | ASI03 Identity & Privilege Abuse | Short-lived, per-call credentials, never baked into agent context | Confirm `--auth-token`-equivalent handling in `tools_scan.go` doesn't persist beyond one call |
-| ASI04 Agentic Supply Chain Vulnerabilities | Pinned-commit template sync + E2's staging directory | `pkg/templatesync` (existing) + Step 6's `templates/proposed/` (this phase) |
-| ASI05 Unexpected Code Execution | No code-execution tool exists | Confirm against the final Phase 6 tool list |
+| ASI04 Agentic Supply Chain Vulnerabilities | Pinned-commit template sync + E2's staging directory; **new since I4**: an LLM-drafted template (Decision 5's frontier-tier fallback) is itself an untrusted-supply-chain input, not just a hazard from an external source | `pkg/templatesync` (existing) + Step 6's `templates/proposed/` (this phase) + confirm `pkg/llmfallback`'s drafted output is never loaded outside that same staging path (Phase 6 Step 2) |
+| ASI05 Unexpected Code Execution | No code-execution tool exists; **new since I4**: an LLM-drafted template must go through the same load-time block-rejection (`code:`/`javascript:`/`headless:`/`file:`) as any other untrusted template, no carve-out for being "agent-authored" | Confirm against the final Phase 6 tool list, and confirm `pkg/llmfallback`'s output path re-uses the existing template loader's rejection logic rather than a separate, possibly-laxer path |
 | ASI06 Memory & Context Poisoning | `PlanTree` is durable, refreshed state, not open-ended memory | `pkg/agenttask` (Phase 5 Step 2) |
 | ASI07 Insecure Inter-Agent Communication | Moot — single coordinator, no peer-agent channel | Confirm no peer-agent code was introduced anywhere in Phases 5-7 |
 | ASI08 Cascading Agent Failures | Host-error-cache circuit breaker + spend/attempt ceiling | Existing `pkg/scanner/hosterrors` + Phase 6 Step 2's `H5`/Step 3's `H4` |
@@ -142,7 +142,7 @@ Every row in the table above is checked against real code (a file path and line,
 
 ### Design
 
-**E1 — generated `templates/index.json`.** A machine-readable index of every loaded template's `info:` metadata (name/severity/tags/description) plus source (bundled/synced), generated at `templates sync`/`templates list` time — gives an agent (or A4's `--json` output) one flat file to reason over instead of parsing individual YAML files.
+**E1 — generated `templates/index.json` — moved to Phase 5 (doc14 R9), not this step's job anymore.** Originally scheduled here, but doc14's decision engine (Group I, added 2026-08-30) needs this index to match template tags against a fingerprinted target *in Phase 5*, well before this phase exists — generating it here would leave Phase 5/6's decision engine and `templates.search` MCP tool with nothing to query. Noted here so a reader of this doc's history understands the move, not just finds it silently missing; nothing left for this step to do on E1 beyond confirming it's still current by this point.
 
 **E2 — agent-proposed templates land in `templates/proposed/`**, never directly in a trusted path (`./templates/` or the synced directory). A future "agent drafts a new detection template based on what it observed" capability — not built in this phase, but the staging convention is: any such template is written only to `templates/proposed/`, requires explicit human promotion (a file move, or a `hackerfive templates promote <name>` command if that turns out to be worth building) before it's ever loaded into a real scan.
 
@@ -151,7 +151,6 @@ Every row in the table above is checked against real code (a file path and line,
 **F2 — structured feedback capture.** When a human overrides or dismisses an agent-surfaced finding/triage note during review, capture that decision in a structured, queryable form (not just "the user closed the tab") — useful raw material for Step 7's eval-maturity work and any future tuning of the coordinator's own prioritization logic.
 
 ### Files (anticipated, confirm at implementation time)
-- `pkg/templatesync/index.go` — E1's `templates/index.json` generation.
 - `templates/proposed/` — new, empty (gitkept) directory; `pkg/template` loader confirmed to never auto-load from it.
 - `pkg/reporter/triageassist.go` — F1's annotation layer.
 - `pkg/webui/handlers_scan.go` (or a new `feedback.go`) — F2's capture endpoint.
@@ -196,8 +195,8 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 
 ## See also
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — the MCP server, approval gate, and task-tree backbone this phase hardens
-- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon/`PlanTree`/`Finding`-schema foundations Phase 6 builds on and this phase's ASI06 row cites directly
-- [90-research-hackerbot.md](90-research-hackerbot.md) — the full research and backlog this plan and doc14/doc15 together schedule
+- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon/`PlanTree`/`Finding`-schema foundations and decision-engine registry (R9, `templates/index.json`) Phase 6 builds on and this phase's ASI04/ASI06 rows cite directly
+- [90-research-hackerbot.md](90-research-hackerbot.md) — the full research and backlog (Groups A-I, plus R for recon) this plan and doc14/doc15 together schedule
 - [03-development-roadmap.md](03-development-roadmap.md) — full Phase 1-7 roadmap this plan is a slice of
 - [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — the Web UI SSE/audit-trail precedent Step 3/C2 extend
 - [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) — the `--allow-writes` flag and HackerOne `Exporter` this phase's Step 2 attests to and exports through

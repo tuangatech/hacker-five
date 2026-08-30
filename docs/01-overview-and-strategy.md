@@ -62,6 +62,8 @@ The decisions below are what actually make this an "Overview & Strategy" doc rat
 
 HackerFive's own answer to the AI-agent trend cited under [Why Now?](#why-now) is **"hacker-in-the-loop," not "fully autonomous."** [90-research-hackerbot.md](90-research-hackerbot.md) researched how the field's serious agent-driven pentesting tools structure themselves and resolved this project's own approach — a single coordinator, MCP-based tool access with no shell/exec surface, human approval via MCP `elicitation` before anything consequential happens — now scheduled as [Phase 5](14-implementation-plan-ph5.md) (recon & orchestration foundations), [Phase 6](15-implementation-plan-ph6.md) (the MCP server itself), and [Phase 7](16-implementation-plan-ph7.md) (hardening). The bet: keep the deterministic, auditable detection core (the same "PoC required" property every credible 2026 agentic pentesting tool converged on independently) something an agent reasons *over*, rather than replacing it with an agent's own free-form judgment the way a fully autonomous tool does.
 
+**Concretely, this makes HackerFive a hybrid, not an LLM-first design.** Most of what a scan does — matching a fingerprinted technology to the right detector/tool/template — is a deterministic decision-engine registry ([90-research-hackerbot.md](90-research-hackerbot.md) Decision 6), the same dispatch pattern HexStrike AI's own internal code already uses (confirmed by reading its source, not just its docs), just built first-party in Go rather than pulled in as a dependency. An LLM — tiered: a small local model for cheap, frequent judgment calls, a frontier model via OpenRouter for the rare case nothing else covers, principally authoring a genuinely new template — is invoked only when that deterministic layer comes up empty, and never as a persistent session driving the scan (doc90 Decision 5). Most of a scan's actual traffic and decisions never touch an LLM at all; see the [Capabilities at a Glance](#capabilities-at-a-glance) section below for what's dispatched deterministically today versus planned.
+
 ## Prioritization Rationale
 
 *(Formerly "Target Vulnerability Classes," with phase/week numbers removed — that duplication had already drifted out of sync with reality once, see the note below.)*
@@ -77,6 +79,41 @@ Why these vulnerability classes, in this order — reward-to-detection-effort ra
 7. **Prompt Injection** — ✅ built ([13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1). 540% YoY growth in reports and the least competition of any class in this list — the strategic bet this project is currently most differentiated on.
 8. **SSRF** — ⬜ planned ([13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 2). Complex to automate and few existing tools do it well; high reward when found.
 9. **Business Logic Flaws** — ⬜ planned ([13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 3). Requires the deepest understanding of application flow and the most human judgment of any class here; highest bounties, deliberately scheduled last.
+
+## Capabilities at a Glance
+
+A single place naming every dispatchable capability by category, added 2026-08-30 so "which detectors/tools/templates exist" isn't scattered across doc02/doc13/doc14. Status reflects what's actually shipped per doc03 — recon tools and the decision-engine registry (doc90 Group I) don't exist yet, listed here as the planned target, not current capability. This list is also I1's own justification: once the registry exists, this becomes generated/machine-searchable (`tools.search`/`templates.search`, doc15) instead of hand-maintained prose — treat this section as the seed data for that, not a permanent hand-written list.
+
+**Detectors** (`pkg/detectors/`, one Go package each except where noted, wired into `scanner.Engine`):
+| Detector | Status | Shape |
+|---|---|---|
+| `idor` | ✅ shipped (Phase 1a) | Two-account baseline comparison |
+| `misconfig` | ✅ shipped (Phase 1b) | Fixed-path + keyword/header match, mostly synced `nuclei-templates` |
+| `authbypass` | ✅ shipped (Phase 2) | JWT tampering, token reuse, rate-limit signal |
+| `promptinjection` | ✅ shipped (Phase 4) | Template-driven (no Go package) — marker match in a chat-shaped response |
+| `ssrf` | ⬜ planned (Phase 4, doc13 Step 2) | Non-blind + scheme-based + OOB-blind (interactsh) |
+| `businesslogic` | ⬜ planned (Phase 4, doc13 Step 3) | `--allow-writes`-gated; coupon reuse, price manipulation, payment race conditions |
+
+**Recon tools** (`pkg/recon/`, shelled out via fixed, named-binary subprocess calls — doc14 Step 3, none shipped yet):
+| Tool | Wave | Role |
+|---|---|---|
+| subfinder | 1 (passive) | Subdomain/DNS enumeration |
+| tlsx | 1 (passive) | TLS/cert inspection |
+| dnsx | 2 (active-low-noise) | DNS resolution |
+| naabu | 2 | Port scan (Go-native substitute for nmap) |
+| httpx | 2 | HTTP probe/fingerprint — feeds `pkg/fingerprint`'s tech-signature detection (doc90 I2) |
+| katana | 3 (application-layer) | Crawl |
+| interactsh (first-party protocol client, not the upstream library — see doc02 §8's dependency-footprint lesson) | cross-cutting | OOB callback correlation, shared by SSRF and later blind XSS/SQLi checks |
+
+**Template categories** (YAML, two engines per doc02 §2 — `nuclei`-compatible and HackerFive-native):
+| Category | Engine | Status |
+|---|---|---|
+| IDOR baseline, prompt injection, business logic | Native | Request-chaining/stateful — no Nuclei equivalent |
+| Misconfiguration, exposed-panels, technologies | Nuclei-compatible, synced from upstream `nuclei-templates` | ✅ shipped |
+| SSTI, XXE, path traversal, open redirect, CVE-tagged | Nuclei-compatible, same synced corpus | ⬜ planned — enabling existing upstream tags via the decision engine (doc90 I3), not authoring new templates |
+| Subdomain takeover | Native, recon-derived (dangling CNAME) | ⬜ planned (Phase 5, recon Wave 1 byproduct) |
+
+Full detail: [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) (the architecture each category is built on), [03-development-roadmap.md](03-development-roadmap.md) (phase/week schedule), [90-research-hackerbot.md](90-research-hackerbot.md) Group I (the registry and decision engine these three lists feed).
 
 ## See also
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — how the shipped detectors above are implemented
