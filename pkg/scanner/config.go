@@ -12,6 +12,7 @@ var recognizedDetectors = map[string]bool{
 	"idor":       true,
 	"misconfig":  true,
 	"authbypass": true,
+	"ssrf":       true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -77,6 +78,26 @@ type Config struct {
 	// Step 5). Does not affect --detector idor/misconfig/authbypass's own
 	// flag-driven requests, only template-fired ones. nil/empty is a no-op.
 	ExtraHeaders map[string]string
+
+	// SSRFParams are candidate query parameter names (from repeatable
+	// --ssrf-param) the ssrf detector's non-blind and scheme-based checks
+	// fire against — required for --detector ssrf, same shape as
+	// authbypass's ProtectedPaths requirement. A real target rarely exposes
+	// exactly one URL-accepting parameter name ("webhook", "callback",
+	// "image_url" are all common), so this is genuinely repeatable
+	// (StringArrayVar), not a single comma-separated flag — see
+	// docs/13-implementation-plan-ph4.md Step 2.
+	SSRFParams []string
+
+	// OOBServer is the base URL of a self-hosted, user-run
+	// Interactsh-protocol server (from --oob-server) the ssrf detector's
+	// blind callback check polls for interactions. "" (the default) skips
+	// that check silently — the non-blind/scheme-based checks still run
+	// without it. Deliberately never a public default server, per
+	// docs/13-implementation-plan-ph4.md's design tension 1 (avoiding
+	// target-request-data leakage to a third party outside the engagement's
+	// authorized scope).
+	OOBServer string
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.
@@ -104,6 +125,9 @@ func (c Config) Validate() error {
 	}
 	if c.Detector == "authbypass" && len(c.ProtectedPaths) == 0 {
 		return fmt.Errorf("validating config: authbypass detector requires --protected-paths")
+	}
+	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 {
+		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param")
 	}
 	if c.AuthHeaderFormat != "" && !strings.Contains(c.AuthHeaderFormat, "{token}") {
 		return fmt.Errorf("validating config: --auth-header-format must contain a {token} placeholder, got %q", c.AuthHeaderFormat)

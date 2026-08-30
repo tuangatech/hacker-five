@@ -13,6 +13,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors/authbypass"
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
@@ -369,6 +370,9 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "authbypass":
 		detector := authbypass.New(e.client, e.authbypassOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.ProtectedPaths)
+	case "ssrf":
+		detector := ssrf.New(e.client, e.ssrfOptions()...)
+		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.OOBServer)
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)
 	}
@@ -400,6 +404,13 @@ func (e *Engine) authbypassOptions() []authbypass.Option {
 		opts = append(opts, authbypass.WithLogoutPaths(e.cfg.LogoutPaths))
 	}
 	return opts
+}
+
+// ssrfOptions builds the ssrf.Option set the flag-driven --detector ssrf
+// path applies. WithAuthHeader is unconditional, same no-op-on-empty-string
+// reasoning as idorOptions/authbypassOptions.
+func (e *Engine) ssrfOptions() []ssrf.Option {
+	return []ssrf.Option{ssrf.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
 }
 
 func hostOf(target string) (string, error) {

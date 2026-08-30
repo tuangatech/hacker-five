@@ -31,6 +31,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		loginPaths       string
 		logoutPaths      string
 		headers          []string
+		ssrfParams       []string
+		oobServer        string
 	)
 
 	cmd := &cobra.Command{
@@ -90,6 +92,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				LoginPaths:       parseTags(loginPaths),
 				LogoutPaths:      parseTags(logoutPaths),
 				ExtraHeaders:     extraHeaders,
+				SSRFParams:       ssrfParams,
+				OOBServer:        oobServer,
 			}
 			if err := cfg.Validate(); err != nil {
 				return err
@@ -131,6 +135,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&loginPaths, "login-paths", "", `comma-separated candidate login paths for authbypass's rate-limit-signal check (default: authbypass's built-in generic guesses, e.g. "/login")`)
 	cmd.Flags().StringVar(&logoutPaths, "logout-paths", "", `comma-separated candidate logout paths for authbypass's broken-session check (default: authbypass's built-in generic guesses, e.g. "/logout")`)
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every template-driven request (repeatable) — e.g. a session cookie a login flow issued outside this scan, since template placeholders can't carry one yet`)
+	cmd.Flags().StringArrayVar(&ssrfParams, "ssrf-param", nil, `candidate URL-accepting query parameter name for the ssrf detector to probe (repeatable), e.g. "url", "webhook", "callback" — required for --detector ssrf`)
+	cmd.Flags().StringVar(&oobServer, "oob-server", "", `base URL of a self-hosted Interactsh-protocol server (never a public one) for the ssrf detector's blind out-of-band check — omitted, only the non-blind/scheme-based checks run`)
 
 	return cmd
 }

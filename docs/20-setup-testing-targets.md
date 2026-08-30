@@ -329,6 +329,22 @@ TOKEN=$(curl -s -X POST http://localhost:8000/vapi/jwt/user -H 'Content-Type: ap
 ```
 Real, live-verified result (2026-08-28): **4 real findings** — `authbypass-jwt-alg-none-vapi-jwt-user` and `authbypass-jwt-signature-stripped-vapi-jwt-user` (both **critical**: the server's `JWT::decode($token, $key, array('HS256','none'))` call really does accept `alg: none`, confirmed independently by hand-forging a `role:admin` token and retrieving the module's flag directly — see doc11 Step 5), `authbypass-broken-session-vapi-jwt-user` (**high**: the token still works after hitting the generic `/logout` guess — this module has no server-side logout at all, so any logout attempt trivially "fails" to invalidate it), and `authbypass-no-rate-limit-login` (**info/needs-triage**, same `/login`-guess mismatch as above — not new signal). One transient run produced only the broken-session finding with no error; a same-second re-run and an isolated direct-`Run()` call both reproduced all 4 findings cleanly, so this was a one-off flake (most likely the local container's own warm-up), not a detector bug — logged as a note, not chased further given it hasn't recurred.
 
+### SSRF (`--detector ssrf`) — real vulnerability, via `/vapi/serversurfer`
+
+vAPI's "ServerSurfer" exercise (`GET /vapi/serversurfer?url=<url>`) fetches whatever URL it's given server-side and returns `{"success":..., "data":"<base64 of the fetched response>"}` — real, no login required. Point HackerFive directly at that endpoint (not just `/vapi`):
+```bash
+./hackerfive scan -t http://localhost:8000/vapi/serversurfer --detector ssrf --ssrf-param url
+```
+Real, live-verified result (2026-08-29): **`ssrf-scheme-based-url-file` fires** — `file:///etc/passwd` returns a real `200` with the actual file's base64-encoded content. Other payloads' real behavior, useful context if results look different on a re-run:
+- Plain `127.0.0.1` is blocklisted (`403 "Whoa!!! Not Allowed!!"`) — correctly produces no finding.
+- Decimal (`2130706433`)/octal (`0177.0.0.1`) bypass that blocklist (no 403) but the fetch itself returns `500`, not `200` — real evidence the filter is naive, but not independently provable as a working fetch on this specific deployment.
+- Hex (`0x7f000001`) and both IPv6 forms hang vAPI's own backend indefinitely rather than completing — HackerFive's own `--timeout` correctly bounds this and treats it as no finding, not a hang or crash on our side.
+- `gopher://`/`dict://` are blocklisted the same as plain `127.0.0.1`.
+
+**A real gotcha this surfaced**: firing every encoded-bypass variant in one run can leave vAPI's small worker pool tied up for several minutes afterward (each hang gets retried 3× by HackerFive's own shared retry middleware) — if you see fewer findings than expected, wait a minute and re-run rather than assuming a detector bug; `pkg/detectors/ssrf` no longer shares the other detectors' host-error circuit breaker for exactly this reason (see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 2).
+
+**Blind OOB check** (`--oob-server`) needs a self-hosted Interactsh-protocol server (e.g. `interactsh-server`'s Docker image) — not yet brought up/live-verified as of 2026-08-29; the protocol/crypto correctness is proven by `tests/unit/detector_ssrf_test.go`'s real encrypted round trip against a fake server.
+
 ### Teardown / reset
 
 ```bash
