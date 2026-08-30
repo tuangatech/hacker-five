@@ -29,6 +29,7 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 - Load credentials/tokens from environment variables only; never hardcode them.
 - Keep new detectors and templates consistent with the false-positive targets in [docs/03-development-roadmap.md](docs/03-development-roadmap.md) (<5%) — flag doubtful matchers instead of guessing.
 - Do not rely on your own knowledge about library, framework versions. Please search for new, stable version of library, framework before use.
+- Before committing to a new dependency in a plan doc, check its real transitive footprint (run `go get` in a scratch branch, read the `go.mod` diff / `go list -m all`) — a package's own doc page can look lightweight while its import pulls in unrelated subsystems (see [docs/02-architecture-and-tech-stack.md](docs/02-architecture-and-tech-stack.md) §8's `interactsh-client` lesson: 134 new go.mod lines from server-mode code the client didn't need). If the real footprint is disproportionate, prefer a first-party implementation of just the needed protocol subset over accepting the bloat.
 
 ## Workflow
 
