@@ -27,7 +27,7 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 
 - `./hackerfive scan` always runs the full template corpus additively alongside `--detector` — isolating one detector's timing/behavior needs `--templates <empty-dir>` or a `--tags` filter matching nothing, or the run also fires ~3190 templates at the target (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)'s gotcha note, hit twice on 2026-08-29).
 
-- Never add code that exfiltrates data, writes/destroys target state, or targets a host outside an explicitly authorized scope — this tool only reads/enumerates (see [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md)).
+- Never add code that exfiltrates data, writes/destroys target state, or targets a host outside an explicitly authorized scope — this tool only reads/enumerates (see [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md)). `--allow-writes` is the one explicit, opt-in exception to this rule — scoped specifically to `pkg/detectors/businesslogic`'s mutating checks (coupon mint/apply, concurrent-fire race probes), never implied elsewhere. Absent, those checks are skipped with a stderr warning, not silently run.
 - Load credentials/tokens from environment variables only; never hardcode them.
 - Keep new detectors and templates consistent with the false-positive targets in [docs/03-development-roadmap.md](docs/03-development-roadmap.md) (<5%) — flag doubtful matchers instead of guessing.
 - Do not rely on your own knowledge about library, framework versions. Please search for new, stable version of library, framework before use.

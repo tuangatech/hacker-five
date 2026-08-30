@@ -33,6 +33,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		headers          []string
 		ssrfParams       []string
 		oobServer        string
+		allowWrites      bool
+		couponMintPath   string
+		couponApplyPath  string
+		raceConcurrency  int
 	)
 
 	cmd := &cobra.Command{
@@ -94,6 +98,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				ExtraHeaders:     extraHeaders,
 				SSRFParams:       ssrfParams,
 				OOBServer:        oobServer,
+				AllowWrites:      allowWrites,
+				CouponMintPath:   couponMintPath,
+				CouponApplyPath:  couponApplyPath,
+				RaceConcurrency:  raceConcurrency,
 			}
 			if err := cfg.Validate(); err != nil {
 				return err
@@ -123,7 +131,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&tags, "tags", "", "comma-separated tags — only load templates carrying at least one (default: no filtering)")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "worker pool size")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 50, "requests/sec across the whole scan")
-	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", or "authbypass"`)
+	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", or "businesslogic"`)
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")
 	cmd.Flags().StringVar(&otherAuthToken, "other-auth-token", "", "second account token for IDOR baseline mode / authbypass token-reuse check (env: HACKERFIVE_OTHER_AUTH_TOKEN)")
@@ -137,6 +145,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every template-driven request (repeatable) — e.g. a session cookie a login flow issued outside this scan, since template placeholders can't carry one yet`)
 	cmd.Flags().StringArrayVar(&ssrfParams, "ssrf-param", nil, `candidate URL-accepting query parameter name for the ssrf detector to probe (repeatable), e.g. "url", "webhook", "callback" — required for --detector ssrf`)
 	cmd.Flags().StringVar(&oobServer, "oob-server", "", `base URL of a self-hosted Interactsh-protocol server (never a public one) for the ssrf detector's blind out-of-band check — omitted, only the non-blind/scheme-based checks run`)
+	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks (coupon self-mint/apply, apply-race) to run — the one explicit exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a warning")
+	cmd.Flags().StringVar(&couponMintPath, "coupon-mint-path", "", `endpoint path the businesslogic detector mints a coupon against (default: crAPI's real "/community/api/v2/coupon/new-coupon")`)
+	cmd.Flags().StringVar(&couponApplyPath, "coupon-apply-path", "", `endpoint path the businesslogic detector applies a coupon against (default: crAPI's real "/workshop/api/shop/apply_coupon")`)
+	cmd.Flags().IntVar(&raceConcurrency, "race-concurrency", 0, "simultaneous requests the businesslogic detector's apply-race check fires via last-byte-sync (default: 15)")
 
 	return cmd
 }

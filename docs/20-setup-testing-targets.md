@@ -10,7 +10,7 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 
 | Target | Detector it supports | Why |
 |---|---|---|
-| **crAPI** | `idor` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug |
+| **crAPI** | `idor`, `authbypass`, `businesslogic` | Stateful, two-account check — needs a target with a scriptable signup/login flow and a known cross-account-access bug; also has a real coupon-flow business-logic bug (unearned credit + a TOCTOU race) |
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
 | **Juice Shop** | `misconfig`; Nuclei-compatible templates | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
 | **vAPI** | `idor`, `misconfig`; Nuclei-compatible templates | Has a real BOLA (see its own section below), reachable via `idor.Detector`'s configurable auth-header scheme (`--auth-header-name`/`--auth-header-format`) |
@@ -121,6 +121,24 @@ Real result (2026-08-28): `checkRateLimitSignal` now correctly reaches `/identit
 Real, live-verified result (2026-08-28): **16 findings**, and the `alg:none` bypass turns out to be systemic, not isolated to `identity` — **7 of the 8 new paths** (all but `videos/convert_video`, which correctly rejected the tampered token — a real negative control, not every endpoint is vulnerable) accept the same `alg:none`-rewritten token across all three separate microservices (`identity`, `community`, `workshop`), meaning whatever JWT library each service uses shares the same unpinned-algorithm gap. Independently re-confirmed outside the tool on two of the seven (`/community/api/v2/community/posts/recent`, `/workshop/api/shop/products`) via hand-built `curl` requests: no-header → `401`, valid token → `200`, hand-forged `alg:none` token → `200` on both — not just the detector's own claim. `/workshop/api/shop/return_qr_code` additionally has no auth requirement at all (`checkMissingAuth`, high) and accepts the signature-*stripped* variant too, not just `alg:none`.
 
 The run also flagged 7 `token-reuse` findings (medium, "needs manual triage" — the check's own hedge for a plausibly-shared/non-personalized endpoint). Manually triaged two: `/workshop/api/shop/orders/all` returned `{"orders":[]}` for both accounts — inconclusive, both throwaway accounts simply have no orders, not proof either way. `/workshop/api/management/users/all` is the real one: a plain `hackerfive-owner` account (never granted any admin role) gets a full user-table dump — every account's email, phone number, and credit balance, `admin@example.com` included — from an endpoint whose path implies it should be admin-only. That's a standalone broken-function-level-authorization finding in its own right, not just "two tokens match."
+
+### Business Logic (`--detector businesslogic`) — real coupon flow, unearned credit + a live race condition
+
+crAPI's coupon flow spans two microservices: `POST /community/api/v2/coupon/new-coupon` (Go, no admin/role check — any authenticated user can mint an arbitrary `coupon_code`/`amount`) and `POST /workshop/api/shop/apply_coupon` (Python, never cross-checks the client-supplied `amount` against the coupon's real stored value). Requires `--allow-writes` — this is the one detector in the project that performs mutating requests, see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 3 and `CLAUDE.md`'s Rules section for why that's a bounded, explicit exception, not a rule violation.
+
+```bash
+cd ~/projects/hacker-five
+export CRAPI_BASE_URL=http://localhost:8888
+source tests/integration/scripts/crapi_setup.sh
+
+./hackerfive scan -t http://localhost:8888 --detector businesslogic --allow-writes \
+  --auth-token "$CRAPI_OWNER_TOKEN" --templates /tmp/empty-templates
+```
+(`--templates` disabled per this doc's own gotcha note above — this run needs to be timed/isolated.)
+
+Real, live-verified result (2026-08-30): **`businesslogic-coupon-self-mint-credit` fires every run** (critical, high confidence) — a self-minted coupon with `amount: 999999` is accepted and adds real, unearned credit (`{"credit":2000098.0,"message":"Coupon successfully applied!"}` on one run, real evidence in the finding's own request/response pairs). Pre-confirmed via direct `curl` before any detector code existed, then reproduced identically through the real detector.
+
+**`businesslogic-coupon-apply-race` (high, high confidence) — real, but intermittent against the live target, reported honestly**: `ApplyCouponView`'s own check-then-act (a raw-SQL `SELECT` for "already applied," then an `INSERT`, no visible transaction/locking) is exploited via a first-party last-byte-sync raw-connection client (`pkg/detectors/businesslogic/raceclient.go`) firing 15 simultaneous apply requests for one coupon. 5 live runs: 4 fired (`successful_applies`: 15, 2, 2, and one earlier unrecorded run), 1 did not. Real network timing against a live target varies more than this technique's own loopback-only unit tests (which fire reliably) — a real, sometimes-missed finding, not a flaky test result to explain away.
 
 ### Teardown / reset
 
@@ -460,7 +478,7 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 
 | Target | Credentials/tokens HackerFive needs | Where they come from | One-time setup step |
 |---|---|---|---|
-| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) — same tokens also drive `--detector authbypass` | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
+| crAPI | `HACKERFIVE_AUTH_TOKEN`, `HACKERFIVE_OTHER_AUTH_TOKEN` (or `--auth-token`/`--other-auth-token`) — same tokens also drive `--detector authbypass`/`businesslogic` (the latter also needs `--allow-writes`) | `tests/integration/scripts/crapi_setup.sh` (signs up two real throwaway accounts) | Log in as the owner account in the browser, add a vehicle, submit one "Contact Mechanic" report |
 | DVWA | None for `misconfig`; a manually-obtained `PHPSESSID` session cookie for XSS/SQLi (not yet CLI-supportable, see its section above) | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 | Juice Shop | None | — | None — ready as soon as the container responds |
 | vAPI | `VAPI_OWNER_TOKEN`, `VAPI_OTHER_TOKEN` for `--detector idor`/`authbypass` (each `base64(username:password)`; target must include the `/vapi` prefix) — none for `--detector misconfig` | `POST /vapi/api1/user` with `username`/`name`/`course`/`password` (faster than the web UI), then base64-encode `username:password` yourself | None — `docker-compose.yml`'s DB init runs automatically |

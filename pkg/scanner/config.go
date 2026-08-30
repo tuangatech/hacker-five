@@ -9,10 +9,11 @@ import (
 
 // recognizedDetectors is the set of --detector values accepted.
 var recognizedDetectors = map[string]bool{
-	"idor":       true,
-	"misconfig":  true,
-	"authbypass": true,
-	"ssrf":       true,
+	"idor":          true,
+	"misconfig":     true,
+	"authbypass":    true,
+	"ssrf":          true,
+	"businesslogic": true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -98,6 +99,30 @@ type Config struct {
 	// target-request-data leakage to a third party outside the engagement's
 	// authorized scope).
 	OOBServer string
+
+	// AllowWrites (from --allow-writes) gates every mutating check the
+	// businesslogic detector's Run performs — coupon self-mint/apply, the
+	// concurrent-fire apply race. Absent (the default, false), those checks
+	// are skipped with a stderr warning printed once per scan
+	// (pkg/scanner/engine.go), not a Validate()-time error — unset is a
+	// normal, expected mode (a read-only run against --detector
+	// businesslogic simply finds nothing), same treatment as ScopeFile's
+	// absence. This is CLAUDE.md's one explicit, opt-in exception to the
+	// read/enumerate-only rule, scoped specifically to this flag/detector.
+	AllowWrites bool
+
+	// CouponMintPath/CouponApplyPath (from --coupon-mint-path/
+	// --coupon-apply-path) override businesslogic.DefaultCouponMintPath/
+	// DefaultCouponApplyPath for a target other than crAPI. "" preserves
+	// that half's package default.
+	CouponMintPath  string
+	CouponApplyPath string
+
+	// RaceConcurrency (from --race-concurrency) overrides
+	// businesslogic.DefaultRaceConcurrency — how many simultaneous requests
+	// the apply-race check's last-byte-sync client fires. 0 preserves the
+	// package default.
+	RaceConcurrency int
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.
@@ -128,6 +153,9 @@ func (c Config) Validate() error {
 	}
 	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 {
 		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param")
+	}
+	if c.Detector == "businesslogic" && c.AuthToken == "" {
+		return fmt.Errorf("validating config: businesslogic detector requires --auth-token (or its env var equivalent)")
 	}
 	if c.AuthHeaderFormat != "" && !strings.Contains(c.AuthHeaderFormat, "{token}") {
 		return fmt.Errorf("validating config: --auth-header-format must contain a {token} placeholder, got %q", c.AuthHeaderFormat)
