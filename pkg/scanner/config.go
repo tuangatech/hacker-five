@@ -90,15 +90,18 @@ type Config struct {
 	// docs/13-implementation-plan-ph4.md Step 2.
 	SSRFParams []string
 
-	// OOBServer is the base URL of a self-hosted, user-run
-	// Interactsh-protocol server (from --oob-server) the ssrf detector's
-	// blind callback check polls for interactions. "" (the default) skips
-	// that check silently — the non-blind/scheme-based checks still run
-	// without it. Deliberately never a public default server, per
-	// docs/13-implementation-plan-ph4.md's design tension 1 (avoiding
-	// target-request-data leakage to a third party outside the engagement's
-	// authorized scope).
-	OOBServer string
+	// OOBServers are the base URL(s) of Interactsh-protocol server(s) (from
+	// repeatable --oob-server) the ssrf detector's blind callback check
+	// polls for interactions, tried in order with automatic fallback. Empty
+	// (the default) skips that check silently — the non-blind/scheme-based
+	// checks still run without it. Never a silent public default — cmd/
+	// hackerfive/scan.go only ever populates this from an explicit
+	// --oob-server value (including the "public" shorthand, an explicit
+	// opt-in), per docs/13-implementation-plan-ph4.md's design tension 1
+	// (avoiding target-request-data leakage to a third party outside the
+	// engagement's authorized scope, unless the user explicitly accepts
+	// that tradeoff).
+	OOBServers []string
 
 	// AllowWrites (from --allow-writes) gates every mutating check the
 	// businesslogic detector's Run performs — coupon self-mint/apply, the

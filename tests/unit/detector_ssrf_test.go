@@ -49,7 +49,7 @@ func TestSSRFInternalTarget_Hit(t *testing.T) {
 	defer srv.Close()
 
 	detector := ssrf.New(newSSRFClient())
-	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, "")
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil)
 	require.NoError(t, err)
 
 	got := withPrefix(findings, "ssrf-internal-target-url-127-0-0-1")
@@ -76,7 +76,7 @@ func TestSSRFInternalTarget_EncodedBypass_Hit(t *testing.T) {
 	defer srv.Close()
 
 	detector := ssrf.New(newSSRFClient())
-	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, "")
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil)
 	require.NoError(t, err)
 
 	got := withPrefix(findings, "ssrf-internal-target-url-2130706433")
@@ -90,7 +90,7 @@ func TestSSRFInternalTarget_Blocked_NoFinding(t *testing.T) {
 	defer srv.Close()
 
 	detector := ssrf.New(newSSRFClient())
-	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, "")
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil)
 	require.NoError(t, err)
 
 	assert.Empty(t, withPrefix(findings, "ssrf-internal-target-"))
@@ -110,7 +110,7 @@ func TestSSRFSchemeBased_FileURI_Hit(t *testing.T) {
 	defer srv.Close()
 
 	detector := ssrf.New(newSSRFClient())
-	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, "")
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil)
 	require.NoError(t, err)
 
 	got := withPrefix(findings, "ssrf-scheme-based-url-file")
@@ -125,7 +125,7 @@ func TestSSRFSchemeBased_Rejected_NoFinding(t *testing.T) {
 	defer srv.Close()
 
 	detector := ssrf.New(newSSRFClient())
-	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, "")
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil)
 	require.NoError(t, err)
 
 	assert.Empty(t, withPrefix(findings, "ssrf-scheme-based-"))
@@ -145,7 +145,7 @@ func TestSSRFAuthHeader_Override(t *testing.T) {
 	defer srv.Close()
 
 	detector := ssrf.New(newSSRFClient(), ssrf.WithAuthHeader("Authorization-Token", "{token}"))
-	_, err := detector.Run(context.Background(), srv.URL, "sekret", []string{"url"}, "")
+	_, err := detector.Run(context.Background(), srv.URL, "sekret", []string{"url"}, nil)
 	require.NoError(t, err)
 
 	assert.True(t, sawCustomHeader, "override header must be sent on probe requests")
@@ -283,7 +283,7 @@ func TestSSRFOOBCallback_RealEncryptedRoundTrip_Hit(t *testing.T) {
 	}()
 
 	detector := ssrf.New(newSSRFClient())
-	findings, err := detector.Run(context.Background(), targetSrv.URL, "", []string{"url"}, oobSrv.URL)
+	findings, err := detector.Run(context.Background(), targetSrv.URL, "", []string{"url"}, []string{oobSrv.URL})
 	require.NoError(t, err)
 
 	got := withPrefix(findings, "ssrf-oob-callback-url")

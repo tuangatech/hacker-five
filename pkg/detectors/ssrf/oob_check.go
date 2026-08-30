@@ -20,12 +20,15 @@ import (
 const oobPollDelay = 5 * time.Second
 
 // checkOOBCallback fires one request per param embedding a unique per-probe
-// payload host, waits, then polls oobServer once and correlates any HTTP
-// interaction back to the probe that triggered it — proof the target
+// payload host, waits, then polls the OOB server once and correlates any
+// HTTP interaction back to the probe that triggered it — proof the target
 // actually made an outbound request, independent of what its own HTTP
-// response says.
-func (d *Detector) checkOOBCallback(ctx context.Context, target, authToken string, params []string, oobServer string) ([]detectors.Finding, error) {
-	client, err := newOOBClient(ctx, &http.Client{Timeout: 10 * time.Second}, oobServer)
+// response says. oobServers is tried in order (newOOBClientWithFallback) —
+// more than one entry only happens via a repeatable --oob-server (e.g. the
+// "public" shorthand expanding to PublicInteractshServers), so one server
+// being unreachable doesn't stall the whole check.
+func (d *Detector) checkOOBCallback(ctx context.Context, target, authToken string, params []string, oobServers []string) ([]detectors.Finding, error) {
+	client, err := newOOBClientWithFallback(ctx, &http.Client{Timeout: 10 * time.Second}, oobServers)
 	if err != nil {
 		return nil, fmt.Errorf("ssrf: setting up oob client: %w", err)
 	}

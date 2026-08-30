@@ -10,6 +10,30 @@ const (
 	DefaultAuthHeaderFormat = "Bearer {token}"
 )
 
+// PublicInteractshServers is ProjectDiscovery's known public OOB server
+// pool — the same defaults interactsh-client/nuclei ship with, publicly
+// documented, not secret. Used only when the user explicitly opts in via
+// --oob-server public (cmd/hackerfive/scan.go's expandOOBServers) — never
+// the default when --oob-server is omitted. Real, informed leak tradeoff,
+// not a design oversight: even though Interactsh's per-client-keypair
+// encryption keeps a captured interaction's *contents* private from the
+// server operator, the operator (and anyone else with visibility into that
+// infrastructure) still sees the target's real IP connecting to
+// third-party infrastructure in real time, with timing that could be
+// correlated back to a specific scan — see docs/follow-up.md §1's public-OOB
+// finding and docs/13-implementation-plan-ph4.md's self-hosted-only design
+// tension for the full reasoning. Appropriate for a target you own or have
+// full authority over; not recommended for a real, authorized third-party
+// engagement, where that leak is target data leaving the engagement's scope.
+var PublicInteractshServers = []string{
+	"https://oast.pro",
+	"https://oast.live",
+	"https://oast.site",
+	"https://oast.online",
+	"https://oast.fun",
+	"https://oast.me",
+}
+
 // loopbackEncodings returns 127.0.0.1 in every form an app that
 // string-matches only the canonical "127.0.0.1" would fail to catch —
 // decimal, octal, hex, IPv6 loopback, and IPv4-mapped IPv6. Each is its own

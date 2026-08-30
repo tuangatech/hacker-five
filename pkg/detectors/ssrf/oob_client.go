@@ -84,10 +84,32 @@ type oobPollResponse struct {
 	AESKey string   `json:"aes_key"`
 }
 
+// newOOBClientWithFallback tries servers in order, returning the first one
+// that accepts registration — the ordered-fallback behavior --oob-server's
+// repeatable flag enables (e.g. --oob-server public expanding to
+// PublicInteractshServers, so one server being down doesn't stall the whole
+// check). Returns an error only if every server in the list fails.
+func newOOBClientWithFallback(ctx context.Context, httpClient *http.Client, servers []string) (*oobClient, error) {
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("ssrf: no oob server configured")
+	}
+	var errs []error
+	for _, serverURL := range servers {
+		c, err := newOOBClient(ctx, httpClient, serverURL)
+		if err == nil {
+			return c, nil
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", serverURL, err))
+	}
+	return nil, fmt.Errorf("ssrf: every oob server failed registration: %w", errors.Join(errs...))
+}
+
 // newOOBClient generates a fresh RSA keypair and correlation ID, then
 // registers with serverURL — a self-hosted server the user runs
-// themselves via --oob-server, never a public default (see doc13's design
-// tension 1). serverURL must already include a scheme.
+// themselves via --oob-server, never a silent public default (see doc13's
+// design tension 1; explicit opt-in to a public server is possible via
+// --oob-server public, see PublicInteractshServers). serverURL must already
+// include a scheme.
 func newOOBClient(ctx context.Context, httpClient *http.Client, serverURL string) (*oobClient, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

@@ -77,12 +77,12 @@ func New(client *httpclient.Client, opts ...Option) *Detector {
 // Run checks target for SSRF via each of params — candidate query
 // parameter names the target accepts a URL through (e.g. "url", "webhook",
 // "callback"). authToken, if non-empty, is sent on every probe request per
-// the configured auth header. If oobServer is non-empty (a self-hosted
-// Interactsh-protocol server URL), the blind OOB check additionally runs;
-// left empty, it's silently skipped — no warning, since omitting
-// --oob-server is a normal, documented mode, unlike --scope's
-// warn-on-absence.
-func (d *Detector) Run(ctx context.Context, target, authToken string, params []string, oobServer string) ([]detectors.Finding, error) {
+// the configured auth header. If oobServers is non-empty (Interactsh-
+// protocol server URLs, tried in order — see newOOBClientWithFallback), the
+// blind OOB check additionally runs; left empty, it's silently skipped — no
+// warning, since omitting --oob-server is a normal, documented mode, unlike
+// --scope's warn-on-absence.
+func (d *Detector) Run(ctx context.Context, target, authToken string, params []string, oobServers []string) ([]detectors.Finding, error) {
 	if _, err := hostOf(target); err != nil {
 		return nil, fmt.Errorf("ssrf: %w", err)
 	}
@@ -112,8 +112,8 @@ func (d *Detector) Run(ctx context.Context, target, authToken string, params []s
 		findings = append(findings, fs...)
 	}
 
-	if oobServer != "" && ctx.Err() == nil {
-		fs, err := d.checkOOBCallback(ctx, target, authToken, params, oobServer)
+	if len(oobServers) > 0 && ctx.Err() == nil {
+		fs, err := d.checkOOBCallback(ctx, target, authToken, params, oobServers)
 		if err != nil {
 			return findings, err
 		}

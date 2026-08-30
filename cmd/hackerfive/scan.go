@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/reporter"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
@@ -32,7 +33,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		logoutPaths      string
 		headers          []string
 		ssrfParams       []string
-		oobServer        string
+		oobServers       []string
 		allowWrites      bool
 		couponMintPath   string
 		couponApplyPath  string
@@ -58,6 +59,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("parsing --header: %w", err)
 			}
+			expandedOOBServers := expandOOBServers(oobServers)
 
 			// Only auto-append the synced templates directory when --templates
 			// was left at its default — an explicit --templates value from the
@@ -97,7 +99,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				LogoutPaths:      parseTags(logoutPaths),
 				ExtraHeaders:     extraHeaders,
 				SSRFParams:       ssrfParams,
-				OOBServer:        oobServer,
+				OOBServers:       expandedOOBServers,
 				AllowWrites:      allowWrites,
 				CouponMintPath:   couponMintPath,
 				CouponApplyPath:  couponApplyPath,
@@ -144,7 +146,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&logoutPaths, "logout-paths", "", `comma-separated candidate logout paths for authbypass's broken-session check (default: authbypass's built-in generic guesses, e.g. "/logout")`)
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every template-driven request (repeatable) — e.g. a session cookie a login flow issued outside this scan, since template placeholders can't carry one yet`)
 	cmd.Flags().StringArrayVar(&ssrfParams, "ssrf-param", nil, `candidate URL-accepting query parameter name for the ssrf detector to probe (repeatable), e.g. "url", "webhook", "callback" — required for --detector ssrf`)
-	cmd.Flags().StringVar(&oobServer, "oob-server", "", `base URL of a self-hosted Interactsh-protocol server (never a public one) for the ssrf detector's blind out-of-band check — omitted, only the non-blind/scheme-based checks run`)
+	cmd.Flags().StringArrayVar(&oobServers, "oob-server", nil, `base URL of an Interactsh-protocol server for the ssrf detector's blind out-of-band check (repeatable — tried in order, falls back if one is unreachable); the literal value "public" expands to ProjectDiscovery's known public server pool, an explicit opt-in with a real leak tradeoff (see docs/follow-up.md) — omitted (the default), only the non-blind/scheme-based checks run, nothing sent to any third party`)
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks (coupon self-mint/apply, apply-race) to run — the one explicit exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a warning")
 	cmd.Flags().StringVar(&couponMintPath, "coupon-mint-path", "", `endpoint path the businesslogic detector mints a coupon against (default: crAPI's real "/community/api/v2/coupon/new-coupon")`)
 	cmd.Flags().StringVar(&couponApplyPath, "coupon-apply-path", "", `endpoint path the businesslogic detector applies a coupon against (default: crAPI's real "/workshop/api/shop/apply_coupon")`)
@@ -196,6 +198,30 @@ func parseHeaders(raw []string) (map[string]string, error) {
 		headers[strings.TrimSpace(name)] = strings.TrimSpace(value)
 	}
 	return headers, nil
+}
+
+// expandOOBServers expands the literal value "public" (case-insensitive)
+// into ssrf.PublicInteractshServers wherever it appears in raw, leaving
+// every other entry as the literal URL the user gave — lets --oob-server
+// public and --oob-server public --oob-server https://my-own.example.com
+// both work, mixing the explicit-opt-in public pool with a real self-hosted
+// server if the user wants both tried in order. nil in, nil out — this
+// never turns an omitted --oob-server into a non-empty list, preserving the
+// "skip the OOB check silently" default (see scanner.Config.OOBServers'
+// doc comment).
+func expandOOBServers(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []string
+	for _, entry := range raw {
+		if strings.EqualFold(entry, "public") {
+			out = append(out, ssrf.PublicInteractshServers...)
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // parseTags splits a comma-separated --tags value into a trimmed slice,

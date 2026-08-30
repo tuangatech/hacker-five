@@ -387,7 +387,7 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.ProtectedPaths)
 	case "ssrf":
 		detector := ssrf.New(e.client, e.ssrfOptions()...)
-		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.OOBServer)
+		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.OOBServers)
 	case "businesslogic":
 		detector := businesslogic.New(e.client, e.businesslogicOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.AllowWrites)
