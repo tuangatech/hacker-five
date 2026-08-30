@@ -23,6 +23,47 @@ import (
 // reflects arbitrary Origin headers back in Access-Control-Allow-Origin.
 const corsProbeOrigin = "https://hackerfive-cors-probe.invalid"
 
+// baselineCanaryPath is guaranteed not to be a real resource on any target —
+// used by probeBaseline to see what a target returns for "definitely
+// nothing here," so looksLikeBaselinePage can recognize when a WAF/
+// bot-protection layer returns that same generic page for every request,
+// including genuinely sensitive-looking paths. Found necessary live against
+// a real Akamai-fronted target: every ExposedPaths probe (including root)
+// came back as an identical "Access Denied" template that happened to echo
+// the requested path and a "https://errors.edgesuite.net/..." reference
+// link back in the body — which trivially satisfied keyword rules like
+// {Path: "/debug", Keywords: ["debug", ...]} and {Path: "/graphql",
+// Keywords: ["errors", ...]}, producing a 100% false-positive run (see
+// docs/13-implementation-plan-ph4.md's Step 4 live-verification notes).
+// Deliberately alphanumeric only, no hyphens/dots/other punctuation: a
+// real WAF/CDN block page that echoes the requested path back HTML-entity-
+// encodes punctuation in it (e.g. Akamai renders "-" as "&#45;") but
+// leaves alphanumeric runs literal — a hyphenated canary path would
+// therefore never appear as a literal substring in the echoed body,
+// silently defeating bodyLengthExcluding's normalization (found live: the
+// original hyphenated canary under-suppressed several real false
+// positives that a purely alphanumeric one correctly catches).
+const baselineCanaryPath = "/hackerfivebaselinecanary9f3c7a21"
+
+// suspiciousBaselineStatuses are the status codes a guaranteed-nonexistent
+// canary path returning them actually suggests interception (a WAF/
+// bot-protection/auth layer), not the application's own routing. A 200
+// canary is deliberately excluded: many real targets (SPA catch-all
+// routing, an API with no path-based 404s) legitimately return 200 for
+// everything, and that's a normal, already-tolerated pattern this project's
+// keyword/marker matching handles on its own (see
+// TestMisconfigExposedPath_CustomNotFoundPage_NoFinding) — treating a plain
+// 200 as "suspicious" would suppress real comment-leak/missing-header
+// findings on any such target, which live testing against a real SPA-style
+// mock confirmed. A 404 canary is excluded for the same reason as always:
+// it's the expected, harmless outcome for most speculative probes.
+var suspiciousBaselineStatuses = map[int]bool{
+	http.StatusUnauthorized:       true,
+	http.StatusForbidden:          true,
+	http.StatusTooManyRequests:    true,
+	http.StatusServiceUnavailable: true,
+}
+
 // malformedQuery is appended to exposed-path checks to try to trigger a
 // verbose error response (stack trace, DB error) without being a real
 // injection attempt — a single fixed probe, not fuzzing.
@@ -57,6 +98,17 @@ type Detector struct {
 	// hostErrors stops a run early once the target host crosses its
 	// consecutive-error threshold, same as idor.Detector.
 	hostErrors *hosterrors.Cache
+
+	// baseline* capture a single canary probe fetched once per Run call —
+	// see baselineCanaryPath/looksLikeBaselinePage. Safe as instance state:
+	// scanner.Engine.runDetector constructs a fresh Detector per target, so
+	// this never carries over between targets or races across concurrent
+	// Run calls on the same instance.
+	baselineFetched          bool
+	baselineStatus           int
+	baselineBody             []byte
+	baselineRequestEvidence  string
+	baselineResponseEvidence string
 }
 
 // New constructs a Detector.
@@ -77,6 +129,39 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 	}
 
 	var findings []detectors.Finding
+
+	d.probeBaseline(ctx, target, host, authToken)
+	if d.baselineFetched && suspiciousBaselineStatuses[d.baselineStatus] {
+		// A guaranteed-nonexistent path came back as anything other than a
+		// normal 404 — most speculative probes below legitimately 404 on a
+		// real target, and that's an expected, harmless scanning outcome,
+		// not a signal on its own. A non-404 (403/401/429/a soft-200, ...)
+		// instead suggests something above the real application — a WAF,
+		// bot-protection layer, auth wall — is intercepting requests
+		// uniformly, which is what actually makes body/header content
+		// matching meaningless. Surfaced once here; individual
+		// exposed-path/dir-listing/comment-leak/missing-header/
+		// verbose-error findings below are additionally suppressed
+		// wherever their own specific response also matches this shape
+		// (see looksLikeBaselinePage) — CORS/disallowed-method/
+		// default-credential checks aren't fooled by response body content
+		// the same way, so they still run and report normally regardless.
+		findings = append(findings, detectors.Finding{
+			ID:          "misconfig-waf-blocked",
+			Type:        "misconfig",
+			Severity:    "low",
+			Confidence:  "low",
+			Target:      target,
+			Description: fmt.Sprintf("a guaranteed-nonexistent path (%s) returned status %d — likely a WAF/bot-protection/auth layer intercepting requests rather than the application's own routing (a real 404 would be expected here)", baselineCanaryPath, d.baselineStatus),
+			Evidence: map[string]string{
+				"baseline_path":   baselineCanaryPath,
+				"baseline_status": fmt.Sprintf("%d", d.baselineStatus),
+				"request":         d.baselineRequestEvidence,
+				"response":        d.baselineResponseEvidence,
+			},
+		})
+	}
+
 	checks := []func(context.Context, string, string, string) ([]detectors.Finding, error){
 		d.checkExposedPaths,
 		d.checkDirListing,
@@ -116,6 +201,9 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 		if !containsAny(body, rule.Keywords) {
 			continue
 		}
+		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) {
+			continue
+		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("misconfig-exposed-path-%s", sanitizeID(rule.Path)),
 			Type:        "misconfig",
@@ -152,6 +240,9 @@ func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken 
 		if !containsAnyFold(body, DirListingMarkers) {
 			continue
 		}
+		if d.looksLikeBaselinePage(resp.StatusCode, body, path) {
+			continue
+		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("misconfig-dir-listing-%s", sanitizeID(path)),
 			Type:        "misconfig",
@@ -181,6 +272,9 @@ func (d *Detector) checkCommentLeaks(ctx context.Context, target, host, authToke
 	if err != nil {
 		return nil, nil
 	}
+	if d.looksLikeBaselinePage(resp.StatusCode, body, "") {
+		return nil, nil
+	}
 	pattern, matched := matchAny(body, commentLeakRegexes)
 	if !matched {
 		return nil, nil
@@ -203,6 +297,9 @@ func (d *Detector) checkCommentLeaks(ctx context.Context, target, host, authToke
 func (d *Detector) checkMissingHeaders(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, nil, nil)
 	if err != nil {
+		return nil, nil
+	}
+	if d.looksLikeBaselinePage(resp.StatusCode, body, "") {
 		return nil, nil
 	}
 	var findings []detectors.Finding
@@ -303,6 +400,9 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 		if !matched {
 			continue
 		}
+		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) {
+			continue
+		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("misconfig-verbose-error-%s", sanitizeID(rule.Path)),
 			Type:        "misconfig",
@@ -359,6 +459,68 @@ func loginSucceeded(resp *http.Response, loginPath string) bool {
 		return true
 	}
 	return len(resp.Header.Values("Set-Cookie")) > 0
+}
+
+// probeBaseline fetches baselineCanaryPath once, to give
+// looksLikeBaselinePage something to compare real probes against. A
+// request error just leaves baselineFetched false — every check then runs
+// unsuppressed, same as before this existed.
+func (d *Detector) probeBaseline(ctx context.Context, target, host, authToken string) {
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, baselineCanaryPath, authToken, nil, nil)
+	if err != nil {
+		return
+	}
+	d.baselineFetched = true
+	d.baselineStatus = resp.StatusCode
+	d.baselineBody = body
+	d.baselineRequestEvidence = detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil)
+	d.baselineResponseEvidence = detectors.FormatResponse(resp.StatusCode, resp.Header, body)
+}
+
+// looksLikeBaselinePage reports whether status/body look like the same
+// generic response baselineCanaryPath got: same status code and body
+// length (after excluding each side's own echoed path — see
+// bodyLengthExcluding) within a small tolerance. Real distinct content (an
+// actual exposed .env file, a real Swagger UI, a real directory listing)
+// differs from a generic error/WAF-block page by far more than the
+// boilerplate a target might echo back (the requested path, a request ID)
+// — this is deliberately a coarse, cheap heuristic, not exact-body dedup.
+// path is the specific path this probe requested (rule.Path,
+// baselineCanaryPath, ""'s root, ...) — live testing against a real
+// Akamai-fronted target found that comparing raw body length alone
+// under-suppressed: the block page echoes the requested path into its own
+// text, so a long canary path produces a longer baseline body than a real
+// target's short paths (e.g. "/debug"), pushing genuinely-identical block
+// pages outside a length-only tolerance (see
+// docs/13-implementation-plan-ph4.md's Step 4 live-verification notes).
+// Only meaningful when the canary itself came back non-404 — see Run's
+// comment on why a 404 baseline never suppresses anything.
+func (d *Detector) looksLikeBaselinePage(status int, body []byte, path string) bool {
+	if !d.baselineFetched || !suspiciousBaselineStatuses[d.baselineStatus] || status != d.baselineStatus {
+		return false
+	}
+	probeAdjusted := bodyLengthExcluding(body, strings.Trim(path, "/"))
+	baselineAdjusted := bodyLengthExcluding(d.baselineBody, strings.Trim(baselineCanaryPath, "/"))
+	diff := probeAdjusted - baselineAdjusted
+	if diff < 0 {
+		diff = -diff
+	}
+	tolerance := baselineAdjusted / 10
+	if tolerance < 32 {
+		tolerance = 32
+	}
+	return diff <= tolerance
+}
+
+// bodyLengthExcluding returns body's length minus every occurrence of
+// needle — a cheap way to discount a reflected request path before
+// comparing two otherwise-identical block-page bodies of different
+// requested-path lengths. needle == "" (root) is a no-op.
+func bodyLengthExcluding(body []byte, needle string) int {
+	if needle == "" {
+		return len(body)
+	}
+	return len(body) - strings.Count(string(body), needle)*len(needle)
 }
 
 // doRequest fires one request and records the outcome against hostErrors.

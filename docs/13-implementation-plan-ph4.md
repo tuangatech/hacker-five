@@ -35,7 +35,7 @@ Four chunks, matching doc03's Week 25-31 breakdown, plus release:
 1. ✅ **Prompt Injection Detector** (Week 25-26) — 2026-08-29, live-verified against a real AIGoat container
 2. 🟡 **SSRF Detector** (Week 27-28) — 2026-08-29, core checks built and live-verified against vAPI; OOB check crypto-verified but not yet run against a real self-hosted server
 3. ✅ **Business Logic Flaw Detector** (Week 29-30) — 2026-08-30, live-verified against real crAPI (coupon self-mint/apply for unearned credit; a TOCTOU apply-race, 4/5 live hit rate)
-4. ⬜ **Advanced Features** (Week 31) — finding dedup, HackerOne API integration, `Exporter` implementations
+4. 🟡 **Advanced Features** (Week 31) — 2026-08-30, dedup + `Exporter`s (Markdown/HTML/HackerOne-JSON) built and smoke-verified; HackerOne API client (`pkg/hackerone`) built and unit-tested against a mock server, but not yet live-verified against a real HackerOne account/program
 5. ⬜ **Testing & Release** (Week 32) — v0.4.0
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09/10/11.)
@@ -182,7 +182,7 @@ Unit tests (`go test ./... -race`, `golangci-lint run ./...`) all clean, includi
 
 ---
 
-## Step 4: Advanced Features (Week 31) — ⬜ not yet implemented
+## Step 4: Advanced Features (Week 31) — 🟡 built, live HackerOne verification pending (2026-08-30)
 
 ### Design
 
@@ -198,16 +198,23 @@ Unit tests (`go test ./... -race`, `golangci-lint run ./...`) all clean, includi
 
 Add a line to CLAUDE.md's Rules section stating that HackerOne report submission is a **permanent architectural invariant** — report-drafting assistance only, never unattended/automatic submission — not a Phase-4-scoped decision a future contributor (human or agent) could quietly "improve" into auto-submission later. Motivated directly by [90-research-hackerbot.md](90-research-hackerbot.md)'s B3: HackerOne's own February 2026 "Responsible AI" update, and the CEO's public clarification after a researcher-trust incident, are concrete evidence of how fast trust erodes once an agentic feature's boundaries aren't crisp and stated up front — HackerFive should hold itself to the same bar preemptively, before any agent integration exists, not after. Same treatment Step 3 already gives `--allow-writes`; a real doc change this step's implementation should make, not just a design note.
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/reporter/exporter.go` — the `Exporter` interface.
-- `pkg/reporter/{markdown,html,hackerone}.go` — one file per format.
-- `pkg/reporter/dedup.go` — exact-`Finding.ID` suppression.
-- `pkg/hackerone/client.go` (or similar) — the API client, separate from the exporter so the H1-JSON *format* (usable standalone, e.g. for manual copy-paste) doesn't require an API token to produce.
-- `cmd/hackerfive/scan.go` — `--export-format`, `--h1-program` (or similar) flags.
-- `CLAUDE.md` — the Rules-section addendum above.
+### Files — as built (2026-08-30)
+- `pkg/reporter/dedup.go` — `Dedup`, exact-`Finding.ID` suppression, keeps first occurrence, stable order.
+- `pkg/reporter/exporter.go` — the `Exporter` interface (`Export(w io.Writer, findings []detectors.Finding) error`) + `ExporterFor(format string)`; wraps the existing, untouched `WriteJSON` as the `"json"` case.
+- `pkg/reporter/markdown.go` / `pkg/reporter/html.go` / `pkg/reporter/hackerone.go` — one file per format. HTML uses `html/template` specifically because `Finding.Evidence` routinely contains attacker-controlled payload text (an XSS/SSRF probe's own request body) that must render as inert text, not live markup — verified in `tests/unit/reporter_html_test.go` by asserting a raw `<script>` evidence value comes out HTML-escaped. `hackerone.go` is the **offline** exporter — a best-effort `report_intent`-shaped JSON array with `team_handle`/`weakness_id`/`structured_scope_id` left as placeholders (`_needs_review`) since those are numeric, program-specific IDs no `Finding` alone can supply.
+- `pkg/hackerone/client.go` (new package) — the live API client, separate from the offline exporter per the plan: `ListWeaknesses`/`ListStructuredScopes` (program-specific ID lookups), `CreateReportIntent` (creates a private draft, never submits), `SubmitReportIntent` (the one call that makes a report visible to a program). HTTP Basic auth (API token identifier/value), JSON:API-shaped request/response bodies.
+- `cmd/hackerfive/report.go` (new subcommand family, not `--export-format`/`--h1-program` flags on `scan` as originally sketched — a real design correction, see below) — `report weaknesses`, `report scopes`, `report create` (never calls submit), `report submit --yes` (refuses without the flag).
+- `cmd/hackerfive/scan.go` — `--format` flag (`json`/`markdown`/`html`/`hackerone-json`), wired through `scanner.Config.OutputFormat` (previously hardcoded); `RunE` now runs `reporter.Dedup` before export.
+- `CLAUDE.md` — the Rules-section addendum, above.
+
+**Design correction made during real implementation, not guessed in the original sketch**: `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` (a program-specific token) don't fit as `scan` flags — creating a report is a separate action from scanning, needing its own inputs (`--team`, `--weakness-id`, `--scope-id`, a findings file to draft from) that have nothing to do with a scan run. A dedicated `report` subcommand family (mirroring `templates`'s existing nesting) is the natural shape, not `scan --export-format hackerone --h1-program ...`.
+
+**HackerOne's real API, researched rather than assumed** (see this doc's Objective/Dependencies section for the full account): the Hacker API's `report_intents` endpoint (added ~Sept 2025) gives a genuine server-side draft state (`pending`/`ready_to_submit` → `submitted` only after a separate `/submit` call) — used here instead of the direct `POST /reports` (which has no draft state), specifically because it's a strictly better fit for "drafting assistance, never auto-submit." **Open item, not yet closed**: the exact `report_intents` create request-body schema was built from the better-documented direct-report-creation field names (`team_handle`/`title`/`vulnerability_information`/`severity_rating`/`weakness_id`/`structured_scope_id`) applied to the newer endpoint — this needs confirmation against a real trial call (a deliberately incomplete request's `422` field-validation-error body is the fastest way) before it's trusted against a real account. Not done yet — no `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN`/real program handle were available during this implementation session.
 
 ### Verification
-Unit tests for each `Exporter` against fixed `Finding` inputs (deterministic — no live target needed), including a redaction test confirming sensitive evidence stays redacted in HTML/Markdown output. HackerOne API client tested against a mock server for the request-shape/auth-header logic; real submission flow verified manually (own account, a genuine draft report field-mapping needs human judgment, not further automated).
+**Done (2026-08-30)**: `go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean. Unit tests: `tests/unit/reporter_dedup_test.go`, `reporter_markdown_test.go`, `reporter_html_test.go` (including the escaping assertion above), `reporter_hackerone_test.go`; `pkg/hackerone/client_test.go` (`httptest.Server`-mocked — Basic-auth header, request-body field names, non-2xx error handling); `cmd/hackerfive/report_test.go` including `TestReportCreate_NeverCallsSubmitEndpoint` (a real httptest.Server that fails the test if any request other than `POST /report_intents` arrives) and `TestReportSubmit_RefusesWithoutYesFlag`. Offline smoke test: a fabricated 3-entry findings.json (with one deliberate duplicate ID) run through `reporter.Dedup` + all four `Exporter`s end-to-end via `go run` — dedup correctly collapsed to 2, all four formats rendered real, sensible output (see this session's transcript). CLI smoke-tested via the built binary: `report submit --intent-id abc123` (no `--yes`) refuses with the expected message and exit code 1.
+
+**Not yet done — real, open work, not silently assumed complete**: no live verification against an actual HackerOne account/program. `report weaknesses`/`report scopes`/`report create` have never been run against the real API; the `report_intents` create body schema is unconfirmed (see above); `report submit` has never been exercised at all, live or otherwise beyond its `--yes`-refusal path. This needs the user's real `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` and a real program handle to close — coordinate before marking this step's DoD line done.
 
 ---
 
@@ -236,10 +243,10 @@ v0.4.0 release is expected to reuse the existing `goreleaser`/CI pipeline unchan
 - [x] SSRF detector's OOB-based blind check live-verified against a real self-hosted `interactsh-server` (2026-08-29) **and against a real Dockerized target directly (2026-08-30)** — a genuine `--oob-server` round trip against the real upstream protocol, not just unit-tested against a mock: real correlation ID/nonce, real captured HTTP request, real RSA-OAEP+AES-256-CTR decrypt, and (via the new `--oob-server public` opt-in) a real vAPI container reaching a real public Interactsh server (`oast.live`) over the internet — closing the earlier Docker-loopback gap for real, not just in theory. See [20-setup-testing-targets.md](20-setup-testing-targets.md)'s Interactsh Server section and [follow-up.md](follow-up.md) §1 for the public-opt-in tradeoff.
 - [x] Business logic flaw checks live-verified against crAPI's real coupon flow (2026-08-30) — `checkCouponSelfMintCredit` reproduced the pre-implementation curl evidence exactly through the real detector; `checkCouponApplyRace` used genuine last-byte-sync raw-connection timing and fired in 4 of 5 live runs against the real target (see Step 3's Design corrections for the honest per-run hit-rate accounting, not smoothed over). `--allow-writes`-absent gate confirmed (unit-tested: zero requests fired) and live-observed (the stderr warning fires when omitted).
 - [x] CLAUDE.md's Rules section updated with the `--allow-writes` addendum — 2026-08-30
-- [ ] Finding dedup (exact-`Finding.ID` case) unit-tested and confirmed against a real overlapping-findings scan
-- [ ] All three `Exporter` implementations (Markdown/HTML/HackerOne-JSON) produce correct, redaction-respecting output against real `Finding` data
-- [ ] HackerOne API client authenticates and builds a correct draft report against a real (own) account, submission remaining a manual, human-reviewed step
-- [ ] CLAUDE.md's Rules section updated with the HackerOne report-drafting-only invariant (Step 4) — permanent, not Phase-4-scoped
+- [x] Finding dedup (exact-`Finding.ID` case) unit-tested and confirmed via an offline smoke test with a real overlapping-ID entry — 2026-08-30. **Not yet confirmed against a real overlapping-findings scan** (no real target run happened to produce a natural duplicate this session).
+- [x] All three `Exporter` implementations (Markdown/HTML/HackerOne-JSON) produce correct, redaction-respecting output — 2026-08-30, unit-tested and offline-smoke-verified against real `Finding` data (redaction itself happens upstream at `detectors.FormatRequest`/`FormatResponse` construction time, per this doc's Files note above; the HTML exporter's own escaping of evidence content is unit-tested directly).
+- [ ] HackerOne API client authenticates and builds a correct draft report against a real (own) account, submission remaining a manual, human-reviewed step — **not yet done**: `pkg/hackerone` is built and unit-tested against a mock server (including a "create never calls submit" test), but has never made a real API call. Needs the user's real `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` + program handle.
+- [x] CLAUDE.md's Rules section updated with the HackerOne report-drafting-only invariant (Step 4) — permanent, not Phase-4-scoped — 2026-08-30
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] Phase 4 Success Metrics measured live and recorded honestly (met, or not met with a stated reason) — not assumed
 - [ ] `v0.4.0` tagged and released, or explicitly held with a stated reason (same as `v0.2.0`'s open status)

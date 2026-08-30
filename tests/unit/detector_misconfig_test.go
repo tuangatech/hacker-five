@@ -315,6 +315,56 @@ func TestMisconfigDefaultCreds_Succeed(t *testing.T) {
 	assert.Equal(t, "critical", got[0].Severity)
 }
 
+// TestMisconfigWAFBlocked_SuppressesContentFindingsButNotBehaviorChecks locks
+// in a real live-found false-positive fix: against a real Akamai-fronted
+// target, every ExposedPaths probe (including root) came back as an
+// identical "Access Denied" block page whose boilerplate text (the echoed
+// request path, a "https://errors.edgesuite.net/..." reference link)
+// trivially satisfied keyword rules like {Path: "/debug", Keywords:
+// ["debug", ...]}, producing a 100% false-positive run — see
+// docs/13-implementation-plan-ph4.md's Step 4 live-verification notes. The
+// content-dependent checks must be suppressed once a guaranteed-nonexistent
+// canary path also comes back with that same block-page shape; checks that
+// don't depend on response body content (disallowed-method here) must keep
+// working regardless.
+func TestMisconfigWAFBlocked_SuppressesContentFindingsButNotBehaviorChecks(t *testing.T) {
+	wafBody := []byte(`<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD><BODY><H1>Access Denied</H1>You don't have permission to access "debug" on this server.<P>Reference #18.abc123<P>https://errors.edgesuite.net/18.abc123</BODY></HTML>`)
+
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(wafBody)
+	})
+
+	waf := withPrefix(findings, "misconfig-waf-blocked")
+	require.Len(t, waf, 1)
+	assert.Equal(t, "low", waf[0].Severity)
+	assert.Equal(t, "low", waf[0].Confidence)
+
+	assert.Empty(t, withPrefix(findings, "misconfig-exposed-path-"), "exposed-path findings must be suppressed against a uniform WAF block page")
+	assert.Empty(t, withPrefix(findings, "misconfig-missing-header-"), "missing-header findings must be suppressed — the checked response is the WAF page, not the real app")
+
+	method := withPrefix(findings, "misconfig-method-put-")
+	require.Len(t, method, 1, "PUT-accepted must still fire — disallowed-method checks aren't fooled by content-based WAF suppression")
+}
+
+// TestMisconfigWAFBlocked_NotTriggeredBy200Catchall guards the fix's own
+// false-positive mode: an SPA-style 200-for-everything catch-all is a
+// normal, common, already-tolerated pattern (see
+// TestMisconfigExposedPath_CustomNotFoundPage_NoFinding) and must not be
+// mistaken for a WAF block page, or real comment-leak/missing-header
+// findings on such a target would be silently suppressed too.
+func TestMisconfigWAFBlocked_NotTriggeredBy200Catchall(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body>SPA shell</body></html>`))
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-waf-blocked"), "a 200 catch-all is a normal pattern, not a WAF signal")
+}
+
 func TestMisconfigDefaultCreds_Fail(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login" && r.Method == http.MethodPost {

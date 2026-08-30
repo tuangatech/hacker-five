@@ -38,6 +38,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		couponMintPath   string
 		couponApplyPath  string
 		raceConcurrency  int
+		format           string
 	)
 
 	cmd := &cobra.Command{
@@ -84,7 +85,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				RateLimit:        rateLimit,
 				ProxyURL:         root.proxy,
 				Timeout:          root.timeout,
-				OutputFormat:     "json",
+				OutputFormat:     format,
 				OutputPath:       root.output,
 				Detector:         detector,
 				EndpointTemplate: endpointTemplate,
@@ -114,6 +115,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("running scan: %w", err)
 			}
+			findings = reporter.Dedup(findings)
+
+			exporter, err := reporter.ExporterFor(cfg.OutputFormat)
+			if err != nil {
+				return err
+			}
 
 			out := cmd.OutOrStdout()
 			if cfg.OutputPath != "" {
@@ -124,7 +131,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				defer func() { _ = f.Close() }()
 				out = f
 			}
-			return reporter.WriteJSON(out, findings)
+			return exporter.Export(out, findings)
 		},
 	}
 
@@ -151,6 +158,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&couponMintPath, "coupon-mint-path", "", `endpoint path the businesslogic detector mints a coupon against (default: crAPI's real "/community/api/v2/coupon/new-coupon")`)
 	cmd.Flags().StringVar(&couponApplyPath, "coupon-apply-path", "", `endpoint path the businesslogic detector applies a coupon against (default: crAPI's real "/workshop/api/shop/apply_coupon")`)
 	cmd.Flags().IntVar(&raceConcurrency, "race-concurrency", 0, "simultaneous requests the businesslogic detector's apply-race check fires via last-byte-sync (default: 15)")
+	cmd.Flags().StringVar(&format, "format", "json", `output format: "json", "markdown", "html", or "hackerone-json" (an offline, best-effort HackerOne report_intent draft — see "hackerfive report" for the live API workflow)`)
 
 	return cmd
 }

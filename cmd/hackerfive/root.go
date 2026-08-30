@@ -31,6 +31,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newScanCmd(flags))
 	cmd.AddCommand(newTemplatesCmd())
 	cmd.AddCommand(newServeCmd())
+	cmd.AddCommand(newReportCmd())
 
 	return cmd
 }

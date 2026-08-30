@@ -38,6 +38,15 @@ A living list of real, authorized targets (found via disclose.io/HackerOne per [
 - **Fit for HackerFive:** good — same shape as a2x.io, `--detector misconfig`'s read-only design matches their "no destructive testing" rule directly
 - **Vetted:** 2026-08-26
 
+### meesho_bbp (Meesho)
+- **Source:** HackerOne program the user is an active participant in (`https://hackerone.com/meesho_bbp`), not disclose.io — vetted directly via the real HackerOne API (`pkg/hackerone`) rather than a security.txt lookup.
+- **Scope:** pulled live via `hackerfive report scopes --team meesho_bbp` (2026-08-30) — of 25 listed structured-scope entries, only 8 are `eligible_for_submission=true` web/API assets: `www.meesho.com`, `admin.meeshosupply.com`, `supplier.meesho.com`, `affiliate.meesho.com`, `prod.meeshoapi.com`, `www.valmo.in`, `superstoreapp.meesho.com`, `investor.meesho.com`. The other 17 (mobile app-store IDs, and 15 more web/wildcard entries like `grocery-supplier.meesho.com`, `*.meeshogcp.in`) are listed but `eligible_for_submission=false` — treated as out of scope per this doc's own rule. Full list with instructions/eligibility flags: `.engagements/meesho/scope.txt` (gitignored) and re-fetchable anytime via `report scopes`.
+- **Policy:** pulled live via `hackerfive report weaknesses`/the program resource (`GET /programs/meesho_bbp`) — not a disclose.io/security.txt page. Full policy text + test credentials cached in `.engagements/meesho/policy.md` (gitignored), not reproduced here since it's specific to this HackerOne program, not a public page.
+- **Hard requirements** (not optional, program-specified): every test request must carry header `X-Hackerone: <hackerone-username>` (use `--header`); rate-limit testing on the order flow is explicitly disallowed; no real financial transactions; no accessing/changing real user data or account security settings (password/email/2FA); test credentials (provided out-of-band, stored in `.local/`, not this file) exist for the Supplier Panel and Consumer/Mobile flows — don't share them.
+- **Fit for HackerFive:** `--detector misconfig` is safe (read-only). `--detector businesslogic`'s mutating checks are hardcoded to crAPI's coupon endpoints and irrelevant/unsafe to point at this target without extensive, individually-reviewed reconfiguration — do not run `--allow-writes` here casually. `--detector authbypass`'s rate-limit-signal check should be avoided or used very conservatively given the explicit order-flow rate-limit restriction.
+- **Real finding from first scan (2026-08-30):** `investor.meesho.com` sits behind an Akamai WAF/bot-protection layer that returns an identical "Access Denied" page for almost any path — this originally produced 10 misconfig false positives (the WAF page's boilerplate text trivially matched several `ExposedPaths` keyword rules) before `pkg/detectors/misconfig`'s baseline-canary suppression fix (this session) closed it to a single, accurate `misconfig-waf-blocked` note.
+- **Vetted:** 2026-08-30
+
 ## Also checked, not added
 
 Found via the same disclose.io search; recorded here so they aren't re-researched later.

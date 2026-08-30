@@ -25,7 +25,7 @@ type Config struct {
 	RateLimit          int
 	ProxyURL           string
 	Timeout            time.Duration
-	OutputFormat       string // fixed "json" in Phase 1a — no CLI flag selects it yet
+	OutputFormat       string // from --format: "json" (default), "markdown", "html", or "hackerone-json" — see reporter.ExporterFor
 	OutputPath         string // from --output/-o; "" = stdout
 	Detector           string // "idor" or "misconfig"
 	EndpointTemplate   string // e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" — joined with each target to build the idor.Detector endpointTemplate; stopgap until Phase 1b's template engine can supply this from a YAML file instead of a flag
