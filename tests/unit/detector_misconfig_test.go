@@ -2,9 +2,11 @@ package unit
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -363,6 +365,130 @@ func TestMisconfigWAFBlocked_NotTriggeredBy200Catchall(t *testing.T) {
 		_, _ = w.Write([]byte(`<html><body>SPA shell</body></html>`))
 	})
 	assert.Empty(t, withPrefix(findings, "misconfig-waf-blocked"), "a 200 catch-all is a normal pattern, not a WAF signal")
+}
+
+// TestMisconfigExposedPath_SPAEchoedPathFalsePositive_Suppressed locks in a
+// second real live-found false-positive, distinct from the WAF case above:
+// a real Next.js SPA (Meesho's www.meesho.com, 2026-08-30) served the exact
+// same app shell for every path, HTTP 200, with the requested path echoed
+// into a canonical-URL tag — response body length correlated byte-for-byte
+// with each requested path's character count. Common short keywords
+// ("debug", "admin", "graphql" via a bundled error-reporting SDK's own
+// embedded "errors" string) trivially satisfied ExposedPaths rules on every
+// probe. The original WAF fix didn't catch this because it only compared
+// against the canary when the canary itself looked suspicious (403/401/
+// 429/503) — a canary that legitimately returns 200 (this exact SPA
+// pattern) was deliberately left unsuppressed, which was too narrow: see
+// looksLikeBaselinePage's doc comment for why path-comparative checks
+// (exposed-path here) must suppress regardless of baseline status.
+func TestMisconfigExposedPath_SPAEchoedPathFalsePositive_Suppressed(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		_, _ = fmt.Fprintf(w, `<html><head><link rel="canonical" href="https://example.com/%s"/></head><body>%s</body></html>`,
+			path, strings.Repeat("filler content ", 200))
+	})
+
+	assert.Empty(t, withPrefix(findings, "misconfig-exposed-path-"),
+		`a 200 SPA catch-all that echoes the requested path (e.g. in a canonical-URL tag) must not false-positive just because the echoed text happens to satisfy a keyword rule like {Path: "/debug", Keywords: ["debug"]}`)
+}
+
+// TestMisconfigDefaultCreds_CookieOnEveryResponse_NotFlagged locks in the
+// other real live-found false positive from the same Meesho run: a
+// "critical" successful admin/admin login fired against what the evidence
+// itself showed was a 404 routing error ("Cannot POST /admin/login"),
+// because the old heuristic treated any Set-Cookie header as proof of
+// success — this real production site sets a tracking/session cookie on
+// every response regardless of outcome. loginSucceeded now requires a real
+// difference from a known-wrong baseline attempt at the same path, not
+// just "a cookie showed up."
+func TestMisconfigDefaultCreds_CookieOnEveryResponse_NotFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		// Every response — including the baseline's known-wrong attempt —
+		// gets the same tracking cookie and the same 404, mirroring
+		// Meesho's real /admin/login behavior.
+		http.SetCookie(w, &http.Cookie{Name: "tracking", Value: "abc123"})
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("Cannot POST /admin/login"))
+	})
+
+	assert.Empty(t, withPrefix(findings, "misconfig-default-creds-"),
+		"a Set-Cookie header present on every response (success or not) must not be treated as evidence of a successful login on its own")
+}
+
+// TestMisconfigWAFBlocked_EngagesMidRun_RootChecksStillCaught locks in a
+// third real live-found bug from the same Meesho run, distinct from the
+// first two: the WAF's blocking is stateful/rate-based, not a static rule
+// — the start-of-scan canary probe got through with 200 (so no
+// misconfig-waf-blocked note fired, and exposed-path/dir-listing checks
+// ran unsuppressed against real 200 responses), but by the time
+// checkMissingHeaders fetched root later in the same run, the target had
+// started blocking with 403 — reproducing the exact false positive the
+// original fix was built to catch, just arriving mid-scan instead of at
+// the start. checkCommentLeaks/checkMissingHeaders now re-probe the
+// baseline fresh, immediately before evaluating root's response, instead
+// of trusting Run's single start-of-scan snapshot.
+func TestMisconfigWAFBlocked_EngagesMidRun_RootChecksStillCaught(t *testing.T) {
+	var rootOrCanaryCount int32
+	wafBody := []byte(`<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD><BODY><H1>Access Denied</H1>Blocked.<P>Reference #18.abc123<P>https://errors.edgesuite.net/18.abc123</BODY></HTML>`)
+
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || strings.Contains(r.URL.Path, "hackerfivebaselinecanary") {
+			n := atomic.AddInt32(&rootOrCanaryCount, 1)
+			if n == 1 {
+				// The very first canary probe — Run's start-of-scan
+				// baseline — succeeds normally.
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("<html><body>normal page shell, no CSP header</body></html>"))
+				return
+			}
+			// Every later root/canary probe — i.e. once
+			// checkCommentLeaks/checkMissingHeaders re-probe — is
+			// WAF-blocked, simulating a WAF that only engages partway
+			// through a scan.
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(wafBody)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	assert.Empty(t, withPrefix(findings, "misconfig-missing-header-"),
+		"missing-header must re-probe the baseline fresh, not rely on Run's stale start-of-scan snapshot, to catch a WAF that only engages partway through a scan")
+	assert.Empty(t, withPrefix(findings, "misconfig-comment-leak"))
+}
+
+// TestMisconfigWAFBlocked_RootConsistentlyBlockedCanaryConsistentlyOK locks
+// in a fourth real live-found bug, distinct from mid-run engagement: five
+// consecutive curl pairs against a real Akamai-fronted target (2026-08-30)
+// confirmed root ("/") is *consistently* WAF-blocked (403) while a random
+// nonexistent path is *consistently* allowed through (200) — not timing
+// flakiness, a genuine path-specific WAF rule. No amount of re-probing the
+// canary closer in time helps here, because canary and root get
+// structurally different treatment from this WAF regardless of when
+// they're compared. looksLikeInterceptedPage/looksLikeBaselinePage now
+// also recognize the block page by its own content signature
+// (knownWAFBlockPageMarkers), independent of any canary comparison.
+func TestMisconfigWAFBlocked_RootConsistentlyBlockedCanaryConsistentlyOK(t *testing.T) {
+	wafBody := []byte(`<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD><BODY><H1>Access Denied</H1>You don't have permission to access "/" on this server.<P>Reference #18.abc123<P>https://errors.edgesuite.net/18.abc123</BODY></HTML>`)
+
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(wafBody)
+			return
+		}
+		if strings.Contains(r.URL.Path, "hackerfivebaselinecanary") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html><body>normal canary response</body></html>"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	assert.Empty(t, withPrefix(findings, "misconfig-missing-header-"),
+		"a WAF that blocks root specifically (while a canary path sails through) must be caught by content-signature recognition, since baseline comparison alone can't distinguish this from root legitimately having its own real response")
+	assert.Empty(t, withPrefix(findings, "misconfig-comment-leak"))
 }
 
 func TestMisconfigDefaultCreds_Fail(t *testing.T) {

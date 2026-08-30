@@ -47,16 +47,14 @@ const baselineCanaryPath = "/hackerfivebaselinecanary9f3c7a21"
 
 // suspiciousBaselineStatuses are the status codes a guaranteed-nonexistent
 // canary path returning them actually suggests interception (a WAF/
-// bot-protection/auth layer), not the application's own routing. A 200
-// canary is deliberately excluded: many real targets (SPA catch-all
-// routing, an API with no path-based 404s) legitimately return 200 for
-// everything, and that's a normal, already-tolerated pattern this project's
-// keyword/marker matching handles on its own (see
-// TestMisconfigExposedPath_CustomNotFoundPage_NoFinding) — treating a plain
-// 200 as "suspicious" would suppress real comment-leak/missing-header
-// findings on any such target, which live testing against a real SPA-style
-// mock confirmed. A 404 canary is excluded for the same reason as always:
-// it's the expected, harmless outcome for most speculative probes.
+// bot-protection/auth layer), not the application's own routing. Used for
+// the top-level "misconfig-waf-blocked" note and by
+// looksLikeInterceptedPage (root-only checks) — NOT by looksLikeBaselinePage
+// itself, which applies regardless of status (see its own doc comment for
+// why: a 200 canary is a legitimate suppression signal for path-comparative
+// checks, just not proof of interception). A 404 canary never triggers
+// either path: it's the expected, harmless outcome for most speculative
+// probes, not a signal on its own.
 var suspiciousBaselineStatuses = map[int]bool{
 	http.StatusUnauthorized:       true,
 	http.StatusForbidden:          true,
@@ -139,13 +137,15 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		// instead suggests something above the real application — a WAF,
 		// bot-protection layer, auth wall — is intercepting requests
 		// uniformly, which is what actually makes body/header content
-		// matching meaningless. Surfaced once here; individual
-		// exposed-path/dir-listing/comment-leak/missing-header/
-		// verbose-error findings below are additionally suppressed
-		// wherever their own specific response also matches this shape
-		// (see looksLikeBaselinePage) — CORS/disallowed-method/
-		// default-credential checks aren't fooled by response body content
-		// the same way, so they still run and report normally regardless.
+		// matching meaningless. Surfaced once here; comment-leak/
+		// missing-header findings below are additionally suppressed
+		// wherever root's own response also matches this shape (see
+		// looksLikeInterceptedPage). Exposed-path/dir-listing/
+		// verbose-error findings use the broader looksLikeBaselinePage
+		// instead, which suppresses regardless of whether this top-level
+		// note fired at all — CORS/disallowed-method/default-credential
+		// checks aren't fooled by response body content the same way, so
+		// they still run and report normally regardless.
 		findings = append(findings, detectors.Finding{
 			ID:          "misconfig-waf-blocked",
 			Type:        "misconfig",
@@ -268,11 +268,21 @@ func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken 
 // principled list of "where a leftover comment might be," so this stays a
 // single bounded request rather than guessing at additional paths.
 func (d *Detector) checkCommentLeaks(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	// Refresh the baseline immediately before evaluating root's response,
+	// not just the one captured at Run's start — live testing found a
+	// real target whose WAF engaged mid-scan (the start-of-run canary got
+	// through with 200; the WAF started blocking with 403 partway through
+	// the same run), leaving this check comparing root against a baseline
+	// that no longer reflected the target's live behavior. See
+	// looksLikeInterceptedPage's doc comment for why this only matters for
+	// root-only checks, not exposed-path/dir-listing/verbose-error.
+	d.probeBaseline(ctx, target, host, authToken)
+
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, nil, nil)
 	if err != nil {
 		return nil, nil
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, "") {
+	if d.looksLikeInterceptedPage(resp.StatusCode, body) {
 		return nil, nil
 	}
 	pattern, matched := matchAny(body, commentLeakRegexes)
@@ -295,11 +305,16 @@ func (d *Detector) checkCommentLeaks(ctx context.Context, target, host, authToke
 }
 
 func (d *Detector) checkMissingHeaders(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	// See checkCommentLeaks' identical refresh for why: a stale
+	// start-of-run baseline can miss a WAF that only engages partway
+	// through a scan.
+	d.probeBaseline(ctx, target, host, authToken)
+
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "", authToken, nil, nil)
 	if err != nil {
 		return nil, nil
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, "") {
+	if d.looksLikeInterceptedPage(resp.StatusCode, body) {
 		return nil, nil
 	}
 	var findings []detectors.Finding
@@ -421,16 +436,51 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 	return findings, nil
 }
 
+// baselineCredUsername/Password are a definitely-wrong credential pair sent
+// once per unique LoginPath before any real DefaultCreds pair — see
+// loginProbeResult/loginSucceeded's doc comments for why: a bare Set-Cookie
+// header used to be treated as proof of a successful login, but a real
+// production site (live-tested) sets a tracking/session cookie on every
+// response regardless of outcome, which false-positived a "critical"
+// successful admin/admin login against what was actually a 404 routing
+// error. Alphanumeric only, matching baselineCanaryPath's reasoning — not
+// that it matters here (no page is expected to echo login form values back
+// HTML-escaped), but keeps the convention consistent.
+const (
+	baselineCredUsername = "hackerfivebaselinecanary9f3c7a21"
+	baselineCredPassword = "hackerfivebaselinepassword1c8e4d"
+)
+
+// loginProbeResult captures just enough of a login attempt's outcome to
+// compare a real DefaultCreds pair against baselineCredUsername/Password's
+// known-wrong attempt at the same path.
+type loginProbeResult struct {
+	finalPath  string
+	statusCode int
+}
+
 func (d *Detector) checkDefaultCreds(ctx context.Context, target, host, _ string) ([]detectors.Finding, error) {
 	var findings []detectors.Finding
+	baselines := make(map[string]loginProbeResult, len(DefaultCreds))
 	for _, rule := range DefaultCreds {
-		form := url.Values{"username": {rule.Username}, "password": {rule.Password}}.Encode()
-		headers := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
-		req, resp, body, err := d.doRequest(ctx, http.MethodPost, target, host, rule.LoginPath, "", headers, strings.NewReader(form))
+		baseline, ok := baselines[rule.LoginPath]
+		if !ok {
+			var err error
+			baseline, err = d.probeLogin(ctx, target, host, rule.LoginPath, baselineCredUsername, baselineCredPassword)
+			if err != nil {
+				// No negative control for this path — skip every real pair
+				// against it rather than risk a false positive with
+				// nothing to compare against.
+				continue
+			}
+			baselines[rule.LoginPath] = baseline
+		}
+
+		req, resp, body, err := d.doRequest(ctx, http.MethodPost, target, host, rule.LoginPath, "", defaultCredsHeaders, strings.NewReader(defaultCredsForm(rule)))
 		if err != nil {
 			continue
 		}
-		if !loginSucceeded(resp, rule.LoginPath) {
+		if !loginSucceeded(resp, baseline) {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
@@ -441,24 +491,59 @@ func (d *Detector) checkDefaultCreds(ctx context.Context, target, host, _ string
 			Target:      target + rule.LoginPath,
 			Description: fmt.Sprintf("login succeeded at %s using a well-known default credential pair (%s)", rule.LoginPath, rule.Username),
 			Evidence: map[string]string{
-				"login_path": rule.LoginPath,
-				"username":   rule.Username,
-				"request":    detectors.FormatRequest(req.Method, req.URL.String(), req.Header, []byte(form)),
-				"response":   detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+				"login_path":          rule.LoginPath,
+				"username":            rule.Username,
+				"request":             detectors.FormatRequest(req.Method, req.URL.String(), req.Header, []byte(defaultCredsForm(rule))),
+				"response":            detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+				"baseline_final_path": baseline.finalPath,
+				"baseline_status":     fmt.Sprintf("%d", baseline.statusCode),
 			},
 		})
 	}
 	return findings, nil
 }
 
-// loginSucceeded reports whether a default-credential POST looks like it
-// authenticated: the client's followed redirect chain landed away from the
-// login path it started at, or the response set a session cookie.
-func loginSucceeded(resp *http.Response, loginPath string) bool {
-	if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Path != loginPath {
+var defaultCredsHeaders = map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+
+func defaultCredsForm(rule DefaultCredRule) string {
+	return url.Values{"username": {rule.Username}, "password": {rule.Password}}.Encode()
+}
+
+// probeLogin fires one login POST and records just its outcome shape
+// (final path after any redirect chain, status code) — used both for the
+// baselineCredUsername/Password negative control and, via loginSucceeded,
+// compared against a real DefaultCreds pair's own probeLogin result.
+func (d *Detector) probeLogin(ctx context.Context, target, host, loginPath, username, password string) (loginProbeResult, error) {
+	form := url.Values{"username": {username}, "password": {password}}.Encode()
+	_, resp, _, err := d.doRequest(ctx, http.MethodPost, target, host, loginPath, "", defaultCredsHeaders, strings.NewReader(form))
+	if err != nil {
+		return loginProbeResult{}, err
+	}
+	finalPath := loginPath
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalPath = resp.Request.URL.Path
+	}
+	return loginProbeResult{finalPath: finalPath, statusCode: resp.StatusCode}, nil
+}
+
+// loginSucceeded reports whether a real DefaultCreds POST looks like it
+// authenticated, by comparing against baseline — a POST with a known-wrong
+// password at the same path (see baselineCredUsername/Password). A bare
+// Set-Cookie header used to be treated as success on its own, which
+// false-positived against a real production site (live-tested) that sets a
+// tracking/session cookie on every response regardless of outcome —
+// including a 404 routing error ("Cannot POST /admin/login"). Real success
+// needs a difference from what a known-wrong pair gets: either the real
+// attempt's final path differs from the known-wrong attempt's (redirected
+// somewhere the failure didn't), or the real attempt's status is a
+// success-shaped 2xx/3xx while the known-wrong one's isn't.
+func loginSucceeded(resp *http.Response, baseline loginProbeResult) bool {
+	if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Path != baseline.finalPath {
 		return true
 	}
-	return len(resp.Header.Values("Set-Cookie")) > 0
+	realIsSuccessStatus := resp.StatusCode >= 200 && resp.StatusCode < 400
+	baselineIsSuccessStatus := baseline.statusCode >= 200 && baseline.statusCode < 400
+	return realIsSuccessStatus && !baselineIsSuccessStatus
 }
 
 // probeBaseline fetches baselineCanaryPath once, to give
@@ -493,10 +578,25 @@ func (d *Detector) probeBaseline(ctx context.Context, target, host, authToken st
 // target's short paths (e.g. "/debug"), pushing genuinely-identical block
 // pages outside a length-only tolerance (see
 // docs/13-implementation-plan-ph4.md's Step 4 live-verification notes).
-// Only meaningful when the canary itself came back non-404 — see Run's
-// comment on why a 404 baseline never suppresses anything.
+//
+// Deliberately not gated on suspiciousBaselineStatuses — used only by
+// checks whose entire premise is "is THIS specific path distinctively
+// different from a definitely-nonexistent one" (exposed-path, dir-listing,
+// verbose-error). If a real target's canary probe legitimately comes back
+// 200 (a normal SPA/catch-all pattern) and a real path's response is
+// shape-identical to it, that still falsifies the check's own premise
+// regardless of status — live-found against a real Next.js SPA whose
+// shared shell embeds the requested path in a canonical-URL tag,
+// incidentally satisfying broad keyword rules like {Path: "/debug",
+// Keywords: ["debug"]}/{Path: "/graphql", Keywords: ["errors"]} on every
+// path via body-length correlation that matched request-path length
+// byte-for-byte. See looksLikeInterceptedPage for the stricter,
+// status-gated variant root-only checks need instead.
 func (d *Detector) looksLikeBaselinePage(status int, body []byte, path string) bool {
-	if !d.baselineFetched || !suspiciousBaselineStatuses[d.baselineStatus] || status != d.baselineStatus {
+	if looksLikeKnownWAFBlockPage(body) {
+		return true
+	}
+	if !d.baselineFetched || status != d.baselineStatus {
 		return false
 	}
 	probeAdjusted := bodyLengthExcluding(body, strings.Trim(path, "/"))
@@ -510,6 +610,56 @@ func (d *Detector) looksLikeBaselinePage(status int, body []byte, path string) b
 		tolerance = 32
 	}
 	return diff <= tolerance
+}
+
+// looksLikeInterceptedPage is looksLikeBaselinePage's stricter counterpart
+// for root-only checks (comment-leak, missing-headers). Their finding isn't
+// "is this path special" — it's "what does the app's real response look
+// like" — so a root response that's shape-identical to canary's is only
+// grounds for suppression when the canary itself signals interception (a
+// WAF/bot-layer/auth-wall — suspiciousBaselineStatuses), not merely because
+// the app happens to serve the same page everywhere. A real, sitewide issue
+// (e.g. a debug comment baked into a shared header/footer template) must
+// not be suppressed just because it also shows up on a fake path — if
+// anything that makes it a *more* meaningful finding, not a false one.
+//
+// knownWAFBlockPageMarkers bypasses that whole comparison, and is checked
+// first, independent of status/canary state: live testing against a real
+// Akamai-fronted target found the canary-comparison technique's own
+// assumption doesn't hold universally — root ("/") was consistently
+// WAF-blocked (403) while a random nonexistent path was consistently
+// allowed through (200), confirmed via five repeated request pairs, not
+// timing flakiness. A canary genuinely cannot stand in for root against a
+// WAF with path-specific rules like this one. Recognizing the block page's
+// own content directly sidesteps the whole comparison.
+func (d *Detector) looksLikeInterceptedPage(status int, body []byte) bool {
+	if looksLikeKnownWAFBlockPage(body) {
+		return true
+	}
+	if !d.baselineFetched || !suspiciousBaselineStatuses[d.baselineStatus] {
+		return false
+	}
+	return d.looksLikeBaselinePage(status, body, "")
+}
+
+// knownWAFBlockPageMarkers are content signatures of a specific, real
+// WAF/CDN interception page — confirmed live (2026-08-30), not guessed.
+// Deliberately narrow: only Akamai's confirmed marker, not a guessed
+// general list for other vendors (Cloudflare, Imperva, Sucuri, ...) —
+// expand only with the same live-confirmation discipline this one used,
+// per CLAUDE.md's "flag doubtful matchers instead of guessing" rule.
+// Deliberately just the alphanumeric word "edgesuite," not the full
+// "errors.edgesuite.net" domain: Akamai HTML-entity-encodes punctuation
+// in this page (dots become "&#46;", same reasoning as
+// baselineCanaryPath's own alphanumeric-only choice above) — a marker
+// containing literal dots silently never matches, found live the same
+// way the hyphenated canary path did.
+var knownWAFBlockPageMarkers = []string{
+	"edgesuite", // Akamai's own block-page reference-link domain (errors.edgesuite.net)
+}
+
+func looksLikeKnownWAFBlockPage(body []byte) bool {
+	return containsAny(body, knownWAFBlockPageMarkers)
 }
 
 // bodyLengthExcluding returns body's length minus every occurrence of
