@@ -51,15 +51,23 @@ signup_and_login() {
 		-d "{\"name\":\"HackerFive ${role}\",\"email\":\"${email}\",\"number\":\"${number}\",\"password\":\"${CRAPI_PASSWORD}\"}" \
 		>/dev/null 2>&1 || true   # failure here just means the account already exists — login below is the real check
 
-	local token
-	token=$(curl -sf -X POST "${CRAPI_BASE_URL}/identity/api/auth/login" \
-		-H "Content-Type: application/json" \
-		-d "{\"email\":\"${email}\",\"password\":\"${CRAPI_PASSWORD}\"}" \
-		| jq -r '.token') \
-		|| { echo "login failed for the ${role} account right after signup — is crAPI healthy?" >&2; return 1; }
+	# crAPI's identity service has a real eventual-consistency race: signup
+	# can return 200 before the account is actually visible to login, which
+	# then 401s with "Given Email is not registered!" for a moment. Retry a
+	# few times with a short backoff instead of treating the first failure
+	# as fatal.
+	local token attempt
+	for attempt in 1 2 3 4 5; do
+		token=$(curl -s -X POST "${CRAPI_BASE_URL}/identity/api/auth/login" \
+			-H "Content-Type: application/json" \
+			-d "{\"email\":\"${email}\",\"password\":\"${CRAPI_PASSWORD}\"}" \
+			| jq -r '.token')
+		[ -n "$token" ] && [ "$token" != "null" ] && break
+		sleep 1
+	done
 
 	if [ -z "$token" ] || [ "$token" = "null" ]; then
-		echo "login for the ${role} account returned no token — crAPI may still be starting up" >&2
+		echo "login for the ${role} account returned no token after ${attempt} attempts — crAPI may still be starting up" >&2
 		return 1
 	fi
 
