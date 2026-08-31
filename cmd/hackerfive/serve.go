@@ -18,7 +18,7 @@ func newServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Run the local web UI (hackerfive serve)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			srv, err := webui.New(webui.Options{Host: host, Port: port})
+			srv, err := webui.New(webui.Options{Host: host, Port: port, Version: version})
 			if err != nil {
 				return fmt.Errorf("starting web server: %w", err)
 			}

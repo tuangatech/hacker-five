@@ -20,6 +20,11 @@ import (
 type Options struct {
 	Host string
 	Port int
+	// Version is cmd/hackerfive's own build-time main.version (ldflags'd in
+	// by .goreleaser.yml/Dockerfile, "dev" otherwise) — rendered in the
+	// footer alongside a link to the GitHub Releases page. Empty defaults
+	// to "dev", same as main.version's own zero value.
+	Version string
 }
 
 // Server is the embedded HTTP server backing `hackerfive serve`.
@@ -34,7 +39,12 @@ type Server struct {
 // routes, and applies the CSRF and (conditionally) non-loopback-token
 // middleware. Does not start listening; see (*Server) ListenAndServe.
 func New(opts Options) (*Server, error) {
-	tmpl, err := template.ParseFS(assets, "templates/*.html")
+	version := opts.Version
+	if version == "" {
+		version = "dev"
+	}
+	funcs := template.FuncMap{"version": func() string { return version }}
+	tmpl, err := template.New("hackerfive").Funcs(funcs).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parsing embedded templates: %w", err)
 	}

@@ -133,6 +133,22 @@ a:hover { text-decoration: none; }
 
 p { color: var(--fg); }
 
+.site-footer {
+  border-top: 1px solid var(--border);
+  margin-top: 2rem;
+}
+
+.site-footer p {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 1rem 1.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.site-footer a { color: var(--muted); }
+.site-footer a:hover { color: var(--accent); }
+
 /* ---- Forms ---- */
 
 fieldset {
