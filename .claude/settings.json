@@ -7,14 +7,18 @@
       "Bash(go version *)",
       "Bash(go get *)",
       "Bash(go build *)",
-      "Bash(gofmt -l .)",
+      "Bash(go test *)",
       "Bash(go vet *)",
+      "Bash(rtk go *)",
+      "Bash(rtk go mod *)",
+      "Bash(rtk go build *)",
+      "Bash(rtk go get *)",
+      "Bash(gofmt -l .)",
       "Bash(./hackerfive --help)",
       "Bash(./hackerfive scan *)",
       "Bash(echo *)",
       "Bash(docker *)",
       "Bash(golangci-lint run *)",
-      "Bash(go test *)",
       "Bash(python3 -c ' *)",
       "Bash(gofmt -w tests/unit/ratelimit_test.go tests/unit/workerpool_test.go)",
       "Bash(chmod +x /Users/tuan.tran/Tuan/weekend/hacker-five/tests/integration/scripts/crapi_setup.sh)",
@@ -49,7 +53,6 @@
       "Bash(curl -s \"https://raw.githubusercontent.com/GH05TCREW/pentestagent/main/pentestagent/agents/crew/orchestrator.py\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/GH05TCREW/pentestagent/main/pentestagent/knowledge/sources/cves.json\")",
       "Bash(wsl.exe -e bash -lc \"cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go build ./... && go vet ./...\")",
-      "Bash(rtk go *)",
       "Read(//Users/tuan.tran/targets/crAPI/deploy/**)",
       "Bash(rtk docker *)",
       "Bash(lsof *)",
@@ -71,7 +74,18 @@
       "Bash(rtk golangci-lint *)",
       "Skill(update-config)",
       "Skill(update-config:*)",
-      "Bash(rtk brew *)"
+      "Bash(rtk brew *)",
+      "Bash(chmod +x /private/tmp/claude-501/-Users-tuan-tran-Tuan-weekend-hacker-five/d9617f66-d06b-470e-9473-1f166c85863b/scratchpad/run_eval.sh)",
+      "Bash(bash /private/tmp/claude-501/-Users-tuan-tran-Tuan-weekend-hacker-five/d9617f66-d06b-470e-9473-1f166c85863b/scratchpad/run_eval.sh)",
+      "Bash(echo \"exit=$?\")",
+      "Read(//tmp/**)",
+      "Bash(chmod +x /private/tmp/claude-501/-Users-tuan-tran-Tuan-weekend-hacker-five/d9617f66-d06b-470e-9473-1f166c85863b/scratchpad/run_eval2.sh)",
+      "Bash(bash /private/tmp/claude-501/-Users-tuan-tran-Tuan-weekend-hacker-five/d9617f66-d06b-470e-9473-1f166c85863b/scratchpad/run_eval2.sh)",
+      "Bash(getent hosts *)",
+      "Bash(python3 -c \"import socket; print\\(socket.gethostbyname\\('abc.localhost'\\)\\)\")",
+      "Bash(OOB_SERVER_URL=http://localhost:8082 go test ./tests/unit/... -run TestOOBClient_SelfIssuedCallback_RealServer -v)",
+      "Bash(rm -f /Users/tuan.tran/Tuan/weekend/hacker-five/hackerfive /tmp/hf-scope-deny.txt /tmp/hf-scope-deny-all.txt /tmp/hf-scope-allow.txt *)",
+      "Bash(git commit -m ' *)"
     ],
     "ask": [
       "Bash(docker rm *)",
@@ -84,7 +98,8 @@
       "Bash(docker system prune *)"
     ],
     "additionalDirectories": [
-      "/Users/tuan.tran/Tuan/weekend/hacker-five/docs"
+      "/Users/tuan.tran/Tuan/weekend/hacker-five/docs",
+      "/private/tmp"
     ]
   }
 }
