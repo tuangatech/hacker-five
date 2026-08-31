@@ -33,6 +33,7 @@ type Recon struct {
 	rateLimit   int
 	concurrency int
 	run         runFunc
+	progress    func(wave, status string)
 }
 
 // Option configures a Recon at construction time.
@@ -71,6 +72,21 @@ func withRun(fn runFunc) Option {
 	return func(r *Recon) { r.run = fn }
 }
 
+// WithProgressCallback registers fn to be invoked as "wave0"/"wave1"/
+// "wave2"/"wave3" transitions between "running" and "done" — Run has no
+// other incremental signal (unlike scanner.Engine's WithFindingCallback/
+// WithLogCallback), so a caller wanting to show live progress across a
+// multi-wave run (pkg/webui's Guided Scan) has nothing else to hook into.
+// Defaults to a no-op, same zero-behavior-change-when-unused shape as
+// scanner.Engine's own callbacks.
+func WithProgressCallback(fn func(wave, status string)) Option {
+	return func(r *Recon) {
+		if fn != nil {
+			r.progress = fn
+		}
+	}
+}
+
 // New builds a Recon. client is used for this package's own direct HTTP
 // calls (Wave 0's security.txt fetch, Wave 3's probeCommonPaths) — the same
 // rate-limited, circuit-broken client every detector already uses.
@@ -81,6 +97,7 @@ func New(client *httpclient.Client, opts ...Option) *Recon {
 		rateLimit:   DefaultRateLimit,
 		concurrency: DefaultConcurrency,
 		run:         defaultRun,
+		progress:    func(string, string) {},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -118,13 +135,17 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 	}
 
 	// Wave 0: zero-touch.
+	r.progress("wave0", "running")
 	r.runWave0(ctx, agg, target)
+	r.progress("wave0", "done")
 
 	// Wave 1: passive enumeration, then the scope cross-check — before any
 	// active wave ever sees a host (docs/91-research-recon-phase.md's
 	// corrected ordering).
+	r.progress("wave1", "running")
 	passiveHosts := r.runWave1(ctx, agg, domain)
 	inScope := r.filterScope(agg, passiveHosts)
+	r.progress("wave1", "done")
 
 	if depth == DepthPassive {
 		return agg.finalize(), nil
@@ -135,11 +156,15 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 	// (runWave2), even when it differs from the bare domain subfinder/tlsx
 	// queried (a non-default port, common for lab/staging targets) — Wave 1's
 	// passive tools have no way to discover that port on their own.
+	r.progress("wave2", "running")
 	liveHosts := r.runWave2(ctx, agg, u.Host, inScope)
+	r.progress("wave2", "done")
 
 	if depth == DepthFull {
 		// Wave 3: bounded crawl + common-path probing.
+		r.progress("wave3", "running")
 		r.runWave3(ctx, agg, target, liveHosts)
+		r.progress("wave3", "done")
 	}
 
 	return agg.finalize(), nil

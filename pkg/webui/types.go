@@ -41,9 +41,13 @@ type NewScanData struct {
 
 // ProgressData is fragment_progress.html's input — the status badge shown
 // both on initial render and pushed live via SSE (progress/done events).
+// Waves is only ever set by ReconJob's own renderProgress closure — Job's
+// (scan) leaves it nil, which renders as no wave list at all, so this one
+// shared struct costs scan progress nothing.
 type ProgressData struct {
 	Status string
 	Err    error
+	Waves  []WaveStatus
 }
 
 // ScanStatusData is what scan_status.html renders — the job's snapshot at
@@ -114,6 +118,12 @@ type ReconFormData struct {
 	Concurrency int
 	Insecure    bool
 
+	// Mode is "" for plain recon (GET /recon) or "guided" (GET
+	// /recon?mode=guided) — carried through the form as a hidden field so
+	// startRecon can tag the resulting ReconJob, which is all Mode
+	// controls: which link the status page offers once done.
+	Mode string
+
 	Tools ToolSetupData
 }
 
@@ -125,6 +135,7 @@ type ReconStatusData struct {
 	JobID     string
 	Target    string
 	Depth     string
+	Mode      string
 
 	Snapshot ReconSnapshot
 
@@ -156,4 +167,30 @@ type PlanPreviewData struct {
 	Target    string
 	Tree      *agenttask.PlanTree
 	IndexWarn string // non-empty when templates/index.json couldn't be loaded — degraded, not fatal
+}
+
+// GuidedScanPlanData is guided_scan_plan.html's input — the matched-
+// capabilities page a completed "guided" ReconJob's status page links to.
+// A single target is scanned throughout (the recon job's own Target, a
+// full scheme-normalized URL) — not individually-discovered subdomains;
+// an explicit scope cut for this pass, not an oversight.
+type GuidedScanPlanData struct {
+	CSRFToken string
+	JobID     string
+	Target    string
+	Errors    []string
+
+	Ready       []string // e.g. "misconfig" — needs no additional input
+	NeedsInput  []string // e.g. "idor", "authbypass" — rendered with the existing detector_fields_* fragments
+	Unsupported []string // matched but not runnable via Guided Scan yet (ssrf/businesslogic/promptinjection/template-tag IDs)
+	Unresolved  []string // StatusUnresolved leaf rationales, informational
+
+	// Echoed on a validation-error re-render, same "don't lose the
+	// operator's input" reasoning as NewScanData/ReconFormData.
+	AuthToken      string
+	OtherAuthToken string
+	Endpoint       string
+	ProtectedPaths string
+	LoginPaths     string
+	LogoutPaths    string
 }

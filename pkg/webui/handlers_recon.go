@@ -30,8 +30,20 @@ func (h *handlers) newReconForm(w http.ResponseWriter, r *http.Request) {
 		Depth:       string(recon.DepthActive), // matches cmd/hackerfive/plan.go's own default/rationale: Wave 2's httpx tech signals are what the decision engine matches against
 		RateLimit:   recon.DefaultRateLimit,
 		Concurrency: recon.DefaultConcurrency,
+		Mode:        normalizeReconMode(r.URL.Query().Get("mode")),
 		Tools:       buildToolSetupData(false, ""),
 	})
+}
+
+// normalizeReconMode is the one place "guided" vs. plain recon gets
+// decided — anything other than the literal string "guided" is plain
+// recon, never an error: an unrecognized ?mode value degrading to the
+// existing behavior is safer than rejecting the request over it.
+func normalizeReconMode(mode string) string {
+	if mode == "guided" {
+		return "guided"
+	}
+	return ""
 }
 
 // startRecon is POST /recon. r.Form/r.PostForm are already populated by
@@ -50,8 +62,8 @@ func (h *handlers) startRecon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := newReconJob(id, form.Target, form.Depth, func(status string, err error) template.HTML {
-		return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Err: err})
+	job := newReconJob(id, form.Target, form.Depth, form.Mode, func(status string, err error, waves []WaveStatus) template.HTML {
+		return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Err: err, Waves: waves})
 	})
 	h.reconStore.Add(job)
 
@@ -106,7 +118,11 @@ func (h *handlers) runReconJob(job *ReconJob, form ReconFormData) {
 		MaxIdleConnsPerHost: form.Concurrency,
 	}, httpclient.WithRateLimit(ratelimit.New(form.RateLimit)))
 
-	opts := []recon.Option{recon.WithRateLimit(form.RateLimit), recon.WithConcurrency(form.Concurrency)}
+	opts := []recon.Option{
+		recon.WithRateLimit(form.RateLimit),
+		recon.WithConcurrency(form.Concurrency),
+		recon.WithProgressCallback(job.SetWaveStatus),
+	}
 	if s != nil {
 		opts = append(opts, recon.WithScope(s))
 	}
@@ -156,7 +172,7 @@ func (h *handlers) reconEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	if snap := job.Snapshot(); snap.Status == StatusDone || snap.Status == StatusFailed {
-		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err})}); err == nil {
+		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err, Waves: snap.Waves})}); err == nil {
 			flusher.Flush()
 		}
 		return
@@ -202,8 +218,9 @@ func (h *handlers) reconSnapshotData(job *ReconJob, csrfTokenValue string) Recon
 		JobID:        job.ID,
 		Target:       job.Target,
 		Depth:        job.Depth,
+		Mode:         job.Mode,
 		Snapshot:     snap,
-		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err}),
+		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err, Waves: snap.Waves}),
 		Tools:        buildToolSetupData(false, ""),
 	}
 }
@@ -241,5 +258,6 @@ func reconFormFromRequest(r *http.Request) (ReconFormData, []string) {
 		RateLimit:   rateLimit,
 		Concurrency: concurrency,
 		Insecure:    r.PostFormValue("insecure") == "on",
+		Mode:        normalizeReconMode(r.PostFormValue("mode")),
 	}, errs
 }

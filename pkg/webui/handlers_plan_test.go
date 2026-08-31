@@ -32,7 +32,7 @@ func fixtureReconResultForPlan() *recon.ReconResult {
 func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newReconJob("job1", "https://example.com", "active", noopProgressRender)
+	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
 	job.MarkDone(fixtureReconResultForPlan(), nil)
 	h.reconStore.Add(job)
 
@@ -57,7 +57,7 @@ func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t 
 func TestPlanPreview_JobNotDone_Returns409(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newReconJob("job1", "https://example.com", "active", noopProgressRender)
+	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
 	job.SetRunning() // never MarkDone
 	h.reconStore.Add(job)
 
@@ -72,7 +72,7 @@ func TestPlanPreview_MissingTemplateIndex_DegradesToWarningBanner(t *testing.T) 
 	// directory in CI — loadTemplateIndex must degrade gracefully, not 500.
 	ts, h := newTestServerHandlers(t)
 
-	job := newReconJob("job1", "https://example.com", "active", noopProgressRender)
+	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
 	job.MarkDone(fixtureReconResultForPlan(), nil)
 	h.reconStore.Add(job)
 

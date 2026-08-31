@@ -2,7 +2,8 @@
 <p>Target: <code>{{.Target}}</code> — depth: <code>{{.Depth}}</code></p>
 
 <div hx-ext="sse" sse-connect="/recon/{{.JobID}}/events">
-<h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
+<h2>Status</h2>
+<div id="progress" sse-swap="progress,done">{{.ProgressHTML}}</div>
 </div>
 
 <details>
@@ -16,7 +17,8 @@
 </details>
 
 {{with .Snapshot.Result}}
-<p><a href="/plan-preview?job={{$.JobID}}">Preview Plan &rarr;</a></p>
+{{if eq $.Mode "guided"}}<p><a href="/guided-scan/plan?job={{$.JobID}}">Start Guided Scan &rarr;</a></p>
+{{else}}<p><a href="/plan-preview?job={{$.JobID}}">Preview Plan &rarr;</a></p>{{end}}
 
 <h2>Hosts</h2>
 <table>

@@ -1,0 +1,50 @@
+{{define "guided_scan_plan.html"}}{{template "header" .}}
+<h1>Guided Scan Plan</h1>
+<p>Recon job: <a href="/recon/{{.JobID}}">{{.JobID}}</a> &mdash; target: <code>{{.Target}}</code></p>
+<p><em>Confirm what to run below, then click "Start Scan" — nothing runs against the target until you do.</em></p>
+
+{{if .Errors}}<div class="error"><ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+
+<form hx-post="/guided-scan/run">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<input type="hidden" name="job" value="{{.JobID}}">
+
+{{range .Ready}}
+<fieldset>
+<legend>{{.}}</legend>
+<label class="inline"><input type="checkbox" name="run_{{.}}" checked> Run {{.}} &mdash; matched, no additional input needed</label>
+</fieldset>
+{{end}}
+
+{{range .NeedsInput}}
+<fieldset>
+<legend>{{.}}</legend>
+<label class="inline"><input type="checkbox" name="run_{{.}}" checked> Run {{.}}</label>
+{{if eq . "idor"}}{{template "detector_fields_idor" $}}{{else if eq . "authbypass"}}{{template "detector_fields_authbypass" $}}{{end}}
+</fieldset>
+{{end}}
+
+{{if or (gt (len .Ready) 0) (gt (len .NeedsInput) 0)}}
+<fieldset>
+<legend>Shared credentials</legend>
+<label for="auth_token">Auth token (--auth-token)</label>
+<input type="password" id="auth_token" name="auth_token" value="{{.AuthToken}}">
+<label for="other_auth_token">Other auth token (--other-auth-token, optional, idor only)</label>
+<input type="password" id="other_auth_token" name="other_auth_token" value="{{.OtherAuthToken}}">
+</fieldset>
+{{end}}
+
+{{if or (gt (len .Ready) 0) (gt (len .NeedsInput) 0)}}<button type="submit">Start Scan</button>{{end}}
+</form>
+
+{{if .Unsupported}}<h2>Matched, not available via Guided Scan yet</h2>
+<ul>{{range .Unsupported}}<li><code>{{.}}</code></li>{{end}}</ul>
+<p class="rationale">Run these manually via <a href="/scans/new">New Scan</a> (misconfig/idor/authbypass) or the CLI (ssrf/businesslogic/promptinjection).</p>
+{{end}}
+
+{{if .Unresolved}}<h2>Unresolved</h2>
+<ul>{{range .Unresolved}}<li><span class="status-badge badge-unresolved">unresolved</span> <span class="rationale">{{.}}</span></li>{{end}}</ul>
+{{end}}
+
+{{template "footer" .}}
+{{end}}

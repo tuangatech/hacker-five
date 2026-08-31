@@ -292,6 +292,16 @@ tr.sev-info { background: var(--info-bg); }
   color: var(--danger);
 }
 
+.wave-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
 .rationale { font-size: 0.85rem; color: var(--muted); margin: 0.15rem 0 0.4rem; }
 
 .tag-link {

@@ -74,6 +74,8 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /recon/{id}/events", h.reconEvents)
 	mux.HandleFunc("POST /recon/setup", h.setupTools)
 	mux.HandleFunc("GET /plan-preview", h.planPreview)
+	mux.HandleFunc("GET /guided-scan/plan", h.guidedScanPlan)
+	mux.HandleFunc("POST /guided-scan/run", h.startGuidedScan)
 
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {

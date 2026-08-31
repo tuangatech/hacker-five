@@ -12,32 +12,48 @@ import (
 // non-blocking publish, same reasoning.
 const reconSubscriberBuffer = 4
 
+// WaveStatus is one recon wave's current progress ("wave0".."wave3",
+// "running"/"done") — pkg/recon.WithProgressCallback's payload, carried
+// through to the rendered progress fragment so an operator watching the
+// status page sees which wave is active, not just an opaque overall
+// "running" badge.
+type WaveStatus struct {
+	Name   string
+	Status string
+}
+
 // ReconJob is a background hackerfive recon run. Deliberately a separate,
 // smaller type from Job rather than a generalization of it: recon.Run
-// (pkg/recon/recon.go) has no incremental callback like scanner.Engine's
-// WithFindingCallback/WithLogCallback, so there is exactly one event ever
-// worth publishing — the running -> done|failed transition — not the
-// finding/log stream Job exists to carry.
+// (pkg/recon/recon.go) has no per-finding/per-log incremental callback like
+// scanner.Engine's WithFindingCallback/WithLogCallback, only the wave-level
+// progress WithProgressCallback adds — not the finding/log stream Job
+// exists to carry. Mode distinguishes a plain recon run ("") from a Guided
+// Scan run ("guided"): the only thing it changes is which link the status
+// page offers once the job is done (see fragment_recon_status_body.html) —
+// immutable after construction, no mutex needed.
 type ReconJob struct {
 	ID        string
 	Target    string
 	Depth     string
+	Mode      string
 	CreatedAt time.Time
 
 	mu     sync.Mutex
 	status string
 	err    error
 	result *recon.ReconResult
+	waves  []WaveStatus
 	subs   []chan Event
 
-	renderProgress func(status string, err error) template.HTML
+	renderProgress func(status string, err error, waves []WaveStatus) template.HTML
 }
 
-func newReconJob(id, target, depth string, renderProgress func(status string, err error) template.HTML) *ReconJob {
+func newReconJob(id, target, depth, mode string, renderProgress func(status string, err error, waves []WaveStatus) template.HTML) *ReconJob {
 	return &ReconJob{
 		ID:             id,
 		Target:         target,
 		Depth:          depth,
+		Mode:           mode,
 		CreatedAt:      time.Now(),
 		status:         StatusQueued,
 		renderProgress: renderProgress,
@@ -51,12 +67,37 @@ type ReconSnapshot struct {
 	Status string
 	Err    error
 	Result *recon.ReconResult // nil until done
+	Waves  []WaveStatus
 }
 
 func (j *ReconJob) Snapshot() ReconSnapshot {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return ReconSnapshot{Status: j.status, Err: j.err, Result: j.result}
+	return ReconSnapshot{Status: j.status, Err: j.err, Result: j.result, Waves: append([]WaveStatus(nil), j.waves...)}
+}
+
+// SetWaveStatus is pkg/recon.WithProgressCallback's target — updates (or
+// appends) one wave's status and publishes the same EventProgress event
+// SetRunning/MarkDone already do, so the wave list re-renders as part of
+// the existing progress fragment rather than needing a new SSE event type.
+func (j *ReconJob) SetWaveStatus(wave, status string) {
+	j.mu.Lock()
+	updated := false
+	for i := range j.waves {
+		if j.waves[i].Name == wave {
+			j.waves[i].Status = status
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		j.waves = append(j.waves, WaveStatus{Name: wave, Status: status})
+	}
+	wavesCopy := append([]WaveStatus(nil), j.waves...)
+	curStatus, curErr := j.status, j.err
+	j.mu.Unlock()
+
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, wavesCopy)})
 }
 
 // Subscribe/publish mirror Job's own (jobs.go) — same non-blocking-send,
@@ -102,8 +143,9 @@ func (j *ReconJob) publish(ev Event) {
 func (j *ReconJob) SetRunning() {
 	j.mu.Lock()
 	j.status = StatusRunning
+	waves := append([]WaveStatus(nil), j.waves...)
 	j.mu.Unlock()
-	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil)})
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil, waves)})
 }
 
 // MarkDone transitions to a terminal state and records result — nil result
@@ -118,9 +160,10 @@ func (j *ReconJob) MarkDone(result *recon.ReconResult, err error) {
 		j.result = result
 	}
 	status := j.status
+	waves := append([]WaveStatus(nil), j.waves...)
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err)})
+	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err, waves)})
 }
 
 // maxReconJobs mirrors maxJobs (jobs.go) — same fixed, stated eviction cap.

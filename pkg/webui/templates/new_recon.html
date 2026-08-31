@@ -1,5 +1,7 @@
 {{define "new_recon.html"}}{{template "header" .}}
-<h1>New Recon</h1>
+{{if eq .Mode "guided"}}<h1>Guided Scan</h1>
+<p>Runs recon first, then walks you through the detectors it matches — read-only recon and decision-making, you confirm before anything scans for real.</p>
+{{else}}<h1>New Recon</h1>{{end}}
 
 <h2>Recon Tools</h2>
 <p>Wave 2 (DNS/port scan/HTTP probe) and Wave 3 (crawl) need 6 external binaries installed — subfinder/tlsx/dnsx/naabu/httpx/katana. Without them, passive-depth recon still works; active/full-depth waves are skipped with a warning.</p>
@@ -14,6 +16,7 @@
 
 <form hx-post="/recon" hx-target="#recon-panel" hx-push-url="true">
 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<input type="hidden" name="mode" value="{{.Mode}}">
 
 <fieldset>
 <legend>Target &amp; Depth</legend>
@@ -39,7 +42,7 @@
 <input type="text" id="scope_file" name="scope_file" value="{{.ScopeFile}}">
 </fieldset>
 
-<button type="submit">Start Recon</button>
+<button type="submit">{{if eq .Mode "guided"}}Start Guided Scan{{else}}Start Recon{{end}}</button>
 </form>
 <div id="recon-panel"></div>
 {{template "footer" .}}

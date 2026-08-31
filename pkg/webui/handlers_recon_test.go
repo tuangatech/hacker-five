@@ -70,7 +70,7 @@ func fixtureReconResult() *recon.ReconResult {
 func TestReconStatus_RendersHostsTechWarningsFromFixture(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newReconJob("job1", "https://example.com", "active", noopProgressRender)
+	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
 	job.MarkDone(fixtureReconResult(), nil)
 	h.reconStore.Add(job)
 
@@ -88,6 +88,44 @@ func TestReconStatus_RendersHostsTechWarningsFromFixture(t *testing.T) {
 	assert.Contains(t, html, "subfinder binary not found")
 	assert.Contains(t, html, "other.example.com")
 	assert.Contains(t, html, "/plan-preview?job=job1")
+}
+
+func TestReconStatus_GuidedMode_LinksToGuidedScanPlanNotPlanPreview(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newReconJob("job1", "https://example.com", "active", "guided", noopReconProgressRender)
+	job.MarkDone(fixtureReconResult(), nil)
+	h.reconStore.Add(job)
+
+	resp, err := http.Get(ts.URL + "/recon/job1")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+
+	assert.Contains(t, html, "/guided-scan/plan?job=job1")
+	assert.NotContains(t, html, "/plan-preview?job=job1")
+}
+
+func TestReconStatus_RendersWaveProgress(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
+	job.SetRunning()
+	job.SetWaveStatus("wave0", "done")
+	job.SetWaveStatus("wave1", "running")
+	h.reconStore.Add(job)
+
+	resp, err := http.Get(ts.URL + "/recon/job1")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+
+	assert.Contains(t, html, "wave0")
+	assert.Contains(t, html, "wave1")
 }
 
 func TestReconStatus_UnknownJob_404s(t *testing.T) {

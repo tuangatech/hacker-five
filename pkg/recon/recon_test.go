@@ -103,6 +103,45 @@ func TestRun_BareDomainTarget_DoesNotErrorOut(t *testing.T) {
 	assert.Contains(t, invoked, "tlsx")
 }
 
+func TestRun_ProgressCallback_FiresInOrderPerDepth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+
+	cases := []struct {
+		depth Depth
+		want  []string
+	}{
+		{DepthPassive, []string{"wave0:running", "wave0:done", "wave1:running", "wave1:done"}},
+		{DepthActive, []string{"wave0:running", "wave0:done", "wave1:running", "wave1:done", "wave2:running", "wave2:done"}},
+		{DepthFull, []string{"wave0:running", "wave0:done", "wave1:running", "wave1:done", "wave2:running", "wave2:done", "wave3:running", "wave3:done"}},
+	}
+	for _, c := range cases {
+		t.Run(string(c.depth), func(t *testing.T) {
+			_, fake := recordingRun(t, nil)
+			var got []string
+			r := New(newTestClient(), withRun(fake), WithProgressCallback(func(wave, status string) {
+				got = append(got, wave+":"+status)
+			}))
+			_, err := r.Run(context.Background(), srv.URL, c.depth)
+			require.NoError(t, err)
+			assert.Equal(t, c.want, got)
+		})
+	}
+}
+
+// TestRun_ProgressCallback_NilIsSafe confirms not passing
+// WithProgressCallback at all (the default, every existing caller) still
+// runs cleanly — New's own no-op default, not a nil-check at every call
+// site.
+func TestRun_ProgressCallback_NilIsSafe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+	_, fake := recordingRun(t, nil)
+	r := New(newTestClient(), withRun(fake))
+	_, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+}
+
 func TestRun_ActiveDepth_NeverInvokesCrawlBinary(t *testing.T) {
 	calls, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
