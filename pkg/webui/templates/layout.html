@@ -16,7 +16,9 @@
 <script src="/static/htmx-ext-sse.js"></script>
 </head>
 <body>
-<header>
+<header class="site-header">
+<div class="header-inner">
+<a class="brand" href="/">HackerFive</a>
 <nav>
 <a href="/">Dashboard</a>
 <a href="/scans/new">New Scan</a>
@@ -24,8 +26,11 @@
 <a href="/templates">Templates</a>
 <a href="/recon">Recon</a>
 </nav>
+</div>
 </header>
+<main class="content">
 {{end}}
-{{define "footer"}}</body>
+{{define "footer"}}</main>
+</body>
 </html>
 {{end}}
