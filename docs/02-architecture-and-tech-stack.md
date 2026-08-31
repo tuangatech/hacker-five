@@ -119,7 +119,63 @@
 - Live findings/logs stream to the browser via Server-Sent Events, backed by `Engine`'s `WithFindingCallback`/`WithLogCallback` hooks (see Scanner Engine, below) — this is what "Callback-based streaming results," formerly listed under Future Considerations, actually became once something needed it.
 - CSRF via a hand-rolled double-submit cookie (no third-party framework, consistent with the Minimal Dependencies stance below); a non-loopback bind requires a one-time bootstrap token, exchanged on first use for an `HttpOnly` session cookie.
 - Full design in [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md).
-- **Planned, not yet built: a third frontend for LLM agents.** [90-research-hackerbot.md](90-research-hackerbot.md) researched how other LLM-driven pentesting tools structure themselves and resolved the open design questions (a single coordinator, no shell/exec-shaped tool, MCP `elicitation`/`tasks` for human approval, and — per the Design Principles above — a deterministic decision engine with a tiered LLM fallback, never an LLM-first design); [91-research-recon-phase.md](91-research-recon-phase.md) added the recon-phase design that feeds it. [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) schedule it as Phase 5-7 (recon/data-model/decision-engine foundations, then the MCP server plus the tiered LLM fallback and `tools.search`/`templates.search`, then hardening). Like the Web UI, it's designed as a third frontend over this same unmodified Scanner Engine (an MCP server in `pkg/mcpserver/`, not a second implementation of it) — this section stays a stub rather than a full write-up until that phase actually ships, matching how this doc already treats Phase 4's still-unbuilt detectors. The shape doc91 lands on, once built, is recon → deterministic decision-engine dispatch (falling back to tiered LLM reasoning only on a registry miss) → human-approved plan proposal → scoped execution → result interpretation → human final review, looping back to plan approval whenever execution surfaces new out-of-scope hosts/paths (doc91 §4's full diagram, updated for the decision-engine step).
+- **Planned, not yet built: a third frontend for LLM agents.** [90-research-hackerbot.md](90-research-hackerbot.md) researched how other LLM-driven pentesting tools structure themselves and resolved the open design questions (a single coordinator, no shell/exec-shaped tool, MCP `elicitation`/`tasks` for human approval, and — per the Design Principles above — a deterministic decision engine with a tiered LLM fallback, never an LLM-first design); [91-research-recon-phase.md](91-research-recon-phase.md) added the recon-phase design that feeds it. [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) schedule it as Phase 5-7 (recon/data-model/decision-engine foundations, then the MCP server plus the tiered LLM fallback and `tools.search`/`templates.search`, then hardening). Like the Web UI, it's designed as a third frontend over this same unmodified Scanner Engine (an MCP server in `pkg/mcpserver/`, not a second implementation of it) — the diagram below stays the design target rather than a built-and-shipped description until Phase 6-7 actually land, matching how this doc already treats Phase 4's still-unbuilt detectors.
+
+  **Planned end-to-end flow (diagrammed 2026-08-31, mid-Phase-5 — ✅ = built and live-verified today, ⬜ = designed, not yet built):**
+
+  ```
+  1. Recon, escalating waves 0-3                                          ✅ pkg/recon (Phase 5 Step 3a)
+     (zero-touch → passive → active → bounded crawl)
+             │
+  2. Fingerprint (header/body/favicon/port signals)                       ✅ pkg/fingerprint (Step 3b, I2)
+             │
+  3. Decision engine: TechFact → registry match                          ✅ pkg/registry (Step 3b, I1/I3)
+             │  deterministic dispatch first (capability + template-tag
+             │  reuse against the already-synced+pinned corpus — never
+             │  a live/dynamic template download, see note below)
+             │
+             ├─ matched? ─────────────────────────────────────────────▶  pending leaf(ves)
+             │
+             └─ no match ──▶ tiered LLM fallback (Decision 5/6)          ⬜ I4 (Phase 6)
+                                   │
+                                   ├─ still no coverage? ──▶ visible     ✅ unresolved-leaf rendering
+                                   │   `unresolved` leaf (never dropped)    (Step 3b/4, live-verified)
+                                   │
+                                   └─ frontier tier authors a NEW
+                                      template ──▶ templates/proposed/  ⬜ E2 — its own separate human
+                                      (untrusted until promoted)            promotion gate, not auto-trusted
+             │
+     [2+3 together are what BUILD the PlanTree — plan review happens
+      ON the tree they produce, never before it exists]
+             │
+  4. PlanTree — read-only preview                                        ✅ pkg/agenttask + Web UI (Step 2/4)
+             │
+  5. Human approves the plan (MCP `elicitation`/`tasks`)  ◀───────┐      ⬜ B1 (Phase 6)
+             │                                                    │
+  6. Scoped execution — approved leaves run, fanned out            │
+     across scanner.Engine's existing worker pool                  │      ⬜ doc15 §2's new Executor (added
+     (parallel across independent leaves; the LLM-fallback         │         2026-08-31) — worker-pool
+     tier stays more conservative — MAPTA's cost/attempt           │         parallelism itself already
+     correlation + H5's spend ceiling argue against firing         │         exists (doc02 §4), the walker
+     many expensive frontier calls at once)                        │         that drives it per-leaf doesn't yet
+             │                                                     │
+             ├─ new out-of-scope host/path discovered? ────────────┘      ⬜ B4 scope-creep loop, now with a
+             │                                                              named caller (doc15 §2's Executor)
+  7. Leaf Status/Confidence updated continuously during execution        ⬜ H2's `ApplyLeafUpdate`, leaf-only —
+     (not a single late step)                                                doc15 §2 schedules the required
+             │                                                               `PlanTree` mutex as an explicit
+             │                                                               prerequisite for this step
+  8. Result interpretation → human final review                          ⬜ not yet built
+             │
+  9. Report (JSON/MD/HTML/HackerOne draft)                               ✅ pkg/reporter Exporter (Phase 4)
+             │
+  10. HackerOne submission — separate, explicit `--yes` gate,            ✅ permanent invariant (CLAUDE.md/B3),
+      never bundled into "reporting" itself                                  not yet wired to an agent flow
+  ```
+
+  **Two boundaries worth stating explicitly, since they're easy to blur:**
+  - **"Reuse existing templates before creating new ones" (Decision 6) is bounded to whatever's already on disk at decision time — never a live download.** `pkg/templatesync` syncs 4 pinned categories (`http/exposed-panels`, `http/misconfiguration`, `http/technologies`, `http/vulnerabilities/generic`) from one fixed upstream commit into a persistent per-user directory, entirely decoupled from the release binary (only a small, hand-authored example set under `templates/` is `go:embed`-ed). The decision engine's template-tag matching only ever searches `templates/index.json` — itself only ever built from whatever `hackerfive templates sync` has *already* pulled down. Re-pinning or widening the synced categories is, by the sync code's own doc comment, *"a rare, deliberate, human-reviewed action... not a runtime toggle"* — so there is no safe middle ground where the decision engine or the LLM fallback expands template coverage on its own mid-scan; a fingerprint the synced corpus doesn't cover surfaces as a real, visible `unresolved` leaf instead. **A real gap found and fixed while drafting this diagram (2026-08-31):** this dev machine's synced directory held only a single leftover test fixture, not the real corpus — every earlier "live-verified template-tag match" claim in doc14 (Steps 3b/4) was true but exercised only the ~29 bundled example templates, not the intended corpus. Running `hackerfive templates sync` for real (1560+980+910+19 = 3469 templates pulled, 3194 indexed) and re-running `hackerfive plan` against crAPI raised the real template-tag-matched leaf count from 1 (`php-detect`) to 11 (nginx/php/phpldapadmin/etc. panel and technology templates) — the reuse-first mechanism works as designed, it just hadn't been exercised against the real corpus size until now.
+  - **Parallel leaf execution (step 6) is architecturally sound but not yet built — now scheduled, not just noted.** Leaves under different hosts have no declared dependency on each other (`registry.Resolve` builds them as flat siblings), and `scanner.Engine`'s worker pool already parallelizes multiple templates/detectors against a target today — running several approved leaves concurrently is the same pattern, not new territory, and doesn't conflict with Decision 1 (a single coordinator dispatching scoped, disposable tool calls concurrently is exactly Cyber-AutoAgent's validated pattern, not a peer-agent mesh). The concrete blocker: `pkg/agenttask.PlanTree`/`PlanNode` currently have no mutex (unlike `Job`/`ReconJob` in `pkg/webui`, which both do) — `ApplyLeafUpdate` isn't yet safe to call from multiple goroutines. **Update, 2026-08-31: this is no longer an open, unscheduled gap** — [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) §2 now names the concrete home for both the executor that runs leaves in parallel and the `PlanTree` mutex it requires as an explicit prerequisite; [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md)'s own `PlanTree` entry carries a forward-note pointing at the same addendum, so all three docs agree on where this lands instead of drifting independently.
 
 #### 8. **Dependencies (Minimal)**
 ```

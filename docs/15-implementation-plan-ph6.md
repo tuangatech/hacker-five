@@ -15,7 +15,7 @@
 ## Scope
 
 1. ⬜ **MCP server** (Weeks 41-42)
-2. ⬜ **Approval gate + spend ceiling** (Week 43)
+2. ⬜ **Approval gate + PlanTree executor + spend ceiling** (Week 43 — see this step's note on week pressure, added 2026-08-31)
 3. ⬜ **Hard safety blockers + scope-creep gate + cost-aware prioritization** (Weeks 44-45)
 4. ⬜ **Approval UI: make the plan preview actionable** (Week 46)
 5. ⬜ **Session log + release** (Weeks 47-48) — `v0.6.0`
@@ -69,7 +69,9 @@ Unit tests per tool against a mock/stub scanner config. A real MCP client (e.g. 
 
 ---
 
-## Step 2: Approval Gate + Spend Ceiling (Week 43) — ⬜ not yet implemented
+## Step 2: Approval Gate + PlanTree Executor + Spend Ceiling (Week 43) — ⬜ not yet implemented
+
+**Week-pressure note, added 2026-08-31, named rather than silently absorbed:** this step grew a real subsystem (the executor, below) after this revision found it had no home anywhere in the original plan. One week for `plan`/`elicitation`, the tiered LLM fallback, the executor (plus the `PlanTree` mutex it requires), and the spend ceiling is tight — flag for re-estimation at Step 2 kickoff rather than silently stretching the week, same discipline this doc set already applies to other estimate risks (see doc13's own week-pressure calls).
 
 ### Design
 
@@ -81,16 +83,25 @@ Unit tests per tool against a mock/stub scanner config. A real MCP client (e.g. 
 
 **H5 — per-job spend ceiling**, sequenced alongside B1 per doc90's own note (a hard budget cap has a same-day reference implementation to copy — Strix's `--max-budget-usd` — so there's no reason to treat it as a stretch goal). A hard, enforced cap on cumulative agent-attributable cost (LLM token spend the coordinator itself reports, not HackerFive's own request cost) for a `Job` — exceeding it fails the job with a clear reason, it does not just log a warning.
 
+**Executor — the PlanTree walker that turns an approved plan into real scan calls (new, added 2026-08-31, cross-referenced from doc02 §7's flow diagram).** A real, load-bearing gap this revision found: every step in this doc up through Step 5 assumes execution happens (Step 5's own Verification says a round trip includes "scan execution with live findings/logs"), but no step before this addition actually specified what runs once `elicitation` returns approved. Concretely: once the human approves (B1), a new `pkg/mcpserver/executor.go` walks the approved `PlanTree`'s leaves and, per leaf, calls into `pkg/scanner`/`pkg/recon` the same way `pkg/webui` already does — no scan logic duplicated, same boundary as everywhere else in this doc. Two concurrency tiers, not one blanket policy:
+- **Deterministic leaves (R8-matched, zero LLM cost)** parallelize freely across `scanner.Engine`'s existing worker pool (doc02 §4) — the same concurrency the CLI already exercises today for multiple templates/detectors against a target, just dispatched per-leaf instead of per-template-list.
+- **LLM-fallback leaves (I4)** stay conservative — low, explicit concurrency (a small fixed cap, not the same pool size as the deterministic tier) — per MAPTA's measured finding that rising cost/attempts/time on one leaf correlates with *falling* success odds (doc90 §2), and H5's spend ceiling: firing many expensive frontier calls in parallel burns budget before H4's stop-and-escalate signal gets a chance to fire.
+
+As each leaf's execution completes, the executor calls `ApplyLeafUpdate` to record its outcome — this is the concrete trigger point Step 3's B4 scope-creep gate reacts to: a leaf's own recon re-run populating `ReconResult.OutOfScope` is what the executor checks before continuing to that leaf's siblings, not a mechanism floating unconnected to anything that calls it. **Hard prerequisite, not assumed**: `pkg/agenttask.PlanTree`/`PlanNode` (doc14 H2) currently carry no mutex — safe there because nothing calls `ApplyLeafUpdate` concurrently in Phase 5, unsafe the moment this executor calls it from parallel leaf goroutines. Add the mutex here, mirroring `pkg/webui`'s `Job`/`ReconJob`, which already guard their mutable fields the same way — a small, well-scoped addition to `pkg/agenttask/plantree.go`, not a redesign.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/mcpserver/tools_plan.go` — `plan` tool, `elicitation` request/response handling, resolving R8's decision-engine output (doc14) plus any I4 fallback resolutions before presenting for approval.
+- `pkg/mcpserver/executor.go` — the PlanTree walker: dispatches approved leaves to `pkg/scanner`/`pkg/recon`, two-tier concurrency (deterministic vs. LLM-fallback), calls `ApplyLeafUpdate` per completed leaf, checks for scope-creep after each leaf (feeds Step 3's B4 gate).
+- `pkg/agenttask/plantree.go` (doc14, extended) — adds a `sync.Mutex` guarding `PlanNode` field access, so `ApplyLeafUpdate` is safe from concurrent callers.
 - `pkg/llmfallback/{tiers,localmodel,openrouter}.go` — the tiered fallback client and its schema-in/schema-out call, invoked per unresolved `PlanTree` leaf.
 - `pkg/webui/jobs.go` (or doc14's shared package) — `Job`/`PlanTree` gains a `SpendCeiling`/`SpendSoFar` pair; the coordinator reports spend increments via a new field on the MCP tool call metadata.
 - `tests/unit/plan_tool_test.go` — approve/reject/timeout paths against a mock elicitation response, including a test confirming the initial tree is seeded from a real (doc14 R8) decision-engine output, not empty and not re-derived.
+- `tests/unit/executor_test.go` — confirms deterministic leaves run concurrently (bounded by the worker pool) while LLM-fallback leaves respect the lower concurrency cap; confirms `ApplyLeafUpdate` under concurrent leaf completions doesn't race (`-race` is the actual proof here, not just a passing assertion); confirms a leaf whose execution populates `OutOfScope` blocks its siblings pending re-approval.
 - `tests/unit/llmfallback_test.go` — confirms the fallback fires only for a leaf R8 left unresolved (mocked model responses), never for an already-matched leaf; confirms a drafted template is rejected at load time if it contains a disallowed block.
 - `tests/unit/spend_ceiling_test.go` — confirms a job hard-fails once the ceiling is crossed, not just logs.
 
 ### Verification
-Unit tests for the elicitation round trip (mocked), the decision-engine-seeded initial plan, the tiered-fallback trigger condition, and the spend-ceiling hard-fail. Live verification: a real MCP client runs `recon` then proposes a plan, a human approves or rejects it via the client's own elicitation UI, and the server only proceeds on approval — confirmed against a real client, not just a mock. Separately, live-verify the fallback fires exactly once per unresolved leaf against a real local model and, for the new-template case, a real OpenRouter call.
+Unit tests for the elicitation round trip (mocked), the decision-engine-seeded initial plan, the tiered-fallback trigger condition, the spend-ceiling hard-fail, and the executor's concurrency/mutex/scope-creep-trigger behavior (`go test -race` specifically exercising concurrent `ApplyLeafUpdate` calls, not just a single-goroutine happy path). Live verification: a real MCP client runs `recon` then proposes a plan, a human approves or rejects it via the client's own elicitation UI, and the server only proceeds on approval — confirmed against a real client, not just a mock. Separately, live-verify the fallback fires exactly once per unresolved leaf against a real local model and, for the new-template case, a real OpenRouter call. Separately, live-verify the executor against a real lab target with a plan containing multiple deterministic leaves — confirm they actually run concurrently (elapsed time close to the slowest single leaf, not the sum of all leaves), not accidentally serialized.
 
 ---
 
@@ -102,7 +113,7 @@ Unit tests for the elicitation round trip (mocked), the decision-engine-seeded i
 
 **D3 — hard-fail, not warn, on missing `--scope` for agent-initiated runs.** The CLI's existing "warn, don't silently proceed" behavior for a missing `--scope` (doc02 §3) is the right default for a human at a terminal who typed the command themselves; it's the wrong default for an agent-initiated `scan`/`recon` MCP tool call, where nobody read the warning. Both tools reject the call outright if `--scope`-equivalent isn't set, rather than proceeding with a stderr line nobody's watching.
 
-**B4 — scope-creep gate, first implementation.** doc90's B4 requires fresh approval when a scan's own recon surfaces hosts/paths outside `--targets`/`--scope`; doc14's `ReconResult.OutOfScope` (doc91's R6) is the producer this gate has been missing. Concretely: if `pkg/recon` (via the `recon` tool, or a re-run mid-scan) populates `OutOfScope` with anything, the coordinator cannot silently fold those hosts into the working set — a second `elicitation` round trip (reusing Step 2's `plan` mechanism) is required before anything touches them. Phase 7 Step 2 rounds this out with audit-trail/documentation coverage; this is where the gate first actually exists and blocks something.
+**B4 — scope-creep gate, first implementation.** doc90's B4 requires fresh approval when a scan's own recon surfaces hosts/paths outside `--targets`/`--scope`; doc14's `ReconResult.OutOfScope` (doc91's R6) is the producer this gate has been missing. Concretely: Step 2's new executor is the actual caller — after each leaf's execution (whether that's the `recon` tool directly or a leaf-scoped re-run mid-scan), the executor checks whether that leaf's result populated `OutOfScope`; if so, it halts dispatch of that leaf's remaining siblings and a second `elicitation` round trip (reusing Step 2's `plan` mechanism) is required before anything touches the newly-found hosts. Naming the executor as the trigger point here closes what was otherwise a gate with no specified caller. Phase 7 Step 2 rounds this out with audit-trail/documentation coverage; this is where the gate first actually exists and blocks something.
 
 **H4 — cost/attempt-aware prioritization.** A per-leaf attempt counter and running spend tracker on doc14's `PlanTree`, applying MAPTA's own measured finding as a concrete rule: rising tool-call count, dollar cost, token count, and elapsed time on one leaf are each independently correlated with *falling* odds of success (r = −0.66, −0.61, −0.59, −0.56 per doc90 §2) — "still grinding after N attempts with no confidence increase" surfaces as a stop-and-escalate signal to the coordinator (via the leaf's `Status`), not a reason to allocate more budget to the same leaf.
 
@@ -163,6 +174,8 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 - [ ] The tiered LLM fallback (I4) fires only on a confirmed decision-engine miss — never as a standing parallel path — with every call logged as one stateless input→output pair per `PlanTree` leaf
 - [ ] An LLM-drafted template is confirmed, live, to go through the existing untrusted-template rejection pipeline and land in `templates/proposed/`, never running against a live target without separate human promotion
 - [ ] A per-job spend ceiling hard-fails a job when crossed, not just logs
+- [ ] The PlanTree executor dispatches approved leaves into real `pkg/scanner`/`pkg/recon` calls; deterministic leaves run concurrently via the existing worker pool while LLM-fallback leaves respect a lower, explicit concurrency cap — both confirmed live, not assumed from the design
+- [ ] `pkg/agenttask.PlanTree`/`PlanNode` are confirmed race-free under concurrent `ApplyLeafUpdate` calls (`go test -race`), not just correct in a single-goroutine test
 - [ ] A program-policy pre-flight check (D2) hard-blocks an agent-driven run against a target whose disclosure policy disallows automated scanners
 - [ ] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command
 - [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and triggers a fresh `elicitation` round trip before it's touched, live-verified
