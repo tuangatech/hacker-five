@@ -28,7 +28,7 @@ coverage.out
 
 # goreleaser output (goreleaser release --snapshot --clean)
 dist/
-.claude/
+# .claude/
 
 # Local, per-engagement workspace: HackerOne/program credentials, pulled
 # scope files, scan output, results logs — never committed. See
