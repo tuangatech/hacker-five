@@ -130,7 +130,22 @@ golangci-lint --version  # confirm v2.x, linux/amd64
 golangci-lint run ./...
 ```
 
-#### 2. **Testing Targets (Docker)**
+#### 2. **Recon binaries** (`pkg/recon`, `hackerfive recon` — docs/14-implementation-plan-ph5.md Step 3)
+Six ProjectDiscovery CLI tools recon shells out to with fixed arguments (same scoped-subprocess precedent as `pkg/templatesync`'s `git` call, not a general shell) — **not linked into this module's own `go.mod`**, each is installed as a standalone binary via `go install`, same class of prerequisite as `golangci-lint` above. A missing binary degrades that one wave to a logged `ReconResult.Warnings` entry, not a hard failure — these are optional for `go build`/`go test ./...` (CI itself doesn't have them installed either, which is exactly what exercises that degrade path), only needed for a live `hackerfive recon --recon-depth active|full` run.
+```bash
+# Verify current stable versions at https://github.com/projectdiscovery before pinning —
+# @latest confirmed working versions as of 2026-08-30: subfinder v2.16.0, tlsx/dnsx/naabu/httpx/katana (current @latest)
+go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest
+go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+go install github.com/projectdiscovery/katana/cmd/katana@latest
+# each installs to $(go env GOPATH)/bin — same PATH entry golangci-lint above already needs
+```
+**Two real things found installing/running these, not assumed:** (1) `subfinder`'s own build pulls a large dependency tree (AWS/Azure SDKs, a Postgres driver, etc., for its cloud-source API-key config) — harmless here since `go install` builds it as a separate binary, never a dependency of this module's own `go.mod` (confirmed: `go.mod`/`go.sum` gained nothing from installing these). (2) `httpx`'s `-tech-detect` flag downloads a ~93MB Wappalyzer-based model file to `~/.dit/model.json` on its *first* invocation — a one-time, unannounced-until-it-happens network fetch, not a bug, but worth knowing about before a first `hackerfive recon --recon-depth active` run appears to hang.
+
+#### 3. **Testing Targets (Docker)**
 Docker here serves two purposes: running the vulnerable targets to scan against, and (once you reach [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)/[10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md)'s verification steps) building/running HackerFive's own image (`docker build -t hackerfive:dev .`). Day-to-day `go build`/`go test`/`golangci-lint run` don't touch Docker at all.
 
 Bring-up steps for each target (crAPI, DVWA, and what's not needed yet) live in [20-setup-testing-targets.md](20-setup-testing-targets.md) — identical on both platforms, since Docker Desktop abstracts the difference. This section only covers Docker/platform quirks that aren't target-specific:
@@ -139,7 +154,7 @@ Bring-up steps for each target (crAPI, DVWA, and what's not needed yet) live in 
 
 **Windows:** run `docker` and `docker compose` from inside the WSL2 Ubuntu shell (not PowerShell) so bind-mounted paths resolve the same way they do on the Mac/Linux instructions in this doc. `localhost:PORT` from a WSL2 container is reachable directly from the Windows browser — no extra port-forwarding needed with the WSL2 backend.
 
-#### 3. **HTTP Interception (Debugging)**
+#### 4. **HTTP Interception (Debugging)**
 ```bash
 # Option 1: Burp Suite Community
 # Download from https://portswigger.net/burp/communitydownload
@@ -155,7 +170,7 @@ cd ~/hacker-five
 ```
 On Windows, run `hackerfive` and `mitmproxy` inside WSL2 for consistency with the rest of this doc; `127.0.0.1` inside WSL2 is reachable from the Windows host, so pointing a Windows-native Burp at the same port works too.
 
-#### 4. **Postman (Template Development)**
+#### 5. **Postman (Template Development)**
 ```bash
 # Download from https://www.postman.com/downloads/
 # Native installer for both macOS and Windows; use to test API endpoints before converting to YAML templates
@@ -276,6 +291,16 @@ docker compose up -d
 
 # 2. Run integration tests
 go test -v -tags=integration ./tests/integration/...
+
+# 2b. Run the Phase 5 eval harness (docs/14-implementation-plan-ph5.md Step 1) —
+#     same opt-in-per-target convention as above, plus a binary pass/fail per
+#     challenge against tests/fixtures/expected-findings/*.json
+make eval
+
+# 2c. Run the Phase 5 recon phase standalone (docs/14-implementation-plan-ph5.md
+#     Step 3) — no agent required; needs the recon binaries above installed
+#     for anything beyond Wave 0-1 (passive) to produce real Wave 2-3 facts
+hackerfive recon -t http://localhost:8888 --recon-depth full --scope path/to/scope.txt
 
 # 3. Compare against expected findings (false positive check)
 hackerfive scan -t http://localhost:8888 --json > findings.json

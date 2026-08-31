@@ -1,4 +1,4 @@
-.PHONY: build test lint fuzz integration templates-sync
+.PHONY: build test lint fuzz integration eval templates-sync
 
 build:
 	go build -o hackerfive ./cmd/hackerfive
@@ -14,6 +14,9 @@ fuzz:
 
 integration:
 	go test -tags=integration ./tests/integration/... -v
+
+eval:
+	go test -tags=eval ./tests/eval/... -v
 
 templates-sync:
 	./scripts/sync-nuclei-templates.sh

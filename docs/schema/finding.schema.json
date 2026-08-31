@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tuangatech/hacker-five/schema/finding.schema.json",
+  "$comment": "v1 — frozen per docs/14-implementation-plan-ph5.md Step 2 (A3). Mirrors pkg/detectors.Finding exactly; do not change field names/types/required-ness without bumping $id and updating every MCP client. severity and confidence are always detector-set — never agent-writable (doc90's Decision 4, corrected: the agent's own success-probability estimate lives on a PlanTree leaf, pkg/agenttask, not here).",
+  "title": "Finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "type", "severity", "confidence", "target", "description", "evidence"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable, detector-generated finding identifier, e.g. \"idor-42\", \"misconfig-missing-header-x-frame-options\", \"nuclei-http-missing-security-headers\"."
+    },
+    "type": {
+      "type": "string",
+      "description": "The detector family that produced this finding. Open set — new detectors add new values over time, so this is not a closed enum. Known values as of v1: \"idor\", \"misconfig\", \"authbypass\", \"ssrf\", \"businesslogic\"."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"],
+      "description": "Deterministic, detector-set impact rating. Never agent-writable."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "low"],
+      "description": "Deterministic, detector-set evidence quality: \"high\" for cross-account baseline evidence, \"low\" for a single-account heuristic needing manual triage. Never agent-writable, and distinct from the agent-set success-probability Confidence band on a PlanTree leaf (pkg/agenttask) — that field never touches a Finding."
+    },
+    "target": {
+      "type": "string",
+      "description": "The URL or host:path the finding was observed against."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable summary of the finding."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Free-form key/value evidence (request/response dumps, matched patterns, etc.) — matches Go's map[string]string."
+    }
+  }
+}

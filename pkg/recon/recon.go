@@ -1,0 +1,144 @@
+package recon
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"time"
+
+	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
+	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
+	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
+)
+
+// DefaultRateLimit/DefaultConcurrency match scan's own --rate-limit/
+// --concurrency defaults (cmd/hackerfive/scan.go) — the numbers passed to
+// every external binary's own native rate/concurrency flag (naabu -rate,
+// httpx -rl/-threads, katana -rl/-c, dnsx -rl), since a separate OS process
+// structurally cannot route through pkg/scanner/httpclient's Go middleware.
+// This is the real, honest reconciliation with "recon requests respect the
+// existing rate-limit/concurrency defaults" — same configured numbers,
+// enforced by each tool's own limiting flag rather than our own transport.
+const (
+	DefaultRateLimit   = 50
+	DefaultConcurrency = 25
+)
+
+// Recon runs the recon waves against a single target.
+type Recon struct {
+	client      *httpclient.Client
+	hostErrors  *hosterrors.Cache
+	scope       *scope.Scope // nil = no enforcement (a warning is appended, same posture as scan's --scope)
+	rateLimit   int
+	concurrency int
+	run         runFunc
+}
+
+// Option configures a Recon at construction time.
+type Option func(*Recon)
+
+// WithScope enforces s against every host discovered in Wave 1+ — hosts
+// failing the check are excluded from every subsequent wave and recorded in
+// ReconResult.OutOfScope, per docs/91-research-recon-phase.md's corrected
+// Wave 1 ordering (the check runs immediately after passive enumeration,
+// before Wave 2's first active probe).
+func WithScope(s *scope.Scope) Option {
+	return func(r *Recon) { r.scope = s }
+}
+
+// WithRateLimit overrides DefaultRateLimit.
+func WithRateLimit(qps int) Option {
+	return func(r *Recon) {
+		if qps > 0 {
+			r.rateLimit = qps
+		}
+	}
+}
+
+// WithConcurrency overrides DefaultConcurrency.
+func WithConcurrency(n int) Option {
+	return func(r *Recon) {
+		if n > 0 {
+			r.concurrency = n
+		}
+	}
+}
+
+// withRun overrides the binary-execution function — test-only, unexported:
+// production callers always get defaultRun.
+func withRun(fn runFunc) Option {
+	return func(r *Recon) { r.run = fn }
+}
+
+// New builds a Recon. client is used for this package's own direct HTTP
+// calls (Wave 0's security.txt fetch, Wave 3's probeCommonPaths) — the same
+// rate-limited, circuit-broken client every detector already uses.
+func New(client *httpclient.Client, opts ...Option) *Recon {
+	r := &Recon{
+		client:      client,
+		hostErrors:  hosterrors.New(hosterrors.DefaultThreshold),
+		rateLimit:   DefaultRateLimit,
+		concurrency: DefaultConcurrency,
+		run:         defaultRun,
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// Run executes Wave 0 through the wave depth permits, returning the
+// aggregated ReconResult. target must be a URL (scheme + host); Run derives
+// the bare domain for passive enumeration from it.
+func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResult, error) {
+	u, err := url.Parse(target)
+	if err != nil || u.Hostname() == "" {
+		return nil, fmt.Errorf("recon: %q is not a valid target URL", target)
+	}
+	domain := u.Hostname()
+
+	agg := &aggregator{target: target}
+
+	// Mirrors scan's own convention (pkg/scanner/engine.go's loadScope):
+	// an explicitly-given target that --scope itself excludes is skipped
+	// entirely, not touched by any wave including Wave 0 — a --scope file
+	// governs every host recon would otherwise contact, not only ones it
+	// discovers along the way.
+	if r.scope != nil && !r.scope.Allowed(target) {
+		agg.addOutOfScope(domain)
+		agg.addWarning("target %s is not covered by --scope — recon skipped entirely", target)
+		return agg.finalize(), nil
+	}
+
+	// Wave 0: zero-touch.
+	r.runWave0(ctx, agg, target)
+
+	// Wave 1: passive enumeration, then the scope cross-check — before any
+	// active wave ever sees a host (docs/91-research-recon-phase.md's
+	// corrected ordering).
+	passiveHosts := r.runWave1(ctx, agg, domain)
+	inScope := r.filterScope(agg, passiveHosts)
+
+	if depth == DepthPassive {
+		return agg.finalize(), nil
+	}
+
+	// Wave 2: active, low-noise — only against Wave 1's scope-filtered hosts.
+	// target's own host:port is always included for httpx specifically
+	// (runWave2), even when it differs from the bare domain subfinder/tlsx
+	// queried (a non-default port, common for lab/staging targets) — Wave 1's
+	// passive tools have no way to discover that port on their own.
+	liveHosts := r.runWave2(ctx, agg, u.Host, inScope)
+
+	if depth == DepthFull {
+		// Wave 3: bounded crawl + common-path probing.
+		r.runWave3(ctx, agg, target, liveHosts)
+	}
+
+	return agg.finalize(), nil
+}
+
+// waveTimeout bounds each external-binary invocation so one hung wave
+// can't stall the whole Run past a caller's own context deadline going
+// unnoticed.
+const waveTimeout = 60 * time.Second

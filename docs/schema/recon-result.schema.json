@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tuangatech/hacker-five/schema/recon-result.schema.json",
+  "$comment": "v1 — frozen per docs/14-implementation-plan-ph5.md Step 3 (R2), same discipline as finding.schema.json (Step 2's A3): publish before an external MCP client depends on the shape. Mirrors pkg/recon.ReconResult exactly. confidence values here (\"high\"|\"medium\"|\"low\") mirror pkg/agenttask.Confidence's band convention, NOT Finding.confidence (a distinct, detector-set, two-value field) — docs/91-research-recon-phase.md already corrected this exact conflation once.",
+  "title": "ReconResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "generated_at"],
+  "properties": {
+    "target": { "type": "string", "description": "The target URL Run was given." },
+    "hosts": { "type": "array", "items": { "$ref": "#/$defs/HostFact" } },
+    "endpoints": { "type": "array", "items": { "$ref": "#/$defs/EndpointFact" } },
+    "tech_stack": { "type": "array", "items": { "$ref": "#/$defs/TechFact" } },
+    "api_spec": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/APISpecFact" }],
+      "description": "Always null in v1 — generic OpenAPI/GraphQL spec parsing is an explicit, named scope cut (docs/14-implementation-plan-ph5.md Step 3's Context section); this field is reserved for a later pass, not yet populated."
+    },
+    "out_of_scope": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Hosts discovered but excluded per --scope — feeds doc90's B4 scope-creep gate once Phase 6 wires it in."
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-fatal degrade notices, e.g. a missing recon binary skipping its wave — inspectable, not just stderr text."
+    },
+    "generated_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "PortFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "protocol", "source"],
+      "properties": {
+        "port": { "type": "integer" },
+        "protocol": { "type": "string", "enum": ["tcp", "udp"] },
+        "service": { "type": "string" },
+        "source": { "type": "string" }
+      }
+    },
+    "HostFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "source", "confidence"],
+      "properties": {
+        "host": { "type": "string" },
+        "ports": { "type": "array", "items": { "$ref": "#/$defs/PortFact" } },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "source": { "type": "string", "description": "e.g. \"passive-subdomain\", \"passive-whois-asn\", \"httpx\", \"user-supplied\"." },
+        "confidence": { "$ref": "#/$defs/Confidence" }
+      }
+    },
+    "EndpointFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "method", "source", "confidence"],
+      "properties": {
+        "url": { "type": "string" },
+        "method": { "type": "string" },
+        "status_code": { "type": "integer" },
+        "source": { "type": "string", "description": "e.g. \"wave0-security-txt\", \"httpx\", \"katana-crawl\", \"wave3-common-path-probe\", \"wave3-auth-boundary-heuristic\"." },
+        "confidence": { "$ref": "#/$defs/Confidence" }
+      }
+    },
+    "TechFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "confidence"],
+      "properties": {
+        "name": { "type": "string" },
+        "source": { "type": "string" },
+        "confidence": { "$ref": "#/$defs/Confidence" }
+      }
+    },
+    "APISpecFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "url"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["openapi", "graphql-sdl"] },
+        "url": { "type": "string" }
+      }
+    },
+    "Confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "Mirrors pkg/agenttask.Confidence's string values — not Finding.confidence."
+    }
+  }
+}

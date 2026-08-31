@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
+	"github.com/tuangatech/hacker-five/pkg/oob"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 )
 
@@ -274,10 +275,10 @@ func TestSSRFOOBCallback_RealEncryptedRoundTrip_Hit(t *testing.T) {
 		}
 		// probedURL is like "http://<corrid><nonce>.127.0.0.1:PORT/ssrf-probe"
 		host := probedURL[len("http://"):]
-		if i := strings.IndexByte(host, '.'); i > correlationIDLenForTest {
+		if i := strings.IndexByte(host, '.'); i > oob.CorrelationIDLen {
 			label := host[:i]
 			<-fake.mu
-			fake.nonce = label[correlationIDLenForTest:]
+			fake.nonce = label[oob.CorrelationIDLen:]
 			fake.mu <- struct{}{}
 		}
 	}()
@@ -291,5 +292,3 @@ func TestSSRFOOBCallback_RealEncryptedRoundTrip_Hit(t *testing.T) {
 	assert.Equal(t, "critical", got[0].Severity)
 	assert.Equal(t, "203.0.113.1", got[0].Evidence["oob_remote_addr"])
 }
-
-const correlationIDLenForTest = 20 // must match ssrf package's unexported correlationIDLen

@@ -78,7 +78,7 @@ func New(client *httpclient.Client, opts ...Option) *Detector {
 // parameter names the target accepts a URL through (e.g. "url", "webhook",
 // "callback"). authToken, if non-empty, is sent on every probe request per
 // the configured auth header. If oobServers is non-empty (Interactsh-
-// protocol server URLs, tried in order — see newOOBClientWithFallback), the
+// protocol server URLs, tried in order — see oob.NewClientWithFallback), the
 // blind OOB check additionally runs; left empty, it's silently skipped — no
 // warning, since omitting --oob-server is a normal, documented mode, unlike
 // --scope's warn-on-absence.

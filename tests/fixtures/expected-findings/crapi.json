@@ -1,9 +1,7 @@
 {
-  "description": "Real, live-verified finding-ID prefixes for crAPI (http://localhost:8888), from docs/10-implementation-plan-ph1b.md Steps 1, 3, and 4's measure-fp-rate.sh run. idor- count varies with how many mechanic reports exist in the instance, so it's a prefix, not an exact list.",
+  "description": "Real, live-verified finding-ID prefixes for crAPI (http://localhost:8888), from docs/10-implementation-plan-ph1b.md Steps 1, 3, and 4's measure-fp-rate.sh run. idor- count varies with how many mechanic reports exist in the instance, so it's a prefix, not an exact list. Corrected 2026-08-31 (Phase 5 Step 1's eval harness first run): scripts/measure-fp-rate.sh's current 'crAPI' call runs --detector idor only (misconfig has its own separate detector, never invoked here) — the misconfig-missing-header-/misconfig-exposed-path-.env prefixes this fixture carried from an earlier phase, when that call ran --detector misconfig instead, no longer apply and were removed rather than left permanently unmatched.",
   "expected_id_prefixes": [
     "idor-",
-    "misconfig-missing-header-",
-    "misconfig-exposed-path-.env",
     "nuclei-http-missing-security-headers"
   ]
 }

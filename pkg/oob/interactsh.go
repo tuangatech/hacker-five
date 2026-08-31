@@ -1,4 +1,29 @@
-package ssrf
+// Package oob is a first-party, stdlib-only client for the Interactsh HTTP
+// polling protocol — reverse-engineered directly from
+// github.com/projectdiscovery/interactsh@v1.3.1/pkg/client's real source
+// (registration/poll/deregister JSON shapes, RSA-OAEP+AES-256-CTR
+// interaction encryption), not guessed or approximated. Written first-party
+// instead of importing that package because its client subpackage
+// transitively pulls in interactsh's own server/storage internals (~130
+// new go.mod entries: an embedded DB, host-introspection libraries, an FTP
+// server) for a small slice of functionality — see
+// docs/13-implementation-plan-ph4.md Step 2's Dependencies note.
+//
+// Non-negotiable per that doc: preserve Interactsh's real per-client-keypair
+// encryption, not just its polling mechanism — a plaintext-polling fallback
+// would silently drop the confidentiality property self-hosting exists for
+// in the first place. This does: every interaction payload is still
+// RSA-OAEP+AES-256-CTR encrypted exactly as the real client/server pair
+// does, so a compromised or merely curious operator of the self-hosted OOB
+// box still can't read intercepted data in cleartext.
+//
+// Promoted here from pkg/detectors/ssrf/oob_client.go
+// (docs/14-implementation-plan-ph5.md Step 3's R1b) once a second consumer
+// (pkg/recon's future blind-check infrastructure, and later blind XSS/SQLi
+// detectors) needed the same correlation-URL/callback-channel mechanism —
+// same "promote once a second consumer needs it" discipline as every other
+// shared type in this project. No behavior change from the original.
+package oob
 
 import (
 	"bytes"
@@ -20,25 +45,9 @@ import (
 	"strings"
 )
 
-// oobClient is a first-party, stdlib-only client for the Interactsh HTTP
-// polling protocol — reverse-engineered directly from
-// github.com/projectdiscovery/interactsh@v1.3.1/pkg/client's real source
-// (registration/poll/deregister JSON shapes, RSA-OAEP+AES-256-CTR
-// interaction encryption), not guessed or approximated. Written first-party
-// instead of importing that package because its client subpackage
-// transitively pulls in interactsh's own server/storage internals (~130
-// new go.mod entries: an embedded DB, host-introspection libraries, an FTP
-// server) for a small slice of functionality — see
-// docs/13-implementation-plan-ph4.md Step 2's Dependencies note.
-//
-// Non-negotiable per that doc: preserve Interactsh's real per-client-keypair
-// encryption, not just its polling mechanism — a plaintext-polling fallback
-// would silently drop the confidentiality property self-hosting exists for
-// in the first place. This does: every interaction payload is still
-// RSA-OAEP+AES-256-CTR encrypted exactly as the real client/server pair
-// does, so a compromised or merely curious operator of the self-hosted OOB
-// box still can't read intercepted data in cleartext.
-type oobClient struct {
+// Client is a registered Interactsh-protocol session against one self-hosted
+// server.
+type Client struct {
 	serverURL     string
 	correlationID string
 	secretKey     string
@@ -47,19 +56,19 @@ type oobClient struct {
 	httpClient    *http.Client
 }
 
-// correlationIDLen/nonceLen match Interactsh's own real defaults
+// CorrelationIDLen/NonceLen match Interactsh's own real defaults
 // (settings.CorrelationIdLengthDefault/CorrelationIdNonceLengthDefault) —
 // not required to match for the protocol to work (the server just stores
 // whatever the client claims), but matching keeps generated hostnames a
 // familiar, expected shape.
 const (
-	correlationIDLen = 20
-	nonceLen         = 13
+	CorrelationIDLen = 20
+	NonceLen         = 13
 )
 
-// oobInteraction mirrors the subset of Interactsh's real Interaction JSON
-// shape this detector actually uses.
-type oobInteraction struct {
+// Interaction mirrors the subset of Interactsh's real Interaction JSON
+// shape callers actually use.
+type Interaction struct {
 	Protocol      string `json:"protocol"`
 	UniqueID      string `json:"unique-id"`
 	FullID        string `json:"full-id"`
@@ -67,62 +76,59 @@ type oobInteraction struct {
 	RemoteAddress string `json:"remote-address"`
 }
 
-type oobRegisterRequest struct {
+type registerRequest struct {
 	PublicKey     string `json:"public-key"`
 	SecretKey     string `json:"secret-key"`
 	CorrelationID string `json:"correlation-id"`
 }
 
-type oobDeregisterRequest struct {
+type deregisterRequest struct {
 	CorrelationID string `json:"correlation-id"`
 	SecretKey     string `json:"secret-key"`
 }
 
-type oobPollResponse struct {
+type pollResponse struct {
 	Data   []string `json:"data"`
 	Extra  []string `json:"extra"`
 	AESKey string   `json:"aes_key"`
 }
 
-// newOOBClientWithFallback tries servers in order, returning the first one
-// that accepts registration — the ordered-fallback behavior --oob-server's
-// repeatable flag enables (e.g. --oob-server public expanding to
-// PublicInteractshServers, so one server being down doesn't stall the whole
-// check). Returns an error only if every server in the list fails.
-func newOOBClientWithFallback(ctx context.Context, httpClient *http.Client, servers []string) (*oobClient, error) {
+// NewClientWithFallback tries servers in order, returning the first one
+// that accepts registration — the ordered-fallback behavior a repeatable
+// --oob-server flag enables (e.g. expanding "public" to a known public
+// server pool, so one server being down doesn't stall the whole check).
+// Returns an error only if every server in the list fails.
+func NewClientWithFallback(ctx context.Context, httpClient *http.Client, servers []string) (*Client, error) {
 	if len(servers) == 0 {
-		return nil, fmt.Errorf("ssrf: no oob server configured")
+		return nil, fmt.Errorf("oob: no server configured")
 	}
 	var errs []error
 	for _, serverURL := range servers {
-		c, err := newOOBClient(ctx, httpClient, serverURL)
+		c, err := NewClient(ctx, httpClient, serverURL)
 		if err == nil {
 			return c, nil
 		}
 		errs = append(errs, fmt.Errorf("%s: %w", serverURL, err))
 	}
-	return nil, fmt.Errorf("ssrf: every oob server failed registration: %w", errors.Join(errs...))
+	return nil, fmt.Errorf("oob: every server failed registration: %w", errors.Join(errs...))
 }
 
-// newOOBClient generates a fresh RSA keypair and correlation ID, then
-// registers with serverURL — a self-hosted server the user runs
-// themselves via --oob-server, never a silent public default (see doc13's
-// design tension 1; explicit opt-in to a public server is possible via
-// --oob-server public, see PublicInteractshServers). serverURL must already
-// include a scheme.
-func newOOBClient(ctx context.Context, httpClient *http.Client, serverURL string) (*oobClient, error) {
+// NewClient generates a fresh RSA keypair and correlation ID, then registers
+// with serverURL — a self-hosted server the caller runs themselves, never a
+// silent public default. serverURL must already include a scheme.
+func NewClient(ctx context.Context, httpClient *http.Client, serverURL string) (*Client, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, fmt.Errorf("ssrf: generating oob rsa key: %w", err)
+		return nil, fmt.Errorf("oob: generating rsa key: %w", err)
 	}
-	pubKeyB64, err := encodeOOBPublicKey(&priv.PublicKey)
+	pubKeyB64, err := encodePublicKey(&priv.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("ssrf: encoding oob public key: %w", err)
+		return nil, fmt.Errorf("oob: encoding public key: %w", err)
 	}
 
-	c := &oobClient{
+	c := &Client{
 		serverURL:     strings.TrimRight(serverURL, "/"),
-		correlationID: randomHexID(correlationIDLen),
+		correlationID: randomHexID(CorrelationIDLen),
 		secretKey:     randomHexID(32),
 		privKey:       priv,
 		pubKeyB64:     pubKeyB64,
@@ -134,76 +140,76 @@ func newOOBClient(ctx context.Context, httpClient *http.Client, serverURL string
 	return c, nil
 }
 
-func (c *oobClient) register(ctx context.Context) error {
-	body, err := json.Marshal(oobRegisterRequest{PublicKey: c.pubKeyB64, SecretKey: c.secretKey, CorrelationID: c.correlationID})
+func (c *Client) register(ctx context.Context) error {
+	body, err := json.Marshal(registerRequest{PublicKey: c.pubKeyB64, SecretKey: c.secretKey, CorrelationID: c.correlationID})
 	if err != nil {
-		return fmt.Errorf("ssrf: marshaling oob register request: %w", err)
+		return fmt.Errorf("oob: marshaling register request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+"/register", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("ssrf: building oob register request: %w", err)
+		return fmt.Errorf("oob: building register request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("ssrf: registering with oob server %s: %w", c.serverURL, err)
+		return fmt.Errorf("oob: registering with server %s: %w", c.serverURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("ssrf: oob server rejected registration: %s", string(data))
+		return fmt.Errorf("oob: server rejected registration: %s", string(data))
 	}
 	return nil
 }
 
 // NewPayloadHost returns a fresh, unique hostname (a correlationID+nonce
-// subdomain of the OOB server's own host) to embed in one SSRF probe's URL
-// — call once per probe, not once per Client: nonce is what lets Poll
+// subdomain of the OOB server's own host) to embed in one probe's URL —
+// call once per probe, not once per Client: nonce is what lets Poll
 // attribute a returned interaction back to the specific probe that
 // triggered it.
-func (c *oobClient) NewPayloadHost() (host, nonce string) {
-	nonce = randomHexID(nonceLen)
+func (c *Client) NewPayloadHost() (host, nonce string) {
+	nonce = randomHexID(NonceLen)
 	bareHost := strings.TrimPrefix(strings.TrimPrefix(c.serverURL, "https://"), "http://")
 	return c.correlationID + nonce + "." + bareHost, nonce
 }
 
 // Poll fetches and decrypts every interaction recorded since the last poll
 // (or since registration).
-func (c *oobClient) Poll(ctx context.Context) ([]oobInteraction, error) {
+func (c *Client) Poll(ctx context.Context) ([]Interaction, error) {
 	pollURL := fmt.Sprintf("%s/poll?id=%s&secret=%s", c.serverURL, c.correlationID, c.secretKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("ssrf: building oob poll request: %w", err)
+		return nil, fmt.Errorf("oob: building poll request: %w", err)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ssrf: polling oob server: %w", err)
+		return nil, fmt.Errorf("oob: polling server: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ssrf: oob server rejected poll: %s", string(data))
+		return nil, fmt.Errorf("oob: server rejected poll: %s", string(data))
 	}
 
-	var pr oobPollResponse
+	var pr pollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
-		return nil, fmt.Errorf("ssrf: decoding oob poll response: %w", err)
+		return nil, fmt.Errorf("oob: decoding poll response: %w", err)
 	}
 
-	var out []oobInteraction
+	var out []Interaction
 	for _, encrypted := range pr.Data {
 		plaintext, err := c.decrypt(pr.AESKey, encrypted)
 		if err != nil {
 			continue // one undecryptable interaction shouldn't drop the rest
 		}
-		var it oobInteraction
+		var it Interaction
 		if err := json.Unmarshal(bytes.TrimSpace(plaintext), &it); err != nil {
 			continue
 		}
 		out = append(out, it)
 	}
 	for _, plaintext := range pr.Extra {
-		var it oobInteraction
+		var it Interaction
 		if err := json.Unmarshal([]byte(plaintext), &it); err != nil {
 			continue
 		}
@@ -216,7 +222,7 @@ func (c *oobClient) Poll(ctx context.Context) ([]oobInteraction, error) {
 // aesKeyB64 is RSA-OAEP(SHA-256)-encrypted to our public key; the message
 // itself is AES-256-CTR-encrypted with a 16-byte IV prepended to the
 // ciphertext.
-func (c *oobClient) decrypt(aesKeyB64, messageB64 string) ([]byte, error) {
+func (c *Client) decrypt(aesKeyB64, messageB64 string) ([]byte, error) {
 	encryptedKey, err := base64.StdEncoding.DecodeString(aesKeyB64)
 	if err != nil {
 		return nil, err
@@ -230,7 +236,7 @@ func (c *oobClient) decrypt(aesKeyB64, messageB64 string) ([]byte, error) {
 		return nil, err
 	}
 	if len(ciphertext) < aes.BlockSize {
-		return nil, errors.New("ssrf: oob ciphertext shorter than one AES block")
+		return nil, errors.New("oob: ciphertext shorter than one AES block")
 	}
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
@@ -243,10 +249,10 @@ func (c *oobClient) decrypt(aesKeyB64, messageB64 string) ([]byte, error) {
 }
 
 // Deregister best-effort releases the correlation ID — a failure here
-// doesn't matter enough to surface as a Run error (the server evicts idle
+// doesn't matter enough to surface as an error (the server evicts idle
 // sessions on its own).
-func (c *oobClient) Deregister(ctx context.Context) {
-	body, err := json.Marshal(oobDeregisterRequest{CorrelationID: c.correlationID, SecretKey: c.secretKey})
+func (c *Client) Deregister(ctx context.Context) {
+	body, err := json.Marshal(deregisterRequest{CorrelationID: c.correlationID, SecretKey: c.secretKey})
 	if err != nil {
 		return
 	}
@@ -262,7 +268,7 @@ func (c *oobClient) Deregister(ctx context.Context) {
 	_ = resp.Body.Close()
 }
 
-func encodeOOBPublicKey(pub *rsa.PublicKey) (string, error) {
+func encodePublicKey(pub *rsa.PublicKey) (string, error) {
 	der, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
 		return "", err

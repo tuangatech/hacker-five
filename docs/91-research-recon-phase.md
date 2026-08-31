@@ -188,9 +188,9 @@ Same convention as doc90's Groups A-H: ⬜ = not yet designed in detail.
 
 Scheduled per Section 7's resolution: R1-R3 land in [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) Step 3 (no MCP dependency); R4-R6 land in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Steps 1-3 (each needs the MCP server or the `plan` tool to exist first).
 
-- ⬜ **R1 — `pkg/recon/` package.** `Detector`-style construction (`New(client, opts...)`, `Option` funcs), one file per wave family (`passive.go`, `active.go`, `crawl.go`, `aggregate.go`), producing a single `ReconResult`. → doc14 Step 3.
-- ⬜ **R2 — `ReconResult` schema, frozen and versioned** alongside `Finding`'s (doc14 A3) — same "publish before an external client depends on the shape" discipline. → doc14 Step 3.
-- ⬜ **R3 — `hackerfive recon` CLI subcommand**, usable standalone (no agent required) — `--recon-depth passive|active|full`, `-o recon.json`. Useful on its own for a human operator, not just as agent infrastructure. → doc14 Step 3.
+- ✅ **R1 — `pkg/recon/` package.** Done 2026-08-31. `Detector`-style construction (`New(client, opts...)`, `Option` funcs), one file per wave family (`passive.go`, `active.go`, `crawl.go`, `aggregate.go`), producing a single `ReconResult`. → doc14 Step 3.
+- ✅ **R2 — `ReconResult` schema, frozen and versioned** alongside `Finding`'s (doc14 A3) — same "publish before an external client depends on the shape" discipline. Done 2026-08-31 (`docs/schema/recon-result.schema.json`). → doc14 Step 3.
+- ✅ **R3 — `hackerfive recon` CLI subcommand**, usable standalone (no agent required) — `--recon-depth passive|active|full`, `-o recon.json`. Useful on its own for a human operator, not just as agent infrastructure. Done 2026-08-31, live-verified against real crAPI/DVWA. → doc14 Step 3.
 - ⬜ **R4 — `recon` MCP tool**, schema-validated the same way `scan` already is; wraps R1, excluded from Decision 2's "no shell tool" boundary via fixed argument shape, not free-form command text. → doc15 Step 1.
 - ⬜ **R5 — Wire `ReconResult` into `PlanTree` seeding.** The coordinator's first `plan` proposal (doc90 B1) is generated from a `ReconResult`, not from an empty tree — this is the concrete fix for Group H having no named source for its initial leaves. → doc15 Step 2.
 - ⬜ **R6 — Wire `ReconResult.OutOfScope` into B4's scope-creep gate.** Currently B4 has no producer; this is it. → doc15 Step 3 (first implementation), doc16 Step 2 (compliance rounding).
@@ -215,14 +215,14 @@ Executed the same day across doc03 (roadmap week ranges/milestones), doc14 (rewr
 
 ## Definition of Done
 
-- [ ] `hackerfive recon` runs standalone against a lab target and produces a `ReconResult` matching the frozen schema, with Wave 0-4 facts each carrying a source and confidence label
-- [ ] `--recon-depth passive` is confirmed, live, to never send a single active probe (DNS resolution, port scan, HTTP request) to the target
-- [ ] The `recon` MCP tool is schema-validated and excluded from anything shell/exec-shaped, consistent with doc90 Decision 2
-- [ ] A coordinator's first `plan` proposal is demonstrably seeded from a real `ReconResult`, not an empty or hand-authored tree
-- [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and is confirmed to trigger doc90 B4's re-approval path, live-verified, not just unit-tested
-- [ ] An out-of-scope host discovered in Wave 1 is confirmed, live, to receive zero active probes in Wave 2/3 (port scan, HTTP probe, crawl) — the scope filter runs before active touch, not only reported after it
-- [ ] Recon requests are confirmed to respect the existing rate-limit/concurrency defaults and host-error-cache circuit breaker — no separate, ungoverned code path for Nmap/crawl traffic
-- [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
+- [x] `hackerfive recon` runs standalone against a lab target and produces a `ReconResult` matching the frozen schema, with Wave 0-4 facts each carrying a source and confidence label — done 2026-08-31, see [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) Step 3
+- [x] `--recon-depth passive` is confirmed, live, to never send a single active probe (DNS resolution, port scan, HTTP request) to the target — done 2026-08-31
+- [ ] The `recon` MCP tool is schema-validated and excluded from anything shell/exec-shaped, consistent with doc90 Decision 2 — Phase 6 (needs the MCP server)
+- [ ] A coordinator's first `plan` proposal is demonstrably seeded from a real `ReconResult`, not an empty or hand-authored tree — Phase 6 (needs the decision engine, R8, and the `plan` tool)
+- [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and is confirmed to trigger doc90 B4's re-approval path, live-verified, not just unit-tested — the `OutOfScope` population half is done 2026-08-31; the B4 re-approval trigger is Phase 6 (needs the coordinator loop)
+- [x] An out-of-scope host discovered in Wave 1 is confirmed, live, to receive zero active probes in Wave 2/3 (port scan, HTTP probe, crawl) — the scope filter runs before active touch, not only reported after it — done 2026-08-31; live testing also caught and fixed a related bug where the *target itself* failing `--scope` wasn't fully honored (see doc14 Step 3)
+- [x] Recon requests are confirmed to respect the existing rate-limit/concurrency defaults and host-error-cache circuit breaker — no separate, ungoverned code path for Nmap/crawl traffic — done 2026-08-31 for Wave 0/3's own HTTP calls; Wave 1-3's binary-shelled calls get the same configured numbers via each tool's own native flag instead (see doc14 Step 3's Design section for the honest reconciliation)
+- [x] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean — clean as of 2026-08-31 for R1/R1b/R2/R3; R7-R9 still open
 
 ## See also
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — the original Recon Phase sketch this doc makes concrete

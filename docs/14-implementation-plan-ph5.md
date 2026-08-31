@@ -19,9 +19,9 @@ Doc90's proposed agent flow (plan → approve → scan → triage) has no step t
 
 ## Scope
 
-1. ⬜ **Foundations: ratify design decisions + eval harness stub** (Week 33)
-2. ⬜ **Finding schema freeze + task-tree data model** (Weeks 34-35)
-3. ⬜ **Recon package + decision engine** (Weeks 36-37)
+1. ✅ **Foundations: ratify design decisions + eval harness stub** (Week 33) — done 2026-08-30
+2. ✅ **Finding schema freeze + task-tree data model** (Weeks 34-35) — done 2026-08-30
+3. 🟡 **Recon package + decision engine** (Weeks 36-37) — R1/R1b/R2/R3 done 2026-08-31 (live-verified against real crAPI/DVWA); R7-R9 (fingerprinting, capability registry/decision engine, template index) still open, scoped as a separate follow-up per this doc's own "R7-R9 added scope, never re-estimated" note below
 4. ⬜ **Recon + Plan-preview Web UI** (Week 38)
 5. ⬜ **Integration testing + release** (Weeks 39-40) — `v0.5.0`
 
@@ -42,48 +42,77 @@ Doc90's proposed agent flow (plan → approve → scan → triage) has no step t
 
 ---
 
-## Step 1: Foundations — Ratify Design Decisions + Eval Harness Stub (Week 33) — ⬜ not yet implemented
+## Step 1: Foundations — Ratify Design Decisions + Eval Harness Stub (Week 33) — ✅ done (2026-08-30)
 
 ### Design
 
 No code changes to `pkg/scanner`/`pkg/detectors` this week — this step is deliberately sequenced first per doc90's own sequencing note ("G1 first, even before A1/B1: without it, every claim this effort makes about agent quality is unfalsifiable from day one").
 
-- **Ratify Decisions 1-6** as committed project design, recorded in this doc (not re-litigated per step): single coordinator (no peer-agent mesh), no shell/exec-shaped MCP tool (including for recon, per doc91's finding above), MCP `elicitation`/`tasks` for approval, the corrected Decision 4 (task-tree-leaf `Confidence`, not `Finding.Confidence` — see Objective above), and Decisions 5-6 (stateless/tiered LLM invocation, deterministic-first dispatch — see Step 3's R7-R9).
-- **G1 — eval harness stub.** A minimal, scriptable harness that runs the *existing* CLI (no agent yet — there's nothing to evaluate an agent against until Phase 6 exists) against the lab targets already used throughout this project (crAPI, DVWA, vAPI, Juice Shop, per [20-setup-testing-targets.md](20-setup-testing-targets.md)) and records a fixed challenge set with a binary pass/fail per challenge — modeled on the MAPTA/Cyber-AutoAgent published discipline doc90 cites, not a bespoke rubric invented here. This stub's job in this phase is narrow: prove the harness itself works and produces a baseline (today's detector-only fp/fn rate) before an agent is introduced later. Phase 7 Step 7 (G1 maturity) extends this into the actual agent-driven benchmark.
+- **Ratified Decisions 1-6**, recorded here as committed project design for this phase, not re-litigated per step (full text: [90-research-hackerbot.md](90-research-hackerbot.md)): (1) single coordinator, no peer-agent mesh; (2) no shell/exec-shaped MCP tool anywhere, including for recon (per doc91's finding above); (3) MCP `elicitation`/`tasks` for approval; (4) the corrected Decision 4 — task-tree-leaf `Confidence`, not `Finding.Confidence` (see Objective above); (5) stateless, per-`PlanTree`-leaf, tiered LLM invocation — never a persistent agent session; (6) deterministic decision-engine dispatch first, LLM fallback only on a registry miss (see Step 3's R7-R9).
+- **G1 — eval harness stub, built.** `tests/eval/` (build-tagged `eval`, opt-in like `tests/integration`, excluded from `go test ./...`/CI by default — run via `make eval`) runs the real `hackerfive scan` CLI (built once by `TestMain`, no agent involved) against each lab target already used throughout this project (crAPI, DVWA, Juice Shop, vAPI), reusing the *existing* `tests/fixtures/expected-findings/*.json` fixtures and mirroring `scripts/measure-fp-rate.sh`'s six scan invocations 1:1 (`tests/eval/challenges.go`'s `Scenarios`). Each fixture's `expected_id_prefixes` entry becomes one binary pass/fail challenge (`tests/eval/eval_test.go`); the same run's unexpected-finding count is logged alongside as an informational FP baseline, never a gate — this stub's job is narrow: prove the harness mechanism and produce today's detector-only baseline before an agent exists to drive it. Phase 7 Step 7 (G1 maturity) extends this into the actual agent-driven benchmark. One deliberate behavior difference from `measure-fp-rate.sh`: the DVWA scenario requires `DVWA_COOKIE` (skipped, not run, without it) rather than treating it as optional — running without it would otherwise report a false "FAIL" on the xss-/sqli- challenges that fixture's own description already documents as unreachable without a session cookie.
 
-### Files (anticipated, confirm at implementation time)
-- `tests/eval/` — new directory: a fixed challenge manifest (target + expected finding, per lab app) and a runner script/Go test that invokes `hackerfive scan` and checks output against the manifest.
+### Files
+- `tests/eval/challenges.go` — `Scenario`/`Scenarios`, one per `measure-fp-rate.sh` invocation.
+- `tests/eval/eval_test.go` (`//go:build eval`) — `TestMain` builds the binary once; `TestEvalHarness` runs each `Scenario`, skip-per-missing-env, one `t.Run` sub-test per expected ID prefix.
+- `Makefile` — new `eval` target.
 
 ### Verification
-The stub runs against all four lab targets and produces a baseline pass/fail report with zero agent involvement — this is what Phase 7 Step 7 will later run again with an agent driving the scan, to get a real before/after delta.
+`go build`/`go vet`/`golangci-lint run` all clean, including the `eval`-tagged package; `go test ./... -race` unaffected (excluded by build tag).
+
+**Live-verified 2026-08-31**, `make eval` against real crAPI/DVWA/Juice Shop/vAPI containers — the harness itself works and produced a real baseline. Two real corrections came out of that first run, not glossed over:
+- **`vAPI (authbypass)` originally hung the full 5-minute per-scenario timeout with zero output** — root cause: vAPI's generic `500` catch-all makes `authbypass`'s rate-limit-signal check + the shared retry middleware stall for minutes when the nuclei-template layer runs alongside it (same root cause [20-setup-testing-targets-macos.md](20-setup-testing-targets-macos.md)'s vAPI section documents). Fixed by giving that one `Scenario` an explicit empty `--templates` override (`tests/eval/challenges.go`'s `emptyTemplatesDir`); the 3 nuclei-template-layer prefixes that override forgoes are graded `SKIP`, not `FAIL`, via a new `Scenario.SkipPrefixes` field.
+- **`tests/fixtures/expected-findings/crapi.json` was stale**, carrying `misconfig-missing-header-`/`misconfig-exposed-path-.env` from an earlier phase when the "crAPI" `measure-fp-rate.sh` call ran `--detector misconfig`; the current call runs `--detector idor` only, and this eval harness is the first thing to have actually checked that fixture's prefixes are still all reachable. Corrected in the fixture itself (both scripts read the same file).
+
+Real, currently-passing baseline: **crAPI**, **crAPI (authbypass)**, **Juice Shop**, **vAPI**, **vAPI (authbypass)** all green. **`DVWA`** has 2 genuine, target-state-dependent misses, left as real signal rather than "fixed" away: `nuclei-php-detect` needs an `X-Powered-By: PHP` response header this DVWA image's PHP config doesn't emit, and `nuclei-missing-cookie-samesite-strict` needs a fresh `Set-Cookie` response, which an already-authenticated request (required for the xss-/sqli- challenges in the same run) never gets. One informational-only FP-baseline note: `vAPI (authbypass)` surfaced `authbypass-broken-session-vapi-api1-user-5`, a real finding not yet in that fixture's expected list — worth a human look, not acted on here (same "measurement, not a gate" posture as `measure-fp-rate.sh`).
 
 ---
 
-## Step 2: Finding Schema Freeze + Task-Tree Data Model (Weeks 34-35) — ⬜ not yet implemented
+## Step 2: Finding Schema Freeze + Task-Tree Data Model (Weeks 34-35) — ✅ done (2026-08-30)
 
 ### Design
 
-**A3 — freeze and version the `Finding` JSON schema.** Publish `docs/schema/finding.schema.json` reflecting the actual current struct (`ID`, `Type`, `Severity`, `Confidence`, `Target`, `Description`, `Evidence` — `pkg/detectors/types.go`), explicitly annotated in the schema's own description fields that `Severity` and `Confidence` are both detector-set and never agent-writable (the corrected Decision 4 from this doc's Objective). This must land *before* Phase 6's MCP server ships, per doc90's own sequencing note — an external MCP client should never depend on a wire shape that changes after the fact.
+**A3 — freeze and version the `Finding` JSON schema.** Published `docs/schema/finding.schema.json` (JSON Schema 2020-12) reflecting the actual current struct (`ID`, `Type`, `Severity`, `Confidence`, `Target`, `Description`, `Evidence` — `pkg/detectors/types.go`), confirmed against every real `Finding{...}` literal in `pkg/detectors/**` and `pkg/template/nuclei/executor.go` (grepped, not assumed): `Severity` is a genuinely closed 4-value enum (`low`/`medium`/`high`/`critical`), `Confidence` a genuinely closed 2-value enum (`high`/`low`), both annotated in the schema's own `description` fields as detector-set and never agent-writable (the corrected Decision 4 from this doc's Objective). `Type` stays an open `string` (documented known values as examples, not an `enum`) since new detectors add new values over time. `additionalProperties: false` and all 6 fields `required`, matching the Go struct having no optional fields. This lands before Phase 6's MCP server, per doc90's own sequencing note.
 
-**H2 — `Job.PlanTree`.** A new shared type (`pkg/agenttask/`, importable by both the future `pkg/mcpserver` and `pkg/webui` without either depending on the other) with a PTT-shaped tree: each node is a candidate `(target, detector/template)` pairing with a `Status` and a `Rationale` string (why the coordinator picked this candidate). **Mutations are restricted to leaves** — any update that changes the tree's shape (add/remove/reparent a node) is rejected, mirroring PentestGPT's own defense (doc90 §2) against a hallucinated rewrite of the overall plan. This phase only needs the data structure, its mutation-guard, and Step 4's read-only rendering to exist and be tested — populating it from a real `ReconResult` and streaming it live are Phase 6/7 concerns.
+**H2 — `Job.PlanTree`.** New shared type `pkg/agenttask` (importable by both the future `pkg/mcpserver` and `pkg/webui` without either depending on the other): a PTT-shaped tree (`PlanTree.Root *PlanNode`), each `PlanNode` a candidate `(Target, Detector)` pairing with `Status`, `Rationale`, and `Confidence`. **Mutations are restricted to leaves** via `PlanTree.ApplyLeafUpdate(nodeID string, patch PlanNodePatch) error`: `PlanNodePatch` carries only `Status`/`Confidence`/`Rationale` as mutable fields, plus a `Children []*PlanNode` field that exists *specifically* so a shape-changing request can be recognized and rejected (`ErrShapeChange`) rather than merely omitted from the API; a target node that itself has children is also rejected (`ErrNotLeaf`) — mirrors PentestGPT's own defense (doc90 §2) against a hallucinated rewrite of the overall plan. Tree construction (building the initial shape) uses the exported `PlanNode`/`Children` fields directly — no separate builder API, since nothing populates a real tree from a `ReconResult` until Step 3.
 
-**H3 (corrected) — leaf-level `Confidence` bands, on `PlanTree` leaves, not on `Finding`.** Each leaf carries a `Confidence` value the coordinator sets and updates as it gathers evidence, banded per Cyber-AutoAgent's convention as a starting point: High (>80%), Medium (50-80%), Low (<50%). This is the agent's own success-probability estimate for *attempting* a candidate — it never touches a `Finding` once one is actually produced; `Finding.Confidence`/`Finding.Severity` stay exactly as they are today, both deterministic.
+**H3 (corrected) — leaf-level `Confidence` bands, on `PlanTree` leaves, not on `Finding`.** `agenttask.Confidence` (`ConfidenceHigh`/`Medium`/`Low`) plus `BandConfidence(percent float64) Confidence`, banded per Cyber-AutoAgent's convention: High (>80%), Medium (50-80% inclusive), Low (<50%). This is the agent's own success-probability estimate for *attempting* a candidate — it never touches a `Finding` once one is actually produced; `Finding.Confidence`/`Finding.Severity` stay exactly as they are today, both deterministic.
 
-### Files (anticipated, confirm at implementation time)
+**Dependency added: `github.com/santhosh-tekuri/jsonschema/v5`** (real JSON Schema validator, not a hand-rolled round-trip check) — its real transitive footprint was checked before committing to it, per this project's own dependency rule: a disposable scratch-module `go get` showed **zero transitive dependencies**, pure Go, one `go.mod` line. `go.sum` confirms the same in the real module.
+
+### Files
 - `docs/schema/finding.schema.json` — new, frozen/versioned schema.
-- `pkg/agenttask/plantree.go` — `PlanTree`/`PlanNode` types, `Confidence` band type, leaf-only mutation guard.
-- `tests/unit/plantree_test.go` — including a test asserting a shape-changing mutation (not touching only a leaf) is rejected.
+- `pkg/agenttask/plantree.go` — `PlanTree`/`PlanNode`/`PlanNodeStatus`/`Confidence` types, `BandConfidence`, `ApplyLeafUpdate` mutation guard.
+- `tests/unit/plantree_test.go` — `BandConfidence` boundary cases; `Find`; `ApplyLeafUpdate` allowed (leaf update) and rejected (shape-change patch, non-leaf target, unknown node ID) cases.
+- `tests/unit/finding_schema_test.go` — compiles the schema once; round-trips real `Finding` values produced by actually running `idor`/`misconfig`/`authbypass`'s real `Run` methods against local `httptest` servers (reusing `detector_idor_test.go`'s existing `loadIDORFixture`/`newFixtureServer` helpers and `idor_classic.json` fixture, and `detector_misconfig_test.go`'s `withPrefix` helper — same package, no fixtures duplicated); a negative test (`TestFindingSchema_RejectsInvalidSeverity`) proves the validator actually rejects a bad enum value rather than passing vacuously.
+- `go.mod`/`go.sum` — added `github.com/santhosh-tekuri/jsonschema/v5`.
 
 ### Verification
-Unit tests: schema round-trips real `Finding` values from each existing detector (`idor`/`misconfig`/`authbypass`) without loss; `PlanTree` mutation tests cover both the allowed (leaf update) and rejected (shape change) cases.
+`go build`/`go vet`/`go test ./... -race`/`golangci-lint run` all clean. All 12 new test cases pass on the first real run against actual detector output (not mocked schema data): 3 detector round-trips (idor/misconfig/authbypass) validate and round-trip losslessly, the invalid-severity negative case correctly fails validation, and all 5 `PlanTree` mutation-guard cases (1 allowed + 3 distinct rejection paths + `Find` hit/miss) pass. No live target needed — this step is schema/unit-only, consistent with doc14's own Step 2 scope.
 
 ---
 
-## Step 3: Recon Package + Decision Engine (Weeks 36-37) — ⬜ not yet implemented
+## Step 3: Recon Package + Decision Engine (Weeks 36-37) — 🟡 R1/R1b/R2/R3 done (2026-08-31), R7-R9 open
 
-### Design
+### R1/R1b/R2/R3 — what's actually built, live-verified
 
-Full design already captured in [91-research-recon-phase.md](91-research-recon-phase.md); this step schedules its Group R backlog items that don't depend on the MCP server:
+**R1 — `pkg/recon`.** Built as designed below, with three real corrections from live implementation (not glossed over):
+- **Wave 2/3 field-name mapping was verified against each binary's actual JSON output, not assumed**: naabu identifies a result by `"ip"`, not `"host"`; httpx's tech list is `"tech"` and its resolved IP is `"host_ip"` — both confirmed by running the real installed binaries against real crAPI/DVWA output before writing the parser, not guessed from docs.
+- **A real scope-bypass bug found and fixed during live testing**: an earlier version unconditionally re-added the target's own `host:port` to Wave 2's `httpx` input (to preserve a non-default port passive subfinder/tlsx enumeration can't discover), which bypassed the Wave 1 scope filter for the one host most likely to be scope-checked deliberately. Fixed by checking the target itself against `--scope` *before* Wave 0 ever fires (mirroring `pkg/scanner/engine.go`'s own `loadScope` convention: an explicitly-given target not covered by `--scope` is skipped entirely, not touched) — regression-tested by `TestRun_ExplicitTargetOutOfScope_SkipsEntirely` (`pkg/recon/recon_test.go`), which fails loudly (via an `httptest` handler that calls `t.Errorf` if ever hit) if this regresses.
+- **katana's own default scope (`-fs rdn`, confirmed via its real `-h` output) already keeps it from fetching links outside a crawl seed's root domain** — an out-of-scope link it merely *noticed* (tagged with a non-empty `"error"` field, e.g. `"max depth reached"`, instead of a real response) is routed into `ReconResult.OutOfScope` if its host doesn't match a seed's, rather than silently dropped or miscounted as a confirmed `EndpointFact`.
+
+Honest scope cuts (named per this doc's Context/discipline, not silently dropped): generic OpenAPI/GraphQL spec *parsing* is deferred — Wave 3 only detects a spec's presence as an `EndpointFact` via `probeCommonPaths`, `APISpec` stays `nil`. Hidden-parameter mining (Arjun-style) has no Go-native tool and isn't implemented. JS-bundle parsing relies entirely on katana's own `-jc` flag, no separate parser. Wave 4 doesn't tag facts against HackerFive's own template vocabulary — that's R8's job.
+
+**R1b — `pkg/oob`, extracted from `pkg/detectors/ssrf/oob_client.go`.** Same real, RSA-OAEP+AES-256-CTR Interactsh-protocol client, now exported and shared (`Client`/`NewClient`/`NewClientWithFallback`/`Interaction`/`CorrelationIDLen`). `pkg/detectors/ssrf` updated to consume it; its own existing live test (`TestSSRFOOBCallback_RealEncryptedRoundTrip_Hit`) still passes unmodified. New `tests/unit/oob_test.go`'s `TestOOBClient_SelfIssuedCallback_RealServer` is a standalone, non-SSRF-detector live test against the real self-hosted `oob-server` container — skip-not-fail without `OOB_SERVER_URL` set, live-verified passing against `http://localhost:8082`.
+
+**R2 — `docs/schema/recon-result.schema.json`**, same frozen/versioned discipline and `github.com/santhosh-tekuri/jsonschema/v5` validator as `finding.schema.json` (Step 2's A3) — no new dependency. `pkg/recon/schema_test.go` round-trips a real `ReconResult` (every wave exercised via an injected fake binary-runner plus a real local `httptest` server for Wave 0/3's own direct HTTP calls) through the schema.
+
+**R3 — `hackerfive recon`** (`cmd/hackerfive/recon.go`): `-t/--targets`, `--recon-depth passive|active|full` (default `passive`), `--scope`, `--rate-limit`/`--concurrency` (also passed through to every external binary's own native rate/concurrency flag — see below), `--insecure`, `-o/--output` (shared root flag). Live-verified against real crAPI (`:8888`) and DVWA (`:80`) at every depth, including a real `--scope` file that correctly produces zero Wave 2/3 activity when the target itself is excluded.
+
+**Rate-limit/concurrency, honestly reconciled**: binary-shelled waves are separate OS processes that structurally cannot route through `pkg/scanner/httpclient`'s Go middleware. Resolution: the same configured numbers (default 50 req/s / 25 concurrency, matching `scan`'s own defaults) are passed to each binary's own native flag (`naabu -rate`, `httpx -rl`/`-threads`, `katana -rl`/`-c`, `dnsx -rl`, `subfinder -rate-limit`) — verified against each tool's real `-h` output, not guessed. Wave 0/3's own direct HTTP calls (`security.txt`, `probeCommonPaths`, the auth-boundary heuristic fetch) go through the real `httpclient.Client` + `hosterrors.Cache`, identical to every existing detector.
+
+### R7-R9 — not this pass
+
+Full design already captured in [91-research-recon-phase.md](91-research-recon-phase.md) for the remaining Group R backlog items that don't depend on the MCP server:
 
 **R1 — `pkg/recon/` package.** `Detector`-style construction (`New(client, opts...)`, `Option` funcs), one file per wave family (`passive.go`, `active.go`, `crawl.go`, `aggregate.go`), producing a single `ReconResult`. Implements doc91's Waves 0-4 in order — including the corrected ordering doc91's own revision fixed: the `--scope`/[22-authorized-targets.md](22-authorized-targets.md) cross-check runs immediately after Wave 1's passive enumeration, *before* Wave 2's first active probe, not deferred to Wave 4's aggregation step (doc91 §1/Wave 1 has the full reasoning — an earlier draft of that doc had this backwards). Each wave file wraps the named binaries from the Dependencies section above via a thin adapter that parses the tool's JSON/line output into that wave's fact types: `passive.go` → subfinder + tlsx (+ the first-party WHOIS/ASN client); `active.go` → dnsx + naabu + httpx; `crawl.go` → katana.
 
@@ -103,19 +132,28 @@ Full design already captured in [91-research-recon-phase.md](91-research-recon-p
 
 **R4-R6** (the `recon` MCP tool and wiring `OutOfScope` into the scope-creep gate) are explicitly **not** this step's job — each needs the MCP server or the `plan` tool to exist first, and are scheduled in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Steps 1-3. **R5 (wiring `ReconResult` into `PlanTree` seeding) is now substantially satisfied by R8** — the decision engine already produces a real, `ReconResult`-seeded `PlanTree` with no agent involved; Phase 6's remaining job for R5 shrinks to exposing that same tree via the `plan` MCP tool and gating it behind `elicitation`, not re-deriving the seeding logic.
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/recon/{detector,passive,active,crawl,aggregate}.go`
-- `pkg/oob/interactsh.go` — the first-party Interactsh-protocol client, extracted/promoted from Phase 4's `pkg/detectors/ssrf/oob_client.go` (or built fresh, same approach, if Phase 4 Step 2 hasn't shipped yet) — correlation-ID generation, callback polling, callback-received channel, per-client-keypair decryption.
-- `pkg/fingerprint/{detector,signatures}.go` — R7: header/body/favicon/port signature tables and matching logic.
-- `pkg/registry/{registry,decisionengine}.go` — R8: the capability catalog and the `TechFact`→`PlanTree`-leaf lookup.
-- `templates/index.json` (generated, not hand-authored) + the generator command/script — R9.
-- `cmd/hackerfive/recon.go`
-- `docs/schema/recon-result.schema.json`
-- `tests/unit/recon_*_test.go` — including a test confirming Wave 2+ steps never fire when `--recon-depth passive` is set, a test confirming an out-of-scope host discovered in Wave 1 receives zero active probes in Wave 2/3 (the ordering fix, live-verified per doc91's own Definition of Done), a test confirming each wave degrades to a logged warning (not a hard failure) when its binary is absent, and `tests/unit/recon_oob_test.go` confirming a self-issued callback is received within the test's timeout.
-- `tests/unit/fingerprint_test.go`, `tests/unit/registry_test.go` — including a test confirming a `TechFact` with no registry entry produces an explicit unresolved leaf, not a silent drop and not any call to an LLM.
+### Files
+
+**Built this pass (R1/R1b/R2/R3):**
+- `pkg/recon/{types,exec,whois,recon,passive,active,crawl,aggregate}.go` — one file per concern, matching the anticipated `{detector,passive,active,crawl,aggregate}.go` split with `types`/`exec`/`whois`/`recon` factored out for clarity (`recon.go` holds `New`/`Option`/`Run`, the anticipated "detector"-style construction).
+- `pkg/recon/recon_test.go`, `pkg/recon/schema_test.go` — **placed inside `pkg/recon` itself (package `recon`), not `tests/unit`**, a deliberate deviation from this doc's earlier anticipated `tests/unit/recon_*_test.go` location: these tests need the unexported `withRun`/`runFunc` test hook to deterministically mock all six binaries, the same "white-box test lives beside the package" precedent already established by `pkg/templatesync/sync_test.go` and `pkg/detectors/businesslogic/raceclient_test.go`. Covers: `--recon-depth passive` never invokes an active-wave binary, `--recon-depth active` never invokes katana, an out-of-scope host discovered via subfinder gets zero dnsx/naabu/httpx probes, a missing binary degrades every wave to a `Warnings` entry rather than failing `Run`, and (a real bug this session's live testing found and fixed) the target itself failing `--scope` skips every wave including Wave 0 rather than only being excluded from Wave 2+.
+- `pkg/oob/interactsh.go` — extracted/exported from `pkg/detectors/ssrf/oob_client.go` (already existed, Phase 4 Step 2 shipped it).
+- `tests/unit/oob_test.go` — `TestOOBClient_SelfIssuedCallback_RealServer`, live-verified against the real `oob-server` container.
+- `cmd/hackerfive/recon.go`, wired into `cmd/hackerfive/root.go`.
+- `docs/schema/recon-result.schema.json`.
+- `docs/04-environment-and-testing.md` — new "Recon binaries" subsection: install commands, the real subfinder-dependency-footprint and httpx-model-download findings from installing/running them.
+
+**Still anticipated (R7-R9, not this pass):**
+- `pkg/fingerprint/{detector,signatures}.go` — R7.
+- `pkg/registry/{registry,decisionengine}.go` — R8.
+- `templates/index.json` (generated) + its generator — R9.
+- `tests/unit/fingerprint_test.go`, `tests/unit/registry_test.go`.
 
 ### Verification
-`hackerfive recon` runs standalone against a lab target and produces a `ReconResult` matching the frozen schema, with Wave 0-4 facts each carrying a source and confidence label. `--recon-depth passive` confirmed, live, to never send a single active probe to the target. The OOB infrastructure confirmed working standalone: a self-issued test request to its generated correlation URL is observed via the callback channel. The decision engine confirmed, live, to resolve a real lab target's fingerprint (e.g. a known crAPI/DVWA component) to matched `PlanTree` leaves with zero LLM calls, and to leave an unrecognized `TechFact` as a visibly unresolved leaf rather than dropping it.
+
+**R1/R1b/R2/R3, live-verified 2026-08-31:** `go build`/`go vet`/`go test ./... -race`/`golangci-lint run` all clean (10 new recon/oob tests, all passing on first real run against actual binary output — not fixtures fabricated to fit). Live against real crAPI (`:8888`) and DVWA (`:80`): `hackerfive recon --recon-depth full` produces a real `ReconResult` with real naabu ports, real httpx-detected tech (`OpenResty`, `Apache HTTP Server:2.4.25`, `PHP`, `Debian`), real katana-crawled endpoints (including DVWA's `/login.php` incidentally discovered on the same host, since httpx's own default-port probing surfaced it), and a real WHOIS-derived note (correctly identifying `127.0.0.1` as "IANA - Loopback"). `--recon-depth passive` confirmed both live (near-instant completion, no naabu/httpx/katana output) and structurally (`TestRun_PassiveDepth_NeverInvokesActiveBinaries`) to never invoke an active-wave binary. `--scope` confirmed live, twice: once correctly excluding a target and short-circuiting before Wave 0, once correctly allowing it through to a full Wave 0-3 run. `pkg/oob`'s extraction verified two ways: the pre-existing `TestSSRFOOBCallback_RealEncryptedRoundTrip_Hit` still passes unmodified, and the new standalone `TestOOBClient_SelfIssuedCallback_RealServer` passes against the real `oob-server` container. `docs/schema/recon-result.schema.json` round-trips a real, every-wave-populated `ReconResult` without loss (`pkg/recon/schema_test.go`).
+
+**R7-R9, not yet verified** — scheduled as this step's remaining, separately-planned follow-up.
 
 ---
 
@@ -152,17 +190,17 @@ Full integration testing across Steps 1-4 together — recon CLI against a real 
 
 ## Definition of Done (Phase 5, Weeks 33-40)
 
-- [ ] Design Decisions 1-6 (with the Objective's correction to Decision 4, doc91's shell-tool finding, and Decisions 5-6's LLM-invocation-model/deterministic-dispatch split) are recorded as committed design, not open questions
-- [ ] `tests/eval/` runs a fixed, MAPTA/Cyber-AutoAgent-style challenge set against the lab targets with zero agent involvement, producing a baseline pass/fail report
-- [ ] `docs/schema/finding.schema.json` is published and frozen; it documents `Severity`/`Confidence` as detector-set, never agent-writable
-- [ ] `Job.PlanTree` exists in `pkg/agenttask`, mutates only at leaves, and a shape-changing mutation is rejected and tested
-- [ ] Leaf-level `Confidence` bands (High/Medium/Low) exist on `PlanTree` nodes — distinct from, and never propagated into, `Finding.Confidence`/`Finding.Severity`
-- [ ] `hackerfive recon` runs standalone against a lab target and produces a `ReconResult` matching a frozen, versioned schema, with Wave 0-4 facts each carrying a source and confidence label
-- [ ] `--recon-depth passive` is confirmed, live, to never send a single active probe to the target
-- [ ] An out-of-scope host discovered in Wave 1 is confirmed, live, to receive zero active probes in Wave 2/3
-- [ ] Recon requests are confirmed to respect the existing rate-limit/concurrency defaults and host-error-cache circuit breaker
-- [ ] Each wave's ProjectDiscovery binary prerequisite (subfinder/tlsx/dnsx/naabu/httpx/katana) is documented in doc04; a missing binary degrades that wave to a logged warning, not a hard failure
-- [ ] OOB callback infrastructure (interactsh) generates a correlation URL and confirms a self-issued test callback is received — standalone, not yet wired into any detector
+- [x] Design Decisions 1-6 (with the Objective's correction to Decision 4, doc91's shell-tool finding, and Decisions 5-6's LLM-invocation-model/deterministic-dispatch split) are recorded as committed design, not open questions
+- [x] `tests/eval/` runs a fixed, MAPTA/Cyber-AutoAgent-style challenge set against the lab targets with zero agent involvement, producing a baseline pass/fail report — live-verified 2026-08-31 against real crAPI/DVWA/Juice Shop/vAPI containers; see Step 1's Verification for the two real corrections that run surfaced and the 2 genuine (target-state-dependent, not fixed) DVWA misses
+- [x] `docs/schema/finding.schema.json` is published and frozen; it documents `Severity`/`Confidence` as detector-set, never agent-writable — done 2026-08-30, round-trip-tested against real detector output (`tests/unit/finding_schema_test.go`)
+- [x] `Job.PlanTree` exists in `pkg/agenttask`, mutates only at leaves, and a shape-changing mutation is rejected and tested — done 2026-08-30 (`pkg/agenttask/plantree.go`'s `ApplyLeafUpdate`, tested in `tests/unit/plantree_test.go`)
+- [x] Leaf-level `Confidence` bands (High/Medium/Low) exist on `PlanTree` nodes — distinct from, and never propagated into, `Finding.Confidence`/`Finding.Severity` — done 2026-08-30 (`agenttask.Confidence`/`BandConfidence`)
+- [x] `hackerfive recon` runs standalone against a lab target and produces a `ReconResult` matching a frozen, versioned schema, with Wave 0-4 facts each carrying a source and confidence label — done 2026-08-31, live against real crAPI/DVWA
+- [x] `--recon-depth passive` is confirmed, live, to never send a single active probe to the target — done 2026-08-31, live + `TestRun_PassiveDepth_NeverInvokesActiveBinaries`
+- [x] An out-of-scope host discovered in Wave 1 is confirmed, live, to receive zero active probes in Wave 2/3 — done 2026-08-31; also caught and fixed a related real bug where the *explicitly-given target itself* failing `--scope` wasn't fully honored (see Step 3's Design section), now covered by `TestRun_ExplicitTargetOutOfScope_SkipsEntirely` plus a live `--scope`-deny run
+- [x] Recon requests are confirmed to respect the existing rate-limit/concurrency defaults and host-error-cache circuit breaker — done 2026-08-31 for Wave 0/3's own direct HTTP calls (real `httpclient.Client`/`hosterrors.Cache`, unmodified); Wave 1-3's binary-shelled calls get the same configured numbers via each tool's own native rate/concurrency flag instead, since a separate OS process structurally can't route through our Go middleware — the honest reconciliation documented in Step 3's Design section, not a silent gap
+- [x] Each wave's ProjectDiscovery binary prerequisite (subfinder/tlsx/dnsx/naabu/httpx/katana) is documented in doc04; a missing binary degrades that wave to a logged warning, not a hard failure — done 2026-08-31 (doc04 §"Recon binaries"; `TestRun_MissingBinaries_DegradesToWarningsNotFailure`)
+- [x] OOB callback infrastructure (interactsh) generates a correlation URL and confirms a self-issued test callback is received — standalone, not yet wired into any detector — done 2026-08-31 (`pkg/oob`, `tests/unit/oob_test.go`, live against the real `oob-server` container)
 - [ ] `pkg/fingerprint` (R7) enriches `ReconResult.TechStack` with at least one real, live-verified tech-signature match against a lab target
 - [ ] The capability registry + decision engine (R8) resolves that match to real `PlanTree` leaves with zero LLM calls, live-verified; a `TechFact` with no registry entry produces a visibly unresolved leaf, not a silent drop
 - [ ] `templates/index.json` (R9) is generated from the synced corpus and consumed by the decision engine's template-tag matching
