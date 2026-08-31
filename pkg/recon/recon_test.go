@@ -71,6 +71,38 @@ func TestRun_PassiveDepth_NeverInvokesActiveBinaries(t *testing.T) {
 	assert.NotContains(t, invoked, "katana")
 }
 
+func TestDefaultScheme(t *testing.T) {
+	assert.Equal(t, "https://www.example.com", defaultScheme("www.example.com"))
+	assert.Equal(t, "https://example.com", defaultScheme("example.com"))
+	assert.Equal(t, "http://example.com", defaultScheme("http://example.com"), "an explicit scheme is never overridden")
+	assert.Equal(t, "https://example.com:8443", defaultScheme("https://example.com:8443"), "already-schemed input passes through unchanged")
+}
+
+// TestRun_BareDomainTarget_DoesNotErrorOut confirms a schemeless target
+// (found live: an operator typing "www.example.com" into the Web UI's
+// /recon form got "not a valid target URL" instead of the obviously-
+// intended https:// target) no longer rejects upfront. srv is plain HTTP,
+// so Wave 0's own direct call against the now-https-defaulted bare host
+// fails silently (runWave0's own designed tolerance for any error, see
+// passive.go) — this test isn't about Wave 0 succeeding, only that Run
+// itself accepts the target and proceeds to invoke the passive binaries.
+func TestRun_BareDomainTarget_DoesNotErrorOut(t *testing.T) {
+	calls, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+	bareTarget := strings.TrimPrefix(srv.URL, "http://") // e.g. "127.0.0.1:54321", no scheme
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), bareTarget, DepthPassive)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "https://"+bareTarget, result.Target)
+
+	invoked := namesOf(*calls)
+	assert.Contains(t, invoked, "subfinder")
+	assert.Contains(t, invoked, "tlsx")
+}
+
 func TestRun_ActiveDepth_NeverInvokesCrawlBinary(t *testing.T) {
 	calls, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))

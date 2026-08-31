@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
@@ -88,9 +89,15 @@ func New(client *httpclient.Client, opts ...Option) *Recon {
 }
 
 // Run executes Wave 0 through the wave depth permits, returning the
-// aggregated ReconResult. target must be a URL (scheme + host); Run derives
-// the bare domain for passive enumeration from it.
+// aggregated ReconResult. target is normalized to a full URL first (a bare
+// domain like "www.example.com" defaults to https://, the same assumption
+// a browser's address bar makes on schemeless input — found live: an
+// operator typing a bare domain into the Web UI's /recon form got an
+// opaque "not a valid target URL" error instead of the obviously-intended
+// https:// target); Run derives the bare domain for passive enumeration
+// from the resulting URL.
 func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResult, error) {
+	target = defaultScheme(target)
 	u, err := url.Parse(target)
 	if err != nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("recon: %q is not a valid target URL", target)
@@ -136,6 +143,20 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 	}
 
 	return agg.finalize(), nil
+}
+
+// defaultScheme prepends "https://" to target when it has no scheme —
+// "www.example.com" and "https://www.example.com" should behave
+// identically, matching what a browser's own address bar does with
+// schemeless input. Anything already containing "://" (including a scheme
+// this package doesn't expect, e.g. "ftp://") passes through unchanged;
+// url.Parse in Run is still the real validity check, this only fixes the
+// single most common way to type a target without one.
+func defaultScheme(target string) string {
+	if strings.Contains(target, "://") {
+		return target
+	}
+	return "https://" + target
 }
 
 // waveTimeout bounds each external-binary invocation so one hung wave
