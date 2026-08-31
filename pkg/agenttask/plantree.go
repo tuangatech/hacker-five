@@ -54,18 +54,18 @@ func BandConfidence(percent float64) Confidence {
 // individually mutable once built; only leaves may change post-construction,
 // via PlanTree.ApplyLeafUpdate.
 type PlanNode struct {
-	ID         string
-	Target     string
-	Detector   string // detector name, or a template ID/tag
-	Rationale  string // why the coordinator picked this candidate
-	Status     PlanNodeStatus
-	Confidence Confidence
-	Children   []*PlanNode
+	ID         string         `json:"id"`
+	Target     string         `json:"target"`
+	Detector   string         `json:"detector,omitempty"` // detector name, or a template ID/tag
+	Rationale  string         `json:"rationale,omitempty"` // why the coordinator picked this candidate
+	Status     PlanNodeStatus `json:"status,omitempty"`
+	Confidence Confidence     `json:"confidence,omitempty"`
+	Children   []*PlanNode    `json:"children,omitempty"`
 }
 
 // PlanTree is a Job's task tree.
 type PlanTree struct {
-	Root *PlanNode
+	Root *PlanNode `json:"root"`
 }
 
 // Find walks the tree depth-first for the node with the given ID, or nil if

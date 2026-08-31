@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"github.com/tuangatech/hacker-five/pkg/fingerprint"
 )
 
 // runWave2 is the standard first live-touch step (docs/91-research-recon-
@@ -42,6 +44,26 @@ func (r *Recon) runWave2(ctx context.Context, agg *aggregator, targetHost string
 			hf.Ports = ps
 		}
 		agg.addHost(hf.HostFact)
+
+		// R7: deterministic tech-signature matching on top of httpx's own
+		// -tech-detect list, using the same headers/body/favicon httpx
+		// already captured plus the just-merged port list — see
+		// pkg/fingerprint's own doc comment for why this doesn't replace
+		// httpx's own list, it enriches it.
+		ports := make([]int, 0, len(hf.Ports))
+		for _, p := range hf.Ports {
+			ports = append(ports, p.Port)
+		}
+		for _, m := range fingerprint.Detect(fingerprint.Signal{Headers: hf.headers, Body: hf.body, FaviconHash: hf.favicon, Ports: ports}) {
+			confidence := ConfidenceHigh
+			switch m.Source {
+			case fingerprint.SourceBody:
+				confidence = ConfidenceMedium
+			case fingerprint.SourcePort:
+				confidence = ConfidenceLow
+			}
+			agg.addTech(TechFact{Name: m.Product, Host: hf.Host, Source: m.Source, Confidence: confidence})
+		}
 	}
 	return liveURLs
 }
@@ -131,10 +153,15 @@ func hasPort(ports []PortFact, port int, proto string) bool {
 // hostWithIP pairs an httpx-derived HostFact with the IP httpx itself
 // resolved it to ("host_ip" in its JSON output) — the join key runWave2
 // uses to attach runNaabu's by-IP port results, since naabu and httpx
-// identify a result differently (IP vs. input hostname).
+// identify a result differently (IP vs. input hostname). headers/body/
+// favicon carry httpx's own captured response signals through to runWave2,
+// where pkg/fingerprint's matching runs once the port list is also known.
 type hostWithIP struct {
 	HostFact
-	hostIP string
+	hostIP  string
+	headers map[string]string
+	body    string
+	favicon string
 }
 
 func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) ([]string, []hostWithIP) {
@@ -142,6 +169,7 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 	defer cancel()
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "httpx",
 		"-silent", "-json", "-status-code", "-title", "-web-server", "-tech-detect", "-follow-redirects",
+		"-favicon", "-irr", // R7: response headers/body + favicon hash, for pkg/fingerprint's signature matching
 		"-rl", itoa(r.rateLimit), "-threads", itoa(r.concurrency))
 	if err != nil {
 		if isBinaryMissing(err) {
@@ -155,17 +183,21 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 	var urls []string
 	var hostFacts []hostWithIP
 	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // -irr includes full response bodies, can exceed bufio's 64KiB default
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var rec struct {
-			URL        string   `json:"url"`
-			Host       string   `json:"host"`
-			HostIP     string   `json:"host_ip"`
-			StatusCode int      `json:"status_code"`
-			Tech       []string `json:"tech"`
+			URL        string            `json:"url"`
+			Host       string            `json:"host"`
+			HostIP     string            `json:"host_ip"`
+			StatusCode int               `json:"status_code"`
+			Tech       []string          `json:"tech"`
+			Header     map[string]string `json:"header"`
+			Body       string            `json:"body"`
+			Favicon    string            `json:"favicon"`
 		}
 		if err := json.Unmarshal(line, &rec); err != nil || rec.URL == "" {
 			continue
@@ -178,10 +210,13 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 		hostFacts = append(hostFacts, hostWithIP{
 			HostFact: HostFact{Host: host, Source: "httpx", Confidence: ConfidenceHigh},
 			hostIP:   rec.HostIP,
+			headers:  rec.Header,
+			body:     rec.Body,
+			favicon:  rec.Favicon,
 		})
 		agg.addEndpoint(EndpointFact{URL: rec.URL, Method: "GET", StatusCode: rec.StatusCode, Source: "httpx", Confidence: ConfidenceHigh})
 		for _, tech := range rec.Tech {
-			agg.addTech(TechFact{Name: tech, Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+			agg.addTech(TechFact{Name: tech, Host: host, Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
 		}
 	}
 	return urls, hostFacts

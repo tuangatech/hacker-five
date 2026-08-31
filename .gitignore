@@ -26,6 +26,10 @@ coverage.out
 # Synced upstream templates (scripts/sync-nuclei-templates.sh) — never redistributed, see docs/10-implementation-plan-ph1b.md Step 2
 .nuclei-templates-cache/
 
+# Generated template metadata index (`hackerfive templates index`, docs/14-implementation-plan-ph5.md Step 3's R9) —
+# regenerate on demand, would go stale the moment templates/ or the synced corpus changes if committed
+/templates/index.json
+
 # goreleaser output (goreleaser release --snapshot --clean)
 dist/
 # .claude/

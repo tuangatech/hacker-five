@@ -141,6 +141,15 @@ go test -tags=integration ./tests/integration/... -v
 
 **crAPI/DVWA/Juice Shop/vAPI/AIGoat are self-contained local Docker targets built for this purpose — never point `--endpoint` or `-t` at a live/external host with these lab credentials/assumptions.** See [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md).
 
+### Recon & Planning
+
+`hackerfive recon` runs the recon phase standalone — no agent required — against a target: passive subdomain/TLS/WHOIS enumeration, then (with `--recon-depth active|full`) DNS resolution, port scanning, HTTP/tech fingerprinting, and a bounded crawl. `hackerfive plan` runs recon and then resolves the result through a deterministic capability registry (zero LLM calls) into a `PlanTree` of candidate detector/template leaves — a tech signal the registry can't map to anything becomes a visible `unresolved` leaf, never a silent drop:
+```bash
+./hackerfive templates index                                  # generate templates/index.json once
+./hackerfive plan -t http://localhost:8888 --recon-depth active --scope path/to/scope.txt
+```
+Wave 2+ (DNS/port-scan/HTTP-probe) and Wave 3 (crawl) need 6 external ProjectDiscovery CLI tools (subfinder/tlsx/dnsx/naabu/httpx/katana) installed and on `PATH` — see [docs/04-environment-and-testing.md](docs/04-environment-and-testing.md#2-recon-binaries-pkgrecon-hackerfive-recon--docs14-implementation-plan-ph5md-step-3) for install commands. Without them, Wave 0-1 (zero-touch + passive) still work; a missing binary degrades that wave to a warning, not a hard failure — **the Dockerfile doesn't bundle these binaries today**, so `docker run hackerfive recon --recon-depth active` is currently passive-only unless you build your own image with them installed.
+
 ## Docs
 
 Project plan split by concern under [docs/](docs/):

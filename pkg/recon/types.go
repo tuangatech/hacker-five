@@ -71,12 +71,17 @@ type EndpointFact struct {
 }
 
 // TechFact is one technology/framework signal observed on the target.
-// Populated this pass from httpx's own -tech-detect output
-// (Source: "httpx-tech-detect"); docs/14-implementation-plan-ph5.md Step
-// 3's R7 (a later pass) adds a deterministic layer on top of this, it does
-// not replace it.
+// Populated from httpx's own -tech-detect output (Source:
+// "httpx-tech-detect") and from pkg/fingerprint's deterministic
+// header/body/favicon/port signature matching, layered on top of the same
+// signals rather than replacing them (Step 3's R7). Host is a correction
+// found implementing R8 (Step 3b): the decision engine needs to know which
+// host produced a given tech signal to set a PlanTree leaf's Target — an
+// omission in this type's original Step 3a shape, fixed here before an
+// external client (Phase 6) could ever depend on it missing.
 type TechFact struct {
 	Name       string `json:"name"`
+	Host       string `json:"host"`
 	Source     string `json:"source"`
 	Confidence string `json:"confidence"`
 }

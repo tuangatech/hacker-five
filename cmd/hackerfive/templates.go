@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +21,7 @@ func newTemplatesCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newTemplatesSyncCmd())
 	cmd.AddCommand(newTemplatesListCmd())
+	cmd.AddCommand(newTemplatesIndexCmd())
 	return cmd
 }
 
@@ -90,6 +93,62 @@ func newTemplatesListCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&tags, "tags", "", "comma-separated tags — only list templates carrying at least one (default: no filtering)")
 	return cmd
+}
+
+// templateIndexFile is the on-disk shape of templates/index.json (doc14
+// Step 3's R9) — a thin, timestamped wrapper around templatesync.List's
+// own already-flattened Entry shape. Read by `hackerfive plan` and
+// pkg/registry's decision engine (template-tag matching), written here.
+type templateIndexFile struct {
+	GeneratedAt time.Time            `json:"generated_at"`
+	Templates   []templatesync.Entry `json:"templates"`
+}
+
+func newTemplatesIndexCmd() *cobra.Command {
+	var output string
+
+	cmd := &cobra.Command{
+		Use:   "index",
+		Short: "Generate templates/index.json — template metadata pkg/registry's decision engine matches tech signals against",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dirs, labels := defaultTemplateDirsWithLabels()
+			entries, rejected, err := templatesync.List(dirs, labels, nil)
+			if err != nil {
+				return fmt.Errorf("indexing templates: %w", err)
+			}
+
+			data, err := json.MarshalIndent(templateIndexFile{GeneratedAt: time.Now().UTC(), Templates: entries}, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshaling template index: %w", err)
+			}
+			if err := os.WriteFile(output, data, 0o644); err != nil {
+				return fmt.Errorf("writing %s: %w", output, err)
+			}
+
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d templates (%d rejected) to %s\n", len(entries), rejected, output)
+			return err
+		},
+	}
+
+	cmd.Flags().StringVarP(&output, "output", "o", "templates/index.json", "output path for the generated index")
+	return cmd
+}
+
+// loadTemplateIndex reads a templateIndexFile written by `templates index`,
+// returning its flattened Entry list. Callers that can proceed without a
+// template index (e.g. `plan`) should treat a missing file as a soft
+// degrade, not a hard error — mirroring pkg/recon's own "missing binary ->
+// warning, not failure" posture.
+func loadTemplateIndex(path string) ([]templatesync.Entry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var f templateIndexFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return f.Templates, nil
 }
 
 // defaultTemplateDirsWithLabels is the default two-source list both

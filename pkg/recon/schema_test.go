@@ -52,7 +52,7 @@ func TestReconResult_SchemaRoundTrip(t *testing.T) {
 		"tlsx":      `{"subject_an":["san.example.com"]}`,
 		"dnsx":      `{"host":"` + targetHost + `"}`,
 		"naabu":     `{"ip":"` + targetHost + `","port":80,"protocol":"tcp"}`,
-		"httpx":     `{"url":"` + target + `","host":"` + targetHost + `","host_ip":"` + targetHost + `","status_code":200,"tech":["Nginx"]}`,
+		"httpx":     `{"url":"` + target + `","host":"` + targetHost + `","host_ip":"` + targetHost + `","status_code":200,"tech":["Nginx"],"header":{"server":"nginx/1.25"},"body":"<html>ok</html>","favicon":"12345"}`,
 		"katana":    `{"request":{"endpoint":"` + target + `/app.js","method":"GET"}}`,
 	}
 	_, fake := recordingRun(t, responses)
@@ -72,6 +72,15 @@ func TestReconResult_SchemaRoundTrip(t *testing.T) {
 	require.NotEmpty(t, result.Endpoints)
 	require.NotEmpty(t, result.TechStack)
 	require.Contains(t, result.OutOfScope, "evil.other.net")
+
+	foundFingerprint := false
+	for _, tf := range result.TechStack {
+		require.NotEmpty(t, tf.Host, "every TechFact must carry the host that produced it")
+		if tf.Source == "fingerprint-header" {
+			foundFingerprint = true
+		}
+	}
+	assert.True(t, foundFingerprint, "expected pkg/fingerprint's header-based match to enrich TechStack alongside httpx-tech-detect")
 
 	raw, err := json.Marshal(result)
 	require.NoError(t, err)

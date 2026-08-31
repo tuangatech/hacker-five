@@ -15,12 +15,12 @@ import (
 // its info: block. See docs/12-implementation-plan-ph3.md's "Template sync
 // command" §2 note.
 type Entry struct {
-	ID       string
-	Name     string
-	Format   string // "nuclei" | "native"
-	Severity string
-	Tags     []string
-	Source   string // caller-supplied label for the dir this entry loaded from, e.g. "bundled" | "synced"
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Format   string   `json:"format"` // "nuclei" | "native"
+	Severity string   `json:"severity"`
+	Tags     []string `json:"tags"`
+	Source   string   `json:"source"` // caller-supplied label for the dir this entry loaded from, e.g. "bundled" | "synced"
 }
 
 // List loads every template under each of dirs (same nuclei.LoadDir/

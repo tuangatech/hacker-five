@@ -249,7 +249,7 @@ v0.4.0 release is expected to reuse the existing `goreleaser`/CI pipeline unchan
 - [x] CLAUDE.md's Rules section updated with the HackerOne report-drafting-only invariant (Step 4) — permanent, not Phase-4-scoped — 2026-08-30
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] Phase 4 Success Metrics measured live and recorded honestly (met, or not met with a stated reason) — not assumed
-- [ ] `v0.4.0` tagged and released, or explicitly held with a stated reason (same as `v0.2.0`'s open status)
+- [ ] `v0.4.0` tagged and released, or explicitly held with a stated reason (same as `v0.2.0`'s open status) — **explicitly held, 2026-08-31**: the HackerOne live-API-call item directly above and the Success Metrics item are both still genuinely open (not just unchecked boxes — no real HackerOne account call has ever been made, no metrics run has happened), so tagging now would overstate what Phase 4 actually delivered. Unlike `v0.2.0` (which doc11 held only until its Success Metrics gap was explicitly accepted as a breadth ceiling, then tagged immediately after — see doc11's Definition of Done), `v0.4.0` isn't being held pending a deliberate accept-as-is call; it's genuinely incomplete work waiting on the user's real HackerOne credentials + program handle. Revisit once that item is closed (or explicitly accepted as out of scope, same kind of call).
 
 ## See also
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — vulnerability classes this plan builds on
