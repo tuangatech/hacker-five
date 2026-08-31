@@ -28,8 +28,15 @@ func newTestServer(t *testing.T) *httptest.Server {
 	// own dev environment has, from Week 19's live verification) would have
 	// every test scan here load the full ~3469-template synced corpus
 	// instead of just the bundled dir, making tests slow and dependent on
-	// real environment state rather than hermetic.
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// real environment state rather than hermetic. os.UserConfigDir() only
+	// honors XDG_CONFIG_HOME on Linux — on Darwin it's always
+	// $HOME/Library/Application Support, so HOME must be overridden too
+	// (found 2026-08-31: XDG_CONFIG_HOME alone silently did nothing on a
+	// macOS dev machine that had ever run a real sync, and this test timed
+	// out against the real 3469-template corpus instead).
+	tmpHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpHome)
+	t.Setenv("HOME", tmpHome)
 
 	srv, err := New(Options{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)

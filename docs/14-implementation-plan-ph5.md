@@ -23,7 +23,7 @@ Doc90's proposed agent flow (plan → approve → scan → triage) has no step t
 2. ✅ **Finding schema freeze + task-tree data model** (Weeks 34-35) — done 2026-08-30
 3. ✅ **Recon package + decision engine** (Weeks 36-37) — done 2026-08-31 (live-verified against real crAPI/DVWA)
 4. ✅ **Recon + Plan-preview Web UI** (Week 38) — done 2026-08-31 (live-verified against real crAPI)
-5. ⬜ **Integration testing + release** (Weeks 39-40) — `v0.5.0`
+5. ✅ **Integration testing + release** (Weeks 39-40) — done 2026-08-31 — `v0.5.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-13.)
 
@@ -175,14 +175,31 @@ Both use the existing Go stdlib `net/http` + `html/template` + htmx stack (doc02
 
 ---
 
-## Step 5: Integration Testing + Release (Weeks 39-40) — ⬜ not yet implemented — `v0.5.0`
+## Step 5: Integration Testing + Release (Weeks 39-40) — ✅ done (2026-08-31) — `v0.5.0`
 
 ### Design
 
-Full integration testing across Steps 1-4 together — recon CLI against a real lab target, schema round-trips, `PlanTree` mutation guards, the decision engine resolving a real fingerprint end-to-end, both new Web UI pages — then release. No MCP client, no agent session, no LLM call anywhere in this phase; that round trip is Phase 6 Step 5's job.
+Steps 1-4 were each live-verified during implementation, but only ad hoc (CLI/curl runs in a terminal) — none of that became a committed, rerunnable test. `tests/integration/` (build-tagged `integration`, opt-in via `make integration`, real lab targets per its own package doc, never mocks) had zero files touching `pkg/recon`, `pkg/registry`, `pkg/agenttask`, or `pkg/webui`'s new recon/plan-preview routes before this step. Step 5's actual job: turn Steps 1-4's manual findings into permanent regression tests, then run the full `go build`/`go vet`/`go test -race`/`golangci-lint` gate, then decide the release.
+
+**Built and live-verified 2026-08-31:**
+- `tests/integration/recon_plan_crapi_test.go` — `TestReconAndPlan_AgainstCRAPI`: real `pkg/recon.Run` at `--recon-depth active` against `CRAPI_BASE_URL`, schema-validated against `docs/schema/recon-result.schema.json`, then real `registry.Resolve` (loading `templates/index.json` if present, degrading gracefully if not — same posture as `plan.go`/`handlers_plan.go`). Asserts real `misconfig`/`idor`/`authbypass` leaves from crAPI's OpenResty tech fact.
+- `tests/integration/recon_plan_dvwa_test.go` — same shape against `DVWA_BASE_URL`, asserting DVWA's real `misconfig` leaf (and `php-detect` once the corpus is synced).
+- `tests/integration/webui_recon_flow_test.go` — `TestWebUIReconAndPlanPreview_AgainstCRAPI`: a real `webui.Server` on an ephemeral loopback port, driven by a real `net/http` client with a cookie jar through the actual double-submit-cookie CSRF flow (`GET /recon` → `POST /recon` → poll `GET /recon/{id}` → `GET /plan-preview?job={id}`) against real crAPI — the thing Step 4's own Verification section named honestly as not yet done ("no browser-automation tool available... a full visual pass is still worth doing manually"). Not a browser/visual test, but a real end-to-end HTTP regression test.
+
+**A real finding from actually running these live, not glossed over:** which exact tech fact renders as an `unresolved` leaf varies run-to-run — live `httpx` tech-detect against a live container isn't perfectly deterministic. One real run of `TestReconAndPlan_AgainstCRAPI` reported only crAPI's own favicon match unresolved; a second real run (and a separate manual check earlier the same session) reported both `Debian` and the favicon match. All three new tests were written to assert the actual structural guarantee this phase's Decision 6 makes — *an unmatched tech fact always renders as a visible, inspectable leaf* — rather than which specific tech name triggers it on any given run, after the first version's harder assertion (`"Debian"` present) genuinely failed live and revealed this.
+
+**A second real finding, this one a pre-existing test bug surfaced by actually running the full suite on a machine that had synced the real corpus:** `pkg/webui/handlers_scan_test.go`'s `newTestServer` isolates `templatesync.DefaultSyncDir()` from this machine's real synced-corpus state by overriding `XDG_CONFIG_HOME` — which has no effect on Darwin, since Go's `os.UserConfigDir()` only reads that variable on Linux and always resolves to `$HOME/Library/Application Support` on macOS. `TestEndToEnd_StartScan_ProducesRealFindings` genuinely failed (timed out at its 5s `require.Eventually` budget) once this dev machine's real corpus was synced for Step 3's live verification, taking 87s instead of ~2s because the background scan loaded all 3165 real templates instead of the bundled handful. Fixed by also overriding `HOME` in the same test helper — the real, cross-platform fix, not a workaround.
+
+No MCP client, no agent session, no LLM call anywhere in this phase; that round trip is Phase 6 Step 5's job.
+
+### Files
+- `tests/integration/recon_plan_crapi_test.go`, `tests/integration/recon_plan_dvwa_test.go`, `tests/integration/webui_recon_flow_test.go` (new).
+- `pkg/webui/handlers_scan_test.go` (edit) — `newTestServer`'s corpus-isolation fix (`HOME` override alongside `XDG_CONFIG_HOME`).
 
 ### Verification
-`hackerfive recon` against crAPI/DVWA produces a real, schema-valid `ReconResult` with correctly-labeled facts, and the decision engine turns it into real `PlanTree` leaves with zero LLM involvement. The Web UI's Recon and Plan-preview pages both render real data end-to-end. `go build`/`go vet`/`go test -race`/`golangci-lint` all clean.
+`go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean — 2026-08-31. `make integration`-equivalent (`go test -tags=integration ./tests/integration/...`) run twice, live, against real crAPI (`:8888`) and DVWA (`:80`): all three new tests pass both runs, exercising real recon → schema validation → decision engine → (for the third) real HTTP Web UI flow end-to-end, no mocks — including the second run's real-time confirmation that the relaxed unresolved-leaf assertion (see Design) tolerates the exact non-determinism the first run surfaced.
+
+**Release decision — made 2026-08-31, user's explicit call:** `v0.3.0` is the last real tag; `v0.4.0` remains explicitly held (doc13 — genuinely incomplete, waiting on real HackerOne credentials). This phase was deliberately carved out because it doesn't depend on that blocker (this doc's own opening paragraph), and its own Definition of Done is now fully closed — so `v0.5.0` is tagged and released now rather than waiting on `v0.4.0`. The skipped version number is deliberate, stated here rather than left for someone to notice and wonder about; `v0.4.0` stays separately held per doc13's own reason, unaffected by this tag. `.goreleaser.yml`/`.github/workflows/release.yml` needed no changes (confirmed by reading `release.yml` directly): same generic, tag-triggered pipeline every prior tag (`v0.1.0`-`v0.3.0`) already used.
 
 ## Definition of Done (Phase 5, Weeks 33-40)
 
@@ -201,8 +218,8 @@ Full integration testing across Steps 1-4 together — recon CLI against a real 
 - [x] The capability registry + decision engine (R8) resolves that match to real `PlanTree` leaves with zero LLM calls, live-verified; a `TechFact` with no registry entry produces a visibly unresolved leaf, not a silent drop — done 2026-08-31 (`hackerfive plan`, live against crAPI/DVWA; `Debian`/`crAPI` tech facts rendered as real `unresolved` leaves)
 - [x] `templates/index.json` (R9) is generated from the synced corpus and consumed by the decision engine's template-tag matching — done 2026-08-31 (`hackerfive templates index`; live-matched a real `php-detect` template leaf)
 - [x] The Web UI's Recon and Plan-preview pages both render real data end-to-end — Plan-preview showing a real, decision-engine-populated tree, not only a hand-built fixture — done 2026-08-31, live against real crAPI (see Step 4's Verification)
-- [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
-- [ ] `v0.5.0` tagged and released, or explicitly held with a stated reason
+- [x] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean — done 2026-08-31 (Step 5 also found and fixed a real pre-existing Darwin-only test-hermeticity bug in `pkg/webui/handlers_scan_test.go` along the way; see Step 5's Design)
+- [x] `v0.5.0` tagged and released, or explicitly held with a stated reason — **tagged 2026-08-31**, user's explicit call: Phase 5's own scope is fully done and doesn't depend on Phase 4's still-open HackerOne-credential gap (doc13), so `v0.5.0` ships now rather than waiting on `v0.4.0`; the skipped version number is deliberate, not an error, and `v0.4.0` remains separately held per doc13's own stated reason.
 
 ## See also
 - [91-research-recon-phase.md](91-research-recon-phase.md) — the full recon research and Group R backlog this phase schedules the MCP-independent half of
