@@ -1,0 +1,45 @@
+# Phase 5 Step 4 — Recon + Plan-Preview Web UI (docs/14-implementation-plan-ph5.md)
+
+## Context
+
+Steps 1-3b shipped `pkg/recon` (produces a real `ReconResult`) and `pkg/registry` (deterministically resolves that into a real `PlanTree`) — both currently only reachable via CLI (`hackerfive recon`, `hackerfive plan`). Step 4 gives a human operator two read-only Web UI pages to look at that same data without a terminal, validating Steps 2-3's data models the way doc14 intends, before Phase 6 makes either page actionable (approve/reject via MCP `elicitation`). No new capability is being built — this step is purely a UI window onto `pkg/recon`/`pkg/registry`, mirroring the boundary doc12 already drew for `pkg/scanner` (`pkg/webui` calls the package directly, duplicates no scan/recon logic).
+
+## Design
+
+**Reuse, don't reinvent — every mechanism below has a direct precedent already in `pkg/webui`:**
+- Async job model: `handlers_scan.go`'s `newJob`/`JobStore`/`runJob` (background goroutine on `h.baseCtx`, not the request's own context) — the same "long-running op started via POST, results browsable via GET /x/{id}" shape recon needs, since `--recon-depth active|full` can take tens of seconds (external binaries) and must not block the HTTP request.
+- SSE for live status: `jobs.go`'s `Subscribe`/`publish`/`Event` pattern and `scanEvents`'s SSE writer (`scan_status.html`'s `hx-ext="sse"`/`sse-swap`). Recon needs a *much* smaller slice of this: `recon.Run` (`pkg/recon/recon.go:93`) is one blocking call with no incremental callback (no `WithFindingCallback`/`WithLogCallback` equivalent) — so there is exactly one event ever worth pushing: the `running → done|failed` transition. No finding/log stream to reuse.
+- Synchronous page render: `handlers_templates.go`'s `templatesPage` (loads + renders in one request, no job) — the shape the **Plan-preview** page follows, since `registry.Resolve` (`pkg/registry/decisionengine.go`) is pure, synchronous, in-memory tree construction over an *already-fetched* `ReconResult` — no new async work of its own.
+- Cross-package boundary duplication: `handlers_templates.go`'s `defaultWebTemplateDirsWithLabels` and `handlers_scan.go`'s `splitCSV` already duplicate small `cmd/hackerfive` helpers locally rather than import `package main` from `pkg/webui` (correctly impossible — `cmd` imports `pkg`, never the reverse). `cmd/hackerfive/plan.go`'s `loadTemplateIndex` (unexported, in `package main`) needs the same treatment: a small local `loadTemplateIndex(path string) ([]templatesync.Entry, error)` in `pkg/webui`, reading the same `{generated_at, templates}` JSON shape `cmd/hackerfive/templates.go`'s `templateIndexFile` writes.
+
+**New type: `ReconJob`/`ReconJobStore`** (`pkg/webui/reconjobs.go`) — deliberately a *separate*, smaller type from `Job`, not a generalization of it: `Job`'s shape (`findings`/`logs`/multi-event SSE) exists because a scan has incremental output; recon doesn't, so bolting `Result *recon.ReconResult` onto `Job` and leaving `findings`/`logs` always empty would just be a confusing partial fit. `ReconJob` carries `ID, Target, Depth, CreatedAt`, a mutex-guarded `status`/`err`/`result *recon.ReconResult`, and the same minimal `Subscribe`/`publish` pair `Job` already has but with only two `Event.Type`s (`EventProgress`/`EventDone`, reusing the existing consts). `ReconJobStore` mirrors `JobStore` exactly (`Add`/`Get`, `maxJobs`-style eviction) — small, proportionate duplication, consistent with this codebase's existing precedent (see `splitCSV` above) rather than a forced-generic shared store.
+
+**Routes** (added to `server.go`'s existing `mux`, same registration style):
+- `GET /recon` — new-recon form (`newReconForm`, mirrors `newScanForm`): single `Target` field (`recon.Run` takes one target, not a list — unlike scan), `Depth` select (`passive`/`active`/`full`, default `active` matching `plan.go`'s own default and rationale — Wave 2's httpx tech signals are what the decision engine needs), `ScopeFile` text field (mirrors `NewScanData.ScopeFile` 1:1 — same server-side-path convention, same missing-file-warns-not-fails posture as the CLI).
+- `POST /recon` — `startRecon` (mirrors `startScan`): validates target/depth, builds `recon.New(client, recon.WithRateLimit(...), recon.WithConcurrency(...), recon.WithScope(...))` exactly like `plan.go:71-83`, creates a `ReconJob`, stores it, `go h.runReconJob(job, ...)`, responds with the status fragment (`HX-Push-Url` to `/recon/{id}`, same as `startScan`).
+- `GET /recon/{id}` — `reconStatus` (mirrors `scanStatus`): renders hosts/endpoints/tech-stack/out-of-scope/warnings from `job.Snapshot()`, each fact's existing `Source`/`Confidence` string fields shown directly (no new confidence logic — `recon.ConfidenceHigh/Medium/Low` already exist). Once `status == done`, shows a "Preview Plan →" link to `/plan-preview?job={id}`.
+- `GET /recon/{id}/events` — `reconEvents`, SSE, mirrors `scanEvents` structurally but only ever emits one terminal event.
+- `GET /plan-preview?job={id}` — `planPreview`: loads the `ReconJob` by ID (404 if missing/not done — Plan-preview only makes sense against a completed `ReconResult`), loads `templates/index.json` via the new local loader (missing file → warn banner in the page, `index = nil`, matching `plan.go`'s own graceful degrade — never a hard failure), calls `registry.Resolve(job.result, index)`, renders the tree.
+
+**Recursive tree rendering** — `agenttask.PlanNode.Children []*PlanNode` is arbitrarily (if shallowly, in practice) nested; Go's `html/template` supports a template calling itself by name, so `fragment_plan_node.html` defines `{{define "fragment_plan_node"}}...{{range .Children}}{{template "fragment_plan_node" .}}{{end}}{{end}}` — no new templating mechanism, just the standard recursive-template idiom. Each leaf shows `Target`/`Detector`/`Rationale`/`Status`/`Confidence`; a `StatusUnresolved` leaf gets a distinct badge class (`badge-unresolved` in `style.css`, next to the existing `status-badge`) per doc14's "needs a decision" callout — not a new mechanism, just a CSS modifier and a template `{{if eq .Status "unresolved"}}`.
+
+**Nav**: add `<a href="/recon">Recon</a>` to `layout.html`'s nav (next to "Templates"). No separate "Plan Preview" nav entry — like `detector-fields`, it's only reachable from a completed recon job's page, never a bare/parameterless route.
+
+## Files
+
+- `pkg/webui/reconjobs.go` (new) — `ReconJob`, `ReconJobStore`, `Snapshot`-equivalent, `Subscribe`/`publish`.
+- `pkg/webui/handlers_recon.go` (new) — `newReconForm`, `startRecon`, `runReconJob`, `reconStatus`, `reconEvents`, `buildReconConfig`-equivalent (target/depth/scope validation, mirroring `buildScanConfig`'s errs-list style).
+- `pkg/webui/handlers_plan.go` (new) — `planPreview`, local `loadTemplateIndex`.
+- `pkg/webui/types.go` (edit) — `ReconFormData`, `ReconStatusData`, `PlanPreviewData`.
+- `pkg/webui/templates/new_recon.html`, `recon_status.html`, `fragment_recon_status_body.html`, `fragment_host_row.html`, `fragment_tech_row.html`, `plan_preview.html`, `fragment_plan_node.html` (new).
+- `pkg/webui/templates/layout.html` (edit) — nav link.
+- `pkg/webui/static/style.css` (edit) — `badge-unresolved` modifier.
+- `pkg/webui/server.go` (edit) — 5 new route registrations.
+- `pkg/webui/handlers_recon_test.go`, `pkg/webui/handlers_plan_test.go` (new) — construct a `ReconJob`/`ReconResult` fixture directly (same package, unexported access) and a hand-built `PlanTree` fixture (nested leaves, every `Confidence` band, one `StatusUnresolved` leaf) to test rendering without needing real recon binaries in CI; this mirrors doc14 Step 4's own note that fixtures stay useful for edge cases even though the tree can now be real. The real `recon.Run`/`registry.Resolve` path is already live-verified via `hackerfive recon`/`hackerfive plan` (Step 3b) — these tests check *rendering*, not recon/decision-engine correctness again.
+- `docs/14-implementation-plan-ph5.md` (edit) — Step 4 flipped to done with dated evidence, Definition of Done's Web UI line checked.
+
+## Verification
+
+- `go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` clean.
+- New unit tests pass: recon status page renders hosts/tech/warnings from a fixture `ReconResult`; plan-preview renders nested leaves at every `Confidence` band plus the `unresolved` badge from a fixture `PlanTree`; a missing `templates/index.json` degrades `planPreview` to a warning banner, not a 500.
+- Live: start `hackerfive serve`, submit a real target via `/recon` at `--recon-depth active` against real crAPI/DVWA, confirm the status page flips from running to done with real hosts/tech facts, then follow "Preview Plan →" and confirm the rendered tree matches the equivalent `hackerfive plan` CLI output for the same target (same leaves, same unresolved facts) — exercised via `curl`/direct HTTP against the running server, since no browser-automation tool is available in this environment; I'll say so explicitly rather than claim a visual browser check that didn't happen, and flag if you'd like to do that visual pass yourself before calling Step 4 done.

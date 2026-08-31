@@ -28,6 +28,7 @@
       "Bash(./hackerfive *)",
       "Bash(git add *)",
       "Bash(git commit *)",
+      "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(git check-ignore *)",
       "Bash(git mv *)",
@@ -58,7 +59,7 @@
       "Read(//tmp/**)",
       "Read(//private/tmp/**)",
       "Skill(update-config)",
-      "Skill(update-config:*)"
+      "Skill(update-config:*)",
     ],
     "ask": [
       "Bash(docker rm *)",
