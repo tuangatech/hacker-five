@@ -19,7 +19,15 @@ import (
 // ReconJob directly into h.reconStore without running a real recon.Run.
 func newTestServerHandlers(t *testing.T) (*httptest.Server, *handlers) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// Isolates both templatesync.DefaultSyncDir() and toolsync.DefaultInstallDir()
+	// from this machine's real state — os.UserConfigDir() only honors
+	// XDG_CONFIG_HOME on Linux, always $HOME/Library/Application Support on
+	// Darwin, so HOME must be overridden too (same fix handlers_scan_test.go's
+	// newTestServer needed after a real `hackerfive templates sync` run on
+	// this dev machine broke its own isolation the same way).
+	tmpHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpHome)
+	t.Setenv("HOME", tmpHome)
 
 	srv, err := New(Options{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)

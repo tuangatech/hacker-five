@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,7 +15,13 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
 	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
+	"github.com/tuangatech/hacker-five/pkg/toolsync"
 )
+
+// reconSetupTimeout bounds the whole Install run — 6 sequential downloads
+// plus httpx's own ~93MB model-file warm-up, generous enough for a slow
+// connection without hanging forever on a genuinely stuck request.
+const reconSetupTimeout = 10 * time.Minute
 
 // reconRunTimeout bounds the whole multi-wave Run — each individual wave
 // already has its own shorter per-binary timeout (pkg/recon's internal
@@ -99,5 +107,103 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification for this package's own direct HTTP calls — lab targets only, never the default")
 
+	cmd.AddCommand(newReconSetupCmd())
+
 	return cmd
+}
+
+// newReconSetupCmd is `hackerfive recon setup` — installs the 6 recon
+// binaries pkg/recon shells out to (subfinder/tlsx/dnsx/naabu/httpx/
+// katana), replacing the manual `go install ...@latest` per tool
+// (docs/04-environment-and-testing.md §2) for anyone without a Go
+// toolchain. Never runs automatically (not on `serve` startup, not as a
+// side effect of `recon`/`plan`) — installing binaries is a real network
+// operation with a real failure mode, so it stays one explicit, opt-in
+// action, same posture as `hackerfive templates sync`.
+func newReconSetupCmd() *cobra.Command {
+	var (
+		dir   string
+		check bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Install the 6 recon binaries (subfinder/tlsx/dnsx/naabu/httpx/katana) needed for --recon-depth active|full",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dir == "" {
+				d, err := toolsync.DefaultInstallDir()
+				if err != nil {
+					return fmt.Errorf("resolving install directory: %w", err)
+				}
+				dir = d
+			}
+
+			out := cmd.OutOrStdout()
+			if check {
+				return printToolStatus(out, toolsync.Status(dir), dir)
+			}
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), reconSetupTimeout)
+			defer cancel()
+
+			result := toolsync.Install(ctx, dir, func(tool, message string) {
+				if tool == "" {
+					_, _ = fmt.Fprintf(out, "%s\n", message)
+					return
+				}
+				_, _ = fmt.Fprintf(out, "[%s] %s\n", tool, message)
+			})
+
+			_, _ = fmt.Fprintln(out)
+			failed := 0
+			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "TOOL\tSTATUS\tVERSION")
+			for _, tr := range result.Tools {
+				status := "ok"
+				extra := "v" + tr.Version
+				if !tr.OK {
+					status = "failed"
+					extra = tr.Err
+					failed++
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", tr.Name, status, extra)
+			}
+			if err := tw.Flush(); err != nil {
+				return err
+			}
+			if failed > 0 {
+				return fmt.Errorf("%d of %d tools failed to install — see above; the rest installed successfully", failed, len(result.Tools))
+			}
+			_, _ = fmt.Fprintf(out, "\nAll tools installed into %s\n", dir)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&dir, "dir", "", "install directory (default: the OS user-config dir, same base as 'templates sync')")
+	cmd.Flags().BoolVar(&check, "check", false, "report current install status only — no network, no download")
+
+	return cmd
+}
+
+func printToolStatus(out io.Writer, statuses []toolsync.ToolStatus, dir string) error {
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "TOOL\tINSTALLED\tVERSION")
+	for _, s := range statuses {
+		version := s.Version
+		if version == "" {
+			version = "unknown"
+		}
+		installed := "no"
+		if s.Installed {
+			installed = "yes"
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, installed, version)
+			continue
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t-\n", s.Name, installed)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(out, "\ninstall directory: %s\n", dir)
+	return err
 }

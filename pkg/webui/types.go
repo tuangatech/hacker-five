@@ -113,19 +113,41 @@ type ReconFormData struct {
 	RateLimit   int
 	Concurrency int
 	Insecure    bool
+
+	Tools ToolSetupData
 }
 
 // ReconStatusData is what recon_status.html (and startRecon's response
 // fragment) renders — the job's snapshot at page-load/reload time, same
 // reconnect-safety shape as ScanStatusData.
 type ReconStatusData struct {
-	JobID  string
-	Target string
-	Depth  string
+	CSRFToken string
+	JobID     string
+	Target    string
+	Depth     string
 
 	Snapshot ReconSnapshot
 
 	ProgressHTML template.HTML
+
+	Tools ToolSetupData
+}
+
+// ToolStatusRow is one recon binary's row in the tool-setup panel.
+type ToolStatusRow struct {
+	Name      string
+	Installed bool
+	Version   string
+}
+
+// ToolSetupData is fragment_tool_setup_status.html's input — mirrors
+// SyncPanelData's own shape (Error/JustInstalled play the same role as
+// Error/JustSynced there) for the same kind of concern, different payload.
+type ToolSetupData struct {
+	Dir           string
+	Rows          []ToolStatusRow
+	Error         string // friendly message when an install attempt failed; empty otherwise
+	JustInstalled bool   // true only on POST /recon/setup's own response
 }
 
 // PlanPreviewData is plan_preview.html's input.

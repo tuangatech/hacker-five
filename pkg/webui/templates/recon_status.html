@@ -5,6 +5,16 @@
 <h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
 </div>
 
+<details>
+<summary>Recon Tools</summary>
+<form hx-post="/recon/setup" hx-target="#tool-setup-status" hx-indicator="#tool-setup-indicator">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<button type="submit">Setup now</button>
+<span id="tool-setup-indicator" class="htmx-indicator">Installing&hellip;</span>
+</form>
+<div id="tool-setup-status">{{template "fragment_tool_setup_status" .Tools}}</div>
+</details>
+
 {{with .Snapshot.Result}}
 <p><a href="/plan-preview?job={{$.JobID}}">Preview Plan &rarr;</a></p>
 

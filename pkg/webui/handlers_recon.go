@@ -30,6 +30,7 @@ func (h *handlers) newReconForm(w http.ResponseWriter, r *http.Request) {
 		Depth:       string(recon.DepthActive), // matches cmd/hackerfive/plan.go's own default/rationale: Wave 2's httpx tech signals are what the decision engine matches against
 		RateLimit:   recon.DefaultRateLimit,
 		Concurrency: recon.DefaultConcurrency,
+		Tools:       buildToolSetupData(false, ""),
 	})
 }
 
@@ -56,8 +57,18 @@ func (h *handlers) startRecon(w http.ResponseWriter, r *http.Request) {
 
 	go h.runReconJob(job, form)
 
+	// csrfMiddleware already required a valid cookie to reach this handler,
+	// so this just reads it back — no new cookie is set — to embed the same
+	// value in the tool-setup form this response's fragment now also
+	// carries (fragment_recon_status_body.html).
+	token, err := csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("HX-Push-Url", "/recon/"+job.ID)
-	executeTemplate(w, h.tmpl, "fragment_recon_status_body", h.reconSnapshotData(job))
+	executeTemplate(w, h.tmpl, "fragment_recon_status_body", h.reconSnapshotData(job, token))
 }
 
 func (h *handlers) rerenderReconFormWithErrors(w http.ResponseWriter, r *http.Request, form ReconFormData, errs []string) {
@@ -114,7 +125,12 @@ func (h *handlers) reconStatus(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	executeTemplate(w, h.tmpl, "recon_status.html", h.reconSnapshotData(job))
+	token, err := csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	executeTemplate(w, h.tmpl, "recon_status.html", h.reconSnapshotData(job, token))
 }
 
 // reconEvents is GET /recon/{id}/events, the SSE stream. Structurally
@@ -179,14 +195,16 @@ func (h *handlers) reconEvents(w http.ResponseWriter, r *http.Request) {
 // reconSnapshotData builds the initial-render data for both recon_status.html
 // and startRecon's response fragment — one job snapshot, two callers, same
 // reasoning as snapshotData (handlers_scan.go).
-func (h *handlers) reconSnapshotData(job *ReconJob) ReconStatusData {
+func (h *handlers) reconSnapshotData(job *ReconJob, csrfTokenValue string) ReconStatusData {
 	snap := job.Snapshot()
 	return ReconStatusData{
+		CSRFToken:    csrfTokenValue,
 		JobID:        job.ID,
 		Target:       job.Target,
 		Depth:        job.Depth,
 		Snapshot:     snap,
 		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err}),
+		Tools:        buildToolSetupData(false, ""),
 	}
 }
 

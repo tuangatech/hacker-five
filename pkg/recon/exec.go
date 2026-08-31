@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/tuangatech/hacker-five/pkg/toolsync"
 )
 
 // errBinaryMissing wraps a tool name so callers can turn "not installed"
@@ -29,17 +32,36 @@ func (e *errBinaryMissing) Error() string {
 // a missing binary — deterministically without the real tools installed.
 type runFunc func(ctx context.Context, stdin string, name string, args ...string) ([]byte, error)
 
-// defaultRun is runFunc's real implementation: exec.LookPath first (so a
-// missing binary is reported as errBinaryMissing, not a generic "exec:
+// resolveBinaryPath finds name either on PATH (which wins, so a user's own
+// manual install/override is always respected) or, failing that, in
+// toolsync.DefaultInstallDir() — where `hackerfive recon setup` places
+// these binaries for anyone without a Go toolchain to `go install` them
+// manually (docs/04-environment-and-testing.md §2). Returns errBinaryMissing
+// if neither has it, same as a bare exec.LookPath failure did before.
+func resolveBinaryPath(name string) (string, error) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+	if dir, err := toolsync.DefaultInstallDir(); err == nil {
+		p := toolsync.InstalledPath(dir, name)
+		if info, statErr := os.Stat(p); statErr == nil && !info.IsDir() {
+			return p, nil
+		}
+	}
+	return "", &errBinaryMissing{name: name}
+}
+
+// defaultRun is runFunc's real implementation: resolveBinaryPath first (so
+// a missing binary is reported as errBinaryMissing, not a generic "exec:
 // unrecognized" error a caller would have to string-match), then run it and
 // return stdout. A non-zero exit with no stdout is treated as this wave
 // simply finding nothing, not a hard failure — every one of these binaries
 // (subfinder/tlsx/dnsx/naabu/httpx/katana) can legitimately exit non-zero
 // for "no results," which callers already treat as an empty result set.
 func defaultRun(ctx context.Context, stdin string, name string, args ...string) ([]byte, error) {
-	path, err := exec.LookPath(name)
+	path, err := resolveBinaryPath(name)
 	if err != nil {
-		return nil, &errBinaryMissing{name: name}
+		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	if stdin != "" {

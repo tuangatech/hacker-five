@@ -1,6 +1,15 @@
 {{define "new_recon.html"}}{{template "header" .}}
 <h1>New Recon</h1>
 
+<h2>Recon Tools</h2>
+<p>Wave 2 (DNS/port scan/HTTP probe) and Wave 3 (crawl) need 6 external binaries installed — subfinder/tlsx/dnsx/naabu/httpx/katana. Without them, passive-depth recon still works; active/full-depth waves are skipped with a warning.</p>
+<form hx-post="/recon/setup" hx-target="#tool-setup-status" hx-indicator="#tool-setup-indicator">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<button type="submit">Setup now</button>
+<span id="tool-setup-indicator" class="htmx-indicator">Installing&hellip;</span>
+</form>
+<div id="tool-setup-status">{{template "fragment_tool_setup_status" .Tools}}</div>
+
 {{if .Errors}}<div class="error"><ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 
 <form hx-post="/recon" hx-target="#recon-panel" hx-push-url="true">
