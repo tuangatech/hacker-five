@@ -110,6 +110,61 @@ http:
 	assert.True(t, haveNuclei, "nuclei-compatible template finding must be present alongside the built-in detector's")
 }
 
+// TestEngineRun_RejectedCount_OnlyCountsFilesInvalidInBothFormats confirms
+// loadTemplates' logged "rejected" count doesn't flag a file that's simply
+// written in the other template format (a nuclei-format file always fails
+// native's own parser and vice versa — expected, not a problem) as
+// rejected; only a file that fails *both* loaders is a genuine parse
+// failure. A prior version of this logic summed both loaders' raw error
+// counts unconditionally, which would have logged "2 rejected" here for a
+// setup with zero actually-broken files — the same confusion a real user
+// saw in the Web UI's template count (pkg/templatesync.List shares this
+// exact fix, see list_test.go).
+func TestEngineRun_RejectedCount_OnlyCountsFilesInvalidInBothFormats(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "nuclei.yaml"), []byte(`
+id: nuclei-only-check
+info:
+  name: Nuclei-only check
+  severity: info
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: word
+        words: ["ok"]
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte("not: [valid yaml at all\n"), 0o644))
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	joined := strings.Join(msgs, "\n")
+	assert.Contains(t, joined, "loaded 1 nuclei-compatible, 0 native templates (1 rejected, 0 filtered by tag)",
+		"nuclei.yaml is valid and must load; broken.yaml fails both loaders and must be the only rejection")
+}
+
 // TestEngineRun_TagsFilterTemplates confirms --tags (Config.Tags) does the
 // OR-match filtering documented in engine.go's loadTemplates: a template
 // loads only if it carries at least one of the requested tags. Two

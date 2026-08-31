@@ -271,13 +271,18 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		if dir == "" {
 			continue
 		}
-		nt, nErrs := nuclei.LoadDir(dir)
+		nt, nErrs := nuclei.LoadDirDetailed(dir)
 		nucleiTemplates = append(nucleiTemplates, nt...)
-		rejected += len(nErrs)
 
-		vt, vErrs := native.LoadDir(dir)
+		vt, vErrs := native.LoadDirDetailed(dir)
 		nativeTemplates = append(nativeTemplates, vt...)
-		rejected += len(vErrs)
+
+		// A file valid in one format is expected to fail the other format's
+		// own parser (it's simply not written in that format) — only a
+		// file rejected by *both* is a genuine problem worth counting. See
+		// pkg/templatesync.List's countRejectedByBothFormats, the same fix
+		// applied there for the Web UI's template count.
+		rejected += countRejectedByBothFormats(nErrs, vErrs)
 	}
 
 	loadedNuclei, loadedNative := len(nucleiTemplates), len(nativeTemplates)
@@ -295,6 +300,26 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
 		len(nucleiTemplates), len(nativeTemplates), rejected, filtered)
 	return nucleiTemplates, nativeTemplates
+}
+
+// countRejectedByBothFormats returns how many distinct paths appear in both
+// nErrs and vErrs — a file neither loader could parse, i.e. a genuine
+// problem rather than simply "written in the other format." Duplicated
+// (small, proportionate) from pkg/templatesync.List's own copy rather than
+// shared: pkg/scanner doesn't otherwise depend on pkg/templatesync, and
+// pulling in that whole package for one 8-line helper isn't a good trade.
+func countRejectedByBothFormats(nErrs []nuclei.LoadError, vErrs []native.LoadError) int {
+	nFailed := make(map[string]bool, len(nErrs))
+	for _, e := range nErrs {
+		nFailed[e.Path] = true
+	}
+	count := 0
+	for _, e := range vErrs {
+		if nFailed[e.Path] {
+			count++
+		}
+	}
+	return count
 }
 
 // anyTemplateHasTag reports whether any loaded template (either format)

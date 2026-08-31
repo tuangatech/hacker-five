@@ -21,16 +21,42 @@ import (
 // documented in doc 02/03.
 var disallowedBlocks = []string{"code", "javascript", "headless", "file", "dns", "tcp", "ssl", "network", "websocket", "whois"}
 
+// LoadError pairs a rejected file's path with why it failed — the
+// structured shape LoadDirDetailed returns so a caller that also runs the
+// other template format's loader against the same dir (pkg/templatesync.List,
+// pkg/scanner.Engine.loadTemplates) can tell "this file is simply the other
+// format" (rejected here, accepted there) apart from a genuine parse
+// failure (rejected by both), instead of double-counting the former as a
+// real problem.
+type LoadError struct {
+	Path string
+	Err  error
+}
+
+func (e *LoadError) Error() string { return fmt.Sprintf("%s: %v", e.Path, e.Err) }
+
 // LoadDir parses every .yaml/.yml file under dir, recursively — upstream
 // nuclei-templates categories nest vendor-named subdirectories (e.g.
 // http/exposed-panels/adobe/), so a single-level scan would miss most of
 // them. One bad file doesn't stop the rest from loading: errs collects one
 // error per rejected file; callers should log/count them, not treat a
-// non-empty errs as fatal to the whole load.
+// non-empty errs as fatal to the whole load. A thin wrapper over
+// LoadDirDetailed, kept at this exact signature since ~40 existing call
+// sites (tests/unit, tests/integration) already depend on it.
 func LoadDir(dir string) (templates []*Template, errs []error) {
+	templates, detailed := LoadDirDetailed(dir)
+	for i := range detailed {
+		errs = append(errs, &detailed[i])
+	}
+	return templates, errs
+}
+
+// LoadDirDetailed is LoadDir with structured, per-path errors — same walk,
+// same parsing, same accept/reject decisions, only the error shape differs.
+func LoadDirDetailed(dir string) (templates []*Template, errs []LoadError) {
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			errs = append(errs, fmt.Errorf("walking %s: %w", path, err))
+			errs = append(errs, LoadError{Path: path, Err: fmt.Errorf("walking: %w", err)})
 			return nil
 		}
 		if d.IsDir() {
@@ -42,7 +68,7 @@ func LoadDir(dir string) (templates []*Template, errs []error) {
 		}
 		tmpl, err := loadFile(path)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			errs = append(errs, LoadError{Path: path, Err: err})
 			return nil
 		}
 		templates = append(templates, tmpl)

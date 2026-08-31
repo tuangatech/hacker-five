@@ -23,15 +23,21 @@ type Entry struct {
 	Source   string   `json:"source"` // caller-supplied label for the dir this entry loaded from, e.g. "bundled" | "synced"
 }
 
-// List loads every template under each of dirs (same nuclei.LoadDir/
-// native.LoadDir this project's scanner.Engine.loadTemplates already uses),
-// labels each entry with sourceLabels[i] (must be the same length as dirs),
-// and — when tags is non-empty — keeps only entries carrying at least one
-// requested tag (OR match, same semantics as scanner.Engine's --tags
-// filtering, reimplemented locally here rather than shared: the two
+// List loads every template under each of dirs (same nuclei.LoadDirDetailed/
+// native.LoadDirDetailed this project's scanner.Engine.loadTemplates already
+// uses), labels each entry with sourceLabels[i] (must be the same length as
+// dirs), and — when tags is non-empty — keeps only entries carrying at
+// least one requested tag (OR match, same semantics as scanner.Engine's
+// --tags filtering, reimplemented locally here rather than shared: the two
 // packages' tag shapes already differ per-format, and this is a handful of
 // lines, not worth a new shared package for one internal reuse).
-// rejected is the count of files LoadDir couldn't parse, across every dir.
+// rejected counts only files that failed to parse under *both* formats — a
+// file that's valid Nuclei YAML fails native's own parser too (it has no
+// requests: block native expects), and vice versa; counting either loader's
+// raw error count on its own would flag every legitimately-loaded template
+// as "also rejected," which is exactly what a prior version of this
+// function did (see git history / the corrected test cases in
+// list_test.go) and is misleading in the Web UI's own template count.
 func List(dirs, sourceLabels, tags []string) (entries []Entry, rejected int, err error) {
 	if len(dirs) != len(sourceLabels) {
 		return nil, 0, fmt.Errorf("templatesync: List got %d dirs but %d sourceLabels", len(dirs), len(sourceLabels))
@@ -43,8 +49,7 @@ func List(dirs, sourceLabels, tags []string) (entries []Entry, rejected int, err
 		}
 		source := sourceLabels[i]
 
-		nt, nErrs := nuclei.LoadDir(dir)
-		rejected += len(nErrs)
+		nt, nErrs := nuclei.LoadDirDetailed(dir)
 		for _, t := range nt {
 			entries = append(entries, Entry{
 				ID:       t.ID,
@@ -56,8 +61,7 @@ func List(dirs, sourceLabels, tags []string) (entries []Entry, rejected int, err
 			})
 		}
 
-		vt, vErrs := native.LoadDir(dir)
-		rejected += len(vErrs)
+		vt, vErrs := native.LoadDirDetailed(dir)
 		for _, t := range vt {
 			entries = append(entries, Entry{
 				ID:       t.ID,
@@ -68,12 +72,31 @@ func List(dirs, sourceLabels, tags []string) (entries []Entry, rejected int, err
 				Source:   source,
 			})
 		}
+
+		rejected += countRejectedByBothFormats(nErrs, vErrs)
 	}
 
 	if len(tags) > 0 {
 		entries = filterByTags(entries, tags)
 	}
 	return entries, rejected, nil
+}
+
+// countRejectedByBothFormats returns how many distinct paths appear in both
+// nErrs and vErrs — a file neither loader could parse, i.e. a genuine
+// problem rather than simply "written in the other format."
+func countRejectedByBothFormats(nErrs []nuclei.LoadError, vErrs []native.LoadError) int {
+	nFailed := make(map[string]bool, len(nErrs))
+	for _, e := range nErrs {
+		nFailed[e.Path] = true
+	}
+	count := 0
+	for _, e := range vErrs {
+		if nFailed[e.Path] {
+			count++
+		}
+	}
+	return count
 }
 
 func splitTags(commaSeparated string) []string {

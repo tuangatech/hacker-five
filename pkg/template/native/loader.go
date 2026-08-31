@@ -14,13 +14,37 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/template/matcher"
 )
 
+// LoadError pairs a rejected file's path with why it failed — see
+// nuclei.LoadError (pkg/template/nuclei/loader.go) for why this exists:
+// so a caller running both formats' loaders against the same dir can tell
+// a cross-format file (rejected here, accepted by nuclei.LoadDir) apart
+// from a genuine parse failure (rejected by both).
+type LoadError struct {
+	Path string
+	Err  error
+}
+
+func (e *LoadError) Error() string { return fmt.Sprintf("%s: %v", e.Path, e.Err) }
+
 // LoadDir parses every .yaml/.yml file under dir, recursively. One bad file
 // doesn't stop the rest from loading — same per-file error isolation as
-// nuclei.LoadDir (see pkg/template/nuclei/loader.go).
+// nuclei.LoadDir (see pkg/template/nuclei/loader.go). A thin wrapper over
+// LoadDirDetailed, kept at this exact signature since existing callers
+// depend on it.
 func LoadDir(dir string) (templates []*Template, errs []error) {
+	templates, detailed := LoadDirDetailed(dir)
+	for i := range detailed {
+		errs = append(errs, &detailed[i])
+	}
+	return templates, errs
+}
+
+// LoadDirDetailed is LoadDir with structured, per-path errors — same walk,
+// same parsing, same accept/reject decisions, only the error shape differs.
+func LoadDirDetailed(dir string) (templates []*Template, errs []LoadError) {
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			errs = append(errs, fmt.Errorf("walking %s: %w", path, err))
+			errs = append(errs, LoadError{Path: path, Err: fmt.Errorf("walking: %w", err)})
 			return nil
 		}
 		if d.IsDir() {
@@ -32,7 +56,7 @@ func LoadDir(dir string) (templates []*Template, errs []error) {
 		}
 		tmpl, err := loadFile(path)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			errs = append(errs, LoadError{Path: path, Err: err})
 			return nil
 		}
 		templates = append(templates, tmpl)

@@ -16,12 +16,16 @@ func writeFile(t *testing.T, dir, name, content string) {
 
 // TestList_LoadsBothFormatsAndLabelsSource confirms List loads both
 // nuclei-compatible and native templates from each dir and tags every entry
-// with the caller-supplied source label for that dir. rejected counts both
-// loaders' cross-format rejections (a nuclei-format file has no requests:
-// block native.LoadDir needs, and vice versa) — the same "2 rejected from
-// one file of each format" behavior tests/unit/engine_test.go's
-// TestEngineRun_TemplatesRunAlongsideDetector already establishes for
-// scanner.Engine.loadTemplates, which List's rejected count must match.
+// with the caller-supplied source label for that dir. rejected must stay 0
+// here: each file is valid in its own format, so despite each also being
+// rejected by the *other* format's loader (a nuclei-format file has no
+// requests: block native.LoadDirDetailed needs, and vice versa), neither is
+// a genuine parse failure — see countRejectedByBothFormats, which only
+// counts a path rejected by both loaders. A prior version of this function
+// summed both loaders' raw error counts unconditionally, which flagged
+// every legitimately-loaded template as "also rejected" (this exact test
+// used to assert rejected == 2 here) — a real, user-visible confusion in
+// the Web UI's template count, not a cosmetic nit.
 func TestList_LoadsBothFormatsAndLabelsSource(t *testing.T) {
 	bundledDir := t.TempDir()
 	writeFile(t, bundledDir, "nuclei.yaml", `
@@ -56,7 +60,7 @@ requests:
 
 	entries, rejected, err := List([]string{bundledDir, syncedDir}, []string{"bundled", "synced"}, nil)
 	require.NoError(t, err)
-	assert.Equal(t, 2, rejected, "each dir's one file must be cross-rejected once by the other format's loader")
+	assert.Equal(t, 0, rejected, "a file valid in its own format must not count as rejected just because the other format's loader can't parse it")
 
 	require.Len(t, entries, 2)
 	var haveBundledNuclei, haveSyncedNative bool
@@ -112,9 +116,38 @@ http:
 
 	entries, rejected, err := List([]string{dir}, []string{"bundled"}, []string{"WordPress"})
 	require.NoError(t, err)
-	assert.Equal(t, 2, rejected, "both nuclei-format files must be cross-rejected once by native.LoadDir")
+	assert.Equal(t, 0, rejected, "both files are valid nuclei templates — neither is a genuine parse failure")
 	require.Len(t, entries, 1)
 	assert.Equal(t, "wanted-check", entries[0].ID)
+}
+
+// TestList_GenuinelyMalformedFile_CountsAsRejected is
+// countRejectedByBothFormats' own positive case: a file that fails to
+// parse as *either* format (missing required fields for both) must still
+// be counted, distinguishing a real problem from the cross-format
+// non-issue TestList_LoadsBothFormatsAndLabelsSource/TestList_FiltersByTags
+// exercise above.
+func TestList_GenuinelyMalformedFile_CountsAsRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "valid.yaml", `
+id: valid-check
+info:
+  name: Valid check
+  severity: info
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: word
+        words: ["ok"]
+`)
+	writeFile(t, dir, "broken.yaml", "not: [valid yaml at all\n")
+
+	entries, rejected, err := List([]string{dir}, []string{"bundled"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, rejected, "broken.yaml fails both loaders and must count as a genuine rejection")
+	require.Len(t, entries, 1)
+	assert.Equal(t, "valid-check", entries[0].ID)
 }
 
 // TestList_MismatchedLengths confirms a caller bug (dirs/sourceLabels out of
