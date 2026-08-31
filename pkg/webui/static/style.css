@@ -91,6 +91,14 @@ tr.sev-info { background: var(--info-bg); }
   font-size: 0.85rem;
 }
 
+.badge-unresolved {
+  background: var(--critical-bg);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.rationale { font-size: 0.85rem; color: var(--muted); margin: 0.1rem 0 0.3rem; }
+
 .tag-link {
   display: inline-block;
   margin: 0.1rem 0.2rem 0.1rem 0;

@@ -44,7 +44,7 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("initializing access token: %w", err)
 	}
 
-	h := &handlers{tmpl: tmpl, store: newJobStore()}
+	h := &handlers{tmpl: tmpl, store: newJobStore(), reconStore: newReconJobStore()}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.dashboard)
@@ -58,6 +58,11 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /templates", h.templatesPage)
 	mux.HandleFunc("GET /templates/table", h.templateTable)
 	mux.HandleFunc("POST /templates/sync", h.syncTemplates)
+	mux.HandleFunc("GET /recon", h.newReconForm)
+	mux.HandleFunc("POST /recon", h.startRecon)
+	mux.HandleFunc("GET /recon/{id}", h.reconStatus)
+	mux.HandleFunc("GET /recon/{id}/events", h.reconEvents)
+	mux.HandleFunc("GET /plan-preview", h.planPreview)
 
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {

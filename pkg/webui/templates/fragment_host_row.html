@@ -1,0 +1,8 @@
+{{define "fragment_host_row"}}<tr>
+<td><code>{{.Host}}</code></td>
+<td>{{range .Ports}}<span class="status-badge">{{.Port}}/{{.Protocol}}{{if .Service}} {{.Service}}{{end}}</span> {{end}}</td>
+<td>{{.Source}}</td>
+<td>{{.Confidence}}</td>
+<td>{{range .Notes}}{{.}}<br>{{end}}</td>
+</tr>
+{{end}}

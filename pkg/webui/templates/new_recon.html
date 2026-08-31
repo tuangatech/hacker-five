@@ -1,0 +1,37 @@
+{{define "new_recon.html"}}{{template "header" .}}
+<h1>New Recon</h1>
+
+{{if .Errors}}<div class="error"><ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+
+<form hx-post="/recon" hx-target="#recon-panel" hx-push-url="true">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+<fieldset>
+<legend>Target &amp; Depth</legend>
+<label for="target">Target</label>
+<input type="text" id="target" name="target" value="{{.Target}}" required placeholder="https://example.com">
+
+<label for="depth">Recon depth (--recon-depth)</label>
+<select id="depth" name="depth">
+<option value="passive" {{if eq .Depth "passive"}}selected{{end}}>passive — zero-touch + subdomain/TLS/WHOIS enumeration only</option>
+<option value="active" {{if eq .Depth "active"}}selected{{end}}>active — adds DNS/port scan/HTTP probing (httpx's tech signals feed the decision engine)</option>
+<option value="full" {{if eq .Depth "full"}}selected{{end}}>full — adds a bounded crawl and common-path probing</option>
+</select>
+</fieldset>
+
+<fieldset>
+<legend>Behavior</legend>
+<label for="rate_limit">Rate limit (--rate-limit, req/s)</label>
+<input type="number" id="rate_limit" name="rate_limit" value="{{.RateLimit}}" min="1">
+<label for="concurrency">Concurrency (--concurrency)</label>
+<input type="number" id="concurrency" name="concurrency" value="{{.Concurrency}}" min="1">
+<label class="inline"><input type="checkbox" id="insecure" name="insecure" {{if .Insecure}}checked{{end}}> Skip TLS verification (--insecure) — lab targets only</label>
+<label for="scope_file">Scope file (--scope, path on this machine, optional)</label>
+<input type="text" id="scope_file" name="scope_file" value="{{.ScopeFile}}">
+</fieldset>
+
+<button type="submit">Start Recon</button>
+</form>
+<div id="recon-panel"></div>
+{{template "footer" .}}
+{{end}}

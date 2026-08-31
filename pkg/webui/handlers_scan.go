@@ -36,9 +36,10 @@ const sseKeepAlive = 15 * time.Second
 // request's context — a scan must keep running after the HTTP request that
 // started it returns, and should only be cancelled on server shutdown.
 type handlers struct {
-	tmpl    *template.Template
-	store   *JobStore
-	baseCtx context.Context
+	tmpl       *template.Template
+	store      *JobStore
+	reconStore *ReconJobStore
+	baseCtx    context.Context
 }
 
 func (h *handlers) newScanForm(w http.ResponseWriter, r *http.Request) {

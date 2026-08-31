@@ -1,0 +1,10 @@
+{{define "plan_preview.html"}}{{template "header" .}}
+<h1>Plan Preview</h1>
+<p>Recon job: <a href="/recon/{{.JobID}}">{{.JobID}}</a> — target: <code>{{.Target}}</code></p>
+<p><em>Read-only. Approve/reject controls arrive with Phase 6's elicitation flow.</em></p>
+
+{{if .IndexWarn}}<div class="error">{{.IndexWarn}}</div>{{end}}
+
+{{if .Tree}}{{with .Tree.Root}}<ul>{{template "fragment_plan_node" .}}</ul>{{end}}{{end}}
+{{template "footer" .}}
+{{end}}

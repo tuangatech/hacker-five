@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"time"
 
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
@@ -97,4 +98,40 @@ type TemplatesPageData struct {
 	CSRFToken string
 	Table     TemplateTableData
 	Sync      SyncPanelData
+}
+
+// ReconFormData is new_recon.html's input — form defaults/echoed values plus
+// any validation errors, same "re-render with input intact" shape as
+// NewScanData.
+type ReconFormData struct {
+	CSRFToken string
+	Errors    []string
+
+	Target      string
+	Depth       string
+	ScopeFile   string
+	RateLimit   int
+	Concurrency int
+	Insecure    bool
+}
+
+// ReconStatusData is what recon_status.html (and startRecon's response
+// fragment) renders — the job's snapshot at page-load/reload time, same
+// reconnect-safety shape as ScanStatusData.
+type ReconStatusData struct {
+	JobID  string
+	Target string
+	Depth  string
+
+	Snapshot ReconSnapshot
+
+	ProgressHTML template.HTML
+}
+
+// PlanPreviewData is plan_preview.html's input.
+type PlanPreviewData struct {
+	JobID     string
+	Target    string
+	Tree      *agenttask.PlanTree
+	IndexWarn string // non-empty when templates/index.json couldn't be loaded — degraded, not fatal
 }

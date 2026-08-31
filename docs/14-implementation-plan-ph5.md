@@ -22,7 +22,7 @@ Doc90's proposed agent flow (plan → approve → scan → triage) has no step t
 1. ✅ **Foundations: ratify design decisions + eval harness stub** (Week 33) — done 2026-08-30
 2. ✅ **Finding schema freeze + task-tree data model** (Weeks 34-35) — done 2026-08-30
 3. ✅ **Recon package + decision engine** (Weeks 36-37) — done 2026-08-31 (live-verified against real crAPI/DVWA)
-4. ⬜ **Recon + Plan-preview Web UI** (Week 38)
+4. ✅ **Recon + Plan-preview Web UI** (Week 38) — done 2026-08-31 (live-verified against real crAPI)
 5. ⬜ **Integration testing + release** (Weeks 39-40) — `v0.5.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-13.)
@@ -141,25 +141,33 @@ Honest scope cuts (named per this doc's Context/discipline, not silently dropped
 
 ---
 
-## Step 4: Recon + Plan-Preview Web UI (Week 38) — ⬜ not yet implemented
+## Step 4: Recon + Plan-Preview Web UI (Week 38) — ✅ done (2026-08-31)
 
 ### Design
 
-Two new, purely additive pages in `pkg/webui`, both read-only — the point of this step is giving a human something to look at that validates Steps 2-3's data models, before Phase 6 makes either page actionable:
+Two new, purely additive pages in `pkg/webui`, both read-only — the point of this step is giving a human something to look at that validates Steps 2-3's data models, before Phase 6 makes either page actionable. Both reuse existing `pkg/webui` conventions rather than inventing new ones:
 
-- **Recon results page** (`/recon`, or a tab on an existing page) — runs/browses a `ReconResult` (via `pkg/recon` directly, same boundary doc12 already drew for `pkg/scanner`): hosts, endpoints, tech stack, and the `OutOfScope` list, each fact rendered with its source/confidence label. Useful standalone, independent of any agent — a human operator gets a recon-results browser for free out of this phase.
-- **Plan-preview page** (`/plan-preview` or similar) — renders a `PlanTree` as a tree/list view: each leaf's target, detector/template, rationale, and `Confidence` band. **Updated 2026-08-30:** Step 3's R8 decision engine now produces a real, `ReconResult`-seeded `PlanTree` with zero agent involvement, so this page renders that real tree (from a real or lab `hackerfive recon` run) rather than only a hand-built test fixture — test fixtures remain useful for edge cases (deeply nested leaves, every `Confidence` band represented) but are no longer the only source. No approve/reject controls yet — those need a real `elicitation` flow to resolve against, which is Phase 6 Step 4's job; an unresolved leaf (R8, no registry match) renders with a distinct "needs a decision" badge rather than looking like a normal pending leaf.
+- **Recon results page** (`GET /recon` new-run form, `GET /recon/{id}` results): runs `pkg/recon` directly (same boundary doc12 already drew for `pkg/scanner`) via the same async-job/SSE shape `handlers_scan.go`'s `Job`/`JobStore` already establishes — a new, deliberately *smaller* `ReconJob`/`ReconJobStore` (`pkg/webui/reconjobs.go`), not a generalization of `Job`: `recon.Run` has no incremental callback (unlike `scanner.Engine`'s `WithFindingCallback`/`WithLogCallback`), so there is exactly one event ever worth publishing — the `running → done|failed` transition — not the finding/log stream `Job` exists to carry. Renders hosts/endpoints/tech-stack/out-of-scope/warnings from the real `ReconResult`, each fact's existing `Source`/`Confidence` string shown directly. Once done, links to Plan-preview.
+- **Plan-preview page** (`GET /plan-preview?job={id}`): synchronous render (mirrors `handlers_templates.go`'s `templatesPage` — no job needed, `registry.Resolve` is pure in-memory tree construction over an already-fetched `ReconResult`) of the real, decision-engine-populated `PlanTree` for a completed recon job — not a hand-built fixture in production use, though fixtures remain useful for unit-test edge cases (see Verification). No approve/reject controls yet — Phase 6 Step 4's job, once a real `elicitation` flow exists to resolve against. An unresolved leaf (R8, no registry match) renders with a distinct `badge-unresolved` CSS class rather than looking like a normal pending leaf, per this step's original "needs a decision" intent.
 
-Both use the existing Go stdlib `net/http` + `html/template` + htmx stack (doc02 §7) — no new dependency, no client-side framework. A `PlanTree` is a nested list with a status/confidence badge per row; htmx's existing `hx-get`/fragment-swap pattern (already used for the Templates page's tag filter, doc12) covers everything this step needs.
+Both use the existing Go stdlib `net/http` + `html/template` + htmx stack (doc02 §7) — no new dependency. `PlanNode.Children`'s arbitrary nesting is rendered via the standard Go `html/template` recursive-named-template idiom (`fragment_plan_node.html` calling itself), not a new templating mechanism.
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/webui/handlers_recon.go` — `GET /recon` (and a `POST` to trigger a new recon run).
-- `pkg/webui/handlers_plan.go` — `GET /plan-preview` (read-only render).
-- `pkg/webui/templates/recon.html`, `pkg/webui/templates/plan_preview.html`.
-- `tests/unit/webui_recon_test.go`, `tests/unit/webui_plan_preview_test.go`.
+**Real, deliberate scope-tightening found during implementation, not silently dropped**: `templates/index.json`'s path is resolved relative to the server process's own working directory (`defaultTemplateIndexPath = "templates/index.json"`, `handlers_plan.go`) rather than the request or a configurable flag — same convention `hackerfive plan`'s `--template-index` default already uses, just without a flag to override it from the Web UI (nothing in this step's scope needed one); a missing file degrades to a warning banner on the Plan-preview page, never a 500, mirroring `hackerfive plan`'s own graceful degrade.
+
+### Files
+- `pkg/webui/reconjobs.go` — `ReconJob`/`ReconJobStore`, mirroring `jobs.go`'s `Job`/`JobStore` shape with only `EventProgress`/`EventDone`.
+- `pkg/webui/handlers_recon.go` — `newReconForm`/`startRecon`/`runReconJob`/`reconStatus`/`reconEvents`.
+- `pkg/webui/handlers_plan.go` — `planPreview`; a local `loadTemplateIndex`/`templateIndexFile` (mirrors `cmd/hackerfive/templates.go`'s own — duplicated, not imported, since `pkg/webui` cannot depend on `package main`, same boundary `defaultWebTemplateDirsWithLabels`/`splitCSV` already cross).
+- `pkg/webui/types.go` — `ReconFormData`, `ReconStatusData`, `PlanPreviewData`.
+- `pkg/webui/templates/new_recon.html`, `recon_status.html` (+ `fragment_recon_status_body`), `fragment_host_row.html`, `fragment_tech_row.html`, `plan_preview.html`, `fragment_plan_node.html`.
+- `pkg/webui/templates/layout.html` — nav link; `pkg/webui/static/style.css` — `badge-unresolved` modifier.
+- `pkg/webui/server.go` — 5 new routes; `pkg/webui/handlers_recon_test.go`, `pkg/webui/handlers_plan_test.go` (in `pkg/webui`, not `tests/unit` — matches every existing webui handler test's location, not the doc's earlier anticipated path).
 
 ### Verification
-Live-verified against a real browser: a `hackerfive recon` run's output renders correctly on the Recon page; a `PlanTree` test fixture (including nested leaves at different Confidence bands) renders correctly on the Plan-preview page.
+
+`go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean. 6 new test cases, all passing on the first real run, using hand-built `ReconResult`/`ReconJob` fixtures injected directly into the store (not a real `recon.Run` — Step 3b already live-verified that path; these tests check rendering) — including one fixture with tech facts spanning every `Confidence` band plus one deliberately unmatched tech name, run through the real `registry.Resolve` to produce a genuine `unresolved` leaf and `badge-unresolved` class, and a missing-`templates/index.json` case confirming the warning-banner degrade, not a 500.
+
+**Live-verified 2026-08-31** against the real running crAPI container (`localhost:8888`, alongside DVWA/vAPI/AIGoat on other ports of the same host) via a real `hackerfive serve` process and `curl` (no browser-automation tool available in this environment — a full visual/interactive pass is still worth doing manually before considering this fully done): `GET /recon` → `POST /recon` (`--recon-depth active`) → polled `GET /recon/{id}` through `queued`→`running`→`done`, rendering real hosts (`localhost`, 6 real open ports), real httpx tech facts, real R7-fingerprint-enriched leaves (`OpenResty`/`Apache HTTP Server` via header match at `high`, `MySQL` via port match at `low`, `crAPI` via its real favicon hash at `high`), and a real surfaced warning (an ASN lookup failure, not swallowed) — then `GET /plan-preview?job={id}` rendered the exact same tree shape `hackerfive plan` produces for this target: real `misconfig`/`idor`/`authbypass` leaves, a real `php-detect` template-tag leaf, and both `Debian` and `crAPI` rendering as genuine, visible `unresolved` leaves rather than being dropped.
 
 ---
 
@@ -188,7 +196,7 @@ Full integration testing across Steps 1-4 together — recon CLI against a real 
 - [x] `pkg/fingerprint` (R7) enriches `ReconResult.TechStack` with at least one real, live-verified tech-signature match against a lab target — done 2026-08-31, live against crAPI/DVWA (header/port/favicon matches, including a crAPI-specific favicon hash)
 - [x] The capability registry + decision engine (R8) resolves that match to real `PlanTree` leaves with zero LLM calls, live-verified; a `TechFact` with no registry entry produces a visibly unresolved leaf, not a silent drop — done 2026-08-31 (`hackerfive plan`, live against crAPI/DVWA; `Debian`/`crAPI` tech facts rendered as real `unresolved` leaves)
 - [x] `templates/index.json` (R9) is generated from the synced corpus and consumed by the decision engine's template-tag matching — done 2026-08-31 (`hackerfive templates index`; live-matched a real `php-detect` template leaf)
-- [ ] The Web UI's Recon and Plan-preview pages both render real data end-to-end — Plan-preview showing a real, decision-engine-populated tree, not only a hand-built fixture
+- [x] The Web UI's Recon and Plan-preview pages both render real data end-to-end — Plan-preview showing a real, decision-engine-populated tree, not only a hand-built fixture — done 2026-08-31, live against real crAPI (see Step 4's Verification)
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.5.0` tagged and released, or explicitly held with a stated reason
 

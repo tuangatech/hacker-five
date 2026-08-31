@@ -1,0 +1,39 @@
+{{define "fragment_recon_status_body"}}<h1>Recon {{.JobID}}</h1>
+<p>Target: <code>{{.Target}}</code> — depth: <code>{{.Depth}}</code></p>
+
+<div hx-ext="sse" sse-connect="/recon/{{.JobID}}/events">
+<h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
+</div>
+
+{{with .Snapshot.Result}}
+<p><a href="/plan-preview?job={{$.JobID}}">Preview Plan &rarr;</a></p>
+
+<h2>Hosts</h2>
+<table>
+<thead><tr><th>Host</th><th>Ports</th><th>Source</th><th>Confidence</th><th>Notes</th></tr></thead>
+<tbody>{{range .Hosts}}{{template "fragment_host_row" .}}{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
+</table>
+
+<h2>Endpoints</h2>
+<table>
+<thead><tr><th>URL</th><th>Method</th><th>Status</th><th>Source</th><th>Confidence</th></tr></thead>
+<tbody>{{range .Endpoints}}<tr><td><code>{{.URL}}</code></td><td>{{.Method}}</td><td>{{.StatusCode}}</td><td>{{.Source}}</td><td>{{.Confidence}}</td></tr>{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
+</table>
+
+<h2>Tech Stack</h2>
+<table>
+<thead><tr><th>Name</th><th>Host</th><th>Source</th><th>Confidence</th></tr></thead>
+<tbody>{{range .TechStack}}{{template "fragment_tech_row" .}}{{else}}<tr><td colspan="4"><em>none</em></td></tr>{{end}}</tbody>
+</table>
+
+<h2>Out of Scope</h2>
+<ul>{{range .OutOfScope}}<li><code>{{.}}</code></li>{{else}}<li><em>none</em></li>{{end}}</ul>
+
+<h2>Warnings</h2>
+<ul>{{range .Warnings}}<li>{{.}}</li>{{else}}<li><em>none</em></li>{{end}}</ul>
+{{end}}
+{{end}}
+{{define "recon_status.html"}}{{template "header" .}}
+{{template "fragment_recon_status_body" .}}
+{{template "footer" .}}
+{{end}}
