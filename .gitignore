@@ -38,3 +38,4 @@ dist/
 # scope files, scan output, results logs — never committed. See
 # .engagements/README.md.
 .engagements/
+.playwright-mcp/
