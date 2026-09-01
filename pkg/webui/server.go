@@ -63,6 +63,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /scans/{id}", h.scanStatus)
 	mux.HandleFunc("GET /scans/{id}/export.json", h.exportJSON)
 	mux.HandleFunc("GET /scans/{id}/events", h.scanEvents)
+	mux.HandleFunc("GET /scans/{id}/catchup", h.scanCatchup)
 	mux.HandleFunc("GET /templates", h.templatesPage)
 	mux.HandleFunc("GET /templates/table", h.templateTable)
 	mux.HandleFunc("POST /templates/sync", h.syncTemplates)

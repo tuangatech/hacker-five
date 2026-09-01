@@ -10,16 +10,23 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/recon"
 )
 
 func noopFindingRender(f detectors.Finding) template.HTML { return template.HTML(f.ID) }
 func noopLogRender(e LogEntry) template.HTML              { return template.HTML(e.Msg) }
-func noopProgressRender(status string, _ error, _ []WaveStatus) template.HTML {
+func noopProgressRender(status string, _ error, _ []WaveStatus, _ string) template.HTML {
 	return template.HTML(status)
+}
+func noopReconRender(result *recon.ReconResult) template.HTML {
+	if result == nil {
+		return ""
+	}
+	return template.HTML(result.Target)
 }
 
 func newTestJob(id string) *Job {
-	return newJob(id, "http://example.com", noopFindingRender, noopLogRender, noopProgressRender)
+	return newJob(id, "http://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
 }
 
 // TestJob_SubscribeThenUnsubscribe_RemovesChannel is the fix for the "Job.subs

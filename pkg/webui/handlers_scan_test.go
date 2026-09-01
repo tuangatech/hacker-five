@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tuangatech/hacker-five/pkg/recon"
 )
 
 // newTestServer wraps a real Server's handler chain (routes + CSRF +
@@ -101,8 +103,15 @@ func TestEndToEnd_StartScan_ProducesRealFindings(t *testing.T) {
 	require.NotEmpty(t, jobURL, "POST /scans must set HX-Push-Url so the browser's address bar points at the real job")
 	require.True(t, strings.HasPrefix(jobURL, "/scans/"))
 
+	// Polls the export endpoint directly rather than scanning the HTML page's
+	// text for "misconfig"/"done" — the page now also carries those exact
+	// substrings before the scan actually finishes (sse-close="done" in the
+	// markup; a "running: misconfig" phase badge and a "running detector:
+	// misconfig" log line once the detector starts, both real, both wanted),
+	// so a loose substring check on the page would pass prematurely. A real
+	// finding in the exported JSON is the actual signal this test wants.
 	require.Eventually(t, func() bool {
-		r, err := client.Get(ts.URL + jobURL)
+		r, err := client.Get(ts.URL + jobURL + "/export.json")
 		if err != nil {
 			return false
 		}
@@ -111,8 +120,8 @@ func TestEndToEnd_StartScan_ProducesRealFindings(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		return strings.Contains(string(b), "misconfig") && strings.Contains(string(b), StatusDone)
-	}, 5*time.Second, 50*time.Millisecond, "expected a real misconfig finding and a done status once the background scan finishes")
+		return strings.Contains(string(b), `"type": "misconfig"`)
+	}, 5*time.Second, 50*time.Millisecond, "expected a real misconfig finding once the background scan finishes")
 
 	// Export must produce real JSON output from the same findings.
 	exportResp, err := client.Get(ts.URL + jobURL + "/export.json")
@@ -176,6 +185,55 @@ func TestScanStatus_UnknownJobID_404(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestScanCatchup_UnknownJobID_404 confirms the new /catchup route (the
+// htmx:sseOpen-triggered re-sync, added to close the SSE-subscription race
+// where a fast job can finish before the browser's own connection opens)
+// 404s the same way every other job-scoped route already does.
+func TestScanCatchup_UnknownJobID_404(t *testing.T) {
+	ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/scans/does-not-exist/catchup")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps is the direct
+// regression test for the SSE-subscription-race fix: it builds a job whose
+// state (phase + a real ReconResult) was set entirely before any client ever
+// subscribed — exactly what a fast job racing ahead of a browser's SSE
+// connection looks like — then confirms /catchup's response carries that
+// current state as an "innerHTML:#selector"-style OOB swap targeting
+// #progress/#recon-results specifically, not a same-id outerHTML swap: the
+// latter would replace those elements with new nodes, detaching the SSE
+// extension's already-bound sse-swap listener from the live page.
+func TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job.SetRunning()
+	job.SetPhase("misconfig")
+	job.SetReconResult(&recon.ReconResult{
+		Target: "https://example.com",
+		Hosts:  []recon.HostFact{{Host: "example.com", Source: "httpx", Confidence: recon.ConfidenceHigh}},
+	})
+	h.store.Add(job)
+
+	resp, err := http.Get(ts.URL + "/scans/job1/catchup")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	html := string(body)
+	assert.Contains(t, html, `hx-swap-oob="innerHTML:#progress"`, "must target #progress's content only, never replace the element itself")
+	assert.Contains(t, html, `hx-swap-oob="innerHTML:#recon-results"`, "must target #recon-results' content only, never replace the element itself")
+	assert.NotContains(t, html, `id="progress"`, "must not re-emit an element with this id — that would be a second #progress node in the DOM after an outerHTML-style swap")
+	assert.NotContains(t, html, `id="recon-results"`)
+	assert.Contains(t, html, "running: misconfig")
+	assert.Contains(t, html, "example.com")
 }
 
 func TestSplitCSV(t *testing.T) {

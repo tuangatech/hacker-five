@@ -56,7 +56,7 @@ func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t 
 func TestPlanPreview_JobNotDone_Returns409(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
 	job.SetRunning() // never runs a recon phase, so ReconResult stays nil
 	h.store.Add(job)
 

@@ -248,6 +248,15 @@ tr.sev-medium { background: var(--medium-bg); }
 tr.sev-low { background: var(--low-bg); }
 tr.sev-info { background: var(--info-bg); }
 
+.finding-url {
+  font-size: 0.8rem;
+  color: var(--muted);
+  word-break: break-all;
+  margin-bottom: 0.25rem;
+}
+
+.finding-desc { word-break: break-word; }
+
 /* ---- Misc widgets ---- */
 
 .error {
@@ -284,6 +293,12 @@ tr.sev-info { background: var(--info-bg); }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.phase-badge {
+  background: var(--info-bg);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .badge-unresolved {

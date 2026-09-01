@@ -48,6 +48,27 @@ func (h *handlers) scanStatus(w http.ResponseWriter, r *http.Request) {
 	executeTemplate(w, h.tmpl, "scan_status.html", h.snapshotData(job))
 }
 
+// scanCatchup is GET /scans/{id}/catchup — fired once by the browser's own
+// htmx:sseOpen event (see scan_status.html), right after its SSE connection
+// actually opens. Re-syncs the progress badge and Recon Results against the
+// job's *current* snapshot via an out-of-band swap (CatchupData), closing
+// the gap where anything published between job-start and connection-open
+// (a fast recon/scan racing ahead of the browser's own connection setup)
+// would otherwise never reach this client. Deliberately excludes
+// Findings/Logs — see CatchupData's own doc comment for why.
+func (h *handlers) scanCatchup(w http.ResponseWriter, r *http.Request) {
+	job, ok := h.store.Get(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	snap := job.Snapshot()
+	executeTemplate(w, h.tmpl, "fragment_catchup", CatchupData{
+		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves}),
+		ReconHTML:    renderFragment(h.tmpl, "fragment_recon_results", snap.ReconResult),
+	})
+}
+
 func (h *handlers) exportJSON(w http.ResponseWriter, r *http.Request) {
 	job, ok := h.store.Get(r.PathValue("id"))
 	if !ok {
@@ -88,7 +109,7 @@ func (h *handlers) scanEvents(w http.ResponseWriter, r *http.Request) {
 	// reconnects) needs no live stream — send the final state once and
 	// close, rather than holding a connection open for nothing.
 	if snap := job.Snapshot(); snap.Status == StatusDone || snap.Status == StatusFailed {
-		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err, Waves: snap.Waves})}); err == nil {
+		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves})}); err == nil {
 			flusher.Flush()
 		}
 		return
@@ -167,7 +188,7 @@ func (h *handlers) snapshotData(job *Job) ScanStatusData {
 		Snapshot:        snap,
 		FindingRowsHTML: template.HTML(findingsHTML.String()), //nolint:gosec // built only from our own already-escaped fragment renders, not raw input
 		LogLinesHTML:    template.HTML(logsHTML.String()),     //nolint:gosec // same
-		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err, Waves: snap.Waves}),
+		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves}),
 	}
 }
 

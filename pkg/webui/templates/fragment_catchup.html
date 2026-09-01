@@ -1,0 +1,9 @@
+{{/* hx-swap-oob's default swap style is outerHTML, which would replace the
+     #progress/#recon-results elements with brand-new DOM nodes — detaching
+     the SSE extension's already-bound sse-swap listeners from the live page
+     (they'd keep firing against the old, now-invisible node). Explicit
+     "innerHTML:#selector" targets only the *content* of the existing
+     element, leaving it and its listener binding untouched. */}}
+{{define "fragment_catchup"}}<div hx-swap-oob="innerHTML:#progress">{{.ProgressHTML}}</div>
+<div hx-swap-oob="innerHTML:#recon-results">{{.ReconHTML}}</div>
+{{end}}

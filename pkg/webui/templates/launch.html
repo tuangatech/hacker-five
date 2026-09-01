@@ -1,9 +1,8 @@
-{{define "launch.html"}}{{template "header" .}}
-<h1>Scan</h1>
+{{define "fragment_launch_body"}}<h1>Scan</h1>
 
 {{if .Errors}}<div class="error"><ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 
-<form hx-post="/scans" hx-target="#scan-panel" hx-push-url="true">
+<form hx-post="/scans" hx-target="#main-content" hx-push-url="true">
 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
 <fieldset>
@@ -97,7 +96,6 @@
 <button type="submit">Start Scan</button>
 </div>
 </form>
-<div id="scan-panel"></div>
 
 <h2>Recent Scans</h2>
 {{if .RecentJobs}}
@@ -109,6 +107,8 @@
 {{else}}
 <p>No scans yet.</p>
 {{end}}
-
+{{end}}
+{{define "launch.html"}}{{template "header" .}}
+{{template "fragment_launch_body" .}}
 {{template "footer" .}}
 {{end}}

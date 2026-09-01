@@ -58,8 +58,28 @@ type LaunchFormData struct {
 // Waves is only non-empty when this Job ran an optional recon phase first.
 type ProgressData struct {
 	Status string
+	Phase  string // "" | "recon" | a detector name — which main step is currently running
 	Err    error
 	Waves  []WaveStatus
+}
+
+// CatchupData is fragment_catchup.html's input — an out-of-band re-sync of
+// the progress badge and Recon Results against the job's *current* snapshot,
+// fetched once the SSE connection actually opens. Closes a real gap: the
+// browser's EventSource only receives events published after its own
+// Subscribe() call registers, so anything published between job-start and
+// connection-open (SetRunning, early wave transitions, a fast recon
+// finishing before the connection opens) is silently missed — the page
+// could sit on "queued" indefinitely even though the job had already
+// finished. Deliberately narrow: only the two idempotent, last-value-wins
+// fragments (progress badge, Recon Results) are re-synced this way, not
+// Findings/Logs — those use hx-swap="afterbegin" (an append list), and
+// blindly overwriting them here would risk duplicating rows already
+// delivered live; a finding/log missed in the same narrow window still
+// recovers via reload, same as before this fix.
+type CatchupData struct {
+	ProgressHTML template.HTML
+	ReconHTML    template.HTML
 }
 
 // ScanStatusData is what scan_status.html renders — the job's snapshot at

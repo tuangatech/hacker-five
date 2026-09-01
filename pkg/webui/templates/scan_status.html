@@ -1,36 +1,20 @@
 {{define "fragment_scan_status_body"}}<h1>Scan Activity: {{.JobID}}</h1>
 <p>Target: <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a></p>
 
-<div hx-ext="sse" sse-connect="/scans/{{.JobID}}/events">
+<div id="sse-root" hx-ext="sse" sse-connect="/scans/{{.JobID}}/events" sse-close="done">
+{{/* A separate, inert element — not the sse-root div itself — fires the
+     catch-up request. Putting hx-get/hx-trigger directly on sse-root risked
+     htmx's own request/settle cycle re-touching that element's SSE
+     extension state; this sibling has no hx-ext of its own, so its request
+     cycle can't interact with the EventSource lifecycle at all. */}}
+<div hx-get="/scans/{{.JobID}}/catchup" hx-trigger="htmx:sseOpen from:#sse-root" hx-target="this" hx-swap="none"></div>
 <h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
 
-{{with .Snapshot.ReconResult}}
-<h2>Recon Results</h2>
-<h3>Hosts</h3>
-<table>
-<thead><tr><th>Host</th><th>Ports</th><th>Source</th><th>Confidence</th><th>Notes</th></tr></thead>
-<tbody>{{range .Hosts}}{{template "fragment_host_row" .}}{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
-</table>
-
-<h3>Endpoints</h3>
-<table>
-<thead><tr><th>URL</th><th>Method</th><th>Status</th><th>Source</th><th>Confidence</th></tr></thead>
-<tbody>{{range .Endpoints}}<tr><td><code>{{.URL}}</code></td><td>{{.Method}}</td><td>{{.StatusCode}}</td><td>{{.Source}}</td><td>{{.Confidence}}</td></tr>{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
-</table>
-
-<h3>Tech Stack</h3>
-<table>
-<thead><tr><th>Name</th><th>Host</th><th>Source</th><th>Confidence</th></tr></thead>
-<tbody>{{range .TechStack}}{{template "fragment_tech_row" .}}{{else}}<tr><td colspan="4"><em>none</em></td></tr>{{end}}</tbody>
-</table>
-
-{{if .OutOfScope}}<h3>Out of Scope</h3><ul>{{range .OutOfScope}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}
-{{if .Warnings}}<h3>Warnings</h3><ul>{{range .Warnings}}<li>{{.}}</li>{{end}}</ul>{{end}}
-{{end}}
+<div id="recon-results" sse-swap="recon">{{template "fragment_recon_results" .Snapshot.ReconResult}}</div>
 
 <h2>Findings</h2>
 <table>
-<thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Confidence</th><th>Target</th><th>Description</th></tr></thead>
+<thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Confidence</th><th>URL &amp; Description</th></tr></thead>
 <tbody id="findings" sse-swap="finding" hx-swap="afterbegin">{{.FindingRowsHTML}}</tbody>
 </table>
 

@@ -39,7 +39,7 @@ func newTestServerHandlers(t *testing.T) (*httptest.Server, *handlers) {
 }
 
 func newTestJobWithRecon(id string, result *recon.ReconResult) *Job {
-	j := newJob(id, "https://example.com", noopFindingRender, noopLogRender, noopProgressRender)
+	j := newJob(id, "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
 	j.SetReconResult(result)
 	j.MarkDone(nil)
 	return j
@@ -322,7 +322,7 @@ func TestLaunchTargetScheme(t *testing.T) {
 func TestSnapshotData_FindingsAndLogsRenderNewestFirst(t *testing.T) {
 	_, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
 	job.AppendFinding(detectors.Finding{ID: "first"})
 	job.AppendFinding(detectors.Finding{ID: "second"})
 	job.AppendLog("info", "first-log")

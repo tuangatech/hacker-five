@@ -23,6 +23,7 @@ const (
 	EventFinding  = "finding"
 	EventLog      = "log"
 	EventDone     = "done"
+	EventRecon    = "recon"
 )
 
 // subscriberBuffer is each SSE subscriber's channel depth — a small buffer
@@ -68,6 +69,7 @@ type Job struct {
 
 	mu          sync.Mutex
 	status      string
+	phase       string // "" | "recon" | a detector name — which main step is currently running, doc14/15's "which step are we in" gap
 	err         error
 	findings    []detectors.Finding
 	logs        []LogEntry
@@ -77,10 +79,11 @@ type Job struct {
 
 	renderFinding  func(detectors.Finding) template.HTML
 	renderLog      func(LogEntry) template.HTML
-	renderProgress func(status string, err error, waves []WaveStatus) template.HTML
+	renderProgress func(status string, err error, waves []WaveStatus, phase string) template.HTML
+	renderRecon    func(*recon.ReconResult) template.HTML
 }
 
-func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus) template.HTML) *Job {
+func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML) *Job {
 	return &Job{
 		ID:             id,
 		Target:         target,
@@ -89,6 +92,7 @@ func newJob(id, target string, renderFinding func(detectors.Finding) template.HT
 		renderFinding:  renderFinding,
 		renderLog:      renderLog,
 		renderProgress: renderProgress,
+		renderRecon:    renderRecon,
 	}
 }
 
@@ -97,6 +101,7 @@ func newJob(id, target string, renderFinding func(detectors.Finding) template.HT
 // for: render this first, then SSE only needs to stream what happens after.
 type Snapshot struct {
 	Status      string
+	Phase       string
 	Err         error
 	Findings    []detectors.Finding
 	Logs        []LogEntry
@@ -109,6 +114,7 @@ func (j *Job) Snapshot() Snapshot {
 	defer j.mu.Unlock()
 	return Snapshot{
 		Status:      j.status,
+		Phase:       j.phase,
 		Err:         j.err,
 		Findings:    append([]detectors.Finding(nil), j.findings...),
 		Logs:        append([]LogEntry(nil), j.logs...),
@@ -194,8 +200,26 @@ func (j *Job) SetRunning() {
 	j.mu.Lock()
 	j.status = StatusRunning
 	waves := append([]WaveStatus(nil), j.waves...)
+	phase := j.phase
 	j.mu.Unlock()
-	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil, waves)})
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil, waves, phase)})
+}
+
+// SetPhase records which main step is currently running — recon, or one
+// detector name — and publishes the same EventProgress event wave updates
+// do. Distinct from Waves: this covers the coarser "what stage is the whole
+// job in" question, including the detector-scan stage recon's own wave list
+// says nothing about. A real gap found live 2026-09-01: once recon finished,
+// nothing on the page indicated which detector (if any) was currently
+// running — only the scrolling Logs panel had any signal, and only once
+// that detector's own log lines started arriving.
+func (j *Job) SetPhase(phase string) {
+	j.mu.Lock()
+	j.phase = phase
+	waves := append([]WaveStatus(nil), j.waves...)
+	curStatus, curErr := j.status, j.err
+	j.mu.Unlock()
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves, phase)})
 }
 
 // SetWaveStatus is pkg/recon.WithProgressCallback's target when a Job runs
@@ -218,20 +242,25 @@ func (j *Job) SetWaveStatus(wave, waveStatus string) {
 		j.waves = append(j.waves, WaveStatus{Name: wave, Status: waveStatus})
 	}
 	waves := append([]WaveStatus(nil), j.waves...)
-	curStatus, curErr := j.status, j.err
+	curStatus, curErr, curPhase := j.status, j.err, j.phase
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves)})
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves, curPhase)})
 }
 
 // SetReconResult records a completed recon phase's result — read by the
 // results page's hosts/tech/endpoints tables and the "recon also suggests"
 // callout. Distinct from MarkDone: a Job that runs recon then detectors
-// isn't done just because recon finished.
+// isn't done just because recon finished. Publishes EventRecon so a client
+// already watching the SSE stream sees the Recon Results tables appear live,
+// rather than only after a manual reload of /scans/{id} — a real gap found
+// live 2026-09-01: SetWaveStatus already published wave progress, but this
+// method originally didn't publish anything at all.
 func (j *Job) SetReconResult(result *recon.ReconResult) {
 	j.mu.Lock()
 	j.reconResult = result
 	j.mu.Unlock()
+	j.publish(Event{Type: EventRecon, HTML: j.renderRecon(result)})
 }
 
 // MarkDone transitions the job to its terminal state (done or failed) and
@@ -246,11 +275,12 @@ func (j *Job) MarkDone(err error) {
 	} else {
 		j.status = StatusDone
 	}
+	j.phase = ""
 	status := j.status
 	waves := append([]WaveStatus(nil), j.waves...)
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err, waves)})
+	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err, waves, "")})
 }
 
 // maxJobs caps the in-memory job store per doc12's corrected eviction

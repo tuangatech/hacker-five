@@ -47,7 +47,7 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:    token,
 		Target:       "https://www.example.com",
 		RunRecon:     true,
-		Depth:        string(recon.DepthActive),
+		Depth:        string(recon.DepthFull),
 		RunMisconfig: true,
 		RateLimit:    defaultRateLimit,
 		Concurrency:  defaultConcurrency,
@@ -102,9 +102,10 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 	job := newJob(id, launchTargetScheme(form.Target),
 		func(f detectors.Finding) template.HTML { return renderFragment(h.tmpl, "fragment_finding_row", f) },
 		func(entry LogEntry) template.HTML { return renderFragment(h.tmpl, "fragment_log_line", entry) },
-		func(status string, err error, waves []WaveStatus) template.HTML {
-			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Err: err, Waves: waves})
+		func(status string, err error, waves []WaveStatus, phase string) template.HTML {
+			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves})
 		},
+		func(result *recon.ReconResult) template.HTML { return renderFragment(h.tmpl, "fragment_recon_results", result) },
 	)
 	// The authorization checkbox becomes the job's first log entry — the
 	// "audit trail" doc12 calls for; reuses the one logging surface that
@@ -129,7 +130,7 @@ func (h *handlers) rerenderLaunchWithErrors(w http.ResponseWriter, r *http.Reque
 	form.Tools = buildToolSetupData(false, "")
 	h.fillRecentJobs(&form)
 	w.WriteHeader(http.StatusUnprocessableEntity)
-	executeTemplate(w, h.tmpl, "launch.html", form)
+	executeTemplate(w, h.tmpl, "fragment_launch_body", form)
 }
 
 // parseLaunchSubmission maps POST /scans' form values onto a LaunchFormData
@@ -270,11 +271,14 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	job.SetRunning()
 
 	if form.RunRecon {
+		job.SetPhase("recon")
 		h.runLaunchRecon(job, form, cfgs)
 	}
 
 	var lastErr error
 	for _, cfg := range cfgs {
+		job.SetPhase(cfg.Detector)
+		job.AppendLog("info", "running detector: "+cfg.Detector)
 		if _, err := scanner.New(cfg).WithFindingCallback(job.AppendFinding).WithLogCallback(job.AppendLog).Run(h.baseCtx); err != nil {
 			lastErr = err
 			job.AppendLog("error", fmt.Sprintf("%s: %v", cfg.Detector, err))
@@ -282,6 +286,26 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	}
 
 	job.MarkDone(lastErr)
+}
+
+// waveDescription is a human-readable gloss on what a wave actually does —
+// logged when it starts so a long-running wave (e.g. wave1's subfinder call
+// against external passive sources can take tens of seconds) doesn't look
+// stalled just because WaveStatus itself only has "running"/"done", no
+// sub-progress. Mirrors doc91 §3's own wave descriptions.
+func waveDescription(wave string) string {
+	switch wave {
+	case "wave0":
+		return "recon wave0: zero-touch — parsing any provided spec, fetching security.txt"
+	case "wave1":
+		return "recon wave1: passive — subdomain/DNS enumeration (subfinder), TLS cert inspection (tlsx), WHOIS/ASN lookup"
+	case "wave2":
+		return "recon wave2: active — DNS resolve, port scan (naabu), HTTP probe/fingerprint (httpx)"
+	case "wave3":
+		return "recon wave3: full — bounded crawl (katana) + common-path probing"
+	default:
+		return "recon " + wave
+	}
 }
 
 // runLaunchRecon runs the recon phase and records its result on job — never
@@ -311,7 +335,12 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	opts := []recon.Option{
 		recon.WithRateLimit(form.RateLimit),
 		recon.WithConcurrency(form.Concurrency),
-		recon.WithProgressCallback(job.SetWaveStatus),
+		recon.WithProgressCallback(func(wave, status string) {
+			job.SetWaveStatus(wave, status)
+			if status == "running" {
+				job.AppendLog("info", waveDescription(wave))
+			}
+		}),
 	}
 	if s != nil {
 		opts = append(opts, recon.WithScope(s))
