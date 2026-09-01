@@ -9,7 +9,7 @@
 <fieldset>
 <legend>Target &amp; Recon</legend>
 <label for="target">Target</label>
-<input type="text" id="target" name="target" value="{{.Target}}" required placeholder="https://example.com">
+<input type="text" id="target" name="target" value="{{.Target}}" required placeholder="https://www.example.com">
 
 <label class="inline"><input type="checkbox" id="run_recon" name="run_recon" {{if .RunRecon}}checked{{end}}> Run recon first</label>
 <label for="depth">Recon depth (--recon-depth)</label>
@@ -22,11 +22,12 @@
 <details>
 <summary>Recon Tools</summary>
 <p>Active/full-depth recon uses 6 external binaries (subfinder/tlsx/dnsx/naabu/httpx/katana). Without them, those waves are skipped with a warning — the scan still runs.</p>
-<button type="button" hx-post="/recon/setup" hx-include="[name='csrf_token']" hx-target="#tool-setup-status" hx-indicator="#tool-setup-indicator">Setup now</button>
-<span id="tool-setup-indicator" class="htmx-indicator">Installing&hellip;</span>
-<div id="tool-setup-status">{{template "fragment_tool_setup_status" .Tools}}</div>
+<div id="tool-setup-panel">{{template "fragment_tool_setup_status" .Tools}}</div>
 </details>
 </fieldset>
+
+<details id="advanced-settings">
+<summary>Advanced Settings</summary>
 
 <fieldset>
 <legend>Detectors</legend>
@@ -58,10 +59,9 @@
 
 <label for="tags">Template tags (--tags, comma-separated, optional)</label>
 <input type="text" id="tags" name="tags" value="{{.Tags}}">
-</fieldset>
 
-<fieldset>
-<legend>Authentication</legend>
+<div class="auth-shared">
+<p class="hint">Shared by IDOR and Auth Bypass &mdash; misconfig ignores these.</p>
 <label for="auth_token">Auth token (--auth-token)</label>
 <input type="password" id="auth_token" name="auth_token" value="{{.AuthToken}}">
 <label for="other_auth_token">Other auth token (--other-auth-token, optional)</label>
@@ -70,6 +70,11 @@
 <input type="text" id="auth_header_name" name="auth_header_name" value="{{.AuthHeaderName}}" placeholder="Authorization">
 <label for="auth_header_format">Auth header format (--auth-header-format, optional, must contain {token})</label>
 <input type="text" id="auth_header_format" name="auth_header_format" value="{{.AuthHeaderFormat}}" placeholder="Bearer {token}">
+</div>
+</fieldset>
+
+<fieldset>
+<legend>Headers</legend>
 <label for="headers">Extra headers (--header, one &quot;Name: Value&quot; per line, optional)</label>
 <textarea id="headers" name="headers" placeholder="Cookie: PHPSESSID=...">{{.Headers}}</textarea>
 </fieldset>
@@ -83,10 +88,14 @@
 <label class="inline"><input type="checkbox" id="insecure" name="insecure" {{if .Insecure}}checked{{end}}> Skip TLS verification (--insecure) — lab targets only</label>
 <label for="scope_file">Scope file (--scope, path on this machine, optional)</label>
 <input type="text" id="scope_file" name="scope_file" value="{{.ScopeFile}}">
-<label class="inline"><input type="checkbox" name="authorized" required {{if .Authorized}}checked{{end}}> I am authorized to scan this target</label>
 </fieldset>
 
+</details>
+
+<div class="launch-submit">
+<label class="inline"><input type="checkbox" name="authorized" required {{if .Authorized}}checked{{end}}> I am authorized to scan this target</label>
 <button type="submit">Start Scan</button>
+</div>
 </form>
 <div id="scan-panel"></div>
 

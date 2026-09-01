@@ -123,6 +123,7 @@ type ToolStatusRow struct {
 type ToolSetupData struct {
 	Dir           string
 	Rows          []ToolStatusRow
+	AllInstalled  bool   // true when every row is present — collapses the panel to a version summary, no "Setup now" button
 	Error         string // friendly message when an install attempt failed; empty otherwise
 	JustInstalled bool   // true only on POST /recon/setup's own response
 }
