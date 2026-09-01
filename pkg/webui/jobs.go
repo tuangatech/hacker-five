@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/recon"
 )
 
 // Job statuses.
@@ -29,6 +30,16 @@ const (
 // path stays non-blocking regardless (see Job.publish): a full buffer just
 // drops that one live update, it never blocks the scan.
 const subscriberBuffer = 16
+
+// WaveStatus is one recon wave's current progress ("wave0".."wave3",
+// "running"/"done") — pkg/recon.WithProgressCallback's payload. Originally
+// ReconJob-only; moved onto Job when the unified launch page (doc14 Step 6)
+// made recon an optional phase of the same Job a detector scan uses, instead
+// of a separate job type.
+type WaveStatus struct {
+	Name   string
+	Status string
+}
 
 // LogEntry is one warning/error line, as scanner.Engine's WithLogCallback
 // delivers it.
@@ -55,19 +66,21 @@ type Job struct {
 	Target    string    // display only — the raw target list the form submitted, joined
 	CreatedAt time.Time // set once at creation — drives Dashboard/Scan History ordering and display
 
-	mu       sync.Mutex
-	status   string
-	err      error
-	findings []detectors.Finding
-	logs     []LogEntry
-	subs     []chan Event
+	mu          sync.Mutex
+	status      string
+	err         error
+	findings    []detectors.Finding
+	logs        []LogEntry
+	waves       []WaveStatus       // set only when this Job runs an optional recon phase first
+	reconResult *recon.ReconResult // nil until a recon phase (if any) completes
+	subs        []chan Event
 
 	renderFinding  func(detectors.Finding) template.HTML
 	renderLog      func(LogEntry) template.HTML
-	renderProgress func(status string, err error) template.HTML
+	renderProgress func(status string, err error, waves []WaveStatus) template.HTML
 }
 
-func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error) template.HTML) *Job {
+func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus) template.HTML) *Job {
 	return &Job{
 		ID:             id,
 		Target:         target,
@@ -83,20 +96,24 @@ func newJob(id, target string, renderFinding func(detectors.Finding) template.HT
 // state before attaching SSE — the reconnect-safety mechanism doc12 calls
 // for: render this first, then SSE only needs to stream what happens after.
 type Snapshot struct {
-	Status   string
-	Err      error
-	Findings []detectors.Finding
-	Logs     []LogEntry
+	Status      string
+	Err         error
+	Findings    []detectors.Finding
+	Logs        []LogEntry
+	Waves       []WaveStatus
+	ReconResult *recon.ReconResult // nil unless this Job ran a recon phase that completed
 }
 
 func (j *Job) Snapshot() Snapshot {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return Snapshot{
-		Status:   j.status,
-		Err:      j.err,
-		Findings: append([]detectors.Finding(nil), j.findings...),
-		Logs:     append([]LogEntry(nil), j.logs...),
+		Status:      j.status,
+		Err:         j.err,
+		Findings:    append([]detectors.Finding(nil), j.findings...),
+		Logs:        append([]LogEntry(nil), j.logs...),
+		Waves:       append([]WaveStatus(nil), j.waves...),
+		ReconResult: j.reconResult,
 	}
 }
 
@@ -176,8 +193,45 @@ func (j *Job) AppendLog(level, msg string) {
 func (j *Job) SetRunning() {
 	j.mu.Lock()
 	j.status = StatusRunning
+	waves := append([]WaveStatus(nil), j.waves...)
 	j.mu.Unlock()
-	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil)})
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil, waves)})
+}
+
+// SetWaveStatus is pkg/recon.WithProgressCallback's target when a Job runs
+// an optional recon phase first — updates (or appends) one wave's status and
+// publishes the same EventProgress event SetRunning/MarkDone already do, so
+// the wave list re-renders as part of the existing progress fragment rather
+// than needing a new SSE event type. Moved here from the now-retired
+// ReconJob (doc14 Step 6's unified launch page).
+func (j *Job) SetWaveStatus(wave, waveStatus string) {
+	j.mu.Lock()
+	updated := false
+	for i := range j.waves {
+		if j.waves[i].Name == wave {
+			j.waves[i].Status = waveStatus
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		j.waves = append(j.waves, WaveStatus{Name: wave, Status: waveStatus})
+	}
+	waves := append([]WaveStatus(nil), j.waves...)
+	curStatus, curErr := j.status, j.err
+	j.mu.Unlock()
+
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves)})
+}
+
+// SetReconResult records a completed recon phase's result — read by the
+// results page's hosts/tech/endpoints tables and the "recon also suggests"
+// callout. Distinct from MarkDone: a Job that runs recon then detectors
+// isn't done just because recon finished.
+func (j *Job) SetReconResult(result *recon.ReconResult) {
+	j.mu.Lock()
+	j.reconResult = result
+	j.mu.Unlock()
 }
 
 // MarkDone transitions the job to its terminal state (done or failed) and
@@ -193,9 +247,10 @@ func (j *Job) MarkDone(err error) {
 		j.status = StatusDone
 	}
 	status := j.status
+	waves := append([]WaveStatus(nil), j.waves...)
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err)})
+	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err, waves)})
 }
 
 // maxJobs caps the in-memory job store per doc12's corrected eviction

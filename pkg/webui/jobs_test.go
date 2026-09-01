@@ -12,14 +12,9 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 )
 
-func noopFindingRender(f detectors.Finding) template.HTML     { return template.HTML(f.ID) }
-func noopLogRender(e LogEntry) template.HTML                  { return template.HTML(e.Msg) }
-func noopProgressRender(status string, _ error) template.HTML { return template.HTML(status) }
-
-// noopReconProgressRender is ReconJob's own renderProgress shape — separate
-// from noopProgressRender (Job's) since ReconJob's signature also carries
-// the wave list.
-func noopReconProgressRender(status string, _ error, _ []WaveStatus) template.HTML {
+func noopFindingRender(f detectors.Finding) template.HTML { return template.HTML(f.ID) }
+func noopLogRender(e LogEntry) template.HTML              { return template.HTML(e.Msg) }
+func noopProgressRender(status string, _ error, _ []WaveStatus) template.HTML {
 	return template.HTML(status)
 }
 

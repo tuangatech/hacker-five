@@ -30,7 +30,7 @@ func TestDashboard_NoScansYet(t *testing.T) {
 func startTestScan(t *testing.T, client *http.Client, ts *httptest.Server, targetURL string) string {
 	t.Helper()
 
-	resp, err := client.Get(ts.URL + "/scans/new")
+	resp, err := client.Get(ts.URL + "/")
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 
@@ -40,10 +40,10 @@ func startTestScan(t *testing.T, client *http.Client, ts *httptest.Server, targe
 	require.NotEmpty(t, csrfVal)
 
 	form := url.Values{
-		"csrf_token": {csrfVal},
-		"targets":    {targetURL},
-		"detector":   {"misconfig"},
-		"authorized": {"on"},
+		"csrf_token":    {csrfVal},
+		"target":        {targetURL},
+		"run_misconfig": {"on"},
+		"authorized":    {"on"},
 	}
 	resp, err = client.PostForm(ts.URL+"/scans", form)
 	require.NoError(t, err)

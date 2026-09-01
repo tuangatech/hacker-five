@@ -74,22 +74,21 @@ func TestEndToEnd_StartScan_ProducesRealFindings(t *testing.T) {
 	require.NoError(t, err)
 	client := &http.Client{Jar: jar}
 
-	resp, err := client.Get(ts.URL + "/scans/new")
+	resp, err := client.Get(ts.URL + "/")
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
-	require.NotEmpty(t, csrfVal, "GET /scans/new must set a CSRF cookie")
+	require.NotEmpty(t, csrfVal, "GET / must set a CSRF cookie")
 
 	form := url.Values{
-		"csrf_token":  {csrfVal},
-		"targets":     {target.URL},
-		"detector":    {"misconfig"},
-		"rate_limit":  {"50"},
-		"concurrency": {"5"},
-		"timeout":     {"5s"},
-		"authorized":  {"on"},
+		"csrf_token":    {csrfVal},
+		"target":        {target.URL},
+		"run_misconfig": {"on"},
+		"rate_limit":    {"50"},
+		"concurrency":   {"5"},
+		"authorized":    {"on"},
 	}
 	resp, err = client.PostForm(ts.URL+"/scans", form)
 	require.NoError(t, err)
@@ -136,7 +135,7 @@ func TestEndToEnd_StartScan_ProducesRealFindings(t *testing.T) {
 func TestStartScan_MissingCSRFCookie_Rejected(t *testing.T) {
 	ts := newTestServer(t)
 
-	form := url.Values{"csrf_token": {"whatever"}, "targets": {"http://example.com"}, "detector": {"misconfig"}, "authorized": {"on"}}
+	form := url.Values{"csrf_token": {"whatever"}, "target": {"http://example.com"}, "run_misconfig": {"on"}, "authorized": {"on"}}
 	resp, err := http.PostForm(ts.URL+"/scans", form)
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
@@ -149,15 +148,15 @@ func TestStartScan_MissingAuthorizationCheckbox_RerendersFormWithError(t *testin
 	require.NoError(t, err)
 	client := &http.Client{Jar: jar}
 
-	resp, err := client.Get(ts.URL + "/scans/new")
+	resp, err := client.Get(ts.URL + "/")
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
 
 	form := url.Values{
-		"csrf_token": {csrfVal},
-		"targets":    {"http://example.com"},
-		"detector":   {"misconfig"},
+		"csrf_token":    {csrfVal},
+		"target":        {"http://example.com"},
+		"run_misconfig": {"on"},
 		// "authorized" deliberately omitted
 	}
 	resp, err = client.PostForm(ts.URL+"/scans", form)
@@ -171,25 +170,12 @@ func TestStartScan_MissingAuthorizationCheckbox_RerendersFormWithError(t *testin
 	assert.Contains(t, string(body), "example.com", "the form must echo back what the operator already typed, not lose it")
 }
 
-func TestDetectorFields_UnknownDetector_Rejected(t *testing.T) {
-	ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/scans/new/detector-fields?detector=nonsense")
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
 func TestScanStatus_UnknownJobID_404(t *testing.T) {
 	ts := newTestServer(t)
 	resp, err := http.Get(ts.URL + "/scans/does-not-exist")
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
-func TestParseTargetsFromTextarea(t *testing.T) {
-	got := parseTargetsFromTextarea("http://a.example\n\n  http://b.example  \n")
-	assert.Equal(t, []string{"http://a.example", "http://b.example"}, got)
 }
 
 func TestSplitCSV(t *testing.T) {

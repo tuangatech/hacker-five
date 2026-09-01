@@ -322,6 +322,43 @@ tr.sev-info { background: var(--info-bg); }
 .htmx-indicator { opacity: 0; transition: opacity 0.15s ease; font-size: 0.85rem; color: var(--muted); }
 .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
 
+/* ---- Detector tabs (radio-driven, CSS-only — no JS) ---- */
+
+.tab-radio { position: absolute; opacity: 0; pointer-events: none; }
+
+.tab-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+
+.tab-label {
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.tab-panel { display: none; }
+
+#tab-misconfig:checked ~ .tab-panels #panel-misconfig,
+#tab-idor:checked ~ .tab-panels #panel-idor,
+#tab-authbypass:checked ~ .tab-panels #panel-authbypass {
+  display: block;
+}
+
+#tab-misconfig:checked ~ .tab-labels label[for="tab-misconfig"],
+#tab-idor:checked ~ .tab-labels label[for="tab-idor"],
+#tab-authbypass:checked ~ .tab-labels label[for="tab-authbypass"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
 details summary {
   cursor: pointer;
   font-weight: 600;

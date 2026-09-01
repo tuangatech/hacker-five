@@ -16,18 +16,21 @@ import (
 const defaultTemplateIndexPath = "templates/index.json"
 
 // planPreview is GET /plan-preview?job={id} — renders the PlanTree
-// registry.Resolve builds from a completed recon job's ReconResult. Only
-// makes sense against a job that's actually done: a queued/running/failed
-// job has no ReconResult to resolve yet.
+// registry.Resolve builds from a completed job's recon-phase ReconResult.
+// Only makes sense against a Job whose recon phase actually finished: a
+// queued/running/failed job, or one that never ran recon at all, has no
+// ReconResult to resolve yet. Reads from the same unified JobStore every
+// other route uses (doc14 Step 6) — recon is a phase of Job, not a separate
+// ReconJob/ReconJobStore anymore.
 func (h *handlers) planPreview(w http.ResponseWriter, r *http.Request) {
-	job, ok := h.reconStore.Get(r.URL.Query().Get("job"))
+	job, ok := h.store.Get(r.URL.Query().Get("job"))
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	snap := job.Snapshot()
-	if snap.Status != StatusDone || snap.Result == nil {
-		http.Error(w, "recon job is not done yet — this job has no ReconResult to preview a plan against", http.StatusConflict)
+	if snap.ReconResult == nil {
+		http.Error(w, "this job has no completed recon phase to preview a plan against", http.StatusConflict)
 		return
 	}
 
@@ -40,11 +43,11 @@ func (h *handlers) planPreview(w http.ResponseWriter, r *http.Request) {
 		index = nil
 	}
 
-	tree := registry.Resolve(snap.Result, index)
+	tree := registry.Resolve(snap.ReconResult, index)
 
 	executeTemplate(w, h.tmpl, "plan_preview.html", PlanPreviewData{
 		JobID:     job.ID,
-		Target:    job.Target,
+		Target:    snap.ReconResult.Target, // the scheme-normalized target recon actually ran against, not job.Target's raw form input
 		Tree:      tree,
 		IndexWarn: indexWarn,
 	})

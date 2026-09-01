@@ -54,28 +54,20 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("initializing access token: %w", err)
 	}
 
-	h := &handlers{tmpl: tmpl, store: newJobStore(), reconStore: newReconJobStore()}
+	h := &handlers{tmpl: tmpl, store: newJobStore()}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", h.dashboard)
+	mux.HandleFunc("GET /{$}", h.launchForm)
+	mux.HandleFunc("POST /scans", h.startLaunch)
 	mux.HandleFunc("GET /scans", h.scanHistory)
-	mux.HandleFunc("GET /scans/new", h.newScanForm)
-	mux.HandleFunc("GET /scans/new/detector-fields", h.detectorFields)
-	mux.HandleFunc("POST /scans", h.startScan)
 	mux.HandleFunc("GET /scans/{id}", h.scanStatus)
 	mux.HandleFunc("GET /scans/{id}/export.json", h.exportJSON)
 	mux.HandleFunc("GET /scans/{id}/events", h.scanEvents)
 	mux.HandleFunc("GET /templates", h.templatesPage)
 	mux.HandleFunc("GET /templates/table", h.templateTable)
 	mux.HandleFunc("POST /templates/sync", h.syncTemplates)
-	mux.HandleFunc("GET /recon", h.newReconForm)
-	mux.HandleFunc("POST /recon", h.startRecon)
-	mux.HandleFunc("GET /recon/{id}", h.reconStatus)
-	mux.HandleFunc("GET /recon/{id}/events", h.reconEvents)
 	mux.HandleFunc("POST /recon/setup", h.setupTools)
 	mux.HandleFunc("GET /plan-preview", h.planPreview)
-	mux.HandleFunc("GET /guided-scan/plan", h.guidedScanPlan)
-	mux.HandleFunc("POST /guided-scan/run", h.startGuidedScan)
 
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {

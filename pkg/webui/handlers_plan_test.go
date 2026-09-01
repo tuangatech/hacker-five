@@ -32,9 +32,8 @@ func fixtureReconResultForPlan() *recon.ReconResult {
 func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
-	job.MarkDone(fixtureReconResultForPlan(), nil)
-	h.reconStore.Add(job)
+	job := newTestJobWithRecon("job1", fixtureReconResultForPlan())
+	h.store.Add(job)
 
 	resp, err := http.Get(ts.URL + "/plan-preview?job=job1")
 	require.NoError(t, err)
@@ -57,9 +56,9 @@ func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t 
 func TestPlanPreview_JobNotDone_Returns409(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
-	job.SetRunning() // never MarkDone
-	h.reconStore.Add(job)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender)
+	job.SetRunning() // never runs a recon phase, so ReconResult stays nil
+	h.store.Add(job)
 
 	resp, err := http.Get(ts.URL + "/plan-preview?job=job1")
 	require.NoError(t, err)
@@ -72,9 +71,8 @@ func TestPlanPreview_MissingTemplateIndex_DegradesToWarningBanner(t *testing.T) 
 	// directory in CI — loadTemplateIndex must degrade gracefully, not 500.
 	ts, h := newTestServerHandlers(t)
 
-	job := newReconJob("job1", "https://example.com", "active", "", noopReconProgressRender)
-	job.MarkDone(fixtureReconResultForPlan(), nil)
-	h.reconStore.Add(job)
+	job := newTestJobWithRecon("job1", fixtureReconResultForPlan())
+	h.store.Add(job)
 
 	resp, err := http.Get(ts.URL + "/plan-preview?job=job1")
 	require.NoError(t, err)

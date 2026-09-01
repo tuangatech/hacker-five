@@ -1,17 +1,41 @@
-{{define "fragment_scan_status_body"}}<h1>Scan {{.JobID}}</h1>
-<p>Target(s): <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a></p>
+{{define "fragment_scan_status_body"}}<h1>Scan Activity: {{.JobID}}</h1>
+<p>Target: <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a></p>
 
 <div hx-ext="sse" sse-connect="/scans/{{.JobID}}/events">
 <h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
 
+{{with .Snapshot.ReconResult}}
+<h2>Recon Results</h2>
+<h3>Hosts</h3>
+<table>
+<thead><tr><th>Host</th><th>Ports</th><th>Source</th><th>Confidence</th><th>Notes</th></tr></thead>
+<tbody>{{range .Hosts}}{{template "fragment_host_row" .}}{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
+</table>
+
+<h3>Endpoints</h3>
+<table>
+<thead><tr><th>URL</th><th>Method</th><th>Status</th><th>Source</th><th>Confidence</th></tr></thead>
+<tbody>{{range .Endpoints}}<tr><td><code>{{.URL}}</code></td><td>{{.Method}}</td><td>{{.StatusCode}}</td><td>{{.Source}}</td><td>{{.Confidence}}</td></tr>{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
+</table>
+
+<h3>Tech Stack</h3>
+<table>
+<thead><tr><th>Name</th><th>Host</th><th>Source</th><th>Confidence</th></tr></thead>
+<tbody>{{range .TechStack}}{{template "fragment_tech_row" .}}{{else}}<tr><td colspan="4"><em>none</em></td></tr>{{end}}</tbody>
+</table>
+
+{{if .OutOfScope}}<h3>Out of Scope</h3><ul>{{range .OutOfScope}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}
+{{if .Warnings}}<h3>Warnings</h3><ul>{{range .Warnings}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{end}}
+
 <h2>Findings</h2>
 <table>
 <thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Confidence</th><th>Target</th><th>Description</th></tr></thead>
-<tbody id="findings" sse-swap="finding" hx-swap="beforeend">{{.FindingRowsHTML}}</tbody>
+<tbody id="findings" sse-swap="finding" hx-swap="afterbegin">{{.FindingRowsHTML}}</tbody>
 </table>
 
 <h2>Logs</h2>
-<div id="logs" sse-swap="log" hx-swap="beforeend">{{.LogLinesHTML}}</div>
+<div id="logs" sse-swap="log" hx-swap="afterbegin">{{.LogLinesHTML}}</div>
 </div>
 {{end}}
 {{define "scan_status.html"}}{{template "header" .}}

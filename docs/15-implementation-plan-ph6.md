@@ -137,11 +137,12 @@ Doc14 Step 4 shipped a *read-only* Plan-preview page — useful for inspecting a
 
 - **Approve / Reject / Edit controls per leaf and for the plan as a whole** — an `hx-post` action on the Plan-preview page that resolves the same `elicitation` response Step 2's `plan` tool is waiting on, so a human can approve from either surface (the MCP client's own UI, or HackerFive's Web UI) interchangeably.
 - **A budget/spend gauge** against Step 2's `SpendCeiling`/`SpendSoFar` — a simple progress bar, not a new subsystem; the numbers already exist on `Job` by this step.
-- **An explicit, always-reachable kill switch/pause control** — doc90's OWASP ASI10 mitigation names this as a requirement; this step is where it's actually built, not just referenced. A single button that cancels the job's context (the same `r.Context().Done()` mechanism doc12's SSE unsubscribe path already relies on) and is visible on every page a running job's status appears on, not buried in a menu.
+- **An explicit, always-reachable kill switch/pause control** — doc90's OWASP ASI10 mitigation names this as a requirement; this step is where it's actually built, not just referenced. A single button that cancels the job's context (the same `r.Context().Done()` mechanism doc12's SSE unsubscribe path already relies on) and is visible on every page a running job's status appears on, not buried in a menu. **Scoping note, added 2026-08-31, from a Guided Scan UX review**: this control is not agent-specific — plain New Scan and doc14's Guided Scan (`/recon?mode=guided` → `/guided-scan/plan` → confirm → run) already dispatch into the exact same `Job`/`JobStore` (`pkg/webui/jobs.go`) this step's kill switch would gate, and neither currently has any way to stop a run once started. Build the cancel mechanism once against `Job`'s own lifecycle context and surface it on every `/scans/{id}` render (New Scan, Guided Scan, and the agent-approval flow alike), not only the plan-preview page — three call sites for one control, not three controls.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/webui/handlers_plan.go` (new) or extend `handlers_scan.go` — approve/reject/edit endpoints resolving an `elicitation` response.
 - `pkg/webui/templates/plan_preview.html` (doc14's page, extended) — action buttons, budget gauge, kill switch.
+- `pkg/webui/templates/scan_status.html`/`fragment_progress.html` (doc12/doc14, extended) — the same kill switch control, since New Scan and Guided Scan runs render here, not on `plan_preview.html`.
 - `tests/unit/plan_ui_test.go` — approve/reject via HTTP produces the same effect as an MCP-client-side elicitation response.
 
 ### Verification
@@ -180,7 +181,7 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 - [ ] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command
 - [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and triggers a fresh `elicitation` round trip before it's touched, live-verified
 - [ ] Cost/attempt-aware prioritization (H4) surfaces a stop-and-escalate signal on a `PlanTree` leaf after repeated low-yield attempts
-- [ ] The Web UI's Plan-preview page supports Approve/Reject/Edit, a budget gauge, and an always-reachable kill switch that actually stops a running job
+- [ ] The Web UI's Plan-preview page supports Approve/Reject/Edit, a budget gauge, and an always-reachable kill switch that actually stops a running job — and that same kill switch is confirmed on `/scans/{id}` for plain New Scan and Guided Scan runs too, not only the agent-approval flow
 - [ ] A structured, persisted agent session log exists and is queryable per job, even without a live Web UI view yet
 - [ ] A full recon → plan → approve → scan → export round trip is live-verified end-to-end against at least one lab target
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean

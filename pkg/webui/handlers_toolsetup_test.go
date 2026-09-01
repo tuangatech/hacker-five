@@ -17,7 +17,7 @@ import (
 func TestNewReconForm_ShowsToolSetupPanel_NoneInstalled(t *testing.T) {
 	ts := newTestServer(t) // isolates DefaultInstallDir to an empty temp dir
 
-	resp, err := http.Get(ts.URL + "/recon")
+	resp, err := http.Get(ts.URL + "/")
 	require.NoError(t, err)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -52,7 +52,7 @@ func TestSetupTools_FailsCleanly_Renders200NotError(t *testing.T) {
 	require.NoError(t, err)
 	client := &http.Client{Jar: jar}
 
-	getResp, err := client.Get(ts.URL + "/recon")
+	getResp, err := client.Get(ts.URL + "/")
 	require.NoError(t, err)
 	require.NoError(t, getResp.Body.Close())
 	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)

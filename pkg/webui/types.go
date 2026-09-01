@@ -8,22 +8,30 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
-// NewScanData is what new_scan.html renders — form defaults/echoed values
-// plus any validation errors, so a rejected submission re-renders with the
-// operator's input intact rather than losing it.
-type NewScanData struct {
+// LaunchFormData is launch.html's input — the single unified entry point
+// (doc14 Step 6) replacing New Scan/Recon/Guided Scan's three separate
+// forms. Same "re-render with input intact on a validation error" shape
+// those pages already used.
+type LaunchFormData struct {
 	CSRFToken string
 	Errors    []string
 
-	Detector    string
-	Targets     string
-	Tags        string
-	RateLimit   int
-	Concurrency int
-	Proxy       string
-	Timeout     string
-	Insecure    bool
-	ScopeFile   string
+	Target string
+
+	RunRecon bool
+	Depth    string
+
+	RunMisconfig bool
+
+	RunIdor  bool
+	Endpoint string // idor's own field, rendered via detector_fields_idor
+
+	RunAuthbypass  bool
+	ProtectedPaths string // authbypass's own fields, rendered via detector_fields_authbypass
+	LoginPaths     string
+	LogoutPaths    string
+
+	Tags string
 
 	AuthToken        string
 	OtherAuthToken   string
@@ -31,19 +39,23 @@ type NewScanData struct {
 	AuthHeaderFormat string
 	Headers          string // one "Name: Value" per line, mirrors repeatable --header
 
-	Endpoint       string // idor only
-	ProtectedPaths string // authbypass only
-	LoginPaths     string
-	LogoutPaths    string
+	RateLimit   int
+	Concurrency int
+	Insecure    bool
+	ScopeFile   string
+	Authorized  bool
 
-	DetectorFieldsHTML template.HTML // pre-rendered detector_fields_* fragment for the initially-selected detector
+	Tools ToolSetupData
+
+	// RecentJobs/HasMore carry over dashboard.html's old "Recent Scans" list
+	// (doc12), shown below the launch form rather than on its own page.
+	RecentJobs []JobSummary
+	HasMore    bool
 }
 
 // ProgressData is fragment_progress.html's input — the status badge shown
 // both on initial render and pushed live via SSE (progress/done events).
-// Waves is only ever set by ReconJob's own renderProgress closure — Job's
-// (scan) leaves it nil, which renders as no wave list at all, so this one
-// shared struct costs scan progress nothing.
+// Waves is only non-empty when this Job ran an optional recon phase first.
 type ProgressData struct {
 	Status string
 	Err    error
@@ -61,12 +73,6 @@ type ScanStatusData struct {
 	FindingRowsHTML template.HTML
 	LogLinesHTML    template.HTML
 	ProgressHTML    template.HTML
-}
-
-// DashboardData is dashboard.html's input.
-type DashboardData struct {
-	RecentJobs []JobSummary
-	HasMore    bool
 }
 
 // ScanHistoryData is scan_history.html's input.
@@ -104,46 +110,6 @@ type TemplatesPageData struct {
 	Sync      SyncPanelData
 }
 
-// ReconFormData is new_recon.html's input — form defaults/echoed values plus
-// any validation errors, same "re-render with input intact" shape as
-// NewScanData.
-type ReconFormData struct {
-	CSRFToken string
-	Errors    []string
-
-	Target      string
-	Depth       string
-	ScopeFile   string
-	RateLimit   int
-	Concurrency int
-	Insecure    bool
-
-	// Mode is "" for plain recon (GET /recon) or "guided" (GET
-	// /recon?mode=guided) — carried through the form as a hidden field so
-	// startRecon can tag the resulting ReconJob, which is all Mode
-	// controls: which link the status page offers once done.
-	Mode string
-
-	Tools ToolSetupData
-}
-
-// ReconStatusData is what recon_status.html (and startRecon's response
-// fragment) renders — the job's snapshot at page-load/reload time, same
-// reconnect-safety shape as ScanStatusData.
-type ReconStatusData struct {
-	CSRFToken string
-	JobID     string
-	Target    string
-	Depth     string
-	Mode      string
-
-	Snapshot ReconSnapshot
-
-	ProgressHTML template.HTML
-
-	Tools ToolSetupData
-}
-
 // ToolStatusRow is one recon binary's row in the tool-setup panel.
 type ToolStatusRow struct {
 	Name      string
@@ -167,30 +133,4 @@ type PlanPreviewData struct {
 	Target    string
 	Tree      *agenttask.PlanTree
 	IndexWarn string // non-empty when templates/index.json couldn't be loaded — degraded, not fatal
-}
-
-// GuidedScanPlanData is guided_scan_plan.html's input — the matched-
-// capabilities page a completed "guided" ReconJob's status page links to.
-// A single target is scanned throughout (the recon job's own Target, a
-// full scheme-normalized URL) — not individually-discovered subdomains;
-// an explicit scope cut for this pass, not an oversight.
-type GuidedScanPlanData struct {
-	CSRFToken string
-	JobID     string
-	Target    string
-	Errors    []string
-
-	Ready       []string // e.g. "misconfig" — needs no additional input
-	NeedsInput  []string // e.g. "idor", "authbypass" — rendered with the existing detector_fields_* fragments
-	Unsupported []string // matched but not runnable via Guided Scan yet (ssrf/businesslogic/promptinjection/template-tag IDs)
-	Unresolved  []string // StatusUnresolved leaf rationales, informational
-
-	// Echoed on a validation-error re-render, same "don't lose the
-	// operator's input" reasoning as NewScanData/ReconFormData.
-	AuthToken      string
-	OtherAuthToken string
-	Endpoint       string
-	ProtectedPaths string
-	LoginPaths     string
-	LogoutPaths    string
 }

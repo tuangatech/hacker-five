@@ -11,9 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/reporter"
-	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
@@ -36,110 +34,9 @@ const sseKeepAlive = 15 * time.Second
 // request's context — a scan must keep running after the HTTP request that
 // started it returns, and should only be cancelled on server shutdown.
 type handlers struct {
-	tmpl       *template.Template
-	store      *JobStore
-	reconStore *ReconJobStore
-	baseCtx    context.Context
-}
-
-func (h *handlers) newScanForm(w http.ResponseWriter, r *http.Request) {
-	token, err := csrfToken(w, r)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	data := NewScanData{
-		CSRFToken:   token,
-		Detector:    "misconfig",
-		Tags:        r.URL.Query().Get("tags"), // prefilled via the Templates page's tag links (docs/12-implementation-plan-ph3.md design decision 1)
-		RateLimit:   defaultRateLimit,
-		Concurrency: defaultConcurrency,
-		Timeout:     defaultTimeout.String(),
-	}
-	data.DetectorFieldsHTML = renderFragment(h.tmpl, "detector_fields_misconfig", data)
-	executeTemplate(w, h.tmpl, "new_scan.html", data)
-}
-
-func (h *handlers) detectorFields(w http.ResponseWriter, r *http.Request) {
-	detector := r.URL.Query().Get("detector")
-	switch detector {
-	case "idor", "authbypass", "misconfig":
-	default:
-		http.Error(w, "unknown detector", http.StatusBadRequest)
-		return
-	}
-	executeTemplate(w, h.tmpl, "detector_fields_"+detector, NewScanData{})
-}
-
-// startScan is POST /scans. r.Form/r.PostForm are already populated —
-// csrfMiddleware calls r.ParseForm() for every non-GET request before its
-// own check, so by the time this handler runs the form is parsed.
-func (h *handlers) startScan(w http.ResponseWriter, r *http.Request) {
-	cfg, errs := buildScanConfig(r)
-
-	if r.PostFormValue("authorized") != "on" {
-		errs = append(errs, "you must confirm you are authorized to scan this target")
-	}
-
-	if len(errs) == 0 {
-		if err := cfg.Validate(); err != nil {
-			errs = append(errs, err.Error())
-		}
-	}
-
-	if len(errs) > 0 {
-		h.rerenderFormWithErrors(w, r, errs)
-		return
-	}
-
-	id, err := randomHex(8)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	job := newJob(id, strings.Join(cfg.Targets, ", "),
-		func(f detectors.Finding) template.HTML { return renderFragment(h.tmpl, "fragment_finding_row", f) },
-		func(entry LogEntry) template.HTML { return renderFragment(h.tmpl, "fragment_log_line", entry) },
-		func(status string, err error) template.HTML {
-			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Err: err})
-		},
-	)
-	// The authorization checkbox becomes the job's first log entry — the
-	// "audit trail" doc12 calls for; no separate audit mechanism exists or
-	// is being built here, this reuses the one logging surface that already
-	// does (see docs/12-implementation-plan-ph3.md's design decision #7).
-	job.AppendLog("info", "authorized: target(s) confirmed by operator acknowledgment")
-	h.store.Add(job)
-
-	go h.runJob(job, cfg)
-
-	w.Header().Set("HX-Push-Url", "/scans/"+job.ID)
-	executeTemplate(w, h.tmpl, "fragment_scan_status_body", h.snapshotData(job))
-}
-
-func (h *handlers) rerenderFormWithErrors(w http.ResponseWriter, r *http.Request, errs []string) {
-	token, err := csrfToken(w, r)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	data := formDataFromRequest(r, token, errs)
-	data.DetectorFieldsHTML = renderFragment(h.tmpl, "detector_fields_"+data.Detector, data)
-	w.WriteHeader(http.StatusUnprocessableEntity)
-	executeTemplate(w, h.tmpl, "new_scan.html", data)
-}
-
-// runJob runs the scan in the background, on the server's lifecycle
-// context — not the HTTP request's, which ends when startScan returns,
-// long before a real scan finishes.
-func (h *handlers) runJob(job *Job, cfg scanner.Config) {
-	job.SetRunning()
-	_, err := scanner.New(cfg).
-		WithFindingCallback(job.AppendFinding).
-		WithLogCallback(job.AppendLog).
-		Run(h.baseCtx)
-	job.MarkDone(err)
+	tmpl    *template.Template
+	store   *JobStore
+	baseCtx context.Context
 }
 
 func (h *handlers) scanStatus(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +88,7 @@ func (h *handlers) scanEvents(w http.ResponseWriter, r *http.Request) {
 	// reconnects) needs no live stream — send the final state once and
 	// close, rather than holding a connection open for nothing.
 	if snap := job.Snapshot(); snap.Status == StatusDone || snap.Status == StatusFailed {
-		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err})}); err == nil {
+		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err, Waves: snap.Waves})}); err == nil {
 			flusher.Flush()
 		}
 		return
@@ -246,18 +143,22 @@ func writeSSEEvent(w http.ResponseWriter, ev Event) error {
 }
 
 // snapshotData builds the initial-render data for both scan_status.html
-// (full page) and startScan's response fragment — one job snapshot, two
-// callers, so a page load and a form-submit response always agree.
+// (full page) and startLaunch's response fragment — one job snapshot, two
+// callers, so a page load and a form-submit response always agree. Findings
+// and log lines are rendered newest-first: the live SSE stream appends new
+// ones via hx-swap="afterbegin" (doc14 Step 6's "Scan Activity" redesign),
+// so the very first paint must already match that order, not the other way
+// around (oldest-first, matching the old "beforeend" behavior).
 func (h *handlers) snapshotData(job *Job) ScanStatusData {
 	snap := job.Snapshot()
 
 	var findingsHTML strings.Builder
-	for _, f := range snap.Findings {
-		findingsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_finding_row", f)))
+	for i := len(snap.Findings) - 1; i >= 0; i-- {
+		findingsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_finding_row", snap.Findings[i])))
 	}
 	var logsHTML strings.Builder
-	for _, l := range snap.Logs {
-		logsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_log_line", l)))
+	for i := len(snap.Logs) - 1; i >= 0; i-- {
+		logsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_log_line", snap.Logs[i])))
 	}
 
 	return ScanStatusData{
@@ -266,71 +167,8 @@ func (h *handlers) snapshotData(job *Job) ScanStatusData {
 		Snapshot:        snap,
 		FindingRowsHTML: template.HTML(findingsHTML.String()), //nolint:gosec // built only from our own already-escaped fragment renders, not raw input
 		LogLinesHTML:    template.HTML(logsHTML.String()),     //nolint:gosec // same
-		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err}),
+		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Err: snap.Err, Waves: snap.Waves}),
 	}
-}
-
-// buildScanConfig maps POST /scans' form values onto scanner.Config —
-// the web-form counterpart to cmd/hackerfive/scan.go's flag-to-Config
-// mapping, reading r.PostFormValue instead of cobra flags since the input
-// source differs; the resulting Config fields are identical either way, and
-// cfg.Validate() (called by the caller once errs is empty) is the single
-// shared source of truth for per-detector required fields either path
-// takes.
-func buildScanConfig(r *http.Request) (scanner.Config, []string) {
-	var errs []string
-
-	targets := parseTargetsFromTextarea(r.PostFormValue("targets"))
-	if len(targets) == 0 {
-		errs = append(errs, "at least one target is required")
-	}
-
-	rateLimit, err := parsePositiveInt(r.PostFormValue("rate_limit"), defaultRateLimit)
-	if err != nil {
-		errs = append(errs, "rate limit must be a positive integer")
-	}
-	concurrency, err := parsePositiveInt(r.PostFormValue("concurrency"), defaultConcurrency)
-	if err != nil {
-		errs = append(errs, "concurrency must be a positive integer")
-	}
-
-	timeout := defaultTimeout
-	if raw := r.PostFormValue("timeout"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			timeout = d
-		} else {
-			errs = append(errs, "timeout must be a duration like 30s")
-		}
-	}
-
-	extraHeaders, err := parseHeaderLines(r.PostFormValue("headers"))
-	if err != nil {
-		errs = append(errs, err.Error())
-	}
-
-	cfg := scanner.Config{
-		Targets:          targets,
-		TemplatePaths:    defaultWebTemplateDirs(),
-		Tags:             splitCSV(r.PostFormValue("tags")),
-		Concurrency:      concurrency,
-		RateLimit:        rateLimit,
-		ProxyURL:         r.PostFormValue("proxy"),
-		Timeout:          timeout,
-		OutputFormat:     "json",
-		Detector:         r.PostFormValue("detector"),
-		EndpointTemplate: r.PostFormValue("endpoint"),
-		Insecure:         r.PostFormValue("insecure") == "on",
-		AuthToken:        r.PostFormValue("auth_token"),
-		OtherAuthToken:   r.PostFormValue("other_auth_token"),
-		AuthHeaderName:   r.PostFormValue("auth_header_name"),
-		AuthHeaderFormat: r.PostFormValue("auth_header_format"),
-		ScopeFile:        r.PostFormValue("scope_file"),
-		ProtectedPaths:   splitCSV(r.PostFormValue("protected_paths")),
-		LoginPaths:       splitCSV(r.PostFormValue("login_paths")),
-		LogoutPaths:      splitCSV(r.PostFormValue("logout_paths")),
-		ExtraHeaders:     extraHeaders,
-	}
-	return cfg, errs
 }
 
 // defaultWebTemplateDirs mirrors cmd/hackerfive/scan.go's --templates
@@ -349,44 +187,6 @@ func defaultWebTemplateDirs() []string {
 	return dirs
 }
 
-func formDataFromRequest(r *http.Request, token string, errs []string) NewScanData {
-	rateLimit, _ := strconv.Atoi(r.PostFormValue("rate_limit"))
-	if rateLimit <= 0 {
-		rateLimit = defaultRateLimit
-	}
-	concurrency, _ := strconv.Atoi(r.PostFormValue("concurrency"))
-	if concurrency <= 0 {
-		concurrency = defaultConcurrency
-	}
-	detector := r.PostFormValue("detector")
-	if detector == "" {
-		detector = "misconfig"
-	}
-
-	return NewScanData{
-		CSRFToken:        token,
-		Errors:           errs,
-		Detector:         detector,
-		Targets:          r.PostFormValue("targets"),
-		Tags:             r.PostFormValue("tags"),
-		RateLimit:        rateLimit,
-		Concurrency:      concurrency,
-		Proxy:            r.PostFormValue("proxy"),
-		Timeout:          r.PostFormValue("timeout"),
-		Insecure:         r.PostFormValue("insecure") == "on",
-		ScopeFile:        r.PostFormValue("scope_file"),
-		AuthToken:        r.PostFormValue("auth_token"),
-		OtherAuthToken:   r.PostFormValue("other_auth_token"),
-		AuthHeaderName:   r.PostFormValue("auth_header_name"),
-		AuthHeaderFormat: r.PostFormValue("auth_header_format"),
-		Headers:          r.PostFormValue("headers"),
-		Endpoint:         r.PostFormValue("endpoint"),
-		ProtectedPaths:   r.PostFormValue("protected_paths"),
-		LoginPaths:       r.PostFormValue("login_paths"),
-		LogoutPaths:      r.PostFormValue("logout_paths"),
-	}
-}
-
 func parsePositiveInt(raw string, def int) (int, error) {
 	if raw == "" {
 		return def, nil
@@ -396,22 +196,6 @@ func parsePositiveInt(raw string, def int) (int, error) {
 		return 0, fmt.Errorf("must be a positive integer, got %q", raw)
 	}
 	return n, nil
-}
-
-// parseTargetsFromTextarea splits a browser textarea's one-target-per-line
-// value. Unlike cmd/hackerfive/scan.go's resolveTargets, this never treats
-// a value as a filesystem path — a browser form has no meaningful "path on
-// the server" concept for this field, so it's a small, deliberately
-// separate parser (see docs/12-implementation-plan-ph3.md's design
-// decision #5).
-func parseTargetsFromTextarea(raw string) []string {
-	var out []string
-	for _, line := range strings.Split(raw, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			out = append(out, line)
-		}
-	}
-	return out
 }
 
 // splitCSV is the shared comma-separated-value parser for --tags/
