@@ -40,6 +40,11 @@ type Detector struct {
 
 	authHeaderName   string
 	authHeaderFormat string
+
+	// preview/logFn back WithTemplatePreview/WithLogCallback — see those
+	// doc comments.
+	preview bool
+	logFn   func(level, msg string)
 }
 
 // Option configures a Detector at construction time.
@@ -63,6 +68,29 @@ func WithAuthHeader(name, format string) Option {
 		if format != "" {
 			d.authHeaderFormat = format
 		}
+	}
+}
+
+// WithTemplatePreview enables a one-shot preflight GET against
+// endpointTemplate (substituted with the enumeration strategy's first
+// candidate ID) before Run's real loop begins, logged via WithLogCallback —
+// closes docs/14-implementation-plan-ph5.md Step 7's named gap that a wrong
+// EndpointTemplate otherwise "silently yields zero findings with no
+// validation catching it." No Finding is ever emitted from this probe.
+func WithTemplatePreview(enabled bool) Option {
+	return func(d *Detector) {
+		d.preview = enabled
+	}
+}
+
+// WithLogCallback registers fn to receive informational/warning log lines
+// produced outside the normal Finding-returning path — currently only
+// WithTemplatePreview's probe. Mirrors pkg/scanner.Engine's own
+// WithLogCallback signature so a caller can route both through the same
+// seam (see pkg/scanner/engine.go's idorOptions).
+func WithLogCallback(fn func(level, msg string)) Option {
+	return func(d *Detector) {
+		d.logFn = fn
 	}
 }
 
@@ -102,6 +130,10 @@ type idSample struct {
 // flagged for manual triage — it cannot distinguish an authorization bypass
 // from an ID that legitimately has different, non-sensitive content.
 func (d *Detector) Run(ctx context.Context, endpointTemplate, ownerToken, otherToken string) ([]detectors.Finding, error) {
+	if d.preview {
+		d.previewOnce(ctx, endpointTemplate, ownerToken, otherToken)
+	}
+
 	if ownerToken != "" && otherToken != "" {
 		return d.runBaseline(ctx, endpointTemplate, ownerToken, otherToken)
 	}
@@ -110,6 +142,41 @@ func (d *Detector) Run(ctx context.Context, endpointTemplate, ownerToken, otherT
 		token = ownerToken
 	}
 	return d.runHeuristic(ctx, endpointTemplate, token)
+}
+
+// previewOnce fires a single substituted-ID GET against endpointTemplate and
+// logs its status/body-length, purely informational — never a Finding, and
+// never fails Run: a render/fetch error here just logs a warning, since the
+// real loop below will hit (and report on) the same problem properly if it's
+// real.
+func (d *Detector) previewOnce(ctx context.Context, endpointTemplate, ownerToken, otherToken string) {
+	ids := d.strategy.Generate()
+	if len(ids) == 0 {
+		return
+	}
+	token := ownerToken
+	if token == "" {
+		token = otherToken
+	}
+
+	reqURL, err := renderEndpoint(endpointTemplate, ids[0])
+	if err != nil {
+		d.log("warn", fmt.Sprintf("idor preview: could not render endpoint template %q: %v", endpointTemplate, err))
+		return
+	}
+	sig, _, _, err := d.fetch(ctx, reqURL, token)
+	if err != nil {
+		d.log("warn", fmt.Sprintf("idor preview: request to %s failed: %v", reqURL, err))
+		return
+	}
+	d.log("info", fmt.Sprintf("idor preview: %s -> status %d, %d bytes", reqURL, sig.StatusCode, sig.BodySize))
+}
+
+// log is a nil-safe wrapper around logFn.
+func (d *Detector) log(level, msg string) {
+	if d.logFn != nil {
+		d.logFn(level, msg)
+	}
 }
 
 func (d *Detector) runBaseline(ctx context.Context, endpointTemplate, ownerToken, otherToken string) ([]detectors.Finding, error) {

@@ -28,6 +28,16 @@ type LaunchFormData struct {
 	LoginPaths     string
 	LogoutPaths    string
 
+	RunSsrf    bool
+	SSRFParams string // ssrf's own fields, rendered via detector_fields_ssrf
+	OOBServers string
+
+	RunBusinesslogic bool
+	AllowWrites      bool   // businesslogic's own fields, rendered via detector_fields_businesslogic — AllowWrites defaults false and is never recon-derived (CLAUDE.md's mutating-checks gate)
+	CouponMintPath   string
+	CouponApplyPath  string
+	RaceConcurrency  int
+
 	Tags string
 
 	AuthToken        string

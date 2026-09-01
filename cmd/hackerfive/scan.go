@@ -22,6 +22,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		rateLimit        int
 		detector         string
 		endpointTemplate string
+		idorPreview      bool
 		authToken        string
 		otherAuthToken   string
 		authHeaderName   string
@@ -89,6 +90,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				OutputPath:       root.output,
 				Detector:         detector,
 				EndpointTemplate: endpointTemplate,
+				IDORPreview:      idorPreview,
 				Insecure:         insecure,
 				AuthToken:        authToken,
 				OtherAuthToken:   otherAuthToken,
@@ -142,6 +144,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 50, "requests/sec across the whole scan")
 	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", or "businesslogic"`)
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
+	cmd.Flags().BoolVar(&idorPreview, "idor-preview", false, "fire one extra preflight GET against the resolved --endpoint before enumeration begins, logging its status/body-length — off by default so scripted invocations see no behavior change")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")
 	cmd.Flags().StringVar(&otherAuthToken, "other-auth-token", "", "second account token for IDOR baseline mode / authbypass token-reuse check (env: HACKERFIVE_OTHER_AUTH_TOKEN)")
 	cmd.Flags().StringVar(&authHeaderName, "auth-header-name", "", `HTTP header name for the idor/authbypass auth token (default "Authorization")`)

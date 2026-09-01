@@ -53,7 +53,7 @@ func TestReconResult_SchemaRoundTrip(t *testing.T) {
 		"dnsx":      `{"host":"` + targetHost + `"}`,
 		"naabu":     `{"ip":"` + targetHost + `","port":80,"protocol":"tcp"}`,
 		"httpx":     `{"url":"` + target + `","host":"` + targetHost + `","host_ip":"` + targetHost + `","status_code":200,"tech":["Nginx"],"header":{"server":"nginx/1.25"},"body":"<html>ok</html>","favicon":"12345"}`,
-		"katana":    `{"request":{"endpoint":"` + target + `/app.js","method":"GET"}}`,
+		"katana":    `{"request":{"endpoint":"` + target + `/app.js","method":"GET"},"response":{"status_code":200}}`,
 	}
 	_, fake := recordingRun(t, responses)
 
@@ -81,6 +81,15 @@ func TestReconResult_SchemaRoundTrip(t *testing.T) {
 		}
 	}
 	assert.True(t, foundFingerprint, "expected pkg/fingerprint's header-based match to enrich TechStack alongside httpx-tech-detect")
+
+	foundKatanaStatusCode := false
+	for _, ep := range result.Endpoints {
+		if ep.Source == "katana-crawl" {
+			assert.Equal(t, 200, ep.StatusCode, "katana's own response.status_code must be decoded, not silently dropped (found live 2026-09-01 — see docs/14-implementation-plan-ph5.md Step 7)")
+			foundKatanaStatusCode = true
+		}
+	}
+	assert.True(t, foundKatanaStatusCode, "expected a katana-crawl EndpointFact in this result")
 
 	raw, err := json.Marshal(result)
 	require.NoError(t, err)

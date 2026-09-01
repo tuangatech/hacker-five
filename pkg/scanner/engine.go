@@ -402,7 +402,17 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "idor":
 		endpointTemplate := strings.TrimRight(target, "/") + e.cfg.EndpointTemplate
 		strategy := idor.SequentialIntStrategy{Start: idEnumRangeStart, End: idEnumRangeEnd}
-		detector := idor.New(e.client, strategy, e.idorOptions()...)
+		// WithTemplatePreview/WithLogCallback are appended here, not folded
+		// into idorOptions() — that set is also shared with the idor-tagged
+		// native-template path (native.Executor.runIDOR), which shouldn't
+		// fire an extra preview probe/log line per template. This
+		// flag-driven --detector idor path is the one doc14 Step 7's
+		// preview probe actually targets.
+		opts := append(e.idorOptions(),
+			idor.WithTemplatePreview(e.cfg.IDORPreview),
+			idor.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }),
+		)
+		detector := idor.New(e.client, strategy, opts...)
 		return detector.Run(ctx, endpointTemplate, e.cfg.AuthToken, e.cfg.OtherAuthToken)
 	case "misconfig":
 		detector := misconfig.New(e.client)

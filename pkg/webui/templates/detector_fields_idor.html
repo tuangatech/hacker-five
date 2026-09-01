@@ -1,5 +1,5 @@
 {{define "detector_fields_idor"}}{{$db := "{{"}}{{$de := "}}"}}<div id="detector-fields">
-<label for="endpoint">Endpoint template (--endpoint, required)</label>
+<label for="endpoint">Endpoint template (--endpoint; leave blank to auto-fill from recon)</label>
 <input type="text" id="endpoint" name="endpoint" value="{{.Endpoint}}" placeholder="/workshop/api/mechanic/mechanic_report?report_id={{$db}}id{{$de}}">
 </div>
 {{end}}

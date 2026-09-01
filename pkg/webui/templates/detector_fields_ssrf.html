@@ -1,0 +1,7 @@
+{{define "detector_fields_ssrf"}}<div id="detector-fields">
+<label for="ssrf_params">SSRF params (--ssrf-param, comma-separated; leave blank to auto-fill from recon)</label>
+<input type="text" id="ssrf_params" name="ssrf_params" value="{{.SSRFParams}}" placeholder="url, webhook, callback">
+<label for="oob_servers">OOB servers (--oob-server, comma-separated, optional — &quot;public&quot; opts into ProjectDiscovery's public pool)</label>
+<input type="text" id="oob_servers" name="oob_servers" value="{{.OOBServers}}">
+</div>
+{{end}}

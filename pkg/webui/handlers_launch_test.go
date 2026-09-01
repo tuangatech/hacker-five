@@ -17,6 +17,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/scanner"
 )
 
 // newTestServerHandlers is newTestServer's (handlers_scan_test.go) sibling —
@@ -147,6 +148,9 @@ func TestLaunchForm_RendersDefaults(t *testing.T) {
 	assert.Contains(t, html, `name="run_misconfig"`)
 	assert.Contains(t, html, `name="run_idor"`)
 	assert.Contains(t, html, `name="run_authbypass"`)
+	assert.Contains(t, html, `name="run_ssrf"`)
+	assert.Contains(t, html, `name="run_businesslogic"`)
+	assert.Contains(t, html, `name="allow_writes"`)
 	assert.Contains(t, html, `name="target"`)
 	assert.NotContains(t, html, `name="run_recon"`, "recon always runs — no opt-out control shown")
 	assert.NotContains(t, html, `name="depth"`, "recon depth is always full — no picker shown")
@@ -252,6 +256,19 @@ func TestStartLaunch_UncheckedDetectorTab_NotRunSilently(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 }
 
+// TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip checks
+// a field that is NOT recon-fillable (AuthToken — a session token can never
+// be recon-derived, per doc14 Step 7's named credential-fields limit) still
+// fails immediately at submission time. ProtectedPaths left blank, by
+// contrast, is deferred rather than immediately rejected as of Step 7 — see
+// TestFillReconFields_Authbypass_ZeroCandidates_SkipsWithLogLine below for
+// that case.
+// TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip checks
+// a field that's still genuinely unconditional for authbypass — a malformed
+// auth_header_format missing the required "{token}" placeholder. AuthToken
+// and ProtectedPaths no longer qualify: AuthToken is skippable (authbypass
+// can run its two token-independent checks unauthenticated) and
+// ProtectedPaths is deferred to recon, both per doc14 Step 7.
 func TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip(t *testing.T) {
 	ts := newTestServer(t)
 
@@ -264,13 +281,13 @@ func TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip(t *tes
 	require.NoError(t, getResp.Body.Close())
 	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
 
-	// authbypass checked, but protected_paths deliberately left empty.
 	form := url.Values{
-		"csrf_token":     {csrfVal},
-		"target":         {"http://example.com"},
-		"run_authbypass": {"on"},
-		"auth_token":     {"tok"},
-		"authorized":     {"on"},
+		"csrf_token":         {csrfVal},
+		"target":             {"http://example.com"},
+		"run_authbypass":     {"on"},
+		"protected_paths":    {"/admin"},
+		"auth_header_format": {"Bearer notoken"},
+		"authorized":         {"on"},
 	}
 	resp, err := client.PostForm(ts.URL+"/scans", form)
 	require.NoError(t, err)
@@ -280,6 +297,131 @@ func TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip(t *tes
 
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 	assert.Contains(t, string(body), "authbypass:", "a checked-but-invalid detector must produce a visible error, not a silent no-op")
+}
+
+// TestStartLaunch_Authbypass_NoToken_DeferredNotRejected confirms authbypass
+// can now start with zero token given at all — it narrows to
+// checkMissingAuth/checkRateLimitSignal internally (see ValidateOptions'
+// SkipAuthTokenRequired doc comment), it doesn't fail outright.
+func TestStartLaunch_Authbypass_NoToken_DeferredNotRejected(t *testing.T) {
+	ts := newTestServer(t)
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+
+	getResp, err := client.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.NoError(t, getResp.Body.Close())
+	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
+
+	form := url.Values{
+		"csrf_token":      {csrfVal},
+		"target":          {"http://example.com"},
+		"run_authbypass":  {"on"},
+		"protected_paths": {"/admin"},
+		"authorized":      {"on"},
+	}
+	resp, err := client.PostForm(ts.URL+"/scans", form)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+}
+
+// TestStartLaunch_IDOR_NoToken_DeferredNotRejected is idor's counterpart —
+// heuristic mode's signature comparison is still meaningful with no token.
+func TestStartLaunch_IDOR_NoToken_DeferredNotRejected(t *testing.T) {
+	ts := newTestServer(t)
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+
+	getResp, err := client.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.NoError(t, getResp.Body.Close())
+	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
+
+	form := url.Values{
+		"csrf_token": {csrfVal},
+		"target":     {"http://example.com"},
+		"run_idor":   {"on"},
+		"endpoint":   {"/api/report?id={{id}}"},
+		"authorized": {"on"},
+	}
+	resp, err := client.PostForm(ts.URL+"/scans", form)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+}
+
+// TestStartLaunch_Businesslogic_MissingAuthToken_FailsImmediately confirms
+// businesslogic's AuthToken requirement is never deferred to recon — a
+// credential can't be recon-derived, the same permanent limit named for
+// idor/authbypass in doc14 Step 7's Design section.
+func TestStartLaunch_Businesslogic_MissingAuthToken_FailsImmediately(t *testing.T) {
+	ts := newTestServer(t)
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+
+	getResp, err := client.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.NoError(t, getResp.Body.Close())
+	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
+
+	form := url.Values{
+		"csrf_token":        {csrfVal},
+		"target":            {"http://example.com"},
+		"run_businesslogic": {"on"},
+		"authorized":        {"on"},
+	}
+	resp, err := client.PostForm(ts.URL+"/scans", form)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Contains(t, string(body), "businesslogic:")
+}
+
+// TestStartLaunch_SSRF_BlankParams_DeferredNotRejected confirms a checked
+// ssrf tab with no --ssrf-param typed in succeeds at submission time —
+// recon (which always runs) gets a chance to fill SSRFParams before the
+// detector actually runs, same deferred-validation shape as idor/authbypass.
+func TestStartLaunch_SSRF_BlankParams_DeferredNotRejected(t *testing.T) {
+	ts := newTestServer(t)
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+
+	getResp, err := client.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.NoError(t, getResp.Body.Close())
+	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
+
+	form := url.Values{
+		"csrf_token": {csrfVal},
+		"target":     {"http://example.com"},
+		"run_ssrf":   {"on"},
+		"authorized": {"on"},
+	}
+	resp, err := client.PostForm(ts.URL+"/scans", form)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 }
 
 // TestStartLaunch_NoDetectorsChecked_StillSucceeds confirms omitting every
@@ -338,4 +480,421 @@ func TestSnapshotData_FindingsAndLogsRenderNewestFirst(t *testing.T) {
 
 	logsHTML := string(data.LogLinesHTML)
 	assert.Less(t, strings.Index(logsHTML, "second-log"), strings.Index(logsHTML, "first-log"), "the most recently appended log line must render first")
+}
+
+// logMessages flattens job's logs into "level: msg" strings for substring
+// assertions below.
+func logMessages(job *Job) []string {
+	logs := job.Snapshot().Logs
+	msgs := make([]string, len(logs))
+	for i, l := range logs {
+		msgs[i] = l.Level + ": " + l.Msg
+	}
+	return msgs
+}
+
+func containsSubstring(msgs []string, substr string) bool {
+	for _, m := range msgs {
+		if strings.Contains(m, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFillReconFields_IDOR_ZeroCandidates_SkipsWithLogLine and its siblings
+// below cover doc14 Step 7's recon-derived-fill design directly against
+// fillReconFields — no HTTP submission or real recon.Run needed, since the
+// function only reads job.Snapshot().ReconResult (set here via
+// SetReconResult, mirroring what runLaunchRecon does for a real job).
+func TestFillReconFields_IDOR_ZeroCandidates_SkipsWithLogLine(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "idor",
+		AuthToken:   "tok",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	assert.Empty(t, got)
+	assert.True(t, containsSubstring(logMessages(job), "idor: skipped"), "logs: %v", logMessages(job))
+}
+
+func TestFillReconFields_IDOR_OneCandidate_AutoFills(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{{URL: "https://example.com/orders/123"}},
+	})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "idor",
+		AuthToken:   "tok",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "/orders/{{id}}", got[0].EndpointTemplate)
+	assert.True(t, containsSubstring(logMessages(job), "idor: using recon-derived endpoint"), "logs: %v", logMessages(job))
+}
+
+// TestFillReconFields_IDOR_OneCandidate_AutoFills_NoToken is a regression
+// test for a real bug caught live 2026-09-01: fillReconFields's own trailing
+// cfg.Validate() call didn't carry SkipAuthTokenRequired through, so a
+// successfully auto-filled idor config with no token was still dropped with
+// a misleading "requires --auth-token" error — the exact thing
+// SkipAuthTokenRequired was added to allow.
+func TestFillReconFields_IDOR_OneCandidate_AutoFills_NoToken(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{{URL: "https://example.com/orders/123"}},
+	})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "idor",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1, "logs: %v", logMessages(job))
+	assert.Equal(t, "/orders/{{id}}", got[0].EndpointTemplate)
+}
+
+func TestFillReconFields_IDOR_MultipleCandidates_SkipsWithoutAutoPick(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{
+			{URL: "https://example.com/orders/123"},
+			{URL: "https://example.com/invoices?invoice_id=456"},
+		},
+	})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "idor",
+		AuthToken:   "tok",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	assert.Empty(t, got)
+	assert.True(t, containsSubstring(logMessages(job), "recon-derived candidates found, none auto-selected"), "logs: %v", logMessages(job))
+}
+
+func TestFillReconFields_IDOR_UserTypedEndpoint_NeverOverwritten(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{{URL: "https://example.com/orders/123"}},
+	})
+
+	cfg := scanner.Config{
+		Targets:          []string{"https://example.com"},
+		Concurrency:      10,
+		RateLimit:        10,
+		Detector:         "idor",
+		AuthToken:        "tok",
+		EndpointTemplate: "/manual/{{id}}",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "/manual/{{id}}", got[0].EndpointTemplate, "a user-typed value must never be overwritten even when a recon candidate also exists")
+	assert.False(t, containsSubstring(logMessages(job), "idor: using recon-derived"), "logs: %v", logMessages(job))
+}
+
+func TestFillReconFields_Authbypass_ZeroCandidates_SkipsWithLogLine(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "authbypass",
+		AuthToken:   "tok",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	assert.Empty(t, got)
+	assert.True(t, containsSubstring(logMessages(job), "authbypass: skipped"), "logs: %v", logMessages(job))
+}
+
+func TestFillReconFields_Authbypass_FillsProtectedLoginLogoutIndependently(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{
+			{URL: "https://example.com/admin", StatusCode: http.StatusForbidden},
+			{URL: "https://example.com/login"},
+			{URL: "https://example.com/logout"},
+		},
+	})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "authbypass",
+		AuthToken:   "tok",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, []string{"/admin"}, got[0].ProtectedPaths)
+	assert.Equal(t, []string{"/login"}, got[0].LoginPaths)
+	assert.Equal(t, []string{"/logout"}, got[0].LogoutPaths)
+}
+
+// TestFillReconFields_Authbypass_FillsProtectedPaths_NoToken is authbypass's
+// counterpart to the idor regression test above — same real bug, same fix.
+func TestFillReconFields_Authbypass_FillsProtectedPaths_NoToken(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{{URL: "https://example.com/admin", StatusCode: http.StatusForbidden}},
+	})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "authbypass",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1, "logs: %v", logMessages(job))
+	assert.Equal(t, []string{"/admin"}, got[0].ProtectedPaths)
+}
+
+func TestFillReconFields_Authbypass_UserTypedProtectedPaths_StillFillsBlankLoginPaths(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{{URL: "https://example.com/login"}},
+	})
+
+	cfg := scanner.Config{
+		Targets:        []string{"https://example.com"},
+		Concurrency:    10,
+		RateLimit:      10,
+		Detector:       "authbypass",
+		AuthToken:      "tok",
+		ProtectedPaths: []string{"/secret"},
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, []string{"/secret"}, got[0].ProtectedPaths, "a user-typed value must never be overwritten")
+	assert.Equal(t, []string{"/login"}, got[0].LoginPaths)
+}
+
+func TestFillReconFields_SSRF_ZeroCandidates_SkipsWithLogLine(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "ssrf",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	assert.Empty(t, got)
+	assert.True(t, containsSubstring(logMessages(job), "ssrf: skipped"), "logs: %v", logMessages(job))
+}
+
+func TestFillReconFields_SSRF_CandidatesFillEveryMatch_NoAmbiguity(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{
+			{URL: "https://example.com/fetch?url=https://internal.example/health"},
+			{URL: "https://example.com/avatar?webhook=https://cb.example"},
+		},
+	})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "ssrf",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.ElementsMatch(t, []string{"url", "webhook"}, got[0].SSRFParams, "unlike idor's single-endpoint choice, every recon-derived candidate is directly usable — no ambiguity to resolve")
+	assert.True(t, containsSubstring(logMessages(job), "ssrf: using recon-derived params"), "logs: %v", logMessages(job))
+}
+
+func TestFillReconFields_SSRF_UserTypedParams_NeverOverwritten(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{
+		Endpoints: []recon.EndpointFact{{URL: "https://example.com/fetch?url=https://internal.example/health"}},
+	})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "ssrf",
+		SSRFParams:  []string{"manual_param"},
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, []string{"manual_param"}, got[0].SSRFParams, "a user-typed value must never be overwritten even when a recon candidate also exists")
+}
+
+// TestStartLaunch_IDORBlankEndpoint_RealReconFindsNoCandidate_SkipsAndJobStillCompletes
+// is the one end-to-end submission test doc14 Step 7 calls for: a real
+// (non-fixture) recon.Run against a real httptest target, driven through a
+// real POST /scans, confirming the zero-candidate skip path arises
+// naturally — the target here serves no numeric/UUID-shaped paths, so recon
+// genuinely finds nothing idor-fillable — and the job still reaches "done"
+// rather than failing outright, same as
+// TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables's pattern.
+func TestStartLaunch_IDORBlankEndpoint_RealReconFindsNoCandidate_SkipsAndJobStillCompletes(t *testing.T) {
+	ts, _ := newTestServerHandlers(t)
+
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(targetSrv.Close)
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+
+	getResp, err := client.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.NoError(t, getResp.Body.Close())
+	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
+	require.NotEmpty(t, csrfVal)
+
+	form := url.Values{
+		"csrf_token": {csrfVal},
+		"target":     {targetSrv.URL},
+		"run_idor":   {"on"},
+		"auth_token": {"tok"},
+		"authorized": {"on"},
+	}
+	resp, err := client.PostForm(ts.URL+"/scans", form)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode, "a blank --endpoint must not be rejected at submission time — recon gets a chance to fill it first")
+
+	redirect := resp.Header.Get("HX-Push-Url")
+	require.Regexp(t, `^/scans/[0-9a-f]+$`, redirect)
+
+	require.Eventually(t, func() bool {
+		r, err := client.Get(ts.URL + redirect)
+		if err != nil {
+			return false
+		}
+		b, err := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(b), "idor: skipped")
+	}, 15*time.Second, 100*time.Millisecond, "expected the idor phase to be skipped with a log line once recon found no candidate")
+
+	require.Eventually(t, func() bool {
+		r, err := client.Get(ts.URL + redirect)
+		if err != nil {
+			return false
+		}
+		b, err := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(b), `status-badge">done`)
+	}, 15*time.Second, 100*time.Millisecond, "the job must still reach done — a skipped detector is not a job failure")
+}
+
+func TestFillReconFields_Misconfig_PassesThroughUnmodified(t *testing.T) {
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "misconfig",
+	}
+
+	got := fillReconFields(job, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, cfg, got[0])
+}
+
+func TestNoTokenNote(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  scanner.Config
+		want string
+	}{
+		{
+			name: "idor with no token",
+			cfg:  scanner.Config{Detector: "idor"},
+			want: "unauthenticated",
+		},
+		{
+			name: "idor with a token",
+			cfg:  scanner.Config{Detector: "idor", AuthToken: "tok"},
+			want: "",
+		},
+		{
+			name: "authbypass with no token",
+			cfg:  scanner.Config{Detector: "authbypass"},
+			want: "missing-auth probe",
+		},
+		{
+			name: "authbypass with an other-token only",
+			cfg:  scanner.Config{Detector: "authbypass", OtherAuthToken: "tok"},
+			want: "",
+		},
+		{
+			name: "misconfig never gets a note",
+			cfg:  scanner.Config{Detector: "misconfig"},
+			want: "",
+		},
+		{
+			name: "businesslogic never gets a note (it can't run without a token at all)",
+			cfg:  scanner.Config{Detector: "businesslogic"},
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := noTokenNote(tc.cfg)
+			if tc.want == "" {
+				assert.Empty(t, got)
+			} else {
+				assert.Contains(t, got, tc.want)
+			}
+		})
+	}
 }

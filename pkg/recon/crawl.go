@@ -84,6 +84,9 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 				Endpoint string `json:"endpoint"`
 				Method   string `json:"method"`
 			} `json:"request"`
+			Response struct {
+				StatusCode int `json:"status_code"`
+			} `json:"response"`
 			Error string `json:"error"`
 		}
 		if err := json.Unmarshal(line, &rec); err != nil || rec.Request.Endpoint == "" {
@@ -100,7 +103,13 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 		if method == "" {
 			method = http.MethodGet
 		}
-		agg.addEndpoint(EndpointFact{URL: rec.Request.Endpoint, Method: method, Source: "katana-crawl", Confidence: ConfidenceMedium})
+		// StatusCode was found live (docs/14-implementation-plan-ph5.md Step
+		// 7's second live-testing pass, 2026-09-01) to always be 0 here —
+		// katana's own "response" object was present in its JSONL output all
+		// along, this struct just never decoded it, silently discarding a
+		// real signal authbypass's recon-derived protected-path suggestion
+		// depends on.
+		agg.addEndpoint(EndpointFact{URL: rec.Request.Endpoint, Method: method, StatusCode: rec.Response.StatusCode, Source: "katana-crawl", Confidence: ConfidenceMedium})
 	}
 }
 

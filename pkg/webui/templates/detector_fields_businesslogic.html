@@ -1,0 +1,10 @@
+{{define "detector_fields_businesslogic"}}<div id="detector-fields">
+<label class="inline"><input type="checkbox" id="allow_writes" name="allow_writes" {{if .AllowWrites}}checked{{end}}> Allow writes (--allow-writes) &mdash; enables mutating checks (coupon self-mint/apply, concurrent-fire apply race); off by default, never enabled automatically</label>
+<label for="coupon_mint_path">Coupon mint path (--coupon-mint-path, optional, default: crAPI's own path)</label>
+<input type="text" id="coupon_mint_path" name="coupon_mint_path" value="{{.CouponMintPath}}">
+<label for="coupon_apply_path">Coupon apply path (--coupon-apply-path, optional, default: crAPI's own path)</label>
+<input type="text" id="coupon_apply_path" name="coupon_apply_path" value="{{.CouponApplyPath}}">
+<label for="race_concurrency">Race concurrency (--race-concurrency, optional, default 15)</label>
+<input type="number" id="race_concurrency" name="race_concurrency" value="{{if .RaceConcurrency}}{{.RaceConcurrency}}{{end}}" min="1">
+</div>
+{{end}}

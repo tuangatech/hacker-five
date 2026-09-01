@@ -204,3 +204,49 @@ func TestIDORDetector_AuthHeaderOption(t *testing.T) {
 		})
 	}
 }
+
+// TestIDORDetector_TemplatePreview proves WithTemplatePreview fires exactly
+// one extra preflight GET, logged (not a Finding), before Run's real loop —
+// docs/14-implementation-plan-ph5.md Step 7's fix for "a wrong
+// EndpointTemplate silently yields zero findings with no validation catching
+// it." Disabled (the default) produces no preview log line at all.
+func TestIDORDetector_TemplatePreview(t *testing.T) {
+	fx := loadIDORFixture(t, "idor_classic.json")
+	srv := newFixtureServer(t, fx)
+	defer srv.Close()
+
+	client := httpclient.New(httpclient.Config{
+		Timeout:             5 * time.Second,
+		MaxRedirects:        5,
+		MaxIdleConnsPerHost: 10,
+	})
+	strategy := idor.SequentialIntStrategy{Start: 1, End: fx.NumIDs}
+
+	t.Run("enabled: exactly one info-level preview log line", func(t *testing.T) {
+		var logs []string
+		detector := idor.New(client, strategy,
+			idor.WithTemplatePreview(true),
+			idor.WithLogCallback(func(level, msg string) { logs = append(logs, level+": "+msg) }),
+		)
+
+		_, err := detector.Run(context.Background(), srv.URL+"/api/users/{{id}}", fx.OwnerToken, fx.OtherToken)
+		require.NoError(t, err)
+
+		require.Len(t, logs, 1)
+		assert.Contains(t, logs[0], "info:")
+		assert.Contains(t, logs[0], "idor preview:")
+		assert.Contains(t, logs[0], "status")
+	})
+
+	t.Run("disabled (default): no preview log line", func(t *testing.T) {
+		var logs []string
+		detector := idor.New(client, strategy,
+			idor.WithLogCallback(func(level, msg string) { logs = append(logs, level+": "+msg) }),
+		)
+
+		_, err := detector.Run(context.Background(), srv.URL+"/api/users/{{id}}", fx.OwnerToken, fx.OtherToken)
+		require.NoError(t, err)
+
+		assert.Empty(t, logs)
+	})
+}

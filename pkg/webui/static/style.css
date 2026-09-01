@@ -367,11 +367,65 @@ tr.sev-info { background: var(--info-bg); }
   border-top: 1px solid var(--border);
 }
 
-.auth-shared .hint {
+.hint {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.auth-shared .hint {
   margin: 0 0 0.75rem;
 }
+
+.target-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.target-header label[for="target"] { margin-top: 0.75rem; }
+
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.advanced-toggle-checkbox { position: absolute; opacity: 0; pointer-events: none; }
+
+.toggle-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  flex-shrink: 0;
+  background: var(--border);
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--card-bg);
+  border-radius: 50%;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.15s ease;
+}
+
+#advanced-toggle:checked ~ .target-header .toggle-track { background: var(--accent); }
+#advanced-toggle:checked ~ .target-header .toggle-thumb { transform: translateX(16px); }
+
+.advanced-content { display: none; }
+#advanced-toggle:checked ~ .advanced-content { display: block; }
 
 .launch-submit {
   display: flex;
@@ -383,13 +437,17 @@ tr.sev-info { background: var(--info-bg); }
 
 #tab-misconfig:checked ~ .tab-panels #panel-misconfig,
 #tab-idor:checked ~ .tab-panels #panel-idor,
-#tab-authbypass:checked ~ .tab-panels #panel-authbypass {
+#tab-authbypass:checked ~ .tab-panels #panel-authbypass,
+#tab-ssrf:checked ~ .tab-panels #panel-ssrf,
+#tab-businesslogic:checked ~ .tab-panels #panel-businesslogic {
   display: block;
 }
 
 #tab-misconfig:checked ~ .tab-labels label[for="tab-misconfig"],
 #tab-idor:checked ~ .tab-labels label[for="tab-idor"],
-#tab-authbypass:checked ~ .tab-labels label[for="tab-authbypass"] {
+#tab-authbypass:checked ~ .tab-labels label[for="tab-authbypass"],
+#tab-ssrf:checked ~ .tab-labels label[for="tab-ssrf"],
+#tab-businesslogic:checked ~ .tab-labels label[for="tab-businesslogic"] {
   color: var(--accent);
   border-bottom-color: var(--accent);
 }

@@ -126,10 +126,56 @@ type Config struct {
 	// the apply-race check's last-byte-sync client fires. 0 preserves the
 	// package default.
 	RaceConcurrency int
+
+	// IDORPreview (from --idor-preview) fires one extra preflight GET against
+	// the resolved --endpoint before idor's real ID-enumeration loop begins,
+	// logging its status/body-length — closes the "a wrong EndpointTemplate
+	// silently yields zero findings" gap named in
+	// docs/14-implementation-plan-ph5.md Step 7. Off by default so an
+	// existing scripted/CLI-only invocation sees no behavior change unless
+	// it asks for it; pkg/webui's Launch page always sets this true, since a
+	// Web UI operator benefits from the honesty check unconditionally.
+	IDORPreview bool
+}
+
+// ValidateOptions lets a caller defer or waive specific requiredness
+// checks — used by pkg/webui's Launch page, which either fills a field from
+// the ReconResult a background recon phase produces (EndpointTemplate/
+// ProtectedPaths/SSRFParams — doc14 Step 7), or, for SkipAuthTokenRequired,
+// permanently allows a detector to start without a token it can never get
+// from recon (a credential is never recon-derivable — see the
+// credential-fields limit named in doc14 Step 7's Design section).
+// SkipAuthTokenRequired is safe specifically for idor/authbypass because
+// each has at least one check whose own logic is already meaningful with an
+// empty token (idor's heuristic-mode signature comparison; authbypass's
+// missing-auth probe and login rate-limit signal) — every other check in
+// each detector already early-returns to a no-op internally when the token
+// it specifically needs is empty (pkg/detectors/idor, pkg/detectors/
+// authbypass), so nothing breaks by letting the whole detector still start.
+// businesslogic has no such check (both mint/apply operations are
+// inherently "as a logged-in account" and already early-return with an
+// empty token) — its AuthToken requirement stays unconditional, deliberately
+// with no skip option, since running it without a token would only waste a
+// full extra template-corpus pass for zero possible finding.
+type ValidateOptions struct {
+	SkipEndpointRequired       bool // idor's EndpointTemplate may be blank for now
+	SkipProtectedPathsRequired bool // authbypass's ProtectedPaths may be blank for now
+	SkipSSRFParamsRequired     bool // ssrf's SSRFParams may be blank for now
+	SkipAuthTokenRequired      bool // idor/authbypass may run fully unauthenticated
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.
 func (c Config) Validate() error {
+	return c.validate(ValidateOptions{})
+}
+
+// ValidateWithOptions is Validate with the two recon-fillable requiredness
+// checks individually skippable — see ValidateOptions.
+func (c Config) ValidateWithOptions(opts ValidateOptions) error {
+	return c.validate(opts)
+}
+
+func (c Config) validate(opts ValidateOptions) error {
 	if len(c.Targets) == 0 {
 		return fmt.Errorf("validating config: at least one target is required")
 	}
@@ -142,19 +188,19 @@ func (c Config) Validate() error {
 	if !recognizedDetectors[c.Detector] {
 		return fmt.Errorf("validating config: unrecognized detector %q", c.Detector)
 	}
-	if c.Detector == "idor" && c.AuthToken == "" && c.OtherAuthToken == "" {
+	if c.Detector == "idor" && c.AuthToken == "" && c.OtherAuthToken == "" && !opts.SkipAuthTokenRequired {
 		return fmt.Errorf("validating config: idor detector requires --auth-token or --other-auth-token (or their env var equivalents)")
 	}
-	if c.Detector == "idor" && c.EndpointTemplate == "" {
+	if c.Detector == "idor" && c.EndpointTemplate == "" && !opts.SkipEndpointRequired {
 		return fmt.Errorf("validating config: idor detector requires --endpoint")
 	}
-	if c.Detector == "authbypass" && c.AuthToken == "" {
+	if c.Detector == "authbypass" && c.AuthToken == "" && !opts.SkipAuthTokenRequired {
 		return fmt.Errorf("validating config: authbypass detector requires --auth-token (or its env var equivalent)")
 	}
-	if c.Detector == "authbypass" && len(c.ProtectedPaths) == 0 {
+	if c.Detector == "authbypass" && len(c.ProtectedPaths) == 0 && !opts.SkipProtectedPathsRequired {
 		return fmt.Errorf("validating config: authbypass detector requires --protected-paths")
 	}
-	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 {
+	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 && !opts.SkipSSRFParamsRequired {
 		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param")
 	}
 	if c.Detector == "businesslogic" && c.AuthToken == "" {

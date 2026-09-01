@@ -4,16 +4,16 @@
 
 <form hx-post="/scans" hx-target="#main-content" hx-push-url="true">
 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<input type="checkbox" id="advanced-toggle" class="advanced-toggle-checkbox">
 
-<fieldset>
-<legend>Target</legend>
+<div class="target-header">
 <label for="target">Target</label>
+<label for="advanced-toggle" class="toggle-switch"><span class="toggle-track"><span class="toggle-thumb"></span></span>Advanced Settings</label>
+</div>
 <input type="text" id="target" name="target" value="{{.Target}}" required placeholder="https://www.example.com">
 <p class="hint">Recon runs first automatically, at full depth (bounded crawl + common-path probing).</p>
-</fieldset>
 
-<details id="advanced-settings">
-<summary>Advanced Settings</summary>
+<div class="advanced-content">
 
 <fieldset>
 <legend>Detectors</legend>
@@ -21,11 +21,15 @@
 <input type="radio" name="_activetab" id="tab-misconfig" class="tab-radio" checked>
 <input type="radio" name="_activetab" id="tab-idor" class="tab-radio">
 <input type="radio" name="_activetab" id="tab-authbypass" class="tab-radio">
+<input type="radio" name="_activetab" id="tab-ssrf" class="tab-radio">
+<input type="radio" name="_activetab" id="tab-businesslogic" class="tab-radio">
 
 <div class="tab-labels">
 <label for="tab-misconfig" class="tab-label">Misconfig</label>
 <label for="tab-idor" class="tab-label">IDOR</label>
 <label for="tab-authbypass" class="tab-label">Auth Bypass</label>
+<label for="tab-ssrf" class="tab-label">SSRF</label>
+<label for="tab-businesslogic" class="tab-label">Business Logic</label>
 </div>
 
 <div class="tab-panels">
@@ -33,12 +37,20 @@
 <label class="inline"><input type="checkbox" name="run_misconfig" {{if .RunMisconfig}}checked{{end}}> Run misconfig &mdash; no auth token needed, safe first check</label>
 </div>
 <div class="tab-panel" id="panel-idor">
-<label class="inline"><input type="checkbox" name="run_idor" {{if .RunIdor}}checked{{end}}> Run idor</label>
+<label class="inline"><input type="checkbox" name="run_idor" {{if .RunIdor}}checked{{end}}> Run idor &mdash; no auth token needed, but narrows to a lower-confidence unauthenticated check without one</label>
 {{template "detector_fields_idor" .}}
 </div>
 <div class="tab-panel" id="panel-authbypass">
-<label class="inline"><input type="checkbox" name="run_authbypass" {{if .RunAuthbypass}}checked{{end}}> Run authbypass</label>
+<label class="inline"><input type="checkbox" name="run_authbypass" {{if .RunAuthbypass}}checked{{end}}> Run authbypass &mdash; no auth token needed, but narrows to the missing-auth and rate-limit checks without one</label>
 {{template "detector_fields_authbypass" .}}
+</div>
+<div class="tab-panel" id="panel-ssrf">
+<label class="inline"><input type="checkbox" name="run_ssrf" {{if .RunSsrf}}checked{{end}}> Run ssrf</label>
+{{template "detector_fields_ssrf" .}}
+</div>
+<div class="tab-panel" id="panel-businesslogic">
+<label class="inline"><input type="checkbox" name="run_businesslogic" {{if .RunBusinesslogic}}checked{{end}}> Run businesslogic</label>
+{{template "detector_fields_businesslogic" .}}
 </div>
 </div>
 </div>
@@ -47,7 +59,7 @@
 <input type="text" id="tags" name="tags" value="{{.Tags}}">
 
 <div class="auth-shared">
-<p class="hint">Shared by IDOR and Auth Bypass &mdash; misconfig ignores these.</p>
+<p class="hint">Shared by IDOR, Auth Bypass, SSRF (optional), and Business Logic &mdash; misconfig ignores these. Business Logic always requires a real token; IDOR and Auth Bypass can run without one, at reduced scope.</p>
 <label for="auth_token">Auth token (--auth-token)</label>
 <input type="password" id="auth_token" name="auth_token" value="{{.AuthToken}}">
 <label for="other_auth_token">Other auth token (--other-auth-token, optional)</label>
@@ -82,7 +94,7 @@
 <div id="tool-setup-panel">{{template "fragment_tool_setup_status" .Tools}}</div>
 </details>
 
-</details>
+</div>
 
 <div class="launch-submit">
 <label class="inline"><input type="checkbox" name="authorized" required {{if .Authorized}}checked{{end}}> I am authorized to scan this target</label>

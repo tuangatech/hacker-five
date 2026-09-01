@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
@@ -41,7 +43,7 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 	}
 	data := LaunchFormData{
 		CSRFToken:    token,
-		Target:       "https://www.example.com",
+		Target:       "https://thetavernhouse.com",
 		RunMisconfig: true,
 		RateLimit:    defaultRateLimit,
 		Concurrency:  defaultConcurrency,
@@ -88,7 +90,9 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 		func(status string, err error, waves []WaveStatus, phase string) template.HTML {
 			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves})
 		},
-		func(result *recon.ReconResult) template.HTML { return renderFragment(h.tmpl, "fragment_recon_results", result) },
+		func(result *recon.ReconResult) template.HTML {
+			return renderFragment(h.tmpl, "fragment_recon_results", result)
+		},
 	)
 	// The authorization checkbox becomes the job's first log entry — the
 	// "audit trail" doc12 calls for; reuses the one logging surface that
@@ -145,6 +149,11 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 		errs = append(errs, err.Error())
 	}
 
+	raceConcurrency, err := parsePositiveInt(r.PostFormValue("race_concurrency"), 0)
+	if err != nil {
+		errs = append(errs, "race concurrency must be a positive integer")
+	}
+
 	if r.PostFormValue("authorized") != "on" {
 		errs = append(errs, "you must confirm you are authorized to scan this target")
 	}
@@ -158,6 +167,14 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 		ProtectedPaths:   r.PostFormValue("protected_paths"),
 		LoginPaths:       r.PostFormValue("login_paths"),
 		LogoutPaths:      r.PostFormValue("logout_paths"),
+		RunSsrf:          r.PostFormValue("run_ssrf") == "on",
+		SSRFParams:       r.PostFormValue("ssrf_params"),
+		OOBServers:       r.PostFormValue("oob_servers"),
+		RunBusinesslogic: r.PostFormValue("run_businesslogic") == "on",
+		AllowWrites:      r.PostFormValue("allow_writes") == "on",
+		CouponMintPath:   r.PostFormValue("coupon_mint_path"),
+		CouponApplyPath:  r.PostFormValue("coupon_apply_path"),
+		RaceConcurrency:  raceConcurrency,
 		Tags:             r.PostFormValue("tags"),
 		AuthToken:        r.PostFormValue("auth_token"),
 		OtherAuthToken:   r.PostFormValue("other_auth_token"),
@@ -203,7 +220,23 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 	if form.RunIdor {
 		cfg := baseCfg("idor")
 		cfg.EndpointTemplate = form.Endpoint
-		if err := cfg.Validate(); err != nil {
+		// Always on from the Web UI (doc14 Step 7) — closes the "wrong
+		// --endpoint silently yields zero findings" gap for every idor run
+		// this page starts, recon-derived endpoint or hand-typed alike. The
+		// CLI's own --idor-preview default stays false; this is a Web UI-
+		// specific choice, not a change to scanner.Config's own default.
+		cfg.IDORPreview = true
+		// A blank Endpoint isn't failed here — recon (which always runs)
+		// gets a chance to fill it in first; see fillReconFields, called
+		// from runLaunchJob once recon finishes. A blank AuthToken/
+		// OtherAuthToken isn't failed either, unlike the CLI's own
+		// cfg.Validate(): recon can never supply a credential, but idor's
+		// heuristic mode is still meaningful fully unauthenticated (a
+		// signature-comparison check, not a per-token requirement) — see
+		// ValidateOptions' own doc comment. runLaunchJob logs plainly when
+		// this mode is what actually ran.
+		opts := scanner.ValidateOptions{SkipEndpointRequired: cfg.EndpointTemplate == "", SkipAuthTokenRequired: true}
+		if err := cfg.ValidateWithOptions(opts); err != nil {
 			errs = append(errs, "idor: "+err.Error())
 		} else {
 			cfgs = append(cfgs, cfg)
@@ -214,14 +247,78 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 		cfg.ProtectedPaths = splitCSV(form.ProtectedPaths)
 		cfg.LoginPaths = splitCSV(form.LoginPaths)
 		cfg.LogoutPaths = splitCSV(form.LogoutPaths)
-		if err := cfg.Validate(); err != nil {
+		// Same deferral as idor's Endpoint above, for ProtectedPaths only —
+		// LoginPaths/LogoutPaths are already optional (authbypass's own
+		// package defaults apply), so nothing here needs deferring for them.
+		// SkipAuthTokenRequired, same reasoning as idor's above: a blank
+		// AuthToken still lets checkMissingAuth/checkRateLimitSignal run
+		// (neither references a token at all) — the other four checks
+		// already no-op internally without one.
+		opts := scanner.ValidateOptions{SkipProtectedPathsRequired: len(cfg.ProtectedPaths) == 0, SkipAuthTokenRequired: true}
+		if err := cfg.ValidateWithOptions(opts); err != nil {
 			errs = append(errs, "authbypass: "+err.Error())
+		} else {
+			cfgs = append(cfgs, cfg)
+		}
+	}
+	if form.RunSsrf {
+		cfg := baseCfg("ssrf")
+		cfg.SSRFParams = splitCSV(form.SSRFParams)
+		cfg.OOBServers = expandOOBServers(splitCSV(form.OOBServers))
+		// Same deferral as authbypass's ProtectedPaths above — recon can
+		// supply every SSRFParams candidate it finds (SuggestSSRFParamsFromRecon,
+		// Step 7), and unlike idor's single-endpoint choice there's no
+		// ambiguity to resolve: SSRFParams is a list, so every candidate
+		// recon finds is usable directly, not just one of several.
+		opts := scanner.ValidateOptions{SkipSSRFParamsRequired: len(cfg.SSRFParams) == 0}
+		if err := cfg.ValidateWithOptions(opts); err != nil {
+			errs = append(errs, "ssrf: "+err.Error())
+		} else {
+			cfgs = append(cfgs, cfg)
+		}
+	}
+	if form.RunBusinesslogic {
+		cfg := baseCfg("businesslogic")
+		cfg.AllowWrites = form.AllowWrites
+		cfg.CouponMintPath = form.CouponMintPath
+		cfg.CouponApplyPath = form.CouponApplyPath
+		cfg.RaceConcurrency = form.RaceConcurrency
+		// No deferral here: AuthToken is businesslogic's only required
+		// field, and a credential can never be recon-derived (the
+		// permanent limit named in doc14 Step 7's Design section) —
+		// CouponMintPath/CouponApplyPath/RaceConcurrency are all optional,
+		// already defaulting to businesslogic's own package values
+		// (crAPI's real paths) when left blank. AllowWrites stays
+		// false unless the operator checks it themselves, same as the
+		// authorization checkbox — never toggled by recon.
+		if err := cfg.Validate(); err != nil {
+			errs = append(errs, "businesslogic: "+err.Error())
 		} else {
 			cfgs = append(cfgs, cfg)
 		}
 	}
 
 	return form, cfgs, errs
+}
+
+// expandOOBServers is cmd/hackerfive/scan.go's expandOOBServers, duplicated
+// here since it's package-main-local there — small, proportionate
+// duplication, same reasoning as splitCSV/launchTargetScheme. Expands the
+// literal "public" (case-insensitive) into ssrf.PublicInteractshServers,
+// leaving every other entry as-is; nil in, nil out.
+func expandOOBServers(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []string
+	for _, entry := range raw {
+		if strings.EqualFold(entry, "public") {
+			out = append(out, ssrf.PublicInteractshServers...)
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // runLaunchJob runs the unified job in the background: a recon phase first
@@ -237,10 +334,15 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	job.SetPhase("recon")
 	h.runLaunchRecon(job, form, cfgs)
 
+	cfgs = fillReconFields(job, cfgs)
+
 	var lastErr error
 	for _, cfg := range cfgs {
 		job.SetPhase(cfg.Detector)
 		job.AppendLog("info", "running detector: "+cfg.Detector)
+		if note := noTokenNote(cfg); note != "" {
+			job.AppendLog("info", note)
+		}
 		if _, err := scanner.New(cfg).WithFindingCallback(job.AppendFinding).WithLogCallback(job.AppendLog).Run(h.baseCtx); err != nil {
 			lastErr = err
 			job.AppendLog("error", fmt.Sprintf("%s: %v", cfg.Detector, err))
@@ -248,6 +350,25 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	}
 
 	job.MarkDone(lastErr)
+}
+
+// noTokenNote returns an informational log line when cfg is about to run
+// fully unauthenticated (idor/authbypass only — see ValidateOptions'
+// SkipAuthTokenRequired doc comment) — transparent about which checks that
+// narrows the run to, since neither detector's own behavior otherwise
+// signals this anywhere.
+func noTokenNote(cfg scanner.Config) string {
+	if cfg.AuthToken != "" || cfg.OtherAuthToken != "" {
+		return ""
+	}
+	switch cfg.Detector {
+	case "idor":
+		return "idor: no auth token given — running unauthenticated (heuristic-mode signature comparison only; not a true cross-account IDOR test without one)"
+	case "authbypass":
+		return "authbypass: no auth token given — running only the checks that don't need one (missing-auth probe, login rate-limit signal); JWT/session/token-reuse checks skipped"
+	default:
+		return ""
+	}
 }
 
 // waveDescription is a human-readable gloss on what a wave actually does —
@@ -333,6 +454,142 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	if suggestions := suggestedDetectorNames(tree, selected); len(suggestions) > 0 {
 		job.AppendLog("info", "recon also suggests: "+strings.Join(suggestions, ", ")+" (not run — selected before this scan started)")
 	}
+}
+
+// fillReconFields resolves any recon-fillable field parseLaunchSubmission
+// deferred (idor's EndpointTemplate, authbypass's ProtectedPaths/
+// LoginPaths/LogoutPaths) now that runLaunchRecon — called just before this,
+// and already synchronous/blocking — has had its one chance to populate
+// job's ReconResult. A field recon can't resolve isn't a job failure: that
+// one detector's cfg is simply omitted from the returned, runnable slice,
+// with a clear log line explaining why — mirroring PlanTree's
+// StatusUnresolved-leaf posture (docs/14-implementation-plan-ph5.md Step 7):
+// a gap the deterministic layer can't close stays visible, never silently
+// dropped.
+func fillReconFields(job *Job, cfgs []scanner.Config) []scanner.Config {
+	result := job.Snapshot().ReconResult
+
+	runnable := make([]scanner.Config, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		switch cfg.Detector {
+		case "idor":
+			if cfg.EndpointTemplate == "" {
+				candidates := recon.SuggestIDOREndpointCandidates(result)
+				switch len(candidates) {
+				case 0:
+					job.AppendLog("warn", "idor: skipped — no --endpoint given and recon found no candidate; fill in manually and re-run")
+					continue
+				case 1:
+					cfg.EndpointTemplate = candidates[0]
+					job.AppendLog("info", "idor: using recon-derived endpoint "+cfg.EndpointTemplate)
+				default:
+					job.AppendLog("warn", fmt.Sprintf("idor: %d recon-derived candidates found, none auto-selected — pick one via --endpoint and re-run: %s", len(candidates), strings.Join(candidates, ", ")))
+					continue
+				}
+			}
+		case "authbypass":
+			protected, login, logout := suggestPathsFromRecon(result)
+			if len(cfg.ProtectedPaths) == 0 {
+				if len(protected) == 0 {
+					job.AppendLog("warn", "authbypass: skipped — no --protected-paths given and recon found no candidate; fill in manually and re-run")
+					continue
+				}
+				cfg.ProtectedPaths = protected
+				job.AppendLog("info", "authbypass: using recon-derived protected paths "+strings.Join(protected, ", "))
+			}
+			if len(cfg.LoginPaths) == 0 && len(login) > 0 {
+				cfg.LoginPaths = login
+				job.AppendLog("info", "authbypass: using recon-derived login paths "+strings.Join(login, ", "))
+			}
+			if len(cfg.LogoutPaths) == 0 && len(logout) > 0 {
+				cfg.LogoutPaths = logout
+				job.AppendLog("info", "authbypass: using recon-derived logout paths "+strings.Join(logout, ", "))
+			}
+		case "ssrf":
+			if len(cfg.SSRFParams) == 0 {
+				candidates := recon.SuggestSSRFParamsFromRecon(result)
+				if len(candidates) == 0 {
+					job.AppendLog("warn", "ssrf: skipped — no --ssrf-param given and recon found no candidate; fill in manually and re-run")
+					continue
+				}
+				// Unlike idor's single-endpoint choice, every candidate
+				// recon finds is directly usable — SSRFParams is a list,
+				// so there's no ambiguity to resolve between them.
+				cfg.SSRFParams = candidates
+				job.AppendLog("info", "ssrf: using recon-derived params "+strings.Join(candidates, ", "))
+			}
+		}
+
+		// SkipAuthTokenRequired must be carried through here too — a plain
+		// Validate() would silently re-impose the requirement
+		// parseLaunchSubmission already waived for idor/authbypass (a real
+		// bug caught live: both were being skipped with a misleading
+		// "requires --auth-token" error even after this exact fill step
+		// succeeded, since Validate() has no way to know that requirement
+		// was deliberately relaxed upstream). Endpoint/ProtectedPaths/
+		// SSRFParams need no equivalent skip here — by this point they're
+		// either filled or the cfg has already hit a `continue` above.
+		opts := scanner.ValidateOptions{SkipAuthTokenRequired: true}
+		if err := cfg.ValidateWithOptions(opts); err != nil {
+			// Otherwise defensive only: a recon-filled value is already
+			// known-shaped, so this should rarely fire beyond the
+			// AuthToken case above.
+			job.AppendLog("error", cfg.Detector+": "+err.Error())
+			continue
+		}
+		runnable = append(runnable, cfg)
+	}
+	return runnable
+}
+
+// suggestPathsFromRecon buckets a ReconResult's EndpointFacts into
+// authbypass's three path fields, per docs/14-implementation-plan-ph5.md
+// Step 7's spec: a 401/403 response is evidence of a protected path; a fact
+// wave3's auth-boundary heuristic itself produced, or a login-shaped path,
+// suggests a login path; a logout/signout-shaped path suggests a logout
+// path. Each list preserves recon's own discovery order (already
+// deterministic) and is deduplicated.
+func suggestPathsFromRecon(result *recon.ReconResult) (protected, login, logout []string) {
+	if result == nil {
+		return nil, nil, nil
+	}
+
+	seenProtected, seenLogin, seenLogout := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, ep := range result.Endpoints {
+		path := endpointPath(ep.URL)
+		if path == "" {
+			continue
+		}
+		lower := strings.ToLower(path)
+		switch {
+		case ep.StatusCode == http.StatusUnauthorized || ep.StatusCode == http.StatusForbidden:
+			if !seenProtected[path] {
+				seenProtected[path] = true
+				protected = append(protected, path)
+			}
+		case ep.Source == "wave3-auth-boundary-heuristic" || strings.Contains(lower, "login") || strings.Contains(lower, "signin"):
+			if !seenLogin[path] {
+				seenLogin[path] = true
+				login = append(login, path)
+			}
+		case strings.Contains(lower, "logout") || strings.Contains(lower, "signout"):
+			if !seenLogout[path] {
+				seenLogout[path] = true
+				logout = append(logout, path)
+			}
+		}
+	}
+	return protected, login, logout
+}
+
+// endpointPath extracts rawURL's path, "" on a malformed URL (skipped by
+// suggestPathsFromRecon's caller).
+func endpointPath(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Path
 }
 
 // flattenPlanTree walks tree depth-first into a flat leaf slice.
