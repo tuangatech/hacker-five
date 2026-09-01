@@ -45,6 +45,7 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 	}
 	data := LaunchFormData{
 		CSRFToken:    token,
+		Target:       "https://www.example.com",
 		RunRecon:     true,
 		Depth:        string(recon.DepthActive),
 		RunMisconfig: true,

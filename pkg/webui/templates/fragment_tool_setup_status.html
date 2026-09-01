@@ -1,11 +1,16 @@
-{{define "fragment_tool_setup_status"}}{{if .Error}}<p class="error">Setup failed: {{.Error}}</p>
-{{else if .JustInstalled}}<p>Installed just now into <code>{{.Dir}}</code>.</p>
-{{else if .Dir}}<p><code>{{.Dir}}</code></p>
-{{end}}
+{{define "fragment_tool_setup_status"}}{{if .Error}}<p class="error">Setup failed: {{.Error}}</p>{{end}}
+{{if .JustInstalled}}<p>Installed just now into <code>{{.Dir}}</code>.</p>{{end}}
+{{if .AllInstalled}}
+<p>All recon tools installed{{if .Dir}} (<code>{{.Dir}}</code>){{end}}: {{range $i, $row := .Rows}}{{if $i}}, {{end}}{{$row.Name}}{{if $row.Version}} ({{$row.Version}}){{end}}{{end}}</p>
+{{else}}
+{{if .Dir}}<p><code>{{.Dir}}</code></p>{{end}}
+<button type="button" hx-post="/recon/setup" hx-include="[name='csrf_token']" hx-target="#tool-setup-panel" hx-indicator="#tool-setup-indicator">Setup now</button>
+<span id="tool-setup-indicator" class="htmx-indicator">Installing&hellip;</span>
 <table>
 <thead><tr><th>Tool</th><th>Installed</th><th>Version</th></tr></thead>
 <tbody>{{range .Rows}}<tr><td>{{.Name}}</td><td>{{if .Installed}}yes{{else}}no{{end}}</td><td>{{if .Version}}{{.Version}}{{else}}&mdash;{{end}}</td></tr>
 {{else}}<tr><td colspan="3"><em>unknown</em></td></tr>
 {{end}}</tbody>
 </table>
+{{end}}
 {{end}}

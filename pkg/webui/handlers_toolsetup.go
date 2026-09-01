@@ -23,6 +23,14 @@ func buildToolSetupData(justInstalled bool, errMsg string) ToolSetupData {
 	for _, s := range toolsync.Status(dir) {
 		data.Rows = append(data.Rows, ToolStatusRow{Name: s.Name, Installed: s.Installed, Version: s.Version})
 	}
+
+	data.AllInstalled = len(data.Rows) > 0
+	for _, row := range data.Rows {
+		if !row.Installed {
+			data.AllInstalled = false
+			break
+		}
+	}
 	return data
 }
 

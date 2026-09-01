@@ -346,6 +346,26 @@ tr.sev-info { background: var(--info-bg); }
 
 .tab-panel { display: none; }
 
+.auth-shared {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.auth-shared .hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
+.launch-submit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
 #tab-misconfig:checked ~ .tab-panels #panel-misconfig,
 #tab-idor:checked ~ .tab-panels #panel-idor,
 #tab-authbypass:checked ~ .tab-panels #panel-authbypass {
