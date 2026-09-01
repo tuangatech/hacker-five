@@ -245,6 +245,26 @@ func TestMisconfigMethod_PUTRejected(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// TestMisconfigMethod_404RootNotFlagged reproduces a live false positive from
+// partners.shopify.com: PUT/DELETE/PATCH on "/" returned the same generic
+// Rails 404 page a GET on any nonexistent path would — not evidence the
+// method was accepted, just that no route matched it at all.
+func TestMisconfigMethod_404RootNotFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>home</html>"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<html>The page you were looking for doesn't exist.</html>"))
+	})
+
+	for _, method := range []string{"put", "delete", "patch"} {
+		assert.Empty(t, withPrefix(findings, "misconfig-method-"+method+"-"), "method=%s: generic 404 on root must not be treated as method acceptance", method)
+	}
+}
+
 func TestMisconfigCORS_WildcardWithCredentials(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" && r.Method == http.MethodGet {

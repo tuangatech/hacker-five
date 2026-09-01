@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -39,13 +40,17 @@ func newReportCmd() *cobra.Command {
 // it) that lets tests point this at an httptest.Server instead of the real
 // API.
 func hackeroneClientFromEnv() (*hackerone.Client, error) {
-	username := os.Getenv("HACKERONE_API_USERNAME")
-	token := os.Getenv("HACKERONE_API_TOKEN")
+	// TrimSpace guards against a trailing \r on the value — e.g. a
+	// credentials file with CRLF line endings sourced by a POSIX shell,
+	// which silently corrupts the Basic Auth header and surfaces as an
+	// opaque 401 with no hint that the credential itself was mangled.
+	username := strings.TrimSpace(os.Getenv("HACKERONE_API_USERNAME"))
+	token := strings.TrimSpace(os.Getenv("HACKERONE_API_TOKEN"))
 	if username == "" || token == "" {
 		return nil, fmt.Errorf("HACKERONE_API_USERNAME and HACKERONE_API_TOKEN env vars are required")
 	}
 	var opts []hackerone.Option
-	if baseURL := os.Getenv("HACKERONE_API_BASE_URL"); baseURL != "" {
+	if baseURL := strings.TrimSpace(os.Getenv("HACKERONE_API_BASE_URL")); baseURL != "" {
 		opts = append(opts, hackerone.WithBaseURL(baseURL))
 	}
 	return hackerone.New(username, token, opts...), nil

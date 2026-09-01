@@ -369,8 +369,14 @@ func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, aut
 
 // rejected reports whether status is one of the expected "method not
 // allowed" signals — anything else means the method appears to be accepted.
+// 404 counts too: many routers (e.g. Rails, which this check has hit live —
+// partners.shopify.com) serve the same generic catch-all 404 page for a
+// path+method combination that isn't routed at all, indistinguishable from
+// the response to a nonexistent path under any method. That's evidence the
+// method wasn't handled, not that it was accepted.
 func rejected(status int) bool {
-	return status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented || status == http.StatusForbidden
+	return status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented ||
+		status == http.StatusForbidden || status == http.StatusNotFound
 }
 
 func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
