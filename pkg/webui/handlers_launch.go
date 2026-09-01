@@ -23,10 +23,6 @@ import (
 // background job forever.
 const reconRunTimeout = 10 * time.Minute
 
-// launchRecentLimit mirrors the old dashboard.html's own limit — the full
-// list stays available at /scans (scanHistory).
-const launchRecentLimit = 10
-
 // guidedReadyDetectors/guidedInputDetectors classify a matched registry
 // capability for the "recon also suggests" informational callout below —
 // same buckets Guided Scan's now-retired confirm page used to gate on; here
@@ -46,25 +42,12 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 	data := LaunchFormData{
 		CSRFToken:    token,
 		Target:       "https://www.example.com",
-		RunRecon:     true,
-		Depth:        string(recon.DepthFull),
 		RunMisconfig: true,
 		RateLimit:    defaultRateLimit,
 		Concurrency:  defaultConcurrency,
 		Tools:        buildToolSetupData(false, ""),
 	}
-	h.fillRecentJobs(&data)
 	executeTemplate(w, h.tmpl, "launch.html", data)
-}
-
-func (h *handlers) fillRecentJobs(data *LaunchFormData) {
-	all := h.store.List()
-	data.HasMore = len(all) > launchRecentLimit
-	if data.HasMore {
-		data.RecentJobs = all[:launchRecentLimit]
-	} else {
-		data.RecentJobs = all
-	}
 }
 
 // launchTargetScheme mirrors pkg/recon's own unexported defaultScheme — a
@@ -128,7 +111,6 @@ func (h *handlers) rerenderLaunchWithErrors(w http.ResponseWriter, r *http.Reque
 	form.CSRFToken = token
 	form.Errors = errs
 	form.Tools = buildToolSetupData(false, "")
-	h.fillRecentJobs(&form)
 	w.WriteHeader(http.StatusUnprocessableEntity)
 	executeTemplate(w, h.tmpl, "fragment_launch_body", form)
 }
@@ -148,16 +130,6 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 		errs = append(errs, "target is required")
 	}
 	target := launchTargetScheme(rawTarget)
-
-	runRecon := r.PostFormValue("run_recon") == "on"
-	depth := r.PostFormValue("depth")
-	if runRecon {
-		switch recon.Depth(depth) {
-		case recon.DepthPassive, recon.DepthActive, recon.DepthFull:
-		default:
-			errs = append(errs, `recon depth must be "passive", "active", or "full"`)
-		}
-	}
 
 	rateLimit, err := parsePositiveInt(r.PostFormValue("rate_limit"), defaultRateLimit)
 	if err != nil {
@@ -179,8 +151,6 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 
 	form := LaunchFormData{
 		Target:           rawTarget,
-		RunRecon:         runRecon,
-		Depth:            depth,
 		RunMisconfig:     r.PostFormValue("run_misconfig") == "on",
 		RunIdor:          r.PostFormValue("run_idor") == "on",
 		Endpoint:         r.PostFormValue("endpoint"),
@@ -251,29 +221,21 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 		}
 	}
 
-	// Only surfaced when nothing else already explains why nothing will
-	// run — avoids piling a redundant message on top of a target/detector
-	// validation error that already says as much.
-	if !runRecon && len(cfgs) == 0 && len(errs) == 0 {
-		errs = append(errs, "select recon and/or at least one detector to run")
-	}
-
 	return form, cfgs, errs
 }
 
-// runLaunchJob runs the unified job in the background: an optional recon
-// phase first, then each checked-and-validated detector's scanner.Engine
-// run, sequentially — into one shared Job so the results page renders wave
+// runLaunchJob runs the unified job in the background: a recon phase first
+// (always full depth — recon is enrichment the operator never opts out of),
+// then each checked-and-validated detector's scanner.Engine run,
+// sequentially — into one shared Job so the results page renders wave
 // progress, recon facts, and detector findings from a single stream. Runs
 // on the server's lifecycle context, same reasoning as the pages this
 // replaces.
 func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Config) {
 	job.SetRunning()
 
-	if form.RunRecon {
-		job.SetPhase("recon")
-		h.runLaunchRecon(job, form, cfgs)
-	}
+	job.SetPhase("recon")
+	h.runLaunchRecon(job, form, cfgs)
 
 	var lastErr error
 	for _, cfg := range cfgs {
@@ -350,7 +312,7 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	ctx, cancel := context.WithTimeout(h.baseCtx, reconRunTimeout)
 	defer cancel()
 
-	result, err := rc.Run(ctx, launchTargetScheme(form.Target), recon.Depth(form.Depth))
+	result, err := rc.Run(ctx, launchTargetScheme(form.Target), recon.DepthFull)
 	if err != nil {
 		job.AppendLog("error", fmt.Sprintf("recon: %v", err))
 		return

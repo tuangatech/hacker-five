@@ -144,11 +144,13 @@ func TestLaunchForm_RendersDefaults(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 	html := string(body)
 
-	assert.Contains(t, html, `name="run_recon"`)
 	assert.Contains(t, html, `name="run_misconfig"`)
 	assert.Contains(t, html, `name="run_idor"`)
 	assert.Contains(t, html, `name="run_authbypass"`)
 	assert.Contains(t, html, `name="target"`)
+	assert.NotContains(t, html, `name="run_recon"`, "recon always runs — no opt-out control shown")
+	assert.NotContains(t, html, `name="depth"`, "recon depth is always full — no picker shown")
+	assert.NotContains(t, html, "Recent Scans", "Recent Scans was dropped from the launch page — Scan History nav link covers it")
 }
 
 // TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables runs the
@@ -177,8 +179,6 @@ func TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables(t *testing.T
 	form := url.Values{
 		"csrf_token": {csrfVal},
 		"target":     {targetSrv.URL},
-		"run_recon":  {"on"},
-		"depth":      {"passive"}, // no active binaries needed, fast and hermetic
 		"authorized": {"on"},
 	}
 	resp, err := client.PostForm(ts.URL+"/scans", form)
@@ -282,7 +282,11 @@ func TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip(t *tes
 	assert.Contains(t, string(body), "authbypass:", "a checked-but-invalid detector must produce a visible error, not a silent no-op")
 }
 
-func TestStartLaunch_NothingSelected_RerendersWithError(t *testing.T) {
+// TestStartLaunch_NoDetectorsChecked_StillSucceeds confirms omitting every
+// run_<detector> is no longer an error case: recon always runs regardless,
+// so there's always something for the job to do (doc14 Step 6 follow-up,
+// 2026-09-01 — recon opt-out/depth picker removed from the launch page).
+func TestStartLaunch_NoDetectorsChecked_StillSucceeds(t *testing.T) {
 	ts := newTestServer(t)
 
 	jar, err := cookiejar.New(nil)
@@ -298,7 +302,7 @@ func TestStartLaunch_NothingSelected_RerendersWithError(t *testing.T) {
 		"csrf_token": {csrfVal},
 		"target":     {"http://example.com"},
 		"authorized": {"on"},
-		// run_recon and every run_<detector> deliberately omitted
+		// every run_<detector> deliberately omitted
 	}
 	resp, err := client.PostForm(ts.URL+"/scans", form)
 	require.NoError(t, err)
@@ -306,8 +310,7 @@ func TestStartLaunch_NothingSelected_RerendersWithError(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
-	assert.Contains(t, string(body), "select recon and/or at least one detector")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 }
 
 func TestLaunchTargetScheme(t *testing.T) {

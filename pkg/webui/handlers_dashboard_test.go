@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDashboard_NoScansYet(t *testing.T) {
+func TestScanHistory_NoScansYet(t *testing.T) {
 	ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/")
+	resp, err := http.Get(ts.URL + "/scans")
 	require.NoError(t, err)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func startTestScan(t *testing.T, client *http.Client, ts *httptest.Server, targe
 	return id
 }
 
-func TestDashboardAndScanHistory_ListStartedScans(t *testing.T) {
+func TestScanHistory_ListStartedScansMostRecentFirst(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -71,16 +71,6 @@ func TestDashboardAndScanHistory_ListStartedScans(t *testing.T) {
 	firstID := startTestScan(t, client, ts, target.URL)
 	secondID := startTestScan(t, client, ts, target.URL)
 
-	dashResp, err := http.Get(ts.URL + "/")
-	require.NoError(t, err)
-	dashBody, err := io.ReadAll(dashResp.Body)
-	require.NoError(t, err)
-	require.NoError(t, dashResp.Body.Close())
-	assert.Contains(t, string(dashBody), firstID)
-	assert.Contains(t, string(dashBody), secondID)
-	// most-recent-first: secondID's row must appear before firstID's
-	assert.Less(t, indexOf(t, string(dashBody), secondID), indexOf(t, string(dashBody), firstID))
-
 	histResp, err := http.Get(ts.URL + "/scans")
 	require.NoError(t, err)
 	histBody, err := io.ReadAll(histResp.Body)
@@ -88,6 +78,8 @@ func TestDashboardAndScanHistory_ListStartedScans(t *testing.T) {
 	require.NoError(t, histResp.Body.Close())
 	assert.Contains(t, string(histBody), firstID)
 	assert.Contains(t, string(histBody), secondID)
+	// most-recent-first: secondID's row must appear before firstID's
+	assert.Less(t, indexOf(t, string(histBody), secondID), indexOf(t, string(histBody), firstID))
 }
 
 func indexOf(t *testing.T, haystack, needle string) int {

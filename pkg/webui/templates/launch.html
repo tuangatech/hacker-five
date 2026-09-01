@@ -6,23 +6,10 @@
 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
 <fieldset>
-<legend>Target &amp; Recon</legend>
+<legend>Target</legend>
 <label for="target">Target</label>
 <input type="text" id="target" name="target" value="{{.Target}}" required placeholder="https://www.example.com">
-
-<label class="inline"><input type="checkbox" id="run_recon" name="run_recon" {{if .RunRecon}}checked{{end}}> Run recon first</label>
-<label for="depth">Recon depth (--recon-depth)</label>
-<select id="depth" name="depth">
-<option value="passive" {{if eq .Depth "passive"}}selected{{end}}>passive — zero-touch + subdomain/TLS/WHOIS enumeration only</option>
-<option value="active" {{if eq .Depth "active"}}selected{{end}}>active — adds DNS/port scan/HTTP probing (httpx's tech signals feed the decision engine)</option>
-<option value="full" {{if eq .Depth "full"}}selected{{end}}>full — adds a bounded crawl and common-path probing</option>
-</select>
-
-<details>
-<summary>Recon Tools</summary>
-<p>Active/full-depth recon uses 6 external binaries (subfinder/tlsx/dnsx/naabu/httpx/katana). Without them, those waves are skipped with a warning — the scan still runs.</p>
-<div id="tool-setup-panel">{{template "fragment_tool_setup_status" .Tools}}</div>
-</details>
+<p class="hint">Recon runs first automatically, at full depth (bounded crawl + common-path probing).</p>
 </fieldset>
 
 <details id="advanced-settings">
@@ -89,6 +76,12 @@
 <input type="text" id="scope_file" name="scope_file" value="{{.ScopeFile}}">
 </fieldset>
 
+<details>
+<summary>Recon Tools</summary>
+<p>Full-depth recon uses 6 external binaries (subfinder/tlsx/dnsx/naabu/httpx/katana). Without them, those waves are skipped with a warning — the scan still runs.</p>
+<div id="tool-setup-panel">{{template "fragment_tool_setup_status" .Tools}}</div>
+</details>
+
 </details>
 
 <div class="launch-submit">
@@ -96,17 +89,6 @@
 <button type="submit">Start Scan</button>
 </div>
 </form>
-
-<h2>Recent Scans</h2>
-{{if .RecentJobs}}
-<table>
-<thead><tr><th>ID</th><th>Target(s)</th><th>Status</th><th>Findings</th><th>Started</th></tr></thead>
-<tbody>{{range .RecentJobs}}{{template "fragment_job_row" .}}{{end}}</tbody>
-</table>
-{{if .HasMore}}<p><a href="/scans">View all scans →</a></p>{{end}}
-{{else}}
-<p>No scans yet.</p>
-{{end}}
 {{end}}
 {{define "launch.html"}}{{template "header" .}}
 {{template "fragment_launch_body" .}}

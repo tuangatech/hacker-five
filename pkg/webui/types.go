@@ -18,9 +18,6 @@ type LaunchFormData struct {
 
 	Target string
 
-	RunRecon bool
-	Depth    string
-
 	RunMisconfig bool
 
 	RunIdor  bool
@@ -46,11 +43,6 @@ type LaunchFormData struct {
 	Authorized  bool
 
 	Tools ToolSetupData
-
-	// RecentJobs/HasMore carry over dashboard.html's old "Recent Scans" list
-	// (doc12), shown below the launch form rather than on its own page.
-	RecentJobs []JobSummary
-	HasMore    bool
 }
 
 // ProgressData is fragment_progress.html's input — the status badge shown
