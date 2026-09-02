@@ -104,7 +104,7 @@
   - Markdown (for GitHub issue templates)
   - HTML (for stakeholder reports)
   - HackerOne JSON schema (for platform integration)
-- **Exporter interface:** one `Exporter` interface (`Export(*Finding) error`) with one implementation per format above — justified since multiple concrete formats are already planned (rule of three), not a speculative abstraction. No separate `Tracker`/issue-creation interface (GitHub, Jira, etc.) — HackerOne is the only external integration target (see [01-overview-and-strategy.md](01-overview-and-strategy.md)), and even that's report-drafting export, not live issue tracking.
+- **Exporter interface:** one `Exporter` interface (`Export(w io.Writer, findings []detectors.Finding) error`) with one implementation per format above, dispatched by `ExporterFor(format string)` — justified since multiple concrete formats are already planned (rule of three), not a speculative abstraction. No separate `Tracker`/issue-creation interface (GitHub, Jira, etc.) — HackerOne is the only external integration target (see [01-overview-and-strategy.md](01-overview-and-strategy.md)), and even that's report-drafting export, not live issue tracking.
 
 - **Optional:** SQLite for local finding history
 
@@ -119,7 +119,7 @@
 - Live findings/logs stream to the browser via Server-Sent Events, backed by `Engine`'s `WithFindingCallback`/`WithLogCallback` hooks (see Scanner Engine, below) — this is what "Callback-based streaming results," formerly listed under Future Considerations, actually became once something needed it.
 - CSRF via a hand-rolled double-submit cookie (no third-party framework, consistent with the Minimal Dependencies stance below); a non-loopback bind requires a one-time bootstrap token, exchanged on first use for an `HttpOnly` session cookie.
 - Full design in [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md).
-- **Planned, not yet built: a third frontend for LLM agents.** [90-research-hackerbot.md](90-research-hackerbot.md) researched how other LLM-driven pentesting tools structure themselves and resolved the open design questions (a single coordinator, no shell/exec-shaped tool, MCP `elicitation`/`tasks` for human approval, and — per the Design Principles above — a deterministic decision engine with a tiered LLM fallback, never an LLM-first design); [91-research-recon-phase.md](91-research-recon-phase.md) added the recon-phase design that feeds it. [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) schedule it as Phase 5-7 (recon/data-model/decision-engine foundations, then the MCP server plus the tiered LLM fallback and `tools.search`/`templates.search`, then hardening). Like the Web UI, it's designed as a third frontend over this same unmodified Scanner Engine (an MCP server in `pkg/mcpserver/`, not a second implementation of it) — the diagram below stays the design target rather than a built-and-shipped description until Phase 6-7 actually land, matching how this doc already treats Phase 4's still-unbuilt detectors.
+- **Planned, not yet built: a third frontend for LLM agents.** [90-research-hackerbot.md](90-research-hackerbot.md) researched how other LLM-driven pentesting tools structure themselves and resolved the open design questions (a single coordinator, no shell/exec-shaped tool, MCP `elicitation`/`tasks` for human approval, and — per the Design Principles above — a deterministic decision engine with a tiered LLM fallback, never an LLM-first design); [91-research-recon-phase.md](91-research-recon-phase.md) added the recon-phase design that feeds it. [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) schedule it as Phase 5-7 (recon/data-model/decision-engine foundations, then the MCP server plus the tiered LLM fallback and `tools.search`/`templates.search`, then hardening). Like the Web UI, it's designed as a third frontend over this same unmodified Scanner Engine (an MCP server in `pkg/mcpserver/`, not a second implementation of it) — the diagram below stays the design target rather than a built-and-shipped description until Phase 6-7 actually land, marked ✅/⬜ per step below rather than treated as all-or-nothing.
 
   **Planned end-to-end flow (diagrammed 2026-08-31, mid-Phase-5 — ✅ = built and live-verified today, ⬜ = designed, not yet built):**
 
@@ -182,6 +182,7 @@
 - github.com/spf13/cobra (CLI)
 - gopkg.in/yaml.v3 (YAML parsing)
 - github.com/json-iterator/go (fast JSON parsing)
+- github.com/santhosh-tekuri/jsonschema/v5 (validates docs/schema/finding.schema.json and recon-result.schema.json — Phase 5; checked for real transitive footprint before adding, per this list's own discipline below: zero transitive dependencies, confirmed via a scratch-module `go get`)
 - (Optional) github.com/chromedp/chromedp (for browser-based XSS validation)
 ```
 
@@ -211,7 +212,7 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 | **HTTP Interception** | Burp Suite Community, MitmProxy | Debug requests/responses |
 | **API Testing** | Postman, Insomnia | Template development |
 | **Fuzzing** | ffuf, OWASP ZAP | Discover endpoints |
-| **Recon** | Subfinder, Assetfinder, Nmap | Asset discovery |
+| **Recon** | subfinder, tlsx, dnsx, naabu, httpx, katana (real, shipped `pkg/recon` toolchain — installed via `hackerfive recon setup`, not a dev-only aid) | Asset discovery, live in every `--recon-depth active`/`full` run |
 | **Version Control** | GitHub | Code, templates, issues |
 | **Automation** | GitHub Actions | CI/CD, template validation |
 
@@ -278,6 +279,8 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
    └─────────┘            └───────────┘
 ```
 
+**This diagram predates Phase 4 (SSRF/Business Logic detectors) and Phase 5 (the recon waves, `pkg/fingerprint`, `pkg/registry`'s decision engine, `pkg/agenttask`'s `PlanTree`) — illustrative of the original shape, not a literal current picture.** Not redrawn here since the Code Walkthrough below and the Web UI section's "Planned end-to-end flow" diagram both already carry accurate, current detail on what those additions actually look like; a full redraw is real work worth its own pass rather than a quiet approximation folded into this one.
+
 ### Key Modules
 
 #### 1. **Input Parser**
@@ -285,10 +288,13 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 - Supports templates: `-t IDOR_*.yaml` or `-t /path/to/templates`
 - Options: rate limit, concurrency, proxy, headers, authentication
 
-#### 2. **Recon Phase** (Optional, delegated to external tools)
-- Subdomain enumeration (call Subfinder API or subprocess)
-- Port discovery (call Nmap or Masscan)
-- Tech stack detection (fingerprinting via HTTP headers)
+#### 2. **Recon Phase** (`pkg/recon` — built and live-verified, Phase 5) — escalating, scope-checked waves
+- **Wave 0** (zero-touch): `security.txt`/policy fetch via the existing `httpclient.Client`.
+- **Wave 1** (passive): `subfinder` (subdomain enum), `tlsx` (cert inspection) — the explicit target itself is checked against `--scope` *before* this wave fires, not after, so an out-of-scope target gets zero active probes anywhere downstream.
+- **Wave 2** (active, `--recon-depth active`+): `dnsx` (resolution), `naabu` (port scan), `httpx` (HTTP probe + `-tech-detect` + `-favicon -irr`, feeding `pkg/fingerprint`'s header/body/favicon/port signature matching — not just HTTP headers).
+- **Wave 3** (bounded crawl, `--recon-depth full`): `katana`, plus `probeCommonPaths` (`/swagger.json`, `/.well-known/openapi.json`, etc.) populating `ReconResult.APISpec` when one's exposed.
+- Real ProjectDiscovery binaries via fixed `exec.CommandContext` calls (not Nmap/Masscan) — same scoped-subprocess precedent as `pkg/templatesync`'s `git` call; installed via `hackerfive recon setup` (`pkg/toolsync`), no Go toolchain required. All rate-limit/concurrency numbers pass through to each binary's own native flag, since a separate OS process can't route through `pkg/scanner/httpclient`'s Go middleware.
+- Output is `ReconResult` (`docs/schema/recon-result.schema.json`, frozen/versioned): `Hosts`/`Endpoints`/`TechStack`/`APISpec`/`OutOfScope`/`Warnings`, each fact carrying a `Source`/`Confidence`. A missing recon binary degrades that wave to a logged warning, never a hard failure.
 
 #### 3. **Scanner Engine**
 - **Detector Modules:** IDOR, Misconfiguration, Auth Bypass, etc.
@@ -302,6 +308,8 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 - **IDOR Detector — "swap the ID, see what comes back."** Log in as one account, note what a normal response looks like, then request the same endpoint with a different object ID (another user's order, document, profile). If the response looks like real, authorized data (200 status, expected fields present) rather than a rejection (401/403, empty body, redirect to login), that's an access-control failure. Where possible this runs as a **two-account baseline comparison** (Account A's token accessing Account B's resource) rather than single-account ID guessing, which is what keeps the false-positive rate low — see the IDOR template example above and [01-overview-and-strategy.md](01-overview-and-strategy.md#prioritization-rationale).
 - **Misconfiguration Detector — "check known-bad paths and settings."** No guessing or fuzzing: it requests a fixed list of paths/headers (`/.env`, `/.git`, missing `Content-Security-Policy`, wildcard CORS, etc.) and matches on status code + keyword/header presence. Because the checks are deterministic (a path either exposes `.env` or it doesn't), this is the lowest-effort, lowest-false-positive detector, and it runs almost entirely on templates pulled from the upstream `nuclei-templates` repo rather than custom Go code.
 - **Auth Bypass Detector — "does the API enforce what it claims to enforce?"** A family of state-based checks rather than one technique: call an endpoint with no credentials at all (should reject, does it?), tamper with a JWT (strip the signature, flip `alg` to `none`), reuse one user's token against another user's session, or hammer a login endpoint to see if rate limiting actually kicks in. These require sequencing multiple requests and comparing outcomes, which is why this detector is rated medium-high automation difficulty in the roadmap.
+- **SSRF Detector — "will the target fetch a URL I control?"** Probes any parameter that accepts a URL for scheme-based redirection (`file://`, `gopher://`) and, if an `--oob-server` is configured, a blind out-of-band check via a self-hosted or explicitly opted-in Interactsh-protocol callback (`pkg/oob`, extracted as its own package in Phase 5 so `pkg/recon`'s own OOB-verification path can reuse the same client). Never talks to a third party by default — omitting `--oob-server` just runs the non-blind checks.
+- **Business Logic Detector — "does the app's own workflow rules hold up?"** The one detector with real mutating checks (coupon self-mint/apply, a concurrent-fire apply race), gated behind `--allow-writes` — CLAUDE.md's one explicit, permanent exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a stderr warning rather than silently run.
 - **Template Runner (shared by all detectors)** — the common execution engine: it reads the YAML request/matcher/extractor definitions, fires the HTTP requests through the worker pool, and hands each response to the matcher engine. Detector-specific logic (IDOR's two-account diffing, auth bypass's multi-step sequencing) sits on top of this shared runner rather than each detector reimplementing HTTP handling from scratch.
 
 #### 4. **Concurrency Manager**
@@ -324,32 +332,44 @@ A guided tour through the main files, for orienting in the actual codebase rathe
 [`cmd/hackerfive/main.go`](../cmd/hackerfive/main.go) — sets up signal handling, hands off to Cobra's root command (`newRootCmd()` in [`root.go`](../cmd/hackerfive/root.go)).
 
 ### 2. CLI commands (`cmd/hackerfive/`)
-- [`scan.go`](../cmd/hackerfive/scan.go) — the `hackerfive scan` command. Parses flags into a `scanner.Config`, validates it, builds a `scanner.Engine`, runs it, and writes the result via `reporter.WriteJSON`. This is the clearest map of "what a scan does": targets → templates → detector → auth → scope → output.
+- [`scan.go`](../cmd/hackerfive/scan.go) — the `hackerfive scan` command. Parses flags into a `scanner.Config`, validates it, builds a `scanner.Engine`, runs it, and dedups + exports the result via `reporter.Dedup`/`reporter.ExporterFor` (`--format json|markdown|html|hackerone-json`). This is the clearest map of "what a scan does": targets → templates → detector → auth → scope → output.
 - [`serve.go`](../cmd/hackerfive/serve.go) — `hackerfive serve`, starts the embedded web UI (`webui.New(...).ListenAndServe(...)`).
-- [`templates.go`](../cmd/hackerfive/templates.go) — `hackerfive templates sync|list`, wraps `pkg/templatesync`.
+- [`templates.go`](../cmd/hackerfive/templates.go) — `hackerfive templates sync|list|index`, wraps `pkg/templatesync`; `index` (Phase 5, R9) generates `templates/index.json`, the decision engine's template-tag-reuse lookup.
+- [`recon.go`](../cmd/hackerfive/recon.go) — `hackerfive recon`, standalone entry point into `pkg/recon` (Phase 5); `recon setup` installs the 6 real recon binaries via `pkg/toolsync`, no Go toolchain needed.
+- [`plan.go`](../cmd/hackerfive/plan.go) — `hackerfive plan`, runs recon then `registry.Resolve` and prints the resulting `PlanTree` as JSON (Phase 5) — a CLI-only preview of the same decision-engine output the Web UI's Plan-preview page renders.
+- [`report.go`](../cmd/hackerfive/report.go) — `hackerfive report weaknesses|scopes|create|submit` (Phase 4), drafts a HackerOne `report_intent` from one scan finding via `pkg/hackerone`; `submit` is the one command that can make a report visible to a program, gated behind an explicit `--yes` (CLAUDE.md's permanent report-drafting-only invariant).
 
 ### 3. Scan orchestration (`pkg/scanner/`)
-- [`engine.go`](../pkg/scanner/engine.go) — the core. `Engine.Run` loads scope (`scope.Parse`), loads templates (`nuclei.LoadDir`/`native.LoadDir`), spins up a `workerpool`, and per target: runs the selected built-in detector (`runDetector` → idor/misconfig/authbypass) then runs every loaded template on top (templates are *additive*, not an alternative). `WithFindingCallback`/`WithLogCallback` are the hooks `pkg/webui` uses for live SSE streaming — the CLI path never sets them, so CLI behavior is unaffected.
-- [`config.go`](../pkg/scanner/config.go) — `Config` struct + `Validate()`, the single source of truth for what a scan needs (e.g. `idor` requires `--endpoint` + an auth token, `authbypass` requires `--protected-paths`).
+- [`engine.go`](../pkg/scanner/engine.go) — the core. `Engine.Run` loads scope (`scope.Parse`), loads templates (`nuclei.LoadDir`/`native.LoadDir`), spins up a `workerpool`, and per target: runs the selected built-in detector (`runDetector` → idor/misconfig/authbypass/ssrf/businesslogic) then runs every loaded template on top (templates are *additive*, not an alternative). `WithFindingCallback`/`WithLogCallback` are the hooks `pkg/webui` uses for live SSE streaming — the CLI path never sets them, so CLI behavior is unaffected.
+- [`config.go`](../pkg/scanner/config.go) — `Config` struct + `Validate()`/`ValidateWithOptions()` (the latter added Phase 5 Step 7, letting a caller defer a specific detector's requiredness check — used only by the Web UI's recon-fill path, CLI behavior via `Validate()` unchanged), the single source of truth for what a scan needs (e.g. `idor` requires `--endpoint` + an auth token via the CLI's own `Validate()`, though the Web UI can defer/skip both when recon can fill the gap; `authbypass` requires `--protected-paths`).
 - Supporting subpackages: `httpclient` (retry/rate-limit-wrapped HTTP client), `ratelimit`, `workerpool` (bounded concurrency), `scope` (target allow-list), `hosterrors` (circuit-breaker per host).
 
 ### 4. Detectors (`pkg/detectors/`)
 - [`types.go`](../pkg/detectors/types.go) — the shared `Finding` struct every detector emits and the reporter/web UI consume.
-- `idor/`, `misconfig/`, `authbypass/` — one package each, each exposing `New(...)` + `Run(ctx, ...) ([]Finding, error)`.
+- `idor/`, `misconfig/`, `authbypass/`, `ssrf/`, `businesslogic/` — one package each, each exposing `New(...)` + `Run(ctx, ...) ([]Finding, error)`.
 
 ### 5. Templates (`pkg/template/`)
 Two parallel engines, both loaded and run by the engine for every target:
 - `nuclei/` — parses/executes Nuclei-compatible YAML templates.
 - `native/` — HackerFive's own richer template format (used for e.g. tagged IDOR checks), with `dsl/`, `extractor/`, `matcher/` as its building blocks.
-- `templatesync/` — `git`-based sync of the community template corpus into a persistent OS config dir (survives binary upgrades — see [`sync.go`](../pkg/templatesync/sync.go)).
+- `templatesync/` — `git`-based sync of the community template corpus into a persistent OS config dir (survives binary upgrades — see [`sync.go`](../pkg/templatesync/sync.go)). `List` (extended Phase 5, R9) also flattens the bundled + synced corpus into `templates/index.json` for the decision engine's tag-reuse lookup.
 
 ### 6. Output (`pkg/reporter/`)
-[`output.go`](../pkg/reporter/output.go) — trivially small: `WriteJSON` serializes `[]Finding` to JSON (empty slice, never `null`).
+`Dedup` (exact-`Finding.ID` suppression) then `ExporterFor(format)` dispatches to one of four `Exporter` implementations — `jsonExporter` (wraps the original `WriteJSON`), `markdownExporter`, `htmlExporter` (`html/template`, auto-escapes evidence containing attacker payload text), and `hackerOneJSONExporter` (an offline, best-effort `report_intent` draft — placeholders for team/weakness/scope IDs, meant for manual review or as input to `hackerfive report create`). All Phase 4.
 
-### 7. Web UI (`pkg/webui/`)
-[`server.go`](../pkg/webui/server.go) is the map of this package: routes dashboard/scan-history/new-scan/scan-status(SSE)/templates pages, wrapped in CSRF + non-loopback-token middleware. It's a pure frontend — every handler ultimately calls the same `scanner.Engine`/`templatesync` that the CLI calls, no scan logic is duplicated. `jobs.go` (`JobStore`/`Job`) tracks async scan jobs; `handlers_scan.go`, `handlers_dashboard.go`, `handlers_templates.go` are the per-page handlers.
+### 7. Recon, Fingerprinting & the Decision Engine (Phase 5 — new since this doc's last full pass)
+- [`pkg/recon`](../pkg/recon) — the escalating-wave recon package described under "Recon Phase" above. [`recon.go`](../pkg/recon/recon.go) is the entry point (`Run`); `passive.go`/`active.go`/`crawl.go` are Waves 1/2/3; `aggregate.go` merges/dedups facts (tech-stack merge-not-append, API-spec first-hit-wins) into the final `ReconResult`; [`types.go`](../pkg/recon/types.go) is the frozen, schema-backed data shape; [`suggest.go`](../pkg/recon/suggest.go) is the recon-derived field-suggestion heuristics described under Web UI below.
+- [`pkg/fingerprint`](../pkg/fingerprint) — a static signature table (`detector.go`/`signatures.go`, ~20 hand-authored entries) matching header/body/favicon/port signals, enriching `ReconResult.TechStack` on top of httpx's own `-tech-detect` output rather than replacing it.
+- [`pkg/registry`](../pkg/registry) — `Capabilities` (`registry.go`) hand-transcribes doc01's capability table into a `tools.search`-ready shape; `Resolve` (`decisionengine.go`) turns a `ReconResult`'s tech facts into `PlanTree` leaves deterministically (capability match → template-tag match against `templates/index.json` → a visibly `unresolved` leaf, never silently dropped) — zero LLM involvement, per Design Principle 1 above.
+- [`pkg/agenttask`](../pkg/agenttask) — [`plantree.go`](../pkg/agenttask/plantree.go): `PlanTree`/`PlanNode`, mutable only at leaves via `ApplyLeafUpdate` (a shape-changing patch is rejected, not silently applied).
+- [`pkg/oob`](../pkg/oob) — the RSA-OAEP+AES-256-CTR Interactsh-protocol client, extracted from `pkg/detectors/ssrf` so `pkg/recon`'s own OOB-verification path can share it without duplicating the crypto.
 
-**Suggested reading order** to trace one scan end-to-end: [`scan.go`](../cmd/hackerfive/scan.go) → [`config.go`](../pkg/scanner/config.go) → [`engine.go`](../pkg/scanner/engine.go) → one detector (e.g. [`pkg/detectors/idor`](../pkg/detectors/idor)) → [`output.go`](../pkg/reporter/output.go). Then [`server.go`](../pkg/webui/server.go) → [`handlers_scan.go`](../pkg/webui/handlers_scan.go) to see how the web UI wraps the same engine asynchronously.
+### 8. Web UI (`pkg/webui/`)
+[`server.go`](../pkg/webui/server.go) is the map of this package: `GET /` (the single unified Launch page — see below), `POST /scans`, `GET /scans`, `GET /scans/{id}[...]`, `GET /templates[...]`, `POST /templates/sync`, `POST /recon/setup`, `GET /plan-preview` — wrapped in CSRF + non-loopback-token middleware. It's a pure frontend — every handler ultimately calls the same `scanner.Engine`/`pkg/recon`/`pkg/registry`/`templatesync` that the CLI calls, no scan logic is duplicated. `jobs.go` (`JobStore`/`Job`) tracks async scan jobs, now also carrying wave-by-wave recon progress and the job's `ReconResult`; `handlers_launch.go`, `handlers_scan.go`, `handlers_plan.go`, `handlers_templates.go`, `handlers_toolsetup.go` are the per-page handlers.
+
+**The Launch page (`handlers_launch.go`, Phase 5 Step 6-7) superseded three earlier separate pages** (New Scan / Recon / Guided Scan, and the old dashboard) with one landing page: a target field and five CSS-only radio-driven detector tabs (misconfig/idor/authbypass/ssrf/businesslogic — all wired by Step 7, not just the original three). Recon runs unconditionally on every submission (no opt-out checkbox as of Step 6's later revision) as one phase of the same `Job`, before the checked detectors run. `fillReconFields` (Step 7) then resolves any recon-fillable field a checked detector left blank — `idor`'s `EndpointTemplate` via `recon.SuggestIDOREndpointCandidates` (auto-fills on exactly one candidate, lists every candidate and skips on more than one, never guesses), `authbypass`'s protected/login/logout paths via a 401/403-status and path-shape heuristic, `ssrf`'s `SSRFParams` via a curated query-param-keyword match (no ambiguity to resolve, since it's a list) — always deferring to a value the operator actually typed, and always rendering a genuine gap (`idor: skipped — no candidate; fill in manually`) rather than silently dropping it or guessing. `misconfig`/`idor`/`authbypass`/`ssrf` all now run with zero operator input beyond a target (`businesslogic` can't — both its checks are inherently "as a logged-in account" with no unauthenticated mode). `GET /plan-preview` is a separate, still-read-only page rendering the same `PlanTree` `registry.Resolve` builds — informational only today (Phase 6 Step 4 is where it becomes an approval surface).
+
+**Suggested reading order** to trace one scan end-to-end: [`scan.go`](../cmd/hackerfive/scan.go) → [`config.go`](../pkg/scanner/config.go) → [`engine.go`](../pkg/scanner/engine.go) → one detector (e.g. [`pkg/detectors/idor`](../pkg/detectors/idor)) → [`exporter.go`](../pkg/reporter/exporter.go). Then [`server.go`](../pkg/webui/server.go) → [`handlers_launch.go`](../pkg/webui/handlers_launch.go) to see how the web UI wraps recon + the decision engine + the same engine, asynchronously, into one job.
 
 ## Future Considerations (Not Yet Scoped)
 
@@ -363,4 +383,6 @@ Deferred because the trigger condition for needing them hasn't happened yet — 
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — the detectors this architecture must support
 - [03-development-roadmap.md](03-development-roadmap.md) — build order for these modules
 - [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — full Web UI and template-sync design behind the components summarized here
-- [90-research-hackerbot.md](90-research-hackerbot.md), [91-research-recon-phase.md](91-research-recon-phase.md), [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — planned MCP server / agent-integration design (Phase 5-7, not yet built) that will extend this architecture once that work starts
+- [90-research-hackerbot.md](90-research-hackerbot.md), [91-research-recon-phase.md](91-research-recon-phase.md) — the research behind the agent-integration design below
+- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — recon/fingerprint/decision-engine/`PlanTree` foundations **and** the Web UI's recon-derived field suggestions — done, not just planned; see "Recon, Fingerprinting & the Decision Engine" and the Launch page above
+- [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — the MCP server / approval-gate / hardening work (Phase 6-7, not yet built) that will extend this architecture once that work starts
