@@ -18,7 +18,7 @@
 
 ## Scope
 
-1. ⬜ **MCP server** (Weeks 41-42)
+1. ✅ **MCP server** (Weeks 41-42) — done 2026-09-02
 2. ⬜ **Approval gate + PlanTree executor + spend ceiling** (Week 43 — see this step's note on week pressure, added 2026-08-31)
 3. ⬜ **Hard safety blockers + scope-creep gate + cost-aware prioritization** (Weeks 44-45)
 4. ⬜ **Approval UI: make the plan preview actionable** (Week 46)
@@ -34,7 +34,7 @@
 
 ## Dependencies used in this plan
 
-**New dependency, to be verified at Step 1 kickoff, not assumed here**: an MCP Go SDK. No MCP-related package exists in `go.mod` today. Candidates to check via pkg.go.dev at implementation time (current stable version, import count, maintenance activity, and specifically whether it supports the 2026-07-28 spec's `elicitation`/`tasks` primitives Decision 3 commits to) — same discipline the Phase 2 JWT library and Phase 4's candidate Interactsh client both followed: verify before adding, don't assume a package's maturity from this doc. If no sufficiently mature Go SDK supports `elicitation`/`tasks` yet, that is itself a real finding this step should surface and report honestly (see Step 1's Design), not paper over by hand-rolling a partial MCP implementation. This is precisely the risk this phase's split from doc14 was meant to isolate — a delay here no longer blocks doc14's recon/data-model work, which will already be done.
+**New dependency, verified at Step 1 kickoff, not assumed here — resolved 2026-09-02**: an MCP Go SDK. `github.com/modelcontextprotocol/go-sdk` v1.7.0 (official, maintained with Google) was verified via a real scratch `go get` (not just its own go.mod page) before adding: 11 new modules, lean, two already pinned in this project at identical versions. It supports the 2026-07-28 spec's `elicitation` primitive Decision 3 commits to. **One real correction found**: it does not have a "tasks" extension, despite an early assumption otherwise — the real, available mechanism for a long-running call (`scan`/`recon`, which can take 15+ minutes per CLAUDE.md's documented gotcha) is the standard MCP progress-notification mechanism instead, used in Step 1 (see Step 1's Done note). Same discipline the Phase 2 JWT library and Phase 4's candidate Interactsh client both followed: verify before adding, don't assume a package's maturity or feature set from this doc.
 
 **Second new dependency, for Step 2's tiered LLM fallback (doc90 Decision 5/I4), verified at that step's kickoff, not assumed here**: a local-model runtime client and an OpenRouter client. Per doc02 §8's own updated Dependencies section, both are candidates for a plain `net/http` REST client rather than an SDK (OpenRouter's API is OpenAI-chat-completion-compatible; a local runtime like Ollama exposes the same shape over its own REST endpoint) — apply the `interactsh-client` lesson (doc02 §8) before adding anything heavier: check the real transitive footprint with a scratch `go get`, don't trust a client library's doc page.
 
@@ -42,11 +42,23 @@
 
 ---
 
-## Step 1: MCP Server (Weeks 41-42) — ⬜ not yet implemented
+## Step 1: MCP Server (Weeks 41-42) — ✅ done 2026-09-02
+
+**Done note, 2026-09-02.** `pkg/mcpserver` ships `scan`/`recon`/`templates.list`/`templates.sync`/`findings.export`/`tools.search`/`templates.search`/`plan` (minimal — see below), registered via `hackerfive mcp-serve`. Live-verified against a real MCP Go SDK client connected over a real subprocess (`mcp.CommandTransport` exec'ing the built binary, not just the in-process tests): `tools/list` returns all 8 tools, `tools.search("idor")` returns real registry results, and both `scan`/`plan` correctly refuse an unscoped call. `go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean.
+
+Four decisions made before implementation, all landed as designed except one correction found mid-build:
+- **D3 (missing-scope hard-fail) pulled forward from Step 3.** Every agent-initiated `scan`/`recon`/`plan` call requires a non-empty `scope` argument — enforced twice: the JSON schema marks `scope` required (an entirely-absent field is rejected by the SDK's own input validation before the handler runs), and `requireScope` (`pkg/mcpserver/scope.go`) additionally rejects an explicitly empty list, so a caller can't satisfy the schema with `"scope": []` and slip through. `pkg/scanner/scope.New(entries []string)` was extracted from `Parse` (which is now a thin file-reading wrapper around it) so a caller with in-memory entries never needs to round-trip through a temp file; `scanner.Config` gained a `Scope *scope.Scope` field, checked ahead of `ScopeFile` in `Engine.loadScope`, so the CLI's own existing warn-and-continue behavior for a human-typed command is completely unchanged. D2 (program-policy pre-flight) stays in Step 3 as originally planned — it needs registry data this step doesn't touch.
+- **A minimal `plan` tool shipped in Step 1**, not deferred to Step 2. Mirrors `cmd/hackerfive/plan.go`'s exact pipeline (recon → `registry.Resolve`) with no `elicitation`/approval — Step 2 adds that on top of the same handler.
+- **`templates/index.json`'s loader was extracted** into `templatesync.LoadIndex`/`WriteIndex` (`pkg/templatesync/index.go`) once a third consumer (`tools_registry.go`) needed the same read logic two independent copies (`cmd/hackerfive/templates.go`, `pkg/webui/handlers_plan.go`) had each duplicated; both switched to the shared version.
+- **Correction found mid-build, not assumed from the original plan:** the intended design was for `scan`/`recon` to use the MCP SDK's "tasks" extension for long-running calls (this session's own logs showed a `--detector` scan running 15+ minutes). Grepping the real downloaded SDK source (`go/pkg/mod/.../go-sdk@v1.7.0/mcp/*.go`) at implementation time found no such extension exists in v1.7.0 — no `Task`-named type/function anywhere in the package. What v1.7.0 actually has is the standard MCP progress-notification mechanism (`ServerSession.NotifyProgress`, keyed off the caller's `progressToken`) — same underlying goal, the real available mechanism used instead of an assumed one. `scan`'s `WithFindingCallback`/`WithLogCallback` and `recon`'s `WithProgressCallback` both relay through it when a caller supplies a `progressToken`.
+
+**A second real gap found live-verifying, not in the original plan:** `agenttask.PlanNode` is self-referential (`Children []*PlanNode`), and the SDK's reflection-based output-schema inference (`jsonschema.ForType`) cannot represent a recursive Go type — `AddTool` panicked at server startup with "cycle detected for type agenttask.PlanNode" the first time the `plan` tool was registered. Fixed by supplying an explicit, permissive `OutputSchema` (`{"type":"object"}`) for `plan` instead of leaving it to auto-infer — `PlanTree`'s real structure is already enforced at construction time by `registry.Resolve`/`agenttask.PlanTree`, not by this tool's wire-level output schema, so the permissive override costs nothing real.
+
+**New dependency added, per this step's own verification requirement**: `github.com/modelcontextprotocol/go-sdk` v1.7.0 (official, maintained with Google). Verified via a real scratch `go get` before adding to the real `go.mod` (not just reading its own go.mod): 11 new modules, two already pinned in this project at identical versions (`golang-jwt/jwt/v5 v5.3.1`, `golang.org/x/time v0.15.0`) — no interactsh-client-style bloat. Supports the 2026-07-28 spec's `elicitation` (`InputRequiredResult`/`inputRequests`/`inputResponses`, matching this doc's own B1 design), confirming the "verify before assuming maturity" dependency risk this doc's original Dependencies section flagged did not materialize.
 
 ### Design
 
-**A1 — `pkg/mcpserver/`**, exposing `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon` (doc91's R4, new), `tools.search`/`templates.search` (new, doc90 I1), and `plan` (built out fully in Step 2) as MCP tools. Calls straight into the existing `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon`/`pkg/registry` packages — no scan logic duplicated, the same boundary doc12 already drew for `pkg/webui`. Consumes the same `Engine.WithFindingCallback`/`WithLogCallback` hooks `pkg/webui` already uses (doc90's A2, already landed in Phase 3) — the MCP server is a second frontend on the unchanged core, not a second implementation of it.
+**A1 — `pkg/mcpserver/`**, exposing `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon` (doc91's R4, new), `tools.search`/`templates.search` (new, doc90 I1), and a minimal `plan` (registry-resolved tree only — `elicitation`/approval built out fully in Step 2) as MCP tools. Calls straight into the existing `pkg/scanner`/`pkg/template`/`pkg/reporter`/`pkg/recon`/`pkg/registry` packages — no scan logic duplicated, the same boundary doc12 already drew for `pkg/webui`. Consumes the same `Engine.WithFindingCallback`/`WithLogCallback` hooks `pkg/webui` already uses (doc90's A2, already landed in Phase 3) — the MCP server is a second frontend on the unchanged core, not a second implementation of it.
 
 **`tools.search`/`templates.search` — the answer to "should every detector/recon-tool/template be its own MCP tool": no.** Both are thin query wrappers over doc14's `pkg/registry` (I1) and `templates/index.json` (R9) — an agent calls `tools.search("wordpress")` and gets back matching registry entries (name/description/when-to-use), not a fixed MCP tool per capability. This is the same search-then-fetch shape this project's own tool ecosystem already uses for large catalogs, applied to HackerFive's own capability list instead of designing something bespoke.
 
@@ -56,20 +68,25 @@
 
 **Deliberately excludes anything shell/exec-shaped, per Decision 2** — this is the one place in the whole plan where "don't add a tool" is as important a design choice as "add a tool." Every path to a `Finding` still runs through the existing deterministic matcher/extractor engine; the agent selects targets/templates and interprets results, it never crafts a raw request the engine's matchers didn't already validate.
 
-**First real task of this step, not assumed**: verify the MCP Go SDK candidate (see Dependencies above) actually supports `elicitation`/`tasks` per the 2026-07-28 spec before writing `plan`'s scaffolding — Step 2 builds directly on this.
+**First real task of this step, not assumed**: verify the MCP Go SDK candidate (see Dependencies above) actually supports `elicitation` per the 2026-07-28 spec before writing `plan`'s scaffolding — Step 2 builds directly on this. Done: `github.com/modelcontextprotocol/go-sdk` v1.7.0 does (see this step's Done note); it does **not** have a "tasks" extension despite an early assumption otherwise — corrected before `scan`/`recon` were built, using MCP's standard progress-notification mechanism instead (see Done note).
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/mcpserver/server.go` — MCP server setup, tool registration.
-- `pkg/mcpserver/tools_scan.go` — `scan` tool, wired to `Engine.WithFindingCallback`/`WithLogCallback`.
+### Files (as built)
+- `pkg/mcpserver/server.go` — MCP server setup (`New`, `Serve`), tool registration.
+- `pkg/mcpserver/scope.go` — `requireScope`, D3's shared hard-fail helper.
+- `pkg/mcpserver/defaults.go` — shared rate-limit/concurrency/timeout/index-path defaults, mirroring `pkg/webui/handlers_scan.go`'s own constants.
+- `pkg/mcpserver/tools_scan.go` — `scan` tool, wired to `Engine.WithFindingCallback`/`WithLogCallback`, relaying progress notifications.
 - `pkg/mcpserver/tools_templates.go` — `templates.list`, `templates.sync`, calling `pkg/templatesync`.
-- `pkg/mcpserver/tools_findings.go` — `findings.export`, calling `pkg/reporter`.
-- `pkg/mcpserver/tools_recon.go` — `recon` tool, calling `pkg/recon` (doc14).
-- `pkg/mcpserver/tools_registry.go` — `tools.search`/`templates.search`, calling `pkg/registry` (doc14 I1) and `templates/index.json` (doc14 R9).
-- `cmd/hackerfive/mcpserve.go` — new `hackerfive mcp-serve` (or similar) subcommand.
-- `tests/unit/mcpserver_*_test.go` — schema-validated request/response tests per tool, no live target needed.
+- `pkg/mcpserver/tools_findings.go` — `findings.export`, calling `pkg/reporter.ExporterFor`.
+- `pkg/mcpserver/tools_recon.go` — `recon` tool, calling `pkg/recon`, relaying `WithProgressCallback`.
+- `pkg/mcpserver/tools_registry.go` — `tools.search`/`templates.search`, calling `pkg/registry.Search` (new) and `templatesync.LoadIndex`; the minimal `plan` tool.
+- `cmd/hackerfive/mcpserve.go` — new `hackerfive mcp-serve` subcommand, registered in `root.go`.
+- `pkg/scanner/scope/scope.go` — `New` extracted from `Parse`; `pkg/scanner/config.go` — `Config.Scope`; `pkg/scanner/engine.go` — `loadScope` checks it first.
+- `pkg/registry/registry.go` — `Search`, the substring lookup `tools.search` calls.
+- `pkg/templatesync/index.go` (new) — `LoadIndex`/`WriteIndex`, deduplicating the loader `cmd/hackerfive/templates.go` and `pkg/webui/handlers_plan.go` each carried their own copy of.
+- Tests are **in-package** `*_test.go` files (`pkg/mcpserver/tools_scan_test.go` etc.), not `tests/unit/` — the actually-used convention in this tree (`pkg/hackerone`, `pkg/registry` are in-package; `tests/unit/` is for cross-package/fixture-style tests), confirmed by reading the real tree rather than assumed from this doc's original guess.
 
 ### Verification
-Unit tests per tool against a mock/stub scanner config. A real MCP client (e.g. Claude Desktop or Claude Code configured against this server) can list and call `scan`/`templates.list`/`templates.sync`/`findings.export`/`recon` and get back structured JSON — live-verified before this step is marked done, not just unit-tested.
+`go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean. Unit tests per tool (in-memory MCP transport, `mcp.NewInMemoryTransports`) cover D3's two defense layers (schema-required `scope`, and `requireScope`'s rejection of an explicitly empty list), invalid-depth rejection, `tools.search`/`templates.search` matching, `findings.export`'s four formats, and an unknown-format rejection. Live-verified against a real MCP Go SDK client connected to the actual built binary over a real subprocess (`mcp.CommandTransport`, not Claude Desktop specifically but a genuine external client speaking the real protocol) — `tools/list` returns all 8 tools, `tools.search("idor")` returns real registry data, and `scan`/`plan` both correctly refuse an unscoped call end to end, not just in the in-process tests.
 
 ---
 
@@ -189,7 +206,7 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 
 ## Definition of Done (Phase 6, Weeks 41-48)
 
-- [ ] `pkg/mcpserver` exposes `scan`/`templates.list`/`templates.sync`/`findings.export`/`recon`/`tools.search`/`templates.search`/`plan` and nothing shell/exec-shaped; live-verified against a real MCP client
+- [x] `pkg/mcpserver` exposes `scan`/`templates.list`/`templates.sync`/`findings.export`/`recon`/`tools.search`/`templates.search`/`plan` and nothing shell/exec-shaped; live-verified against a real MCP client — done 2026-09-02 (Step 1)
 - [ ] The `plan` tool's human approval is captured via MCP `elicitation`, not a hand-rolled plan-ID flag; live-verified against a real client's own approval UI
 - [ ] A coordinator's first `plan` proposal is demonstrably seeded from doc14's real decision-engine output (R8), not an empty, hand-authored, or redundantly-re-derived tree
 - [ ] The tiered LLM fallback (I4) fires only on a confirmed decision-engine miss — never as a standing parallel path — with every call logged as one stateless input→output pair per `PlanTree` leaf

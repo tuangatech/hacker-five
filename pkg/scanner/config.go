@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 )
 
 // recognizedDetectors is the set of --detector values accepted.
@@ -54,6 +56,14 @@ type Config struct {
 	// working unmodified without this flag (see
 	// docs/11-implementation-plan-ph2.md Step 0's design tradeoff).
 	ScopeFile string
+
+	// Scope, if set, is a pre-parsed allow-list checked in preference to
+	// ScopeFile — for a caller that already has scope in memory (pkg/mcpserver's
+	// MCP tool handlers, doc15 Step 1) rather than a path on the server's own
+	// filesystem. loadScope's warn-and-continue-if-neither-is-set behavior
+	// (the CLI's existing default for a human-typed command) is unchanged;
+	// only a caller that actually sets one of these two fields opts in.
+	Scope *scope.Scope
 
 	// ProtectedPaths are candidate endpoint paths (from --protected-paths)
 	// the authbypass detector's missing-authentication check fires an

@@ -6,6 +6,8 @@
 // confirmed by reading its source per doc90/doc14).
 package registry
 
+import "strings"
+
 // Kind categorizes a Capability by what actually dispatches it.
 type Kind string
 
@@ -118,4 +120,27 @@ func Find(name string) (Capability, bool) {
 		}
 	}
 	return Capability{}, false
+}
+
+// Search returns every Capability whose Name/Description/WhenToUse/
+// WhenNotToUse contains query, case-insensitive substring match — the
+// `tools.search` MCP tool's backing lookup (doc15 Step 1, doc90 I1).
+// Deliberately a linear scan with no ranking/scoring: Capabilities is a
+// small, hand-authored list (~20 entries as of this writing), so a simple
+// substring match is instant and needs no more machinery than this.
+func Search(query string) []Capability {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil
+	}
+	var matches []Capability
+	for _, c := range Capabilities {
+		if strings.Contains(strings.ToLower(c.Name), q) ||
+			strings.Contains(strings.ToLower(c.Description), q) ||
+			strings.Contains(strings.ToLower(c.WhenToUse), q) ||
+			strings.Contains(strings.ToLower(c.WhenNotToUse), q) {
+			matches = append(matches, c)
+		}
+	}
+	return matches
 }

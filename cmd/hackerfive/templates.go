@@ -1,13 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -95,15 +93,6 @@ func newTemplatesListCmd() *cobra.Command {
 	return cmd
 }
 
-// templateIndexFile is the on-disk shape of templates/index.json (doc14
-// Step 3's R9) — a thin, timestamped wrapper around templatesync.List's
-// own already-flattened Entry shape. Read by `hackerfive plan` and
-// pkg/registry's decision engine (template-tag matching), written here.
-type templateIndexFile struct {
-	GeneratedAt time.Time            `json:"generated_at"`
-	Templates   []templatesync.Entry `json:"templates"`
-}
-
 func newTemplatesIndexCmd() *cobra.Command {
 	var output string
 
@@ -117,12 +106,8 @@ func newTemplatesIndexCmd() *cobra.Command {
 				return fmt.Errorf("indexing templates: %w", err)
 			}
 
-			data, err := json.MarshalIndent(templateIndexFile{GeneratedAt: time.Now().UTC(), Templates: entries}, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshaling template index: %w", err)
-			}
-			if err := os.WriteFile(output, data, 0o644); err != nil {
-				return fmt.Errorf("writing %s: %w", output, err)
+			if err := templatesync.WriteIndex(output, entries); err != nil {
+				return err
 			}
 
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d templates (%d rejected) to %s\n", len(entries), rejected, output)
@@ -134,21 +119,12 @@ func newTemplatesIndexCmd() *cobra.Command {
 	return cmd
 }
 
-// loadTemplateIndex reads a templateIndexFile written by `templates index`,
-// returning its flattened Entry list. Callers that can proceed without a
-// template index (e.g. `plan`) should treat a missing file as a soft
-// degrade, not a hard error — mirroring pkg/recon's own "missing binary ->
-// warning, not failure" posture.
+// loadTemplateIndex reads templates/index.json via templatesync.LoadIndex.
+// Callers that can proceed without a template index (e.g. `plan`) should
+// treat a missing file as a soft degrade, not a hard error — mirroring
+// pkg/recon's own "missing binary -> warning, not failure" posture.
 func loadTemplateIndex(path string) ([]templatesync.Entry, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var f templateIndexFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
-	return f.Templates, nil
+	return templatesync.LoadIndex(path)
 }
 
 // defaultTemplateDirsWithLabels is the default two-source list both

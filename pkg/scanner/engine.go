@@ -224,12 +224,19 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 	return findings, nil
 }
 
-// loadScope parses e.cfg.ScopeFile, if given. Returns (nil, nil) when
-// ScopeFile is "" — the documented "no enforcement" default (see
-// docs/11-implementation-plan-ph2.md Step 0) — but prints a one-line stderr
-// warning first, so a real-target run without scoping is visibly, not
-// silently, unguarded.
+// loadScope returns e.cfg.Scope if the caller already supplied a pre-parsed
+// Scope (pkg/mcpserver's tool handlers do — doc15 Step 1), else parses
+// e.cfg.ScopeFile if given. Returns (nil, nil) when neither is set — the
+// documented "no enforcement" default (see docs/11-implementation-plan-ph2.md
+// Step 0) — but prints a one-line stderr warning first, so a real-target run
+// without scoping is visibly, not silently, unguarded. This warn-and-continue
+// behavior is for a human-typed CLI command; an agent-initiated call is
+// expected to reject a missing scope before ever constructing an Engine
+// (doc15 Step 1's D3), not rely on this warning.
 func (e *Engine) loadScope() (*scope.Scope, error) {
+	if e.cfg.Scope != nil {
+		return e.cfg.Scope, nil
+	}
 	if e.cfg.ScopeFile == "" {
 		e.warnf("warn", "no --scope file provided — all targets will be scanned without authorization-scope validation")
 		return nil, nil

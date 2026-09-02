@@ -25,8 +25,9 @@ type Scope struct {
 
 // Parse reads path — one entry per line, blank lines and "#"-prefixed
 // comments ignored (same convention as cmd/hackerfive/scan.go's
-// resolveTargets file handling). Each line is either a CIDR (net.ParseCIDR)
-// or a bare/"*."-prefixed domain — no other syntax is recognized.
+// resolveTargets file handling) — then hands the lines to New. File-specific
+// concerns (open/read/line-splitting) live only here; entry-parsing lives
+// only in New, so the two never drift apart.
 func Parse(path string) (*Scope, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -34,10 +35,25 @@ func Parse(path string) (*Scope, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	s := &Scope{}
+	var lines []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scope: reading %s: %w", path, err)
+	}
+	return New(lines)
+}
+
+// New builds a Scope directly from in-memory entries (one per element,
+// blank/"#"-prefixed entries ignored) — the same per-line syntax Parse
+// reads from a file, for a caller that already has entries in memory (e.g.
+// an MCP tool argument) rather than a path on the server's own filesystem.
+func New(entries []string) (*Scope, error) {
+	s := &Scope{}
+	for _, line := range entries {
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -46,9 +62,6 @@ func Parse(path string) (*Scope, error) {
 			continue
 		}
 		s.domains = append(s.domains, strings.ToLower(line))
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scope: reading %s: %w", path, err)
 	}
 	return s, nil
 }

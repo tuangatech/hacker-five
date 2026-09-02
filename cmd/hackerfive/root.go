@@ -34,6 +34,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newReportCmd())
 	cmd.AddCommand(newReconCmd(flags))
 	cmd.AddCommand(newPlanCmd(flags))
+	cmd.AddCommand(newMCPServeCmd())
 
 	return cmd
 }

@@ -1,10 +1,7 @@
 package webui
 
 import (
-	"encoding/json"
 	"net/http"
-	"os"
-	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
@@ -53,26 +50,7 @@ func (h *handlers) planPreview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// templateIndexFile mirrors cmd/hackerfive/templates.go's own type of the
-// same name — the on-disk shape of templates/index.json. Duplicated locally
-// rather than imported from cmd/hackerfive/package main, which pkg/webui
-// cannot depend on (same cmd/pkg boundary defaultWebTemplateDirsWithLabels
-// and splitCSV already duplicate small cmd/hackerfive helpers across, see
-// handlers_templates.go/handlers_scan.go).
-type templateIndexFile struct {
-	GeneratedAt time.Time            `json:"generated_at"`
-	Templates   []templatesync.Entry `json:"templates"`
-}
-
-// loadTemplateIndex mirrors cmd/hackerfive/templates.go's loadTemplateIndex.
+// loadTemplateIndex reads templates/index.json via templatesync.LoadIndex.
 func loadTemplateIndex(path string) ([]templatesync.Entry, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var f templateIndexFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, err
-	}
-	return f.Templates, nil
+	return templatesync.LoadIndex(path)
 }

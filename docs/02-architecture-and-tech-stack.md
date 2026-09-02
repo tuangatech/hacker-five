@@ -183,6 +183,7 @@
 - gopkg.in/yaml.v3 (YAML parsing)
 - github.com/json-iterator/go (fast JSON parsing)
 - github.com/santhosh-tekuri/jsonschema/v5 (validates docs/schema/finding.schema.json and recon-result.schema.json — Phase 5; checked for real transitive footprint before adding, per this list's own discipline below: zero transitive dependencies, confirmed via a scratch-module `go get`)
+- github.com/modelcontextprotocol/go-sdk (`pkg/mcpserver`, MCP server — Phase 6 Step 1; official SDK, maintained with Google; checked for real transitive footprint before adding: 11 new modules, two already pinned in this project at identical versions — see [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Step 1's Done note for the full verification)
 - (Optional) github.com/chromedp/chromedp (for browser-based XSS validation)
 ```
 
