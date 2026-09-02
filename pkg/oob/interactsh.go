@@ -43,7 +43,48 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// retryAttempts/retryBackoff exist because public Interactsh servers
+// individually drop or tarpit a meaningful fraction of requests — confirmed
+// live (docs/discussions.md, 2026-09-02): a single well-formed register
+// request via curl and via this package's own single-attempt client both
+// hung for the server's full connection lifetime with zero bytes back on
+// oast.pro/oast.live/oast.fun, while the official interactsh-client (which
+// retries up to 5x via retryablehttp-go) succeeded from the same network
+// moments later. This isn't a protocol bug — it's the normal operating
+// reality of free, heavily-used public OOB infrastructure, and a
+// single-attempt client is simply the wrong shape for talking to it.
+const retryAttempts = 3
+
+var retryBackoff = []time.Duration{1 * time.Second, 2 * time.Second}
+
+// withRetry runs do up to retryAttempts times, waiting the matching
+// retryBackoff entry (the last entry repeats for any further attempt)
+// between tries, and returns the final attempt's error if none succeed.
+func withRetry(ctx context.Context, do func() error) error {
+	var lastErr error
+	for attempt := 0; attempt < retryAttempts; attempt++ {
+		if attempt > 0 {
+			wait := retryBackoff[len(retryBackoff)-1]
+			if attempt-1 < len(retryBackoff) {
+				wait = retryBackoff[attempt-1]
+			}
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if err := do(); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
 
 // Client is a registered Interactsh-protocol session against one self-hosted
 // server.
@@ -145,21 +186,23 @@ func (c *Client) register(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("oob: marshaling register request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+"/register", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("oob: building register request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("oob: registering with server %s: %w", c.serverURL, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("oob: server rejected registration: %s", string(data))
-	}
-	return nil
+	return withRetry(ctx, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+"/register", bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("oob: building register request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("oob: registering with server %s: %w", c.serverURL, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			data, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("oob: server rejected registration: %s", string(data))
+		}
+		return nil
+	})
 }
 
 // NewPayloadHost returns a fresh, unique hostname (a correlationID+nonce
@@ -177,23 +220,29 @@ func (c *Client) NewPayloadHost() (host, nonce string) {
 // (or since registration).
 func (c *Client) Poll(ctx context.Context) ([]Interaction, error) {
 	pollURL := fmt.Sprintf("%s/poll?id=%s&secret=%s", c.serverURL, c.correlationID, c.secretKey)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("oob: building poll request: %w", err)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("oob: polling server: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("oob: server rejected poll: %s", string(data))
-	}
 
 	var pr pollResponse
-	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
-		return nil, fmt.Errorf("oob: decoding poll response: %w", err)
+	err := withRetry(ctx, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if err != nil {
+			return fmt.Errorf("oob: building poll request: %w", err)
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("oob: polling server: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			data, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("oob: server rejected poll: %s", string(data))
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+			return fmt.Errorf("oob: decoding poll response: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	var out []Interaction

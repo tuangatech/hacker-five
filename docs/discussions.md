@@ -20,6 +20,23 @@ Short, dated, bullet-form records of architecture questions that were discussed 
 
 **Files:** `pkg/detectors/ssrf/rules.go` (`DefaultOOBServers`), `cmd/hackerfive/scan.go` (`--oob-server` default, new `--no-oob`), `pkg/webui/handlers_scan.go`/`handlers_launch.go` (Web UI default), `pkg/scanner/config.go` (`OOBServers` doc comment) — plus corrections to [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md)'s design tension 1 and [follow-up.md](follow-up.md) §1, both of which documented the old "empty by default" behavior as settled.
 
+## 2026-09-02: Public OOB servers silently drop single-attempt requests — `pkg/oob` needed retries
+
+**Trigger:** after defaulting `--oob-server` to `oast.pro`/`oast.live` (previous entry above), the obvious next question — "does this actually work?" — turned out not to be true on the first attempt at proving it.
+
+**Investigation, in order, each step ruling something out:**
+1. `tests/unit/oob_test.go`'s live self-issued-callback test against `oast.pro` failed: `context deadline exceeded` on `POST /register`, from the sandboxed Claude Code environment.
+2. Re-ran from the user's own real, unsandboxed WSL2/laptop network — **same failure**, ruling out a sandbox-specific network restriction.
+3. `curl -v` against `oast.pro/register` showed a clean TLS 1.3 handshake (valid Let's Encrypt cert, ALPN h2 negotiated) and a fully-sent HTTP/2 request, then **zero bytes back** — not a TCP block, not a TLS error, not an HTTP error. A true silent drop after the connection was already established. Same symptom against `oast.live` and `oast.fun`.
+4. Installed the *official* `interactsh-client` (`github.com/projectdiscovery/interactsh/cmd/interactsh-client`) and ran it from the same network — **it registered successfully against `oast.live` immediately**, where our own client had just failed 3/3 times in a row against the same server.
+5. Read the official client's actual transport (`retryablehttp-go`'s `DefaultOptionsSpraying`): `RetryMax: 5`, up to 30s per attempt, exponential backoff, plus ProjectDiscovery's own `fastdialer` for DNS/dialing. `pkg/oob`'s `register`/`Poll` each made exactly **one** attempt with no retry at all.
+
+**Conclusion:** not a protocol bug, not a client fingerprint block, not dead servers — free, heavily-used public Interactsh infrastructure genuinely drops or tarpits a meaningful fraction of individual requests as normal operating behavior, and the official client's resilience comes entirely from retrying, which `pkg/oob` didn't do.
+
+**Fix:** `pkg/oob`'s `register` and `Poll` now retry up to 3x (1s, 2s backoff) before surfacing an error — a small, first-party addition (no new dependency, consistent with why `pkg/oob` was written first-party in the first place; see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 2). Verified two ways: a deterministic mock-server test (`tests/unit/oob_retry_test.go`, fails N times then succeeds / exhausts retries and gives up) and the real live round trip against both `oast.pro` and `oast.live`, both now passing from the user's real network.
+
+**Files:** `pkg/oob/interactsh.go` (`withRetry`, wired into `register`/`Poll`), `tests/unit/oob_retry_test.go` (new).
+
 ## 2026-09-02: Go-only vs. Go engine + Python (FastAPI) UI/LLM/MCP, connected via gRPC
 
 **Proposal considered:** split into two deployables — Go for the deterministic engine (and maybe LLM/agent logic), Python/FastAPI for UI + LLM + MCP, gRPC as the connector, same monorepo.
