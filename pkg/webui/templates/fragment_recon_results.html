@@ -8,8 +8,13 @@
 <h3>Endpoints</h3>
 <table>
 <thead><tr><th>URL</th><th>Method</th><th>Status</th><th>Source</th><th>Confidence</th></tr></thead>
-<tbody>{{range .Endpoints}}<tr><td><code>{{.URL}}</code></td><td>{{.Method}}</td><td>{{.StatusCode}}</td><td>{{.Source}}</td><td>{{.Confidence}}</td></tr>{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
+<tbody>{{range .DisplayEndpoints}}<tr><td><code title="{{.URL}}">{{.DisplayURL}}</code>{{if gt .VariantCount 1}} <span class="variant-count">&times;{{.VariantCount}}</span>{{end}}</td><td>{{.Method}}</td><td>{{.StatusCode}}</td><td>{{.Source}}</td><td>{{.Confidence}}</td></tr>{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
 </table>
+
+{{if .APISpec}}<h3>API Spec Exposed</h3>
+<p class="hint">A machine-readable API spec was found publicly reachable — it can disclose the entire route/parameter surface. Worth reviewing directly, not just as one more endpoint.</p>
+<p><code>{{.APISpec.Kind}}</code>: <a href="{{.APISpec.URL}}" target="_blank" rel="noopener noreferrer">{{.APISpec.URL}}</a></p>
+{{end}}
 
 <h3>Tech Stack</h3>
 <table>

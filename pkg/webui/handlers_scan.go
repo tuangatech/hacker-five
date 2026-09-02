@@ -65,7 +65,7 @@ func (h *handlers) scanCatchup(w http.ResponseWriter, r *http.Request) {
 	snap := job.Snapshot()
 	executeTemplate(w, h.tmpl, "fragment_catchup", CatchupData{
 		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves}),
-		ReconHTML:    renderFragment(h.tmpl, "fragment_recon_results", snap.ReconResult),
+		ReconHTML:    renderFragment(h.tmpl, "fragment_recon_results", newReconView(snap.ReconResult)),
 	})
 }
 

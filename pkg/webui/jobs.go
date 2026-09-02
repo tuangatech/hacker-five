@@ -43,10 +43,16 @@ type WaveStatus struct {
 }
 
 // LogEntry is one warning/error line, as scanner.Engine's WithLogCallback
-// delivers it.
+// delivers it. Time is pre-formatted (server-local, 24h "HH:MM") at
+// AppendLog time rather than stored as time.Time — this codebase's existing
+// convention for display-only values (see pkg/webui/recon_view.go's
+// EndpointRow.DisplayURL): the Logs panel is the only consumer, and matching
+// two long log lists side by side is much easier with a visible time on
+// each line than by position alone.
 type LogEntry struct {
 	Level string
 	Msg   string
+	Time  string
 }
 
 // Event is one live update pushed to an SSE subscriber — HTML is
@@ -186,7 +192,7 @@ func (j *Job) AppendFinding(f detectors.Finding) {
 // AppendLog is AppendFinding's counterpart for scanner.Engine's
 // WithLogCallback.
 func (j *Job) AppendLog(level, msg string) {
-	entry := LogEntry{Level: level, Msg: msg}
+	entry := LogEntry{Level: level, Msg: msg, Time: time.Now().Format("15:04")}
 	j.mu.Lock()
 	j.logs = append(j.logs, entry)
 	j.mu.Unlock()

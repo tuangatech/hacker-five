@@ -1,2 +1,2 @@
-{{define "fragment_log_line"}}<div class="log-{{.Level}}">[{{.Level}}] {{.Msg}}</div>
+{{define "fragment_log_line"}}<div class="log-{{.Level}}"><span class="log-time">{{.Time}}</span> [{{.Level}}] {{.Msg}}</div>
 {{end}}

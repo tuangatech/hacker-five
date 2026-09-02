@@ -10,7 +10,7 @@
 <div hx-get="/scans/{{.JobID}}/catchup" hx-trigger="htmx:sseOpen from:#sse-root" hx-target="this" hx-swap="none"></div>
 <h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
 
-<div id="recon-results" sse-swap="recon">{{template "fragment_recon_results" .Snapshot.ReconResult}}</div>
+<div id="recon-results" sse-swap="recon">{{template "fragment_recon_results" (reconView .Snapshot.ReconResult)}}</div>
 
 <h2>Findings</h2>
 <table>

@@ -85,6 +85,23 @@ func TestJob_AppendFinding_AppendsBeforePublishing(t *testing.T) {
 	}
 }
 
+// TestJob_AppendLog_SetsLocalTimeHHMM confirms each log line gets a
+// pre-formatted, 24h "HH:MM" local timestamp (user-requested, 2026-09-01) —
+// AppendLog is the only place LogEntry.Time is ever set.
+func TestJob_AppendLog_SetsLocalTimeHHMM(t *testing.T) {
+	j := newTestJob("t-log-time")
+
+	j.AppendLog("info", "hello")
+
+	snap := j.Snapshot()
+	require.Len(t, snap.Logs, 1)
+	got := snap.Logs[0].Time
+	require.Len(t, got, 5, "expected HH:MM (5 chars), got %q", got)
+	parsed, err := time.Parse("15:04", got)
+	require.NoError(t, err, "Time %q must parse as 24h HH:MM", got)
+	assert.Equal(t, got, parsed.Format("15:04"))
+}
+
 // TestJob_Publish_NeverBlocksOnFullSubscriber is the direct test of doc12's
 // non-blocking-send design: a subscriber that never drains its channel must
 // never stall the scan (AppendLog/AppendFinding) that's publishing to it.

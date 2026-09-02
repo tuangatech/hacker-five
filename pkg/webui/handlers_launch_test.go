@@ -155,6 +155,19 @@ func TestLaunchForm_RendersDefaults(t *testing.T) {
 	assert.NotContains(t, html, `name="run_recon"`, "recon always runs — no opt-out control shown")
 	assert.NotContains(t, html, `name="depth"`, "recon depth is always full — no picker shown")
 	assert.NotContains(t, html, "Recent Scans", "Recent Scans was dropped from the launch page — Scan History nav link covers it")
+
+	// misconfig/idor/authbypass/ssrf default checked — "run whatever recon
+	// can support without any input" (2026-09-01); businesslogic stays off,
+	// it hard-requires a real token and its AllowWrites checkbox is a
+	// deliberate, explicit opt-in (CLAUDE.md).
+	assert.Contains(t, html, `name="run_misconfig" checked`)
+	assert.Contains(t, html, `name="run_idor" checked`)
+	assert.Contains(t, html, `name="run_authbypass" checked`)
+	assert.Contains(t, html, `name="run_ssrf" checked`)
+	assert.NotContains(t, html, `name="run_businesslogic" checked`)
+	assert.NotContains(t, html, `name="allow_writes" checked`)
+
+	assert.NotContains(t, html, "thetavernhouse.com", "the default Target must never point at a real external site")
 }
 
 // TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables runs the
@@ -254,6 +267,43 @@ func TestStartLaunch_UncheckedDetectorTab_NotRunSilently(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+}
+
+// TestParseLaunchSubmission_MultipleDetectorsChecked_TemplatesAttachedOnce
+// guards a real bug found live, 2026-09-01: baseCfg used to attach the full
+// nuclei/native template corpus to every checked detector's scanner.Config
+// identically. Engine.Run fires every loaded template additively alongside
+// whichever --detector was selected (by design, for the CLI's one-config-
+// per-invocation model) — but runLaunchJob calls scanner.New(cfg).Run()
+// once per checked checkbox, so with misconfig+idor+ssrf all checked (now
+// the Launch page's own default), the same ~3190 templates fired three
+// times against the same target, tripling every template-based Finding and
+// every real request sent to the target. Exactly one config must carry
+// TemplatePaths.
+func TestParseLaunchSubmission_MultipleDetectorsChecked_TemplatesAttachedOnce(t *testing.T) {
+	form := url.Values{
+		"target":        {"https://example.com"},
+		"run_misconfig": {"on"},
+		"run_idor":      {"on"},
+		"run_ssrf":      {"on"},
+		"authorized":    {"on"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	_, cfgs, errs := parseLaunchSubmission(req)
+	require.Empty(t, errs)
+	require.Len(t, cfgs, 3)
+
+	withTemplates := 0
+	for _, cfg := range cfgs {
+		if len(cfg.TemplatePaths) > 0 {
+			withTemplates++
+		}
+	}
+	assert.Equal(t, 1, withTemplates, "the template corpus must be attached to exactly one config, never once per checked detector")
+	assert.NotEmpty(t, cfgs[0].TemplatePaths, "misconfig is checked first and built first, so it should be the one carrying the templates")
+	assert.Equal(t, "misconfig", cfgs[0].Detector)
 }
 
 // TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip checks

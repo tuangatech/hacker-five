@@ -17,6 +17,16 @@ var commonPaths = []string{
 	"/api", "/graphql", "/swagger.json", "/.well-known/openapi.json", "/robots.txt", "/sitemap.xml",
 }
 
+// specPaths is the subset of commonPaths whose presence is itself a
+// higher-value finding than a generic discovered endpoint — a publicly
+// reachable OpenAPI/Swagger doc can reveal the whole route/parameter
+// surface. Recorded as an APISpecFact (presence-only, never parsed — see
+// APISpecFact's own doc comment) in addition to the usual EndpointFact.
+var specPaths = map[string]string{
+	"/swagger.json":             "openapi",
+	"/.well-known/openapi.json": "openapi",
+}
+
 // authBoundaryKeywords are lowercase substrings whose presence in a page
 // body suggests a login/auth boundary — cheap heuristic; doesn't attempt to
 // break anything, just answers "are the IDOR/authbypass detectors even
@@ -138,6 +148,9 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		_ = resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 			agg.addEndpoint(EndpointFact{URL: reqURL, Method: http.MethodGet, StatusCode: resp.StatusCode, Source: "wave3-common-path-probe", Confidence: ConfidenceHigh})
+			if kind, ok := specPaths[path]; ok {
+				agg.addAPISpec(APISpecFact{Kind: kind, URL: reqURL})
+			}
 		}
 	}
 }

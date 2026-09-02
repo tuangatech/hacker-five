@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -76,10 +77,14 @@ func TestReconResult_SchemaRoundTrip(t *testing.T) {
 	foundFingerprint := false
 	for _, tf := range result.TechStack {
 		require.NotEmpty(t, tf.Host, "every TechFact must carry the host that produced it")
-		if tf.Source == "fingerprint-header" {
+		if strings.Contains(tf.Source, "fingerprint-header") {
 			foundFingerprint = true
 		}
 	}
+	// Source is now a merged, comma-joined list when independent passes agree
+	// on the same (Name, Host) — see aggregator.addTech's dedup, 2026-09-01 —
+	// so a fingerprint-header match on the same tech httpx already reported
+	// shows up merged into one row's Source, not a second identical row.
 	assert.True(t, foundFingerprint, "expected pkg/fingerprint's header-based match to enrich TechStack alongside httpx-tech-detect")
 
 	foundKatanaStatusCode := false

@@ -283,6 +283,11 @@ tr.sev-info { background: var(--info-bg); }
 .log-warn { color: #a3790a; }
 .log-error { color: var(--danger); }
 
+.log-time {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .status-badge {
   display: inline-block;
   padding: 0.15rem 0.65rem;
@@ -374,6 +379,11 @@ tr.sev-info { background: var(--info-bg); }
 
 .auth-shared .hint {
   margin: 0 0 0.75rem;
+}
+
+.variant-count {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .target-header {

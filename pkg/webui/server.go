@@ -43,7 +43,10 @@ func New(opts Options) (*Server, error) {
 	if version == "" {
 		version = "dev"
 	}
-	funcs := template.FuncMap{"version": func() string { return version }}
+	funcs := template.FuncMap{
+		"version":   func() string { return version },
+		"reconView": newReconView,
+	}
 	tmpl, err := template.New("hackerfive").Funcs(funcs).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parsing embedded templates: %w", err)

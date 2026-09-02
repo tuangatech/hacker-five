@@ -86,11 +86,12 @@ type TechFact struct {
 	Confidence string `json:"confidence"`
 }
 
-// APISpecFact reserves the shape for a parsed OpenAPI/GraphQL SDL spec.
-// Always nil in this pass — generic spec parsing is an explicit, named
-// scope cut from docs/91-research-recon-phase.md §3's Wave 0/3 (see
-// docs/14-implementation-plan-ph5.md Step 3's Context section); Wave 3 only
-// detects a spec's presence as an EndpointFact, it doesn't parse one.
+// APISpecFact records that a machine-readable API spec was found publicly
+// reachable — presence only, never parsed; generic spec parsing is still an
+// explicit, named scope cut from docs/91-research-recon-phase.md §3's Wave
+// 0/3 (see docs/14-implementation-plan-ph5.md Step 3's Context section).
+// Set when a common-path probe (probeCommonPaths' specPaths) hits a known
+// spec URL, in addition to — not instead of — the usual EndpointFact.
 type APISpecFact struct {
 	Kind string `json:"kind"` // "openapi" | "graphql-sdl"
 	URL  string `json:"url"`

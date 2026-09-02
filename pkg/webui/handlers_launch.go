@@ -43,11 +43,21 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 	}
 	data := LaunchFormData{
 		CSRFToken:    token,
-		Target:       "https://thetavernhouse.com",
+		Target:       "https://www.example.com",
 		RunMisconfig: true,
-		RateLimit:    defaultRateLimit,
-		Concurrency:  defaultConcurrency,
-		Tools:        buildToolSetupData(false, ""),
+		// idor/authbypass/ssrf default on too — "run whatever recon can
+		// support without any input" (user decision, 2026-09-01): a
+		// detector with nothing to work with just skips itself with a
+		// clear log line (fillReconFields), so checking these by default
+		// costs nothing and finds more when recon does have something.
+		// businesslogic stays off — it hard-requires a real token and its
+		// AllowWrites checkbox is a deliberate, explicit opt-in (CLAUDE.md).
+		RunIdor:       true,
+		RunAuthbypass: true,
+		RunSsrf:       true,
+		RateLimit:     defaultRateLimit,
+		Concurrency:   defaultConcurrency,
+		Tools:         buildToolSetupData(false, ""),
 	}
 	executeTemplate(w, h.tmpl, "launch.html", data)
 }
@@ -91,7 +101,7 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves})
 		},
 		func(result *recon.ReconResult) template.HTML {
-			return renderFragment(h.tmpl, "fragment_recon_results", result)
+			return renderFragment(h.tmpl, "fragment_recon_results", newReconView(result))
 		},
 	)
 	// The authorization checkbox becomes the job's first log entry — the
@@ -188,10 +198,31 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 		Authorized:       r.PostFormValue("authorized") == "on",
 	}
 
+	// templatesAssigned ensures the nuclei/native template corpus is
+	// attached to exactly one of this submission's scanner.Configs, not
+	// one copy per checked detector. Found live, 2026-09-01: Engine.Run
+	// runs every loaded template additively alongside whichever
+	// --detector was selected (by design, for the CLI's one-config-per-
+	// invocation model — see CLAUDE.md's own documented gotcha) — but
+	// runLaunchJob calls scanner.New(cfg).Run() once per checked
+	// checkbox, each with its own identical TemplatePaths. With 2+
+	// boxes checked (now the default: misconfig+idor+authbypass+ssrf),
+	// that reran the same ~3190 templates once per checked detector,
+	// quadrupling both duplicate Findings and real requests sent to the
+	// target. Which config keeps the templates is arbitrary — template
+	// execution doesn't depend on cfg.Detector — so the first checked-
+	// and-valid detector (misconfig, if checked, since its own if-block
+	// runs first) keeps them; every later one gets TemplatePaths: nil.
+	templatesAssigned := false
 	baseCfg := func(detector string) scanner.Config {
+		var templatePaths []string
+		if !templatesAssigned {
+			templatePaths = defaultWebTemplateDirs()
+			templatesAssigned = true
+		}
 		return scanner.Config{
 			Targets:          []string{target},
-			TemplatePaths:    defaultWebTemplateDirs(),
+			TemplatePaths:    templatePaths,
 			Tags:             splitCSV(form.Tags),
 			Detector:         detector,
 			Concurrency:      concurrency,
