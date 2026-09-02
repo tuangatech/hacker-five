@@ -18,24 +18,22 @@ Short, dated, bullet-form records of architecture questions that were discussed 
 
 **What's still available, unchanged:** `--oob-server public` still expands to the full 6-server `PublicInteractshServers` pool (broader than the 2-server default); an explicit self-hosted URL still works exactly as before.
 
-**Files:** `pkg/detectors/ssrf/rules.go` (`DefaultOOBServers`), `cmd/hackerfive/scan.go` (`--oob-server` default, new `--no-oob`), `pkg/webui/handlers_scan.go`/`handlers_launch.go` (Web UI default), `pkg/scanner/config.go` (`OOBServers` doc comment) — plus corrections to [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md)'s design tension 1 and [follow-up.md](follow-up.md) §1, both of which documented the old "empty by default" behavior as settled.
+**Files:** `pkg/detectors/ssrf/rules.go` (`DefaultOOBServers`), `cmd/hackerfive/scan.go` (`--oob-server` default, new `--no-oob`), `pkg/webui/handlers_scan.go`/`handlers_launch.go` (Web UI default), `pkg/scanner/config.go` (`OOBServers` doc comment) — plus corrections to [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md)'s design tension 1 and [follow-up.md](follow-up.md)'s Security & Scope Hardening section, both of which documented the old "empty by default" behavior as settled.
 
-## 2026-09-02: Public OOB servers silently drop single-attempt requests — `pkg/oob` needed retries
+## 2026-09-02: XBOW research — comparable AI-driven autonomous pentester
 
-**Trigger:** after defaulting `--oob-server` to `oast.pro`/`oast.live` (previous entry above), the obvious next question — "does this actually work?" — turned out not to be true on the first attempt at proving it.
+Closest existing example of "agent-driven scanner run at scale against authorized programs, turned into a business" — kept here for the hackbot-agent-design angle (doc90/doc14/doc15), not company/funding/leaderboard details.
 
-**Investigation, in order, each step ruling something out:**
-1. `tests/unit/oob_test.go`'s live self-issued-callback test against `oast.pro` failed: `context deadline exceeded` on `POST /register`, from the sandboxed Claude Code environment.
-2. Re-ran from the user's own real, unsandboxed WSL2/laptop network — **same failure**, ruling out a sandbox-specific network restriction.
-3. `curl -v` against `oast.pro/register` showed a clean TLS 1.3 handshake (valid Let's Encrypt cert, ALPN h2 negotiated) and a fully-sent HTTP/2 request, then **zero bytes back** — not a TCP block, not a TLS error, not an HTTP error. A true silent drop after the connection was already established. Same symptom against `oast.live` and `oast.fun`.
-4. Installed the *official* `interactsh-client` (`github.com/projectdiscovery/interactsh/cmd/interactsh-client`) and ran it from the same network — **it registered successfully against `oast.live` immediately**, where our own client had just failed 3/3 times in a row against the same server.
-5. Read the official client's actual transport (`retryablehttp-go`'s `DefaultOptionsSpraying`): `RetryMax: 5`, up to 30s per attempt, exponential backoff, plus ProjectDiscovery's own `fastdialer` for DNS/dialing. `pkg/oob`'s `register`/`Poll` each made exactly **one** attempt with no retry at all.
+**Technical architecture:**
+- Multi-agent: a Main Agent plans/decides/invokes tools; spins up Sub Agents for exploit/PoC scripting.
+- Recon-then-exploit phase split — recon (curl-based crawl) runs to completion before any exploitation, structurally similar to HackerFive's baseline-mode two-request design, just LLM-planned instead of template-defined.
+- "Reasoning over rules" — no fixed detection logic; the agent reasons about the target. The core architectural difference from HackerFive's template model: templates are auditable/reproducible, an LLM-reasoning agent is more adaptive but harder to keep deterministic.
+- A deterministic validation layer sits on top of LLM-driven discovery specifically to keep false positives low before submission — same problem HackerFive's <5% FP target solves, different mechanism (LLM re-verification vs. two-account baseline diffing).
+- ~96% self-reported success on their own hint-free benchmark — a marketing number, not an independent audit.
 
-**Conclusion:** not a protocol bug, not a client fingerprint block, not dead servers — free, heavily-used public Interactsh infrastructure genuinely drops or tarpits a meaningful fraction of individual requests as normal operating behavior, and the official client's resilience comes entirely from retrying, which `pkg/oob` didn't do.
+**Business model (Pentest On-Demand):** self-serve — point at a target (URL + creds), no scoping calls, compliance-ready report within 5 business days; $4k-$8k+/test vs. traditional pentesting's $10k-$35k+/35-100 days. Relevant precedent: an open engine (or novel agent) plus authorized-scope results as a credibility proof point, later packaged into a paid hosted/managed service — not a required next step, a viable later path once the open tool has traction.
 
-**Fix:** `pkg/oob`'s `register` and `Poll` now retry up to 3x (1s, 2s backoff) before surfacing an error — a small, first-party addition (no new dependency, consistent with why `pkg/oob` was written first-party in the first place; see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 2). Verified two ways: a deterministic mock-server test (`tests/unit/oob_retry_test.go`, fails N times then succeeds / exhausts retries and gives up) and the real live round trip against both `oast.pro` and `oast.live`, both now passing from the user's real network.
-
-**Files:** `pkg/oob/interactsh.go` (`withRetry`, wired into `register`/`Poll`), `tests/unit/oob_retry_test.go` (new).
+**Relevant to:** doc90/doc14/doc15's deterministic-first, tiered-LLM-fallback design — the "reasoning over rules" tension above is exactly why HackerFive stayed template-first with LLM as fallback rather than agent-first.
 
 ## 2026-09-02: Go-only vs. Go engine + Python (FastAPI) UI/LLM/MCP, connected via gRPC
 
@@ -56,9 +54,9 @@ Short, dated, bullet-form records of architecture questions that were discussed 
 - LLM fallback stays Go (`pkg/llmfallback`, doc15 Step 2) — already REST-only by design.
 - The only contingency worth keeping, and only if the Go MCP SDK genuinely proves inadequate in practice (not preemptively): a narrow, isolated Python subprocess for *just* the MCP transport layer — a much smaller hedge than a second service.
 
-**Trigger to revisit — a condition, not a date:** if HackerFive ever becomes a genuinely hosted, multi-tenant service (the undecided "Pentest On-Demand" idea noted in [follow-up.md](follow-up.md) §3), independent scaling of a UI tier vs. an engine tier would be a legitimate reason to reach for services and maybe gRPC. Doesn't apply to a locally-run CLI/Web UI tool today.
+**Trigger to revisit — a condition, not a date:** if HackerFive ever becomes a genuinely hosted, multi-tenant service (the undecided "Pentest On-Demand" idea in the XBOW research entry above), independent scaling of a UI tier vs. an engine tier would be a legitimate reason to reach for services and maybe gRPC. Doesn't apply to a locally-run CLI/Web UI tool today.
 
 **See also:**
 - [90-research-hackerbot.md](90-research-hackerbot.md) Decision 5 — why a heavy Python agent framework isn't needed either: stateless, tiered LLM calls, never a persistent agent session.
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Dependencies — the MCP SDK verification step this discussion's finding should update.
-- [follow-up.md](follow-up.md) §3 — XBOW's hosted-service precedent, the actual trigger condition named above.
+- XBOW research entry above — the hosted-service precedent and actual trigger condition named here.

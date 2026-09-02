@@ -170,7 +170,7 @@ Project plan split by concern under [docs/](docs/):
 12. [Phase 5 Implementation Plan (Weeks 33-40)](docs/14-implementation-plan-ph5.md) — recon package, `Finding`-schema freeze, task-tree data model, a deterministic decision engine + capability registry, read-only recon/plan-preview UI (no MCP dependency)
 13. [Phase 6 Implementation Plan (Weeks 41-48)](docs/15-implementation-plan-ph6.md) — MCP server, `tools.search`/`templates.search`, elicitation-based approval gate seeded from recon, tiered LLM fallback, hard safety blockers, actionable approval UI
 14. [Phase 7 Implementation Plan (Weeks 49-56)](docs/16-implementation-plan-ph7.md) — `AllowWrites` attestation, live Web UI Agent tab, OWASP Agentic Top 10 mapping, eval maturity
-15. [Follow-Up: Security Review, Expansion Strategy & Protocol Scope](docs/follow-up.md) — security review notes, open-source/VDP expansion plan, XBOW research, non-HTTP protocol assessment
+15. [Follow-Up: Enhancement Backlog](docs/follow-up.md) — open items by category: security/scope hardening, protocol expansion, template/detection engine gaps, recon, reporting, testing
 16. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI, DVWA, Juice Shop, vAPI, WebGoat, bWAPP, and AIGoat bring-up, account/token minting, per-target setup steps and caveats
 17. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
 18. [Authorized Targets Registry](docs/22-authorized-targets.md) — living list of vetted real targets (policy, scope, safe harbor, fit for HackerFive), so vetting isn't repeated
