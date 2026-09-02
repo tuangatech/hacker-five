@@ -1,7 +1,8 @@
 {{define "detector_fields_ssrf"}}<div id="detector-fields">
 <label for="ssrf_params">SSRF params (--ssrf-param, comma-separated; leave blank to auto-fill from recon)</label>
 <input type="text" id="ssrf_params" name="ssrf_params" value="{{.SSRFParams}}" placeholder="url, webhook, callback">
-<label for="oob_servers">OOB servers (--oob-server, comma-separated, optional — &quot;public&quot; opts into ProjectDiscovery's public pool)</label>
+<label for="oob_servers">OOB servers (--oob-server, comma-separated — defaults to 2 public ProjectDiscovery servers; "public" expands to all 6)</label>
 <input type="text" id="oob_servers" name="oob_servers" value="{{.OOBServers}}">
+<p class="hint">Please use your own private Interactsh server for a real, authorized third-party engagement &mdash; a public server sees the target's real IP and request timing, which is target data leaving the engagement's scope. Clear this field to disable the OOB check entirely.</p>
 </div>
 {{end}}

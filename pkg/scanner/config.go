@@ -92,15 +92,17 @@ type Config struct {
 
 	// OOBServers are the base URL(s) of Interactsh-protocol server(s) (from
 	// repeatable --oob-server) the ssrf detector's blind callback check
-	// polls for interactions, tried in order with automatic fallback. Empty
-	// (the default) skips that check silently — the non-blind/scheme-based
-	// checks still run without it. Never a silent public default — cmd/
-	// hackerfive/scan.go only ever populates this from an explicit
-	// --oob-server value (including the "public" shorthand, an explicit
-	// opt-in), per docs/13-implementation-plan-ph4.md's design tension 1
-	// (avoiding target-request-data leakage to a third party outside the
-	// engagement's authorized scope, unless the user explicitly accepts
-	// that tradeoff).
+	// polls for interactions, tried in order with automatic fallback. As of
+	// 2026-09-02 (docs/discussions.md, user's explicit choice), cmd/
+	// hackerfive/scan.go's --oob-server defaults to ssrf.DefaultOOBServers
+	// (2 of ProjectDiscovery's public pool) when the flag is omitted
+	// entirely — a real, informed leak-tradeoff default now, not the prior
+	// "empty unless explicitly opted in" behavior. Empty only when the CLI's
+	// --no-oob is passed or the Web UI's OOB servers field is cleared; empty
+	// skips the blind check silently, the non-blind/scheme-based checks
+	// still run without it. See docs/13-implementation-plan-ph4.md's design
+	// tension 1 for the underlying leak-tradeoff reasoning, which is
+	// unchanged — only the default acceptance of it changed.
 	OOBServers []string
 
 	// AllowWrites (from --allow-writes) gates every mutating check the

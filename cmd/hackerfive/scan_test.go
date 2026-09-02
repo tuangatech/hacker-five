@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 )
 
 func TestResolveTargets_Empty(t *testing.T) {
@@ -61,4 +63,54 @@ func TestParseHeaders_SplitsOnFirstColonAndTrims(t *testing.T) {
 func TestParseHeaders_MissingColonIsError(t *testing.T) {
 	_, err := parseHeaders([]string{"not-a-valid-header"})
 	assert.Error(t, err)
+}
+
+// TestNewScanCmd_OOBServerDefaultsToPublicPair locks in the 2026-09-02
+// default change (docs/discussions.md, user's explicit choice): omitting
+// --oob-server entirely now defaults to 2 of ProjectDiscovery's public OOB
+// servers, not an empty/silent-skip default.
+func TestNewScanCmd_OOBServerDefaultsToPublicPair(t *testing.T) {
+	cmd := newScanCmd(&rootFlags{})
+
+	flag := cmd.Flags().Lookup("oob-server")
+	require.NotNil(t, flag, "--oob-server must be registered")
+	assert.Equal(t, "[https://oast.pro,https://oast.live]", flag.DefValue)
+	assert.Equal(t, ssrf.DefaultOOBServers, []string{"https://oast.pro", "https://oast.live"})
+}
+
+// TestNewScanCmd_NoOOBFlagRegistered confirms the escape hatch exists and
+// defaults to false (OOB stays on unless explicitly disabled) — the
+// StringArray --oob-server flag itself has no clean way to express "start
+// from an explicitly empty list", so this dedicated flag is the only way a
+// CLI user opts out for a real third-party engagement.
+func TestNewScanCmd_NoOOBFlagRegistered(t *testing.T) {
+	cmd := newScanCmd(&rootFlags{})
+
+	flag := cmd.Flags().Lookup("no-oob")
+	require.NotNil(t, flag, "--no-oob must be registered")
+	assert.Equal(t, "false", flag.DefValue)
+}
+
+func TestExpandOOBServers(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil in nil out", nil, nil},
+		{"empty in nil out", []string{}, nil},
+		{"public expands to full pool", []string{"public"}, ssrf.PublicInteractshServers},
+		{"case-insensitive public", []string{"PUBLIC"}, ssrf.PublicInteractshServers},
+		{
+			"mixes public with a custom server, order preserved",
+			[]string{"https://my-own.example.com", "public"},
+			append([]string{"https://my-own.example.com"}, ssrf.PublicInteractshServers...),
+		},
+		{"non-public entries pass through unchanged", []string{"https://a.example.com", "https://b.example.com"}, []string{"https://a.example.com", "https://b.example.com"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, expandOOBServers(tt.in))
+		})
+	}
 }

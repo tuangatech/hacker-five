@@ -177,6 +177,7 @@ Project plan split by concern under [docs/](docs/):
 19. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
 20. [Agent Integration Research: "Hacker-in-the-Loop"](docs/90-research-hackerbot.md) — research behind Phases 5-7: how other LLM-driven pentesting tools structure themselves (including a deterministic-first, tiered-LLM-fallback hybrid model), and the design decisions/backlog this project scheduled from it
 21. [Recon Phase Research](docs/91-research-recon-phase.md) — research behind Phase 5's recon package: how comparable agentic pentesting tools perform reconnaissance, and the wave-based design scheduled from it
+22. [Engineering Discussions](docs/discussions.md) — short, dated, bullet-form records of architecture questions resolved outside any single numbered doc
 
 See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo. Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a vulnerability in HackerFive itself (not a finding it produced against some other target)? See [SECURITY.md](SECURITY.md).
 

@@ -12,10 +12,11 @@ const (
 
 // PublicInteractshServers is ProjectDiscovery's known public OOB server
 // pool — the same defaults interactsh-client/nuclei ship with, publicly
-// documented, not secret. Used only when the user explicitly opts in via
-// --oob-server public (cmd/hackerfive/scan.go's expandOOBServers) — never
-// the default when --oob-server is omitted. Real, informed leak tradeoff,
-// not a design oversight: even though Interactsh's per-client-keypair
+// documented, not secret. Reached via the literal --oob-server public
+// (cmd/hackerfive/scan.go's expandOOBServers), which expands to all 6 —
+// distinct from DefaultOOBServers below, the smaller 2-server subset used
+// when --oob-server is omitted entirely. Real, informed leak tradeoff, not
+// a design oversight: even though Interactsh's per-client-keypair
 // encryption keeps a captured interaction's *contents* private from the
 // server operator, the operator (and anyone else with visibility into that
 // infrastructure) still sees the target's real IP connecting to
@@ -24,7 +25,8 @@ const (
 // finding and docs/13-implementation-plan-ph4.md's self-hosted-only design
 // tension for the full reasoning. Appropriate for a target you own or have
 // full authority over; not recommended for a real, authorized third-party
-// engagement, where that leak is target data leaving the engagement's scope.
+// engagement, where that leak is target data leaving the engagement's scope
+// — use --no-oob (CLI) or clear the Web UI's OOB servers field to opt out.
 var PublicInteractshServers = []string{
 	"https://oast.pro",
 	"https://oast.live",
@@ -32,6 +34,22 @@ var PublicInteractshServers = []string{
 	"https://oast.online",
 	"https://oast.fun",
 	"https://oast.me",
+}
+
+// DefaultOOBServers is the tool-wide default for --oob-server/the Web UI's
+// OOB servers field when neither is touched — a primary plus one backup
+// from PublicInteractshServers above, tried in order per OOBServers'
+// existing fallback semantics. Changed from "empty, OOB off by default" to
+// this 2-server default on 2026-09-02, user's explicit, informed choice
+// (docs/discussions.md) to self-test their own sites without re-typing
+// "public" every run; the underlying leak tradeoff (see
+// PublicInteractshServers' comment above) is unchanged, only the default
+// acceptance of it. A user running against a real third-party engagement
+// (per PublicInteractshServers' own warning) should pass --no-oob or clear
+// the Web UI field — never assume this default is safe for that case.
+var DefaultOOBServers = []string{
+	"https://oast.pro",
+	"https://oast.live",
 }
 
 // loopbackEncodings returns 127.0.0.1 in every form an app that

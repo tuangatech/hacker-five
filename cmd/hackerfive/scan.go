@@ -35,6 +35,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		headers          []string
 		ssrfParams       []string
 		oobServers       []string
+		noOOB            bool
 		allowWrites      bool
 		couponMintPath   string
 		couponApplyPath  string
@@ -62,6 +63,9 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				return fmt.Errorf("parsing --header: %w", err)
 			}
 			expandedOOBServers := expandOOBServers(oobServers)
+			if noOOB {
+				expandedOOBServers = nil
+			}
 
 			// Only auto-append the synced templates directory when --templates
 			// was left at its default — an explicit --templates value from the
@@ -156,7 +160,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&logoutPaths, "logout-paths", "", `comma-separated candidate logout paths for authbypass's broken-session check (default: authbypass's built-in generic guesses, e.g. "/logout")`)
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every template-driven request (repeatable) — e.g. a session cookie a login flow issued outside this scan, since template placeholders can't carry one yet`)
 	cmd.Flags().StringArrayVar(&ssrfParams, "ssrf-param", nil, `candidate URL-accepting query parameter name for the ssrf detector to probe (repeatable), e.g. "url", "webhook", "callback" — required for --detector ssrf`)
-	cmd.Flags().StringArrayVar(&oobServers, "oob-server", nil, `base URL of an Interactsh-protocol server for the ssrf detector's blind out-of-band check (repeatable — tried in order, falls back if one is unreachable); the literal value "public" expands to ProjectDiscovery's known public server pool, an explicit opt-in with a real leak tradeoff (see docs/follow-up.md) — omitted (the default), only the non-blind/scheme-based checks run, nothing sent to any third party`)
+	cmd.Flags().StringArrayVar(&oobServers, "oob-server", ssrf.DefaultOOBServers, `base URL of an Interactsh-protocol server for the ssrf detector's blind out-of-band check (repeatable — tried in order, falls back if one is unreachable); the literal value "public" expands to ProjectDiscovery's full known public server pool (6 servers) — an explicit, real leak tradeoff (see docs/follow-up.md and docs/discussions.md). Defaults to 2 of those public servers (oast.pro, oast.live) when omitted entirely — pass --no-oob to disable for a real third-party engagement, where sending target-request data to a public server is not appropriate`)
+	cmd.Flags().BoolVar(&noOOB, "no-oob", false, "disable the ssrf detector's blind out-of-band check entirely, overriding --oob-server's default public servers — use for a real, authorized third-party engagement (see --oob-server's own help text)")
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks (coupon self-mint/apply, apply-race) to run — the one explicit exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a warning")
 	cmd.Flags().StringVar(&couponMintPath, "coupon-mint-path", "", `endpoint path the businesslogic detector mints a coupon against (default: crAPI's real "/community/api/v2/coupon/new-coupon")`)
 	cmd.Flags().StringVar(&couponApplyPath, "coupon-apply-path", "", `endpoint path the businesslogic detector applies a coupon against (default: crAPI's real "/workshop/api/shop/apply_coupon")`)
@@ -212,14 +217,15 @@ func parseHeaders(raw []string) (map[string]string, error) {
 }
 
 // expandOOBServers expands the literal value "public" (case-insensitive)
-// into ssrf.PublicInteractshServers wherever it appears in raw, leaving
-// every other entry as the literal URL the user gave — lets --oob-server
-// public and --oob-server public --oob-server https://my-own.example.com
-// both work, mixing the explicit-opt-in public pool with a real self-hosted
-// server if the user wants both tried in order. nil in, nil out — this
-// never turns an omitted --oob-server into a non-empty list, preserving the
-// "skip the OOB check silently" default (see scanner.Config.OOBServers'
-// doc comment).
+// into ssrf.PublicInteractshServers (all 6) wherever it appears in raw,
+// leaving every other entry as the literal URL the user gave — lets
+// --oob-server public and --oob-server public --oob-server
+// https://my-own.example.com both work, mixing the full public pool with a
+// real self-hosted server if the user wants both tried in order. nil in,
+// nil out — an omitted --oob-server never reaches this function at all
+// (the flag's own default is ssrf.DefaultOOBServers, non-nil); this
+// function's nil-safety exists for --no-oob's explicit override path and
+// any programmatic caller passing an empty slice directly.
 func expandOOBServers(raw []string) []string {
 	if len(raw) == 0 {
 		return nil

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/reporter"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
@@ -23,6 +24,13 @@ const (
 	defaultConcurrency = 25
 	defaultTimeout     = 30 * time.Second
 )
+
+// defaultOOBServers mirrors cmd/hackerfive/scan.go's --oob-server default
+// (ssrf.DefaultOOBServers) — same source of truth, joined for the form's
+// plain-text field. A user who wants no OOB check just clears the field
+// before submitting (a plain <input>, unlike the CLI's StringArray flag,
+// naturally supports "explicitly empty").
+var defaultOOBServers = strings.Join(ssrf.DefaultOOBServers, ",")
 
 // sseKeepAlive is how often a comment-only ping is sent on an idle SSE
 // connection — standard SSE practice to prevent some proxies/browsers from

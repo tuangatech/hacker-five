@@ -168,6 +168,35 @@ func TestLaunchForm_RendersDefaults(t *testing.T) {
 	assert.NotContains(t, html, `name="allow_writes" checked`)
 
 	assert.NotContains(t, html, "thetavernhouse.com", "the default Target must never point at a real external site")
+
+	// OOB servers default to 2 public ProjectDiscovery servers (2026-09-02,
+	// user's explicit choice — docs/discussions.md), not blank — but stay a
+	// plain, clearable text field so an operator can opt out for a real
+	// third-party engagement.
+	assert.Contains(t, html, `value="https://oast.pro,https://oast.live"`)
+}
+
+// TestParseLaunchSubmission_SSRFOOBServers_DefaultAndClearable locks in the
+// escape hatch for the new non-empty OOB default (2026-09-02): a blank
+// oob_servers submission must produce zero OOBServers, never silently fall
+// back to the default — the Web UI's only way to opt out is clearing the
+// field, unlike the CLI's dedicated --no-oob flag.
+func TestParseLaunchSubmission_SSRFOOBServers_DefaultAndClearable(t *testing.T) {
+	form := url.Values{
+		"target":      {"https://example.com"},
+		"authorized":  {"on"},
+		"run_ssrf":    {"on"},
+		"oob_servers": {""},
+		"ssrf_params": {"url"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	require.NoError(t, req.ParseForm())
+
+	_, cfgs, errs := parseLaunchSubmission(req)
+	require.Empty(t, errs)
+	require.Len(t, cfgs, 1)
+	assert.Empty(t, cfgs[0].OOBServers, "a blank oob_servers submission must clear OOB, never fall back to a default")
 }
 
 // TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables runs the

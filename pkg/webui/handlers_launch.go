@@ -55,6 +55,7 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 		RunIdor:       true,
 		RunAuthbypass: true,
 		RunSsrf:       true,
+		OOBServers:    defaultOOBServers,
 		RateLimit:     defaultRateLimit,
 		Concurrency:   defaultConcurrency,
 		Tools:         buildToolSetupData(false, ""),
