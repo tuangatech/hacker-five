@@ -73,23 +73,24 @@ type Job struct {
 	Target    string    // display only — the raw target list the form submitted, joined
 	CreatedAt time.Time // set once at creation — drives Dashboard/Scan History ordering and display
 
-	mu          sync.Mutex
-	status      string
-	phase       string // "" | "recon" | a detector name — which main step is currently running, doc14/15's "which step are we in" gap
-	err         error
-	findings    []detectors.Finding
-	logs        []LogEntry
-	waves       []WaveStatus       // set only when this Job runs an optional recon phase first
-	reconResult *recon.ReconResult // nil until a recon phase (if any) completes
-	subs        []chan Event
+	mu            sync.Mutex
+	status        string
+	phase         string // "" | "recon" | a detector name — which main step is currently running, doc14/15's "which step are we in" gap
+	err           error
+	findings      []detectors.Finding
+	logs          []LogEntry
+	waves         []WaveStatus       // set only when this Job runs an optional recon phase first
+	detectorSteps []WaveStatus       // the planned detector pipeline, same update-or-append shape as waves — see SetDetectorStatus
+	reconResult   *recon.ReconResult // nil until a recon phase (if any) completes
+	subs          []chan Event
 
 	renderFinding  func(detectors.Finding) template.HTML
 	renderLog      func(LogEntry) template.HTML
-	renderProgress func(status string, err error, waves []WaveStatus, phase string) template.HTML
+	renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML
 	renderRecon    func(*recon.ReconResult) template.HTML
 }
 
-func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML) *Job {
+func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML) *Job {
 	return &Job{
 		ID:             id,
 		Target:         target,
@@ -106,26 +107,28 @@ func newJob(id, target string, renderFinding func(detectors.Finding) template.HT
 // state before attaching SSE — the reconnect-safety mechanism doc12 calls
 // for: render this first, then SSE only needs to stream what happens after.
 type Snapshot struct {
-	Status      string
-	Phase       string
-	Err         error
-	Findings    []detectors.Finding
-	Logs        []LogEntry
-	Waves       []WaveStatus
-	ReconResult *recon.ReconResult // nil unless this Job ran a recon phase that completed
+	Status        string
+	Phase         string
+	Err           error
+	Findings      []detectors.Finding
+	Logs          []LogEntry
+	Waves         []WaveStatus
+	DetectorSteps []WaveStatus
+	ReconResult   *recon.ReconResult // nil unless this Job ran a recon phase that completed
 }
 
 func (j *Job) Snapshot() Snapshot {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return Snapshot{
-		Status:      j.status,
-		Phase:       j.phase,
-		Err:         j.err,
-		Findings:    append([]detectors.Finding(nil), j.findings...),
-		Logs:        append([]LogEntry(nil), j.logs...),
-		Waves:       append([]WaveStatus(nil), j.waves...),
-		ReconResult: j.reconResult,
+		Status:        j.status,
+		Phase:         j.phase,
+		Err:           j.err,
+		Findings:      append([]detectors.Finding(nil), j.findings...),
+		Logs:          append([]LogEntry(nil), j.logs...),
+		Waves:         append([]WaveStatus(nil), j.waves...),
+		DetectorSteps: append([]WaveStatus(nil), j.detectorSteps...),
+		ReconResult:   j.reconResult,
 	}
 }
 
@@ -206,9 +209,10 @@ func (j *Job) SetRunning() {
 	j.mu.Lock()
 	j.status = StatusRunning
 	waves := append([]WaveStatus(nil), j.waves...)
+	detectorSteps := append([]WaveStatus(nil), j.detectorSteps...)
 	phase := j.phase
 	j.mu.Unlock()
-	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil, waves, phase)})
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(StatusRunning, nil, waves, detectorSteps, phase)})
 }
 
 // SetPhase records which main step is currently running — recon, or one
@@ -223,9 +227,10 @@ func (j *Job) SetPhase(phase string) {
 	j.mu.Lock()
 	j.phase = phase
 	waves := append([]WaveStatus(nil), j.waves...)
+	detectorSteps := append([]WaveStatus(nil), j.detectorSteps...)
 	curStatus, curErr := j.status, j.err
 	j.mu.Unlock()
-	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves, phase)})
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves, detectorSteps, phase)})
 }
 
 // SetWaveStatus is pkg/recon.WithProgressCallback's target when a Job runs
@@ -248,10 +253,40 @@ func (j *Job) SetWaveStatus(wave, waveStatus string) {
 		j.waves = append(j.waves, WaveStatus{Name: wave, Status: waveStatus})
 	}
 	waves := append([]WaveStatus(nil), j.waves...)
+	detectorSteps := append([]WaveStatus(nil), j.detectorSteps...)
 	curStatus, curErr, curPhase := j.status, j.err, j.phase
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves, curPhase)})
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves, detectorSteps, curPhase)})
+}
+
+// SetDetectorStatus is SetWaveStatus's counterpart for the detector
+// pipeline — same update-or-append-by-name shape, so the same call both
+// seeds a detector as "pending" (before the loop in runLaunchJob starts)
+// and later transitions it to "running"/"done". A distinct method from
+// SetWaveStatus (not a shared helper parameterized on which slice) because
+// the two pipelines are conceptually distinct steps of a job, matching this
+// package's existing preference for small, direct methods over an early
+// generic abstraction.
+func (j *Job) SetDetectorStatus(name, status string) {
+	j.mu.Lock()
+	updated := false
+	for i := range j.detectorSteps {
+		if j.detectorSteps[i].Name == name {
+			j.detectorSteps[i].Status = status
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		j.detectorSteps = append(j.detectorSteps, WaveStatus{Name: name, Status: status})
+	}
+	waves := append([]WaveStatus(nil), j.waves...)
+	detectorSteps := append([]WaveStatus(nil), j.detectorSteps...)
+	curStatus, curErr, curPhase := j.status, j.err, j.phase
+	j.mu.Unlock()
+
+	j.publish(Event{Type: EventProgress, HTML: j.renderProgress(curStatus, curErr, waves, detectorSteps, curPhase)})
 }
 
 // SetReconResult records a completed recon phase's result — read by the
@@ -284,9 +319,10 @@ func (j *Job) MarkDone(err error) {
 	j.phase = ""
 	status := j.status
 	waves := append([]WaveStatus(nil), j.waves...)
+	detectorSteps := append([]WaveStatus(nil), j.detectorSteps...)
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err, waves, "")})
+	j.publish(Event{Type: EventDone, HTML: j.renderProgress(status, err, waves, detectorSteps, "")})
 }
 
 // maxJobs caps the in-memory job store per doc12's corrected eviction

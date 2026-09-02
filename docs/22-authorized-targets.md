@@ -25,8 +25,9 @@ A living list of real, authorized targets (found via disclose.io/HackerOne per [
 - **Safe harbor:** explicit
 - **Restrictions:** no social engineering/physical attacks/DDoS/spam/"third-party tools"; no bounty-hunting motivated purely by financial gain; don't access more data than necessary; delete confidential data after resolution
 - **Bounty:** yes — fixed Amazon gift cards, severity-assessed, non-negotiable
-- **Fit for HackerFive:** ⚠️ **open question, resolve before scanning** — "third-party tools" is banned in the same clause as DDoS/social engineering, which most likely means third-party attack services (botnets, etc.), not vulnerability scanners — but it's genuinely ambiguous read cold. Per doc05's "when in doubt, treat as out of scope" rule: **email `security@aalberts.com` for explicit confirmation that automated scanning tools are permitted before pointing HackerFive at them.**
-- **Vetted:** 2026-08-26
+- **Hard requirement (2026-09-02, confirmed directly with the aalberts.com security team, not inferred from the policy text):** automated scanning is permitted, capped at **no more than 5 scan runs per day** against this target. HackerFive has no built-in per-day run counter — this is a manual limit the operator must track themselves, not something `--rate-limit`/`--concurrency` (which bound requests/sec within one run, not runs/day) enforce.
+- **Fit for HackerFive:** ✅ resolved — the earlier "third-party tools" ambiguity (same clause as DDoS/social engineering) is confirmed to mean third-party attack services, not vulnerability scanners; automated scanning is explicitly authorized subject to the 5-runs/day cap above.
+- **Vetted:** 2026-08-26, resolved 2026-09-02
 
 ### abc8.immobilien
 - **Source:** disclose.io

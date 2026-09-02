@@ -46,6 +46,7 @@ func New(opts Options) (*Server, error) {
 	funcs := template.FuncMap{
 		"version":   func() string { return version },
 		"reconView": newReconView,
+		"stepChain": stepChain,
 	}
 	tmpl, err := template.New("hackerfive").Funcs(funcs).ParseFS(assets, "templates/*.html")
 	if err != nil {

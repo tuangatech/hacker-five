@@ -43,7 +43,11 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 	}
 	data := LaunchFormData{
 		CSRFToken:    token,
-		Target:       "https://www.example.com",
+		// aalberts.com is a vetted real target (docs/22-authorized-targets.md)
+		// — automated scanning explicitly confirmed with their security team
+		// (2026-09-02), capped at 5 runs/day, a limit HackerFive can't
+		// enforce itself; not a placeholder/documentation domain.
+		Target:       "https://www.aalberts.com",
 		RunMisconfig: true,
 		// idor/authbypass/ssrf default on too — "run whatever recon can
 		// support without any input" (user decision, 2026-09-01): a
@@ -98,8 +102,8 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 	job := newJob(id, launchTargetScheme(form.Target),
 		func(f detectors.Finding) template.HTML { return renderFragment(h.tmpl, "fragment_finding_row", f) },
 		func(entry LogEntry) template.HTML { return renderFragment(h.tmpl, "fragment_log_line", entry) },
-		func(status string, err error, waves []WaveStatus, phase string) template.HTML {
-			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves})
+		func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML {
+			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves, DetectorSteps: detectorSteps})
 		},
 		func(result *recon.ReconResult) template.HTML {
 			return renderFragment(h.tmpl, "fragment_recon_results", newReconView(result))
@@ -363,14 +367,32 @@ func expandOOBServers(raw []string) []string {
 func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Config) {
 	job.SetRunning()
 
+	// Pre-seed the full recon-wave chain as "pending" before recon actually
+	// starts, so the Recon: line shows the whole pipeline immediately rather
+	// than growing one wave at a time — recon always runs all four waves at
+	// full depth here (never opted out of, see runLaunchRecon), so this
+	// fixed list is accurate for every job, not a guess.
+	for _, wave := range []string{"wave0", "wave1", "wave2", "wave3"} {
+		job.SetWaveStatus(wave, "pending")
+	}
 	job.SetPhase("recon")
 	h.runLaunchRecon(job, form, cfgs)
 
 	cfgs = fillReconFields(job, cfgs)
 
+	// Seed the detector chain only now, from cfgs *after* fillReconFields —
+	// that call can drop a detector entirely when recon couldn't resolve a
+	// field it needs (see fillReconFields), and seeding from the pre-recon
+	// list would leave a dropped detector's step stuck at "pending" forever
+	// since the loop below would never reach it.
+	for _, cfg := range cfgs {
+		job.SetDetectorStatus(cfg.Detector, "pending")
+	}
+
 	var lastErr error
 	for _, cfg := range cfgs {
 		job.SetPhase(cfg.Detector)
+		job.SetDetectorStatus(cfg.Detector, "running")
 		job.AppendLog("info", "running detector: "+cfg.Detector)
 		if note := noTokenNote(cfg); note != "" {
 			job.AppendLog("info", note)
@@ -379,6 +401,7 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 			lastErr = err
 			job.AppendLog("error", fmt.Sprintf("%s: %v", cfg.Detector, err))
 		}
+		job.SetDetectorStatus(cfg.Detector, "done")
 	}
 
 	job.MarkDone(lastErr)

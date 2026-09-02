@@ -72,7 +72,7 @@ func (h *handlers) scanCatchup(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := job.Snapshot()
 	executeTemplate(w, h.tmpl, "fragment_catchup", CatchupData{
-		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves}),
+		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps}),
 		ReconHTML:    renderFragment(h.tmpl, "fragment_recon_results", newReconView(snap.ReconResult)),
 	})
 }
@@ -117,7 +117,7 @@ func (h *handlers) scanEvents(w http.ResponseWriter, r *http.Request) {
 	// reconnects) needs no live stream — send the final state once and
 	// close, rather than holding a connection open for nothing.
 	if snap := job.Snapshot(); snap.Status == StatusDone || snap.Status == StatusFailed {
-		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves})}); err == nil {
+		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps})}); err == nil {
 			flusher.Flush()
 		}
 		return
@@ -196,7 +196,7 @@ func (h *handlers) snapshotData(job *Job) ScanStatusData {
 		Snapshot:        snap,
 		FindingRowsHTML: template.HTML(findingsHTML.String()), //nolint:gosec // built only from our own already-escaped fragment renders, not raw input
 		LogLinesHTML:    template.HTML(logsHTML.String()),     //nolint:gosec // same
-		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves}),
+		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps}),
 	}
 }
 

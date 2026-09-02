@@ -59,10 +59,11 @@ type LaunchFormData struct {
 // both on initial render and pushed live via SSE (progress/done events).
 // Waves is only non-empty when this Job ran an optional recon phase first.
 type ProgressData struct {
-	Status string
-	Phase  string // "" | "recon" | a detector name — which main step is currently running
-	Err    error
-	Waves  []WaveStatus
+	Status        string
+	Phase         string // "" | "recon" | a detector name — which main step is currently running
+	Err           error
+	Waves         []WaveStatus
+	DetectorSteps []WaveStatus
 }
 
 // CatchupData is fragment_catchup.html's input — an out-of-band re-sync of

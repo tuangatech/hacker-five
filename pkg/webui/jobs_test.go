@@ -15,7 +15,7 @@ import (
 
 func noopFindingRender(f detectors.Finding) template.HTML { return template.HTML(f.ID) }
 func noopLogRender(e LogEntry) template.HTML              { return template.HTML(e.Msg) }
-func noopProgressRender(status string, _ error, _ []WaveStatus, _ string) template.HTML {
+func noopProgressRender(status string, _ error, _ []WaveStatus, _ []WaveStatus, _ string) template.HTML {
 	return template.HTML(status)
 }
 func noopReconRender(result *recon.ReconResult) template.HTML {
