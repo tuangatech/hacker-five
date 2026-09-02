@@ -251,7 +251,63 @@ docker-compose down -v   # or `docker compose down -v` if you hit the same hyphe
 
 ---
 
-## 5. AIGoat — prompt-injection templates
+## 5. WebGoat — `--detector misconfig` (reserved for Phase 2's XSS/SQLi work)
+
+**Added 2026-09-02**, per an external review's recommendation to broaden the local target list beyond DVWA/Juice Shop. Spring Boot lesson app — no accounts needed for `misconfig`'s generic checks, which is all that's wired up against it today.
+
+### Bring it up
+```bash
+docker pull webgoat/webgoat:v2025.3
+docker run --name webgoat -d -p 127.0.0.1:18080:8080 -p 127.0.0.1:19090:9090 -e TZ=Etc/UTC webgoat/webgoat:v2025.3
+```
+- App: `http://localhost:18080/WebGoat` — remapped from the image's default 8080, which tends to collide with other local dev tools.
+- WebWolf (not needed for `misconfig`): `http://localhost:19090`, remapped from 9090 the same way.
+- Multi-arch image — pulls a native `arm64` image on Apple Silicon automatically, no `--platform` flag needed.
+- No database-init step. `docker ps` may show the container as `unhealthy` even once it's fully up — that's the image's own health-check config being stricter than what actually matters here, not a real problem; `docker logs webgoat` showing `Started StartWebGoat` is the real readiness signal.
+
+### Run the scan
+```bash
+cd ~/Tuan/weekend/hacker-five
+./hackerfive scan -t http://localhost:18080/WebGoat --detector misconfig --templates /tmp/empty-templates
+```
+No tokens, no `--endpoint`. Real, live-verified result (2026-09-02): **10 findings** — 4 missing headers, 3 disallowed methods, and 3 exposed-path hits under Spring Boot's own `/actuator` endpoints (`/actuator/env` at **high** severity — independently confirmed via `curl` that it's really publicly reachable). The built-in default-creds check won't fire — WebGoat's login only works after self-registration, there's no fixed `admin`/`password` account the checker's dictionary would match.
+
+### Teardown
+```bash
+docker rm -f webgoat
+```
+
+---
+
+## 6. bWAPP — `--detector misconfig` (reserved for Phase 2's XSS/SQLi work)
+
+**Added 2026-09-02**, same reasoning as WebGoat above. PHP/MySQL app covering a broader spread of vulnerability classes than DVWA in one place. No longer actively maintained upstream, so `raesene/bwapp` (the standard community image) is used rather than a nonexistent "official" one.
+
+### Bring it up
+```bash
+docker pull raesene/bwapp
+docker run --name bwapp -d -p 127.0.0.1:8079:80 raesene/bwapp
+```
+- App: `http://localhost:8079` — remapped from the image's default port 80, which collides with DVWA's section above if both are running.
+- **Apple Silicon note:** this image is **amd64-only** — Docker will print a platform-mismatch warning and fall back to Rosetta/QEMU emulation. It still works, just slower to start than a native-arch image; nothing to configure.
+- **Required one-time step**, same shape as DVWA's `/setup.php`: hit `http://localhost:8079/install.php?install=yes` once (browser or `curl`) to create the MySQL schema.
+- Default web login: `bee` / `bug` (bWAPP's own documented default account) — only needed to browse it yourself, not for `misconfig`.
+
+### Run the scan
+```bash
+cd ~/Tuan/weekend/hacker-five
+./hackerfive scan -t http://localhost:8079 --detector misconfig --templates /tmp/empty-templates
+```
+No tokens, no `--endpoint`. Real, live-verified result (2026-09-02): **9 findings** — 4 missing headers, 3 disallowed methods, a real directory-listing hit at `/images/`, and a real comment-leak hit on the login page (a commented-out `<script>` tag). Same default-creds caveat as DVWA/WebGoat: bWAPP's login field is named `login`, not `username`, so the fixed-form-field checker finds nothing despite `bee`/`bug` being real, working credentials.
+
+### Teardown
+```bash
+docker rm -f bwapp
+```
+
+---
+
+## 7. AIGoat — prompt-injection templates
 
 Deliberately-vulnerable LLM chatbot (OWASP LLM Top 10), self-hosted via Ollama — no external API, no cost.
 
@@ -312,7 +368,7 @@ docker volume rm ollama_models
 
 ---
 
-## 6. Interactsh Server — self-hosted OOB receiver (for `--detector ssrf --oob-server`)
+## 8. Interactsh Server — self-hosted OOB receiver (for `--detector ssrf --oob-server`)
 
 Not a scan target itself — it's the callback receiver the SSRF detector's blind check polls. HackerFive never talks to the *public* Interactsh service by default; `--oob-server` only takes a URL you're self-hosting (or the explicit `public` opt-in used above).
 
@@ -341,6 +397,8 @@ docker rm -f oob-server
 | DVWA | None for misconfig; a manual `PHPSESSID` cookie for XSS/SQLi | Browser dev tools | "Create/Reset Database" once at `/setup.php`; set Security to Low |
 | Juice Shop | None | — | None |
 | vAPI | `VAPI_OWNER_TOKEN` / `VAPI_OTHER_TOKEN` (base64 `user:pass`) | `POST /vapi/api1/user` | None |
+| WebGoat | None for misconfig | — | None |
+| bWAPP | None for misconfig | — | Hit `/install.php?install=yes` once |
 | AIGoat | A JWT via `--header` | `POST /api/auth/login/` with a demo account | `sed` the model/port config before `docker compose up` |
 
 ## Tear everything down at once
@@ -349,6 +407,7 @@ cd ~/Tuan/weekend/hacker-five-targets/crAPI/deploy/docker && docker compose down
 docker ps --filter ancestor=vulnerables/web-dvwa -q | xargs docker stop
 docker ps --filter ancestor=bkimminich/juice-shop -q | xargs docker stop
 cd ~/Tuan/weekend/hacker-five-targets/vapi && docker compose down -v
+docker rm -f webgoat bwapp 2>/dev/null
 cd ~/Tuan/weekend/hacker-five-targets/AIGoat/docker && docker compose down -v
 docker rm -f oob-server 2>/dev/null
 ```

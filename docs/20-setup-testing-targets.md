@@ -14,7 +14,8 @@ Every command below is identical on macOS and Windows (WSL2) — Docker Desktop 
 | **DVWA** | `misconfig` | Stateless, single-target check — no accounts needed, just a target with exposed paths/headers/methods to probe |
 | **Juice Shop** | `misconfig`; Nuclei-compatible templates | Stateless, single-target — no accounts needed. Also the only target here with a real *target-specific* upstream Nuclei template (`owasp-juice-shop-detect`), confirmed live; XSS/auth-bypass-specific detectors are still Phase 2, not yet implemented |
 | **vAPI** | `idor`, `misconfig`; Nuclei-compatible templates | Has a real BOLA (see its own section below), reachable via `idor.Detector`'s configurable auth-header scheme (`--auth-header-name`/`--auth-header-format`) |
-| WebGoat | *(none yet)* | Reserved for Phase 2 — per [03-development-roadmap.md](03-development-roadmap.md), its Week 13-14 (XSS) and Week 15-16 (SQL injection) deliverables don't name a specific test target the way Week 11-12's API-auth work names vAPI/crAPI; WebGoat's general multi-vulnerability lesson set (unlike the API-specific targets above) is the natural fit for those. Not referenced by any implemented detector yet |
+| **WebGoat** | `misconfig` today; reserved for Phase 2's XSS/SQLi work | Spring Boot lesson app — `misconfig`'s generic header/method/exposed-path checks apply today (added 2026-09-02, including a real Spring Actuator exposure), same as DVWA/Juice Shop; its actual lesson content (XSS/SQLi) is still Phase 2, per [03-development-roadmap.md](03-development-roadmap.md)'s Week 13-16 |
+| **bWAPP** | `misconfig` today; reserved for Phase 2's XSS/SQLi work | PHP/MySQL, broader vulnerability-class coverage than DVWA per a 2026-09-02 external review's recommendation — same `misconfig`-only status as WebGoat for now |
 | **AIGoat** | prompt-injection templates | Deliberately-vulnerable LLM chat app (OWASP LLM Top 10) with real, self-hosted "System Prompt Leakage" and "Data Leakage" labs — see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1 |
 
 Prerequisites for any target: Docker + Docker Compose (`docker compose`, no hyphen), per [04-environment-and-testing.md](04-environment-and-testing.md).
@@ -377,6 +378,70 @@ cd ~/targets/vapi && docker-compose down -v
 
 ---
 
+## WebGoat (for `--detector misconfig`; reserved for Phase 2's XSS/SQLi work)
+
+**Added 2026-09-02**, per an external review's recommendation to broaden the local target list beyond DVWA/Juice Shop. [OWASP WebGoat](https://github.com/WebGoat/WebGoat) is a Spring Boot lesson app — no accounts needed for `misconfig`'s generic checks, which is all that's wired up against it today; its actual lesson content (XSS/SQLi/etc.) is still Phase 2 per [03-development-roadmap.md](03-development-roadmap.md).
+
+### Bring it up
+
+```bash
+wsl                     # Windows only — drops into the Ubuntu shell; skip on macOS
+docker pull webgoat/webgoat:v2025.3
+docker run --name webgoat -d -p 127.0.0.1:18080:8080 -p 127.0.0.1:19090:9090 -e TZ=Etc/UTC webgoat/webgoat:v2025.3
+```
+- **App:** `http://localhost:18080/WebGoat` — remapped from the image's default host port 8080, which collides with other tools commonly already running on a dev box; the container's own internal port is untouched.
+- **WebWolf** (WebGoat's companion tool for some lessons — not needed for `misconfig`): `http://localhost:19090`, remapped from 9090 the same way.
+- No database-init step — ready as soon as the container's Spring Boot app finishes starting (`docker logs webgoat` shows `Started StartWebGoat` when ready, a few seconds after `docker run`). The image's own `docker ps` health check may report `unhealthy` even once the app is fully serving requests — a health-check-config quirk, not a sign anything's actually wrong; confirmed live by the scan below succeeding regardless.
+- Multi-arch image — no `--platform` flag needed on Apple Silicon.
+
+### What HackerFive needs
+
+```bash
+cd ~/projects/hacker-five
+./hackerfive scan -t http://localhost:18080/WebGoat --detector misconfig --templates /tmp/empty-templates
+```
+No tokens, no `--endpoint`. Real, live-verified result (2026-09-02): **10 findings** — 4 missing security headers, 3 disallowed methods (PUT/DELETE/PATCH all return `200` at root instead of being rejected), and 3 exposed-path hits under Spring Boot's own `/actuator` endpoints (`/actuator`, `/actuator/health`, and `/actuator/env` at **high** severity — independently confirmed via direct `curl` that `/actuator/env` really is publicly reachable and returns a real, if partially self-sanitized, environment/property dump). WebGoat's own built-in default-creds check won't fire here either, same caveat as DVWA's section above — its real login posts to `/WebGoat/login` with `username`/`password` fields, but the account itself only exists after self-registration (`/WebGoat/registration`), so there's no fixed `admin`/`password` pair the checker's dictionary would ever match.
+
+### Teardown / reset
+
+```bash
+docker rm -f webgoat
+```
+
+---
+
+## bWAPP (for `--detector misconfig`; reserved for Phase 2's XSS/SQLi work)
+
+**Added 2026-09-02**, same reasoning as WebGoat above. [bWAPP](https://github.com/raesene/bWAPP) ("buggy web application") is a PHP/MySQL app covering a broader spread of vulnerability classes (SQLi, XSS, OS command injection, XXE, and more, each with a low/medium/high difficulty toggle) than DVWA in one place — the project itself is no longer actively maintained, so `raesene/bwapp` (the standard community-maintained Docker image) is used rather than a nonexistent "official" one.
+
+### Bring it up
+
+```bash
+wsl                     # Windows only — drops into the Ubuntu shell; skip on macOS
+docker pull raesene/bwapp
+docker run --name bwapp -d -p 127.0.0.1:8079:80 raesene/bwapp
+```
+- **App:** `http://localhost:8079` — remapped from the image's default host port 80, which collides with this doc's own DVWA section above if both are running at once.
+- **amd64-only image** — on Apple Silicon this runs under Rosetta/QEMU emulation (Docker prints a platform-mismatch warning on pull/run; safe to ignore, it still works, just slower to start than a native-arch image).
+- **Required one-time step**, same shape as DVWA's `/setup.php`: hit `http://localhost:8079/install.php?install=yes` once (a browser visit or `curl` both work) to create the MySQL schema — a fresh container serves an install prompt, not the real app, until this runs.
+- **Default web login:** `bee` / `bug` (bWAPP's own well-known, intentionally-documented default account) — only needed for a human to browse its lesson menu; `misconfig` doesn't need it.
+
+### What HackerFive needs
+
+```bash
+cd ~/projects/hacker-five
+./hackerfive scan -t http://localhost:8079 --detector misconfig --templates /tmp/empty-templates
+```
+No tokens, no `--endpoint`. Real, live-verified result (2026-09-02): **9 findings** — 4 missing security headers, 3 disallowed methods, 1 directory-listing hit at `/images/` (independently confirmed via direct `curl` — Apache really does serve a real directory index there), and 1 comment-leak hit on the login page (a commented-out `<script src=.../html5.js>` tag, matching `misconfig-comment-leak`'s own detection pattern — confirmed genuine, not a false positive, by inspecting the finding's own raw evidence). Same default-creds caveat as DVWA/WebGoat above: bWAPP's real login field is named `login`, not `username`, so the fixed-form-field checker correctly finds nothing despite `bee`/`bug` being real, working, publicly-documented credentials.
+
+### Teardown / reset
+
+```bash
+docker rm -f bwapp
+```
+
+---
+
 ## AIGoat (for prompt-injection templates)
 
 [AIGoat](https://github.com/AISecurityConsortium/AIGoat) (Apache 2.0 app code) is a deliberately-vulnerable LLM shopping-assistant chatbot covering the full OWASP LLM Top 10, self-hosted via Docker + Ollama — no external API, no cost. Used to build and live-verify `templates/nuclei-samples/promptinjection/` (see that directory's README and [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1).
@@ -469,15 +534,6 @@ docker rm -f oob-server
 
 ---
 
-## Other targets (no detector targets these yet)
-
-No setup steps here on purpose — these are Docker-available but nothing in HackerFive targets them yet (see table above), so there's no real live-verified result to document, unlike the sections above. Pull the image ahead of time if you want it ready for when Phase 2's XSS/SQLi work lands (see [03-development-roadmap.md](03-development-roadmap.md) Week 13-16) and this graduates to its own section:
-```bash
-docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; needs Rosetta on Apple Silicon Macs, native on Windows/WSL2 and Intel Macs
-```
-
----
-
 ## Summary: what to prepare, per target
 
 | Target | Credentials/tokens HackerFive needs | Where they come from | One-time setup step |
@@ -486,6 +542,8 @@ docker pull --platform linux/amd64 webgoat/goatandwolf   # amd64-only image; nee
 | DVWA | None for `misconfig`; a manually-obtained `PHPSESSID` session cookie for XSS/SQLi (not yet CLI-supportable, see its section above) | — | Click "Create / Reset Database" once at `/setup.php`; set Security level to Low |
 | Juice Shop | None | — | None — ready as soon as the container responds |
 | vAPI | `VAPI_OWNER_TOKEN`, `VAPI_OTHER_TOKEN` for `--detector idor`/`authbypass` (each `base64(username:password)`; target must include the `/vapi` prefix) — none for `--detector misconfig` | `POST /vapi/api1/user` with `username`/`name`/`course`/`password` (faster than the web UI), then base64-encode `username:password` yourself | None — `docker-compose.yml`'s DB init runs automatically |
+| WebGoat | None for `misconfig` | — | None — ready as soon as `docker logs webgoat` shows `Started StartWebGoat` |
+| bWAPP | None for `misconfig` | — | Hit `/install.php?install=yes` once to create the MySQL schema |
 | AIGoat | A JWT via `--header "Authorization: Bearer $TOKEN"` for the promptinjection templates | `POST /api/auth/login/` with a demo account (`alice`/`password123`) | `sed` the Ollama model to `gemma3:4b` in both config files and remap the backend's host port before `docker compose up` — see its section above |
 
 ## See also

@@ -18,7 +18,7 @@
 #### 1. **Language: Go (Golang)**
 - **Why?**
   - Compiles to single static binary (no dependencies, easy distribution)
-  - Concurrent request handling via goroutines (150+ req/sec baseline)
+  - Concurrent request handling via goroutines (150+ req/sec architectural capacity, demonstrated against local lab targets — not a recommended operating rate against a real program; see [05-hackerone-and-legal.md](05-hackerone-and-legal.md)'s "Rate Limits & Concurrency Against Real Targets" for the actual real-target guidance, 5-10 req/sec absent other constraints)
   - Fast startup and low memory footprint
   - Built-in HTTP/DNS/TCP clients
   - Production-proven by Nuclei, Nmap, Docker, Kubernetes
@@ -207,7 +207,7 @@ The misconfig detector's templates are pulled from upstream `nuclei-templates`, 
 
 | Component | Tool | Purpose |
 |-----------|------|---------|
-| **Vulnerable Targets** | crAPI, vAPI, DVWA, Juice Shop | Safe testing environment |
+| **Vulnerable Targets** | crAPI, vAPI, DVWA, Juice Shop, WebGoat, bWAPP | Safe testing environment |
 | **HTTP Interception** | Burp Suite Community, MitmProxy | Debug requests/responses |
 | **API Testing** | Postman, Insomnia | Template development |
 | **Fuzzing** | ffuf, OWASP ZAP | Discover endpoints |
