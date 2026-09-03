@@ -269,6 +269,32 @@ tr.sev-info { background: var(--info-bg); }
   margin: 0.75rem 0;
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.section-header h2 { margin: 0; }
+
+.icon-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.icon-btn:hover { background: var(--surface-alt); color: var(--fg); }
+.icon-btn:active { transform: translateY(1px); }
+.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 #logs {
   max-height: 12rem;
   overflow-y: auto;

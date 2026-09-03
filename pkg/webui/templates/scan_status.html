@@ -18,8 +18,61 @@
 <tbody id="findings" sse-swap="finding" hx-swap="afterbegin">{{.FindingRowsHTML}}</tbody>
 </table>
 
+<div class="section-header">
 <h2>Logs</h2>
-<div id="logs" sse-swap="log" hx-swap="afterbegin">{{.LogLinesHTML}}</div>
+<button type="button" class="icon-btn" id="copy-logs-btn" title="Copy logs to clipboard" aria-label="Copy logs to clipboard">📋 Copy</button>
+</div>
+<div id="logs" sse-swap="log" hx-swap="beforeend">{{.LogLinesHTML}}</div>
+<script>
+(function() {
+  var logs = document.getElementById("logs");
+  if (!logs) { return; }
+
+  function scrollLogsToBottom() { logs.scrollTop = logs.scrollHeight; }
+  scrollLogsToBottom();
+
+  // Every live log line arrives as its own htmx swap into #logs
+  // (sse-swap="log" hx-swap="beforeend") — re-pin scroll to the bottom
+  // each time so the newest entry always stays visible.
+  document.body.addEventListener("htmx:afterSwap", function(evt) {
+    var swapped = (evt.detail && evt.detail.target) || evt.target;
+    if (swapped === logs) { scrollLogsToBottom(); }
+  });
+
+  // navigator.clipboard needs a secure context — true for a loopback
+  // (127.0.0.1/localhost) bind even over plain http, but this server can
+  // also bind to a non-loopback host (see pkg/webui/auth.go's
+  // nonLoopbackAuth), where plain http is not secure — falls back to the
+  // legacy execCommand technique there.
+  function copyLogsToClipboard() {
+    var text = logs.innerText;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) { /* best-effort fallback */ }
+    document.body.removeChild(ta);
+    return Promise.resolve();
+  }
+
+  var copyBtn = document.getElementById("copy-logs-btn");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", function() {
+      copyLogsToClipboard().then(function() {
+        var original = copyBtn.textContent;
+        copyBtn.textContent = "Copied!";
+        setTimeout(function() { copyBtn.textContent = original; }, 1500);
+      });
+    });
+  }
+})();
+</script>
 </div>
 {{end}}
 {{define "scan_status.html"}}{{template "header" .}}

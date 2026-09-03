@@ -577,25 +577,64 @@ func TestLaunchTargetScheme(t *testing.T) {
 	assert.Equal(t, "https://127.0.0.1:8888", launchTargetScheme("127.0.0.1:8888"))
 }
 
-// TestSnapshotData_FindingsAndLogsRenderNewestFirst guards the "Scan
-// Activity" newest-on-top redesign (doc14 Step 6): the initial render must
-// already match the order live SSE appends (hx-swap="afterbegin") produce.
-func TestSnapshotData_FindingsAndLogsRenderNewestFirst(t *testing.T) {
+// TestSnapshotData_FindingsRenderNewestFirst guards the "Scan Activity"
+// newest-on-top redesign (doc14 Step 6): the initial render must already
+// match the order live SSE appends (hx-swap="afterbegin") produce.
+func TestSnapshotData_FindingsRenderNewestFirst(t *testing.T) {
 	_, h := newTestServerHandlers(t)
 
 	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
 	job.AppendFinding(detectors.Finding{ID: "first"})
 	job.AppendFinding(detectors.Finding{ID: "second"})
-	job.AppendLog("info", "first-log")
-	job.AppendLog("info", "second-log")
 
 	data := h.snapshotData(job)
 
 	findingsHTML := string(data.FindingRowsHTML)
 	assert.Less(t, strings.Index(findingsHTML, "second"), strings.Index(findingsHTML, "first"), "the most recently appended finding must render first")
+}
+
+// TestSnapshotData_LogsRenderOldestFirst guards the Logs panel's
+// chronological order (old on top, new at bottom, auto-scrolled to the
+// bottom by scan_status.html's own script): the initial render must
+// already match the order live SSE appends (hx-swap="beforeend") produce,
+// so a page load and a live update never disagree.
+func TestSnapshotData_LogsRenderOldestFirst(t *testing.T) {
+	_, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job.AppendLog("info", "first-log")
+	job.AppendLog("info", "second-log")
+
+	data := h.snapshotData(job)
 
 	logsHTML := string(data.LogLinesHTML)
-	assert.Less(t, strings.Index(logsHTML, "second-log"), strings.Index(logsHTML, "first-log"), "the most recently appended log line must render first")
+	assert.Less(t, strings.Index(logsHTML, "first-log"), strings.Index(logsHTML, "second-log"), `the earliest log line must render first, matching hx-swap="beforeend"`)
+}
+
+// TestScanStatus_LogsPanel_HasCopyButtonAndAppendsAtBottom confirms the
+// full-page render actually wires the copy-to-clipboard button and the
+// bottom-appending SSE swap, not just snapshotData's own ordering (covered
+// separately above) — a real GET /scans/{id} render, same as
+// TestScanStatus_RendersReconResultTablesFromFixture's pattern.
+func TestScanStatus_LogsPanel_HasCopyButtonAndAppendsAtBottom(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job.AppendLog("info", "first-log")
+	job.AppendLog("info", "second-log")
+	h.store.Add(job)
+
+	resp, err := http.Get(ts.URL + "/scans/job1")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+
+	assert.Contains(t, html, `id="copy-logs-btn"`, "the copy-to-clipboard button must be present")
+	assert.Contains(t, html, `sse-swap="log" hx-swap="beforeend"`, "live log lines must append at the bottom, not the top")
+	assert.Less(t, strings.Index(html, "first-log"), strings.Index(html, "second-log"), "the initial render must already be oldest-first, matching the live beforeend order")
 }
 
 // logMessages flattens job's logs into "level: msg" strings for substring

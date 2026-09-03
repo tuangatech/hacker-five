@@ -174,10 +174,14 @@ func writeSSEEvent(w http.ResponseWriter, ev Event) error {
 // snapshotData builds the initial-render data for both scan_status.html
 // (full page) and startLaunch's response fragment — one job snapshot, two
 // callers, so a page load and a form-submit response always agree. Findings
-// and log lines are rendered newest-first: the live SSE stream appends new
-// ones via hx-swap="afterbegin" (doc14 Step 6's "Scan Activity" redesign),
-// so the very first paint must already match that order, not the other way
-// around (oldest-first, matching the old "beforeend" behavior).
+// are rendered newest-first: the live SSE stream appends new ones via
+// hx-swap="afterbegin" (doc14 Step 6's "Scan Activity" redesign), so the
+// very first paint must already match that order. Log lines are the
+// opposite — rendered oldest-first (chronological, matching snap.Logs'
+// own append order) since the live SSE stream appends new ones via
+// hx-swap="beforeend" on #logs; the page auto-scrolls #logs to its bottom
+// on load and on every new line so the newest entry stays visible without
+// the reversed order findings needs.
 func (h *handlers) snapshotData(job *Job) ScanStatusData {
 	snap := job.Snapshot()
 
@@ -186,8 +190,8 @@ func (h *handlers) snapshotData(job *Job) ScanStatusData {
 		findingsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_finding_row", snap.Findings[i])))
 	}
 	var logsHTML strings.Builder
-	for i := len(snap.Logs) - 1; i >= 0; i-- {
-		logsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_log_line", snap.Logs[i])))
+	for _, entry := range snap.Logs {
+		logsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_log_line", entry)))
 	}
 
 	return ScanStatusData{
