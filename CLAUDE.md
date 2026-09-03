@@ -9,7 +9,7 @@ HackerFive — an open-source vulnerability scanner in Go, template-driven (YAML
 ## Stack & conventions
 
 - **Language:** Go 1.21+, CLI via Cobra, templates via `gopkg.in/yaml.v3`.
-- **Layout:** `cmd/hackerfive/` (entrypoint), `pkg/{scanner,detectors,template,reporter}/`, `templates/{idor,misconfig,...}/`, `tests/{unit,integration,fixtures}/`.
+- **Layout:** `cmd/hackerfive/` (entrypoint), `pkg/{scanner,detectors,template,reporter}/`, `templates/idor/` (native detector templates), `templates/nuclei-samples/` (bundled nuclei-compatible samples), `templates/index.json` (synced-corpus index), `tests/{unit,integration,fixtures}/`.
 - **Testing:** Go `testing` + testify; integration tests run against local vulnerable targets (crAPI, DVWA, Juice Shop, vAPI) via Docker Compose — never against live/external hosts.
 - **Lint:** `golangci-lint run ./...` before considering work done.
 
@@ -23,16 +23,23 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 
 `~/projects/hacker-five` is the user's separate, native-Linux clone — used for what the `/mnt/c` mount can't do: `docker compose` for live crAPI/DVWA targets and running `./hackerfive scan` against them (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)). It has its own git history and needs its own `git pull`; edits here don't reach it automatically.
 
+## Detection philosophy
+
+- Push for broad vulnerability coverage — don't self-limit to a narrow slice out of caution; look for legitimate ways to widen what HackerFive can detect rather than treating current coverage as a ceiling.
+- Avoid hallucinated findings/matchers (false positives erode trust — see the <5% target below), but don't over-correct into unnecessary restrictions or a defensively high safety bar that suppresses real detection capability just to be safe. Precision and coverage are both goals — don't sacrifice one by default to protect the other; flag genuine uncertainty instead of either guessing or refusing.
+- Favor collecting more signal from a target during recon over less, whenever it's read-only and in-scope — a thin recon pass starves every later step of what it could have worked with.
+- Treat everything recon collects as reusable downstream: a detector, template-selection, or reporting step should draw on the full available data set, not just the slice it gathers itself.
+- Actively look for connections across steps/tasks — e.g. correlating a fingerprinted technology with an endpoint discovered separately — since combined signal from multiple sources is usually worth more than any one source alone.
+
 ## Rules
 
-- `./hackerfive scan` always runs the full template corpus additively alongside `--detector` — isolating one detector's timing/behavior needs `--templates <empty-dir>` or a `--tags` filter matching nothing, or the run also fires ~3190 templates at the target (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)'s gotcha note, hit twice on 2026-08-29).
-
-- Never add code that exfiltrates data, writes/destroys target state, or targets a host outside an explicitly authorized scope — this tool only reads/enumerates (see [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md)). `--allow-writes` is the one explicit, opt-in exception to this rule — scoped specifically to `pkg/detectors/businesslogic`'s mutating checks (coupon mint/apply, concurrent-fire race probes), never implied elsewhere. Absent, those checks are skipped with a stderr warning, not silently run.
-- **HackerOne report submission is report-drafting assistance only — never unattended/automatic submission. This is a permanent architectural invariant, not a Phase-4-scoped decision to be quietly relaxed later** (motivated by doc90 §B3: HackerOne's own "Responsible AI" update and a public researcher-trust incident are concrete evidence of how fast trust erodes once an agentic feature's boundaries aren't crisp). In code: `pkg/hackerone.Client.CreateReportIntent` only ever creates a private, unsubmitted draft; `cmd/hackerfive/report.go`'s `report create` never chains into submission; only `report submit`, gated behind an explicit `--yes` flag a human must pass, calls `SubmitReportIntent`. Any future agent/automation integration (see [docs/90-research-hackerbot.md](docs/90-research-hackerbot.md)) must preserve this human-in-the-loop gate on submission specifically, even if other steps become automated.
+- `./hackerfive scan --detector X` still additively runs the full ~9,652-template synced corpus (7 nuclei-templates categories, widened 2026-09-03) unless scoped with `--templates <empty-dir>` or a non-matching `--tags` (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)'s gotcha note, hit twice on 2026-08-29).
+- Never add code that exfiltrates data, writes/destroys target state, or targets a host outside an explicitly authorized scope — this tool only reads/enumerates (see [docs/05-hackerone-and-legal.md](docs/05-hackerone-and-legal.md)). `--allow-writes` is the sole opt-in exception, scoped to `pkg/detectors/businesslogic`'s mutating checks (coupon mint/apply, race probes); absent, those checks are skipped with a stderr warning, never silently run.
+- **HackerOne report submission is report-drafting assistance only — never unattended/automatic, a permanent invariant** (doc90 §B3: HackerOne's own "Responsible AI" update plus a public researcher-trust incident show how fast trust erodes once an agentic feature's boundaries blur). `pkg/hackerone.Client.CreateReportIntent` only ever creates a private, unsubmitted draft; `report create` never chains into submission; only `report submit --yes` calls `SubmitReportIntent`. Any future agent/automation work (see [docs/90-research-hackerbot.md](docs/90-research-hackerbot.md)) must preserve this human-in-the-loop gate on submission.
 - Load credentials/tokens from environment variables only; never hardcode them.
-- Keep new detectors and templates consistent with the false-positive targets in [docs/03-development-roadmap.md](docs/03-development-roadmap.md) (<5%) — flag doubtful matchers instead of guessing.
-- Do not rely on your own knowledge about library, framework versions. Please search for new, stable version of library, framework before use.
-- Before committing to a new dependency in a plan doc, check its real transitive footprint (run `go get` in a scratch branch, read the `go.mod` diff / `go list -m all`) — a package's own doc page can look lightweight while its import pulls in unrelated subsystems (see [docs/02-architecture-and-tech-stack.md](docs/02-architecture-and-tech-stack.md) §8's `interactsh-client` lesson: 134 new go.mod lines from server-mode code the client didn't need). If the real footprint is disproportionate, prefer a first-party implementation of just the needed protocol subset over accepting the bloat.
+- Keep new detectors/templates within the <5% false-positive target ([docs/03-development-roadmap.md](docs/03-development-roadmap.md)) — flag doubtful matchers instead of guessing.
+- Search for the current stable version of a library/framework before use; don't rely on your own knowledge of versions.
+- Before adding a new dependency, check its real transitive footprint (`go get` in a scratch branch, read the `go.mod` diff / `go list -m all`) — a lightweight-looking package can pull in unrelated subsystems (see [docs/02-architecture-and-tech-stack.md](docs/02-architecture-and-tech-stack.md) §8: `interactsh-client` added 134 unneeded go.mod lines from server-mode code). If the footprint is disproportionate, prefer a first-party implementation of just the needed protocol subset.
 
 ## Workflow
 
@@ -41,4 +48,5 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 - Push back with evidence when appropriate.
 - Never mark a task complete without proving it works.
 - Proactively recommend features/practices that raise the tool's maturity (feature parity with established tools, robustness, real-world usability), not just answers to the literal question asked.
+- While testing or reviewing, raise any enhancement opportunity you notice (scanning quality, speed, maintainability) as soon as you see it; if it can't be done right away, log it to [docs/follow-up.md](docs/follow-up.md) instead of letting it drop.
 - User instructions always override this file.

@@ -1,8 +1,8 @@
 # HackerFive
 
-Open-source, high-performance vulnerability scanner (Go) built to support bug bounty hunting on HackerOne and similar platforms.
+Open-source, high-performance vulnerability scanner in Go — deterministic detectors and templates as the auditable core, with an optional MCP server and tiered LLM fallback that let an AI agent extend recon, template coverage, and finding triage beyond what's built in, always gated behind explicit human approval.
 
-HackerFive is the scanner. crAPI, DVWA, Juice Shop, vAPI, WebGoat, bWAPP, and AIGoat are the lab targets it's validated against — see [Test Targets](#test-targets).
+crAPI, DVWA, Juice Shop, vAPI, WebGoat, bWAPP, and AIGoat are the lab targets it's validated against — see [Test Targets](#test-targets).
 
 Repo: https://github.com/tuangatech/hacker-five
 
@@ -13,21 +13,13 @@ Repo: https://github.com/tuangatech/hacker-five
 
 ## Features
 
-- **IDOR** (`--detector idor`) — sequential/wordlist ID enumeration, two modes:
-  - **Baseline mode** (high confidence): give both `--auth-token` and `--other-auth-token`. Two unrelated accounts are compared against each ID; a finding fires only when the second account gets real content where the majority "denied" baseline says it shouldn't.
-  - **Heuristic mode** (low confidence, manual triage): only `--auth-token` given. Flags any ID whose response signature differs from the rest — cannot tell an IDOR from legitimately varying public content, so treat findings as leads, not confirmed bugs.
-  - Targets that don't speak plain `Authorization: Bearer <token>` (e.g. vAPI's `Authorization-Token: base64(username:password)`) can override the header via `--auth-header-name`/`--auth-header-format` (the latter must contain the literal placeholder `{token}`) — see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)'s vAPI section.
-- **Misconfiguration** (`--detector misconfig`) — fixed built-in rule tables (`pkg/detectors/misconfig/`): exposed paths (`.env`, `.git`, `/admin`, `/swagger`, ...), missing security headers (CSP, HSTS, X-Frame-Options, ...), disallowed HTTP methods (PUT/DELETE/PATCH accepted where they shouldn't be), CORS misconfiguration (reflected origin + credentials), verbose error messages, and a fixed, capped (5 pairs, never retried) default-credentials check. No token required; `--auth-token` is used as a Bearer header when set, for paths that sit behind auth.
-- **API Auth Bypass** (`--detector authbypass`) — missing-authentication, JWT `alg:none`/signature-stripping bypass, an **offline-only** JWT weak-secret dictionary check (never sent to the target — see `pkg/detectors/authbypass`), a bounded rate-limit-signal probe (fixed request count, one known-invalid credential, never real credential guessing), token reuse across two accounts, and broken-session (logout-then-reuse) detection. Requires `--auth-token` and `--protected-paths` (comma-separated candidate endpoints); `--other-auth-token` additionally enables the token-reuse check. `--login-paths`/`--logout-paths` override the rate-limit/broken-session checks' fixed candidate lists (real targets rarely use the generic defaults); `--auth-header-name`/`--auth-header-format` (above) apply here too, not just to IDOR.
-- **SSRF** (`--detector ssrf`) — probes each `--ssrf-param` (repeatable — real targets rarely expose just one URL-accepting parameter) with internal-network/cloud-metadata addresses (including blocklist-bypass encodings: decimal, octal, hex, IPv6 loopback, IPv4-mapped IPv6 — each its own explicit probe, not one canonical form) and scheme-based payloads (`file://`, `gopher://`, `dict://`); `--oob-server` (repeatable, tried in order with automatic fallback, retry-hardened against individual server flakiness) additionally enables a blind, out-of-band check via a first-party, stdlib-only Interactsh-protocol client (`pkg/oob`) that preserves Interactsh's real per-client-keypair encryption. Defaults to 2 of ProjectDiscovery's public servers (`oast.pro`/`oast.live`) when omitted — a real, stated leak tradeoff (target IP/timing visible to that infrastructure) appropriate for scanning your own sites; `--no-oob` disables the check entirely, `--oob-server public` expands to the full 6-server pool, and a self-hosted URL is the recommendation for a real third-party engagement — see [docs/discussions.md](docs/discussions.md). Live-verified against vAPI's `serversurfer` endpoint (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)): a real `file:///etc/passwd` disclosure, and a real blind-SSRF callback via both a self-hosted and a public Interactsh server. A handful of encoded-bypass payloads are known to make some targets' own outbound fetch hang rather than reject — a real signal, not a detector bug.
-- **Business Logic** (`--detector businesslogic`) — the one detector that performs mutating requests, gated behind `--allow-writes` (the only exception to this tool's read/enumerate-only default; absent, these checks are skipped with a warning). Two checks against crAPI's real coupon flow: self-minting an arbitrary-value coupon and applying it for real, unearned credit (no admin/role check on minting, no server-side amount cross-check on apply), and a check-then-act race condition on the apply endpoint's single-use enforcement, exploited via a first-party last-byte-sync raw-connection client (`pkg/detectors/businesslogic/raceclient.go`) rather than naive concurrent `net/http` calls, which reliably under-report tight race windows. Requires `--auth-token`; `--coupon-mint-path`/`--coupon-apply-path`/`--race-concurrency` override the crAPI-shaped defaults for a different target. Live-verified against real crAPI (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)): unearned credit fires every run, the race condition fired in 4 of 5 live runs.
-- **Templates** (`--templates`, default `./templates/`) — both formats run automatically alongside whichever `--detector` is selected, additive, not an alternative:
-  - **Nuclei-compatible** (`pkg/template/nuclei`) — a defined, fail-loudly subset of real upstream `nuclei-templates` (`scripts/sync-nuclei-templates.sh` syncs a pinned commit); supports `raw:`/`payloads:` (single/multi-entry, cross-request correlation) and `flow:` (boolean compositions of `http(N)`) within a documented v1 scope, and rejects disallowed protocol blocks and out-of-band/OAST matchers outright at load time rather than silently mis-evaluating them — see [docs/template-writing-guide.md](docs/template-writing-guide.md) for the exact boundaries. Real reflected-XSS/error-based-SQLi/blind-SQLi/stored-XSS samples ship under `templates/nuclei-samples/`.
-  - **Native YAML** (`pkg/template/native`) — HackerFive's own format, sharing the same matcher/extractor engine. `idor`-tagged templates (`templates/idor/*.yaml`) route through the real `idor.Detector`, so a YAML file can supply what `--endpoint` used to.
-  - **`--header 'Name: Value'`** (repeatable) — static headers applied to every template-driven request (both formats), the primary use for a session cookie a target's login flow issued outside the scan (e.g. DVWA), since template placeholders can't carry one yet.
-  - **Prompt injection** (`templates/nuclei-samples/promptinjection/`, tag `prompt-injection`) — a field-deployable system-prompt-extraction check for any chat-shaped LLM endpoint, plus a lab-only seeded-secret variant for validating the detector itself; live-verified against [AIGoat](https://github.com/AISecurityConsortium/AIGoat) (see [Test Targets](#test-targets)). Every request here can trigger a real, metered LLM call on the target's backend — loading a `prompt-injection`-tagged template with `--concurrency` above 5 (the safe default) prints a stderr warning.
-- **`--scope`** — an optional target allow-list file (one domain/`*.domain`/CIDR entry per line, `#` comments). Omitted by default (every existing documented command keeps working unmodified) but prints a warning when it is; given, enforcement is strict default-deny.
-- **Output & reporting** — `scan --format` selects `json` (default), `markdown`, `html`, or `hackerone-json` (an offline, best-effort HackerOne report draft — no API access needed); exact-duplicate findings (same `Finding.ID`, e.g. from overlapping targets) are deduplicated automatically before export. `hackerfive report` drafts a real HackerOne report from a scan's findings via the Hacker API's `report_intents` draft workflow (`report weaknesses`/`report scopes` look up a program's required numeric IDs, `report create` makes a private, unsubmitted draft). **Report-drafting assistance only, a permanent invariant**: `report create` never submits anything — only `report submit --intent-id ... --yes`, which requires an explicit human-confirmed flag, makes a report visible to a program. Requires `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` env vars (never a CLI flag or hardcoded value).
+- **Detectors** — `idor` (baseline two-account comparison or single-token heuristic mode), `misconfig` (exposed paths, missing security headers, CORS, disallowed methods, default creds), `authbypass` (JWT tampering, offline weak-secret check, rate-limit signal, token reuse, broken sessions), `ssrf` (internal/cloud-metadata probes plus blind out-of-band callback via a first-party Interactsh-protocol client), `businesslogic` (coupon abuse, check-then-act race conditions — the one detector that mutates state, gated behind `--allow-writes`). See [Run a Scan](#run-a-scan) for flags, and each detector's own docs for the full mechanics.
+- **Templates** — Nuclei-compatible (synced from real upstream `nuclei-templates`, ~9,600 templates across 7 categories) and a native YAML format sharing the same matcher/extractor engine, both run automatically alongside any detector. Prompt-injection templates ship for chat-shaped LLM endpoints. See [Template Writing Guide](docs/template-writing-guide.md).
+- **Recon** — passive (subdomain/TLS/WHOIS) through active (DNS, port scan, HTTP/tech fingerprinting, bounded crawl) reconnaissance, standalone via `hackerfive recon` or feeding `plan` below.
+- **Plan** — a deterministic capability registry resolves recon output into a `PlanTree` of candidate detector/template work, zero LLM calls, every unmapped tech signal surfaced as a visible `unresolved` leaf rather than silently dropped.
+- **Agent / MCP integration** — `hackerfive mcp-serve` exposes recon/plan/scan/triage to any MCP client (Claude Desktop, Claude Code, ...); a tiered LLM fallback (local model, then OpenRouter) fills gaps the deterministic registry can't resolve, with a hard spend ceiling and every LLM-influenced action gated behind human approval via MCP elicitation. See [MCP Server](#mcp-server-agent-integration).
+- **`--scope`** — a target allow-list file (domain/wildcard/CIDR), strict default-deny enforcement once given.
+- **Output & reporting** — `json`/`markdown`/`html`/`hackerone-json` export with automatic dedup; `hackerfive report` drafts a real HackerOne report. **Permanent invariant: draft-only** — only an explicit human `report submit --yes` ever makes a report visible to a program.
 
 Full capability inventory — every detector/recon-tool/template category, shipped and planned — lives in [doc01's Capabilities at a Glance](docs/01-overview-and-strategy.md#capabilities-at-a-glance), not duplicated here to avoid the two lists drifting apart.
 
@@ -81,6 +73,25 @@ For scripted/headless use, the equivalent CLI subcommands work without the web U
 ./hackerfive templates list   # show what's currently active, --tags to filter
 ```
 Synced templates land in a persistent per-user directory (`os.UserConfigDir()` — e.g. `%AppData%\hackerfive\` on Windows, `~/.config/hackerfive/` on Linux) outside the extracted release folder, so upgrading to a new `hackerfive` release never requires re-syncing or copying anything forward.
+
+## MCP Server (Agent Integration)
+
+`hackerfive mcp-serve` runs HackerFive as an MCP server over stdio — a third frontend (alongside the CLI and Web UI) for Claude Desktop, Claude Code, or any MCP client, built on the same unchanged scanner/recon/registry core. **Phase 6, Steps 1-2 of 5 are done** (server + tools; approval gate, executor, spend ceiling) — hard safety blockers, an approval UI, and a tagged release are still open; see [docs/15-implementation-plan-ph6.md](docs/15-implementation-plan-ph6.md).
+
+```bash
+./hackerfive mcp-serve
+```
+
+Nine tools are exposed:
+- **`plan`** — the flagship tool: runs recon, resolves it via the same deterministic registry the CLI's `plan` command uses (below), and for whatever that can't resolve, falls back to a tiered LLM to decide whether an existing template/tag covers it, a new template should be drafted, or a human should decide. The resulting plan requires explicit human approval via MCP elicitation before anything executes; only then does it run and return real findings.
+- **`recon`**, **`scan`** — the same recon phase and detector/template scan the CLI runs, callable by an agent.
+- **`tools.search`**, **`templates.search`**, **`templates.list`**, **`templates.sync`** — capability/template lookups an agent can use to reason about what's available before calling `plan`/`scan`.
+- **`findings.export`** — render a finding list via the same `pkg/reporter` the CLI's `--format` flag uses.
+- **`findings.triage`** — ranks findings by what's worth investigating first via the same tiered LLM fallback; never adds a finding or changes severity/confidence, and its ranking also requires elicitation approval before being returned.
+
+`recon`/`plan`/`scan` refuse to run at all without an explicit scope allow-list — stricter than the CLI's own `--scope`, which only warns when omitted.
+
+**Tiered LLM fallback** — a local tier first (any Ollama-compatible endpoint: `HACKERFIVE_LOCAL_MODEL_URL`/`HACKERFIVE_LOCAL_MODEL_NAME`, default `http://localhost:11434`/`llama3.1`), then OpenRouter as the frontier tier (`OPENROUTER_API_KEY`, `HACKERFIVE_OPENROUTER_MODEL` — set explicitly; no specific model is assumed current). A per-plan `HACKERFIVE_SPEND_CEILING_USD` (default $1.00) hard-caps cumulative LLM spend — once hit, no further fallback calls are made. Any of these can also go in a `.env` file in the working directory, loaded automatically (a real env var always wins). Same permanent human-in-the-loop posture as HackerOne report submission (above): nothing an LLM decides here executes, or is returned, without an explicit human approval step first.
 
 ## Building & Local Testing
 
@@ -145,7 +156,7 @@ go test -tags=integration ./tests/integration/... -v
 
 ### Recon & Planning
 
-`hackerfive recon` runs the recon phase standalone — no agent required — against a target: passive subdomain/TLS/WHOIS enumeration, then (with `--recon-depth active|full`) DNS resolution, port scanning, HTTP/tech fingerprinting, and a bounded crawl. `hackerfive plan` runs recon and then resolves the result through a deterministic capability registry (zero LLM calls) into a `PlanTree` of candidate detector/template leaves — a tech signal the registry can't map to anything becomes a visible `unresolved` leaf, never a silent drop:
+`hackerfive recon` runs the recon phase standalone — no agent required — against a target: passive subdomain/TLS/WHOIS enumeration, then (with `--recon-depth active|full`) DNS resolution, port scanning, HTTP/tech fingerprinting, and a bounded crawl. `hackerfive plan` runs recon and then resolves the result through a deterministic capability registry (zero LLM calls) into a `PlanTree` of candidate detector/template leaves — a tech signal the registry can't map to anything becomes a visible `unresolved` leaf, never a silent drop. (The MCP server's own `plan` tool, [above](#mcp-server-agent-integration), does the same resolution but additionally falls back to a tiered LLM for what the registry leaves unresolved, gated behind human approval.)
 ```bash
 ./hackerfive templates index                                  # generate templates/index.json once
 ./hackerfive plan -t http://localhost:8888 --recon-depth active --scope path/to/scope.txt
@@ -154,30 +165,15 @@ Wave 2+ (DNS/port-scan/HTTP-probe) and Wave 3 (crawl) need 6 external ProjectDis
 
 ## Docs
 
-Project plan split by concern under [docs/](docs/):
+A few high-level starting points — the full plan (including phase-by-phase implementation docs, environment setup, research write-ups, and the engineering discussion log) lives under [docs/](docs/):
 
 1. [Overview & Strategy](docs/01-overview-and-strategy.md) — mission, market analysis, target vulnerability classes, capability inventory (detectors/recon tools/template categories)
 2. [Architecture & Tech Stack](docs/02-architecture-and-tech-stack.md) — Go/YAML/Cobra stack, system design
-3. [Development Roadmap](docs/03-development-roadmap.md) — Phase 1 (1a/1b)/2/3/4/5/6/7 plan, timeline, milestones
-4. [Environment & Testing](docs/04-environment-and-testing.md) — dev setup, testing strategy
-5. [HackerOne & Legal](docs/05-hackerone-and-legal.md) — bug bounty workflow, security/legal/ethics
-6. [Metrics, Resources & FAQ](docs/06-metrics-resources-faq.md) — success metrics, resources, FAQ
-7. [Phase 1a Implementation Plan (Weeks 1-4)](docs/09-implementation-plan-ph1a.md) — file-by-file build plan and verification steps for the Foundation kickoff
-8. [Phase 1b Implementation Plan (Weeks 5-10)](docs/10-implementation-plan-ph1b.md) — misconfiguration detector, Nuclei-compatible parser, native YAML engine, testing/validation, packaging
-9. [Phase 2 Implementation Plan (Weeks 11-18)](docs/11-implementation-plan-ph2.md) — API auth-bypass detector, XSS/SQLi templates, `--scope` enforcement; `v0.2.0` results
-10. [Phase 3 Implementation Plan (Weeks 19-24)](docs/12-implementation-plan-ph3.md) — local-only web UI (`hackerfive serve`) and upgradeable template sync; `v0.3.0` results
-11. [Phase 4 Implementation Plan (Weeks 25-32)](docs/13-implementation-plan-ph4.md) — Prompt Injection, SSRF, and Business Logic Flaw detectors
-12. [Phase 5 Implementation Plan (Weeks 33-40)](docs/14-implementation-plan-ph5.md) — recon package, `Finding`-schema freeze, task-tree data model, a deterministic decision engine + capability registry, read-only recon/plan-preview UI (no MCP dependency)
-13. [Phase 6 Implementation Plan (Weeks 41-48)](docs/15-implementation-plan-ph6.md) — MCP server, `tools.search`/`templates.search`, elicitation-based approval gate seeded from recon, tiered LLM fallback, hard safety blockers, actionable approval UI
-14. [Phase 7 Implementation Plan (Weeks 49-56)](docs/16-implementation-plan-ph7.md) — `AllowWrites` attestation, live Web UI Agent tab, OWASP Agentic Top 10 mapping, eval maturity
-15. [Follow-Up: Enhancement Backlog](docs/follow-up.md) — open items by category: security/scope hardening, protocol expansion, template/detection engine gaps, recon, reporting, testing
-16. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI, DVWA, Juice Shop, vAPI, WebGoat, bWAPP, and AIGoat bring-up, account/token minting, per-target setup steps and caveats
-17. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
-18. [Authorized Targets Registry](docs/22-authorized-targets.md) — living list of vetted real targets (policy, scope, safe harbor, fit for HackerFive), so vetting isn't repeated
-19. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
-20. [Agent Integration Research: "Hacker-in-the-Loop"](docs/90-research-hackerbot.md) — research behind Phases 5-7: how other LLM-driven pentesting tools structure themselves (including a deterministic-first, tiered-LLM-fallback hybrid model), and the design decisions/backlog this project scheduled from it
-21. [Recon Phase Research](docs/91-research-recon-phase.md) — research behind Phase 5's recon package: how comparable agentic pentesting tools perform reconnaissance, and the wave-based design scheduled from it
-22. [Engineering Discussions](docs/discussions.md) — short, dated, bullet-form records of architecture questions resolved outside any single numbered doc
+3. [Development Roadmap](docs/03-development-roadmap.md) — phase-by-phase plan, timeline, milestones, and links to each phase's own implementation-plan doc
+4. [HackerOne & Legal](docs/05-hackerone-and-legal.md) — bug bounty workflow, security/legal/ethics, safe harbor
+5. [Setting Up Test Targets](docs/20-setup-testing-targets.md) — crAPI, DVWA, Juice Shop, vAPI, WebGoat, bWAPP, and AIGoat bring-up, account/token minting, per-target setup steps and caveats
+6. [Scanning a Real, Authorized Target](docs/21-scanning-real-targets.md) — finding a program/VDP, recon before scanning, building a target-fit Nuclei template set, running the scan conservatively
+7. [Template Writing Guide](docs/template-writing-guide.md) — writing Nuclei-compatible and native YAML templates: supported fields, what's rejected at load time, the shared DSL
 
 See [CLAUDE.md](CLAUDE.md) for conventions when working in this repo. Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a vulnerability in HackerFive itself (not a finding it produced against some other target)? See [SECURITY.md](SECURITY.md).
 
