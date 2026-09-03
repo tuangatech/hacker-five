@@ -39,3 +39,14 @@ dist/
 # .engagements/README.md.
 .engagements/
 .playwright-mcp/
+
+# Credentials/config loaded by cmd/hackerfive/dotenv.go (HACKERFIVE_AUTH_TOKEN,
+# OPENROUTER_API_KEY, etc.) — see .env.example for the real var names, never
+# commit actual values.
+.env
+
+# I4-drafted templates (pkg/mcpserver's plan tool, Phase 6 Step 2) — local,
+# untrusted, ephemeral until a human reviews and promotes one; never
+# committed. Keep the directory itself tracked via .gitkeep.
+/templates-proposed/*
+!/templates-proposed/.gitkeep

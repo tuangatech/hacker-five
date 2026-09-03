@@ -138,3 +138,43 @@ func TestSuggestSSRFParamsFromRecon_NilResult(t *testing.T) {
 		t.Fatalf("got %v, want nil", got)
 	}
 }
+
+func TestSuggestAuthBypassPathsFromRecon(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/admin/settings", StatusCode: 403},
+		{URL: "https://example.com/api/private", StatusCode: 401},
+		{URL: "https://example.com/login", Source: "wave1"},
+		{URL: "https://example.com/auth/signin", Source: "wave3-auth-boundary-heuristic"},
+		{URL: "https://example.com/logout"},
+		{URL: "https://example.com/about"}, // matches nothing
+	}}
+
+	protected, login, logout := SuggestAuthBypassPathsFromRecon(result)
+
+	wantProtected := []string{"/admin/settings", "/api/private"}
+	wantLogin := []string{"/login", "/auth/signin"}
+	wantLogout := []string{"/logout"}
+
+	assertStringSlice(t, "protected", protected, wantProtected)
+	assertStringSlice(t, "login", login, wantLogin)
+	assertStringSlice(t, "logout", logout, wantLogout)
+}
+
+func TestSuggestAuthBypassPathsFromRecon_NilResult(t *testing.T) {
+	protected, login, logout := SuggestAuthBypassPathsFromRecon(nil)
+	if protected != nil || login != nil || logout != nil {
+		t.Fatalf("got (%v, %v, %v), want (nil, nil, nil)", protected, login, logout)
+	}
+}
+
+func assertStringSlice(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: got %v, want %v", label, got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("%s: got %v, want %v", label, got, want)
+		}
+	}
+}

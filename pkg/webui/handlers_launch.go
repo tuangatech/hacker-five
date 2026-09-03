@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -543,7 +542,7 @@ func fillReconFields(job *Job, cfgs []scanner.Config) []scanner.Config {
 				}
 			}
 		case "authbypass":
-			protected, login, logout := suggestPathsFromRecon(result)
+			protected, login, logout := recon.SuggestAuthBypassPathsFromRecon(result)
 			if len(cfg.ProtectedPaths) == 0 {
 				if len(protected) == 0 {
 					job.AppendLog("warn", "authbypass: skipped — no --protected-paths given and recon found no candidate; fill in manually and re-run")
@@ -595,56 +594,6 @@ func fillReconFields(job *Job, cfgs []scanner.Config) []scanner.Config {
 		runnable = append(runnable, cfg)
 	}
 	return runnable
-}
-
-// suggestPathsFromRecon buckets a ReconResult's EndpointFacts into
-// authbypass's three path fields, per docs/14-implementation-plan-ph5.md
-// Step 7's spec: a 401/403 response is evidence of a protected path; a fact
-// wave3's auth-boundary heuristic itself produced, or a login-shaped path,
-// suggests a login path; a logout/signout-shaped path suggests a logout
-// path. Each list preserves recon's own discovery order (already
-// deterministic) and is deduplicated.
-func suggestPathsFromRecon(result *recon.ReconResult) (protected, login, logout []string) {
-	if result == nil {
-		return nil, nil, nil
-	}
-
-	seenProtected, seenLogin, seenLogout := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, ep := range result.Endpoints {
-		path := endpointPath(ep.URL)
-		if path == "" {
-			continue
-		}
-		lower := strings.ToLower(path)
-		switch {
-		case ep.StatusCode == http.StatusUnauthorized || ep.StatusCode == http.StatusForbidden:
-			if !seenProtected[path] {
-				seenProtected[path] = true
-				protected = append(protected, path)
-			}
-		case ep.Source == "wave3-auth-boundary-heuristic" || strings.Contains(lower, "login") || strings.Contains(lower, "signin"):
-			if !seenLogin[path] {
-				seenLogin[path] = true
-				login = append(login, path)
-			}
-		case strings.Contains(lower, "logout") || strings.Contains(lower, "signout"):
-			if !seenLogout[path] {
-				seenLogout[path] = true
-				logout = append(logout, path)
-			}
-		}
-	}
-	return protected, login, logout
-}
-
-// endpointPath extracts rawURL's path, "" on a malformed URL (skipped by
-// suggestPathsFromRecon's caller).
-func endpointPath(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return u.Path
 }
 
 // flattenPlanTree walks tree depth-first into a flat leaf slice.

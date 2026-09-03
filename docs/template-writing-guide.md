@@ -276,6 +276,4 @@ A template tagged exactly `idor` routes through the real `idor.Detector` (the sa
 ## See also
 - [templates/idor/](../templates/idor/) — real native-format `idor`-tagged templates, live-verified against crAPI
 - [templates/nuclei-samples/](../templates/nuclei-samples/) — real, unmodified upstream Nuclei templates, one per curated category
-- [21-scanning-real-targets.md](21-scanning-real-targets.md) — `--tags` filtering workflow for scoping a real scan's template set
-- [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) — the design decisions and live findings behind everything in this doc (Steps 2-3)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — the false-positive-rate bar template contributions are held to

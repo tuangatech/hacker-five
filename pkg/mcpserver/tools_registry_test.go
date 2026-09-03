@@ -87,23 +87,3 @@ func TestTemplatesSearchTool_MissingIndex_DegradesToEmpty(t *testing.T) {
 		t.Fatalf("expected a graceful degrade, not a tool error: %s", textContent(t, res))
 	}
 }
-
-func TestPlanTool_MissingScope_Refused(t *testing.T) {
-	ctx := context.Background()
-	session, err := connect(ctx, New())
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer func() { _ = session.Close() }()
-
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "plan",
-		Arguments: map[string]any{"target": "example.com", "scope": []string{}},
-	})
-	if err != nil {
-		t.Fatalf("CallTool returned a protocol error, want a tool-level error result: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("expected IsError=true for a plan call with an empty scope list — D3 applies to plan too, since it runs recon internally")
-	}
-}

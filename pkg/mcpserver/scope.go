@@ -3,6 +3,8 @@ package mcpserver
 import (
 	"fmt"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 )
 
@@ -23,4 +25,19 @@ func requireScope(entries []string) (*scope.Scope, error) {
 		return nil, fmt.Errorf("parsing scope: %w", err)
 	}
 	return sc, nil
+}
+
+// clientSupportsElicitation mirrors the SDK's own ServerSession.Elicit gate
+// (mcp/server.go) — checked here, before plan/findings.triage ever return
+// InputRequests, so a client that never declared elicitation capability
+// gets a clean "returned unexecuted" result instead of an error surfacing
+// from deep inside the multi-round-trip machinery. Real gap found and fixed
+// 2026-09-02: the original design (Step 2 kickoff) called for exactly this
+// degrade, but it was lost when ServerSession.Elicit turned out not to be
+// callable synchronously mid-request (see tools_plan.go's Done-note-linked
+// comments) — this restores the intended behavior against the corrected
+// SEP-2322 mechanism.
+func clientSupportsElicitation(session *mcp.ServerSession) bool {
+	iparams := session.InitializeParams()
+	return iparams != nil && iparams.Capabilities != nil && iparams.Capabilities.Elicitation != nil
 }

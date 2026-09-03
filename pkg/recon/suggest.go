@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -131,6 +132,58 @@ func idShapedQueryCandidate(u *url.URL) (string, bool) {
 // parameter that just happens to hold a small integer.
 func looksLikeIDKey(key string) bool {
 	return strings.Contains(strings.ToLower(key), "id")
+}
+
+// SuggestAuthBypassPathsFromRecon buckets result's EndpointFacts into
+// protected/login/logout path candidates for authbypass's own three config
+// fields — extracted from pkg/webui's original private suggestPathsFromRecon
+// (docs/15-implementation-plan-ph6.md Step 2) into this pkg/recon-agnostic
+// form, the same way SuggestIDOREndpointCandidates/SuggestSSRFParamsFromRecon
+// already are, so a future MCP tool can call it without a pkg/webui
+// dependency. protected is the field that gates authbypass entirely when
+// empty and none is hand-supplied (mirrors idor's EndpointTemplate miss);
+// login/logout are supplementary and never block the detector on their own.
+func SuggestAuthBypassPathsFromRecon(result *ReconResult) (protected, login, logout []string) {
+	if result == nil {
+		return nil, nil, nil
+	}
+
+	seenProtected, seenLogin, seenLogout := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, ep := range result.Endpoints {
+		path := endpointPath(ep.URL)
+		if path == "" {
+			continue
+		}
+		lower := strings.ToLower(path)
+		switch {
+		case ep.StatusCode == http.StatusUnauthorized || ep.StatusCode == http.StatusForbidden:
+			if !seenProtected[path] {
+				seenProtected[path] = true
+				protected = append(protected, path)
+			}
+		case ep.Source == "wave3-auth-boundary-heuristic" || strings.Contains(lower, "login") || strings.Contains(lower, "signin"):
+			if !seenLogin[path] {
+				seenLogin[path] = true
+				login = append(login, path)
+			}
+		case strings.Contains(lower, "logout") || strings.Contains(lower, "signout"):
+			if !seenLogout[path] {
+				seenLogout[path] = true
+				logout = append(logout, path)
+			}
+		}
+	}
+	return protected, login, logout
+}
+
+// endpointPath extracts rawURL's path, "" on a malformed URL (skipped by
+// SuggestAuthBypassPathsFromRecon's caller).
+func endpointPath(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Path
 }
 
 // ssrfParamKeywords is the small, hand-authored curated table

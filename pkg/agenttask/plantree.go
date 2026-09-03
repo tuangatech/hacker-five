@@ -6,7 +6,10 @@
 // and Phase 6's coordinator.
 package agenttask
 
-import "errors"
+import (
+	"errors"
+	"sync"
+)
 
 // PlanNodeStatus is a PlanNode's lifecycle state.
 type PlanNodeStatus string
@@ -63,18 +66,56 @@ type PlanNode struct {
 	Children   []*PlanNode    `json:"children,omitempty"`
 }
 
-// PlanTree is a Job's task tree.
+// PlanTree is a Job's task tree. Phase 6 Step 2's executor dispatches
+// leaves to parallel goroutines (deterministic and LLM-assisted tiers
+// alike), so every access to Root or the spend counters below goes through
+// mu — safe for a single in-process human-typed CLI/webui.Job call before
+// Step 2, unsafe the moment concurrent leaf goroutines call
+// ApplyLeafUpdate/AddSpend on the same tree.
 type PlanTree struct {
 	Root *PlanNode `json:"root"`
+
+	mu sync.Mutex
+	// SpendCeilingUSD is a hard cap on cumulative LLM-fallback cost
+	// attributed to resolving this tree (doc15 H5) — zero means unset, no
+	// ceiling enforced. Set once by the plan tool handler before any
+	// fallback call; never mutated after.
+	SpendCeilingUSD float64 `json:"spend_ceiling_usd,omitempty"`
+	spendSoFarUSD   float64
 }
 
 // Find walks the tree depth-first for the node with the given ID, or nil if
 // none matches.
 func (t *PlanTree) Find(nodeID string) *PlanNode {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.findLocked(nodeID)
+}
+
+func (t *PlanTree) findLocked(nodeID string) *PlanNode {
 	if t.Root == nil {
 		return nil
 	}
 	return findNode(t.Root, nodeID)
+}
+
+// AddSpend records an LLM-fallback call's real cost against this tree's
+// running total and reports whether SpendCeilingUSD is now exceeded. The
+// caller must stop issuing further fallback calls the instant this returns
+// true — this is a hard-fail budget (doc15 H5), not a warn-and-continue one.
+// A zero SpendCeilingUSD never trips (unset, no ceiling enforced).
+func (t *PlanTree) AddSpend(usd float64) (exceeded bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spendSoFarUSD += usd
+	return t.SpendCeilingUSD > 0 && t.spendSoFarUSD > t.SpendCeilingUSD
+}
+
+// SpendSoFar returns the running total recorded via AddSpend.
+func (t *PlanTree) SpendSoFar() float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.spendSoFarUSD
 }
 
 func findNode(n *PlanNode, nodeID string) *PlanNode {
@@ -92,11 +133,18 @@ func findNode(n *PlanNode, nodeID string) *PlanNode {
 // PlanNodePatch is the only shape a post-construction mutation may take.
 // Children is included specifically so a shape-changing request can be
 // recognized and rejected by ApplyLeafUpdate, not merely a field the API
-// happens to omit.
+// happens to omit. Detector was added in Phase 6 Step 2 specifically for
+// I4's fallback resolving a StatusUnresolved leaf (pkg/llmfallback's
+// use_existing_tag decision) — assigning a leaf's detector after
+// construction is a real, deliberate widening of what "leaf mutation"
+// means, not a loosening of doc90 §2's shape-change defense: the leaf
+// itself (its ID/Target/position in the tree) is still fixed, only which
+// detector runs against it can now be set once, post-construction.
 type PlanNodePatch struct {
 	Status     *PlanNodeStatus
 	Confidence *Confidence
 	Rationale  *string
+	Detector   *string
 	Children   []*PlanNode // any non-nil value here is rejected: see ApplyLeafUpdate
 }
 
@@ -108,11 +156,11 @@ var (
 	ErrNotLeaf = errors.New("agenttask: node is not a leaf; only leaf nodes may be mutated")
 	// ErrShapeChange is returned when the patch itself carries a Children
 	// value — add/remove/reparent has no valid code path through this API.
-	ErrShapeChange = errors.New("agenttask: mutation would change the plan tree's shape; only leaf Status/Confidence/Rationale may be updated")
+	ErrShapeChange = errors.New("agenttask: mutation would change the plan tree's shape; only leaf Status/Confidence/Rationale/Detector may be updated")
 )
 
 // ApplyLeafUpdate finds nodeID and applies patch's non-nil Status/Confidence/
-// Rationale fields to it in place. It rejects the mutation, unchanged, if
+// Rationale/Detector fields to it in place. It rejects the mutation, unchanged, if
 // patch.Children is non-nil (ErrShapeChange), nodeID doesn't exist
 // (ErrNodeNotFound), or the matched node has children (ErrNotLeaf) — doc90
 // §2's defense against a hallucinated full-plan rewrite: only a leaf's own
@@ -121,7 +169,9 @@ func (t *PlanTree) ApplyLeafUpdate(nodeID string, patch PlanNodePatch) error {
 	if patch.Children != nil {
 		return ErrShapeChange
 	}
-	node := t.Find(nodeID)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	node := t.findLocked(nodeID)
 	if node == nil {
 		return ErrNodeNotFound
 	}
@@ -136,6 +186,9 @@ func (t *PlanTree) ApplyLeafUpdate(nodeID string, patch PlanNodePatch) error {
 	}
 	if patch.Rationale != nil {
 		node.Rationale = *patch.Rationale
+	}
+	if patch.Detector != nil {
+		node.Detector = *patch.Detector
 	}
 	return nil
 }

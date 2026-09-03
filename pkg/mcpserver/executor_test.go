@@ -1,0 +1,82 @@
+package mcpserver
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
+	"github.com/tuangatech/hacker-five/pkg/scanner"
+)
+
+func TestLeaves_FlattensDepthFirst(t *testing.T) {
+	leafA := &agenttask.PlanNode{ID: "leaf-a"}
+	leafB := &agenttask.PlanNode{ID: "leaf-b"}
+	branch := &agenttask.PlanNode{ID: "branch", Children: []*agenttask.PlanNode{leafA}}
+	root := &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{branch, leafB}}
+
+	got := leaves(root)
+	if len(got) != 2 || got[0].ID != "leaf-a" || got[1].ID != "leaf-b" {
+		t.Fatalf("got %v leaves, want [leaf-a leaf-b]", got)
+	}
+}
+
+func TestLeaves_SingleNodeTreeIsItsOwnLeaf(t *testing.T) {
+	root := &agenttask.PlanNode{ID: "root"}
+	got := leaves(root)
+	if len(got) != 1 || got[0].ID != "root" {
+		t.Fatalf("got %v, want [root]", got)
+	}
+}
+
+// TestRunPlan_SkipsUnexecutableLeaves confirms three of the four skip
+// reasons (unrecognized detector/template-ID, missing required field) never
+// reach scanner.New — no network call is attempted for them, only the
+// eligible leaf is dispatched (against an unreachable address, so it fails
+// fast rather than needing a real target — this test is about dispatch
+// eligibility, not scan correctness).
+func TestRunPlan_SkipsUnexecutableLeaves(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "template-id-leaf", Target: "http://127.0.0.1:1", Detector: "wordpress-xmlrpc-enabled"}, // raw template ID, not a recognized detector
+		{ID: "idor-no-endpoint", Target: "http://127.0.0.1:1", Detector: "idor"},                      // recognized, but EndpointTemplate unset on baseCfg
+		{ID: "misconfig-leaf", Target: "http://127.0.0.1:1", Detector: "misconfig"},                   // eligible
+	}}}
+
+	baseCfg := scanner.Config{
+		Concurrency:  1,
+		RateLimit:    50,
+		Timeout:      2 * time.Second,
+		OutputFormat: "json",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _, skipped, _ := RunPlan(ctx, nil, nil, tree, baseCfg)
+
+	if len(skipped) != 2 {
+		t.Fatalf("got %d skipped leaves, want 2 (template-id-leaf, idor-no-endpoint); skipped=%v", len(skipped), skipped)
+	}
+
+	// The eligible leaf must have been dispatched (its Status moved off
+	// pending, whatever the outcome against an unreachable target).
+	if tree.Find("misconfig-leaf").Status != agenttask.StatusDone {
+		t.Fatalf("got Status=%q for the eligible leaf, want done (dispatched, regardless of scan outcome)", tree.Find("misconfig-leaf").Status)
+	}
+	// The two skipped leaves must be untouched — never dispatched.
+	if tree.Find("template-id-leaf").Status == agenttask.StatusDone {
+		t.Fatal("a skipped leaf must not be marked done")
+	}
+	if tree.Find("idor-no-endpoint").Status == agenttask.StatusDone {
+		t.Fatal("a skipped leaf must not be marked done")
+	}
+}
+
+func TestRunPlan_EmptyTree_NoPanic(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}} // root itself is a leaf, but has no Detector
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50}
+
+	findings, logs, skipped, err := RunPlan(context.Background(), nil, nil, tree, baseCfg)
+	if findings != nil || logs != nil || skipped != nil || err != nil {
+		t.Fatalf("got (%v, %v, %v, %v), want all zero values for a tree with no Detector on its only leaf", findings, logs, skipped, err)
+	}
+}

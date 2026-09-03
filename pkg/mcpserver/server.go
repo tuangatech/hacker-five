@@ -21,9 +21,10 @@ import (
 const version = "0.6.0-dev"
 
 // New builds a fully-registered MCP server: scan, templates.list,
-// templates.sync, findings.export, recon, tools.search, templates.search,
-// and a minimal plan tool (Step 2 adds elicitation/approval on top of the
-// same plan handler — see tools_registry.go).
+// templates.sync, findings.export, findings.triage, recon, tools.search,
+// templates.search, and plan — the last now elicitation-gated and executing
+// on approval (Phase 6 Step 2, tools_plan.go), not just inspectable as it
+// was in Step 1.
 func New() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "hackerfive", Version: version}, nil)
 
@@ -32,6 +33,7 @@ func New() *mcp.Server {
 	addTemplatesListTool(s)
 	addTemplatesSyncTool(s)
 	addFindingsExportTool(s)
+	addFindingsTriageTool(s)
 	addToolsSearchTool(s)
 	addTemplatesSearchTool(s)
 	addPlanTool(s)

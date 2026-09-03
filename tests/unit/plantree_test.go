@@ -1,6 +1,8 @@
 package unit
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -109,4 +111,67 @@ func TestPlanTree_ApplyLeafUpdate_RejectsUnknownNode(t *testing.T) {
 	err := tree.ApplyLeafUpdate("does-not-exist", agenttask.PlanNodePatch{Status: &status})
 
 	require.ErrorIs(t, err, agenttask.ErrNodeNotFound)
+}
+
+// TestPlanTree_ApplyLeafUpdate_SetsDetector covers the Phase 6 Step 2
+// addition: I4's fallback (pkg/llmfallback.LeafDecision.UseExistingTag)
+// assigns a detector to a leaf registry.Resolve left StatusUnresolved
+// (empty Detector) — this is the concrete case that motivated widening
+// PlanNodePatch beyond Status/Confidence/Rationale.
+func TestPlanTree_ApplyLeafUpdate_SetsDetector(t *testing.T) {
+	tree := buildTestTree()
+	unresolved := &agenttask.PlanNode{ID: "leaf-c", Target: "http://c.test", Status: agenttask.StatusUnresolved}
+	tree.Root.Children = append(tree.Root.Children, unresolved)
+
+	detector := "misconfig"
+	err := tree.ApplyLeafUpdate("leaf-c", agenttask.PlanNodePatch{Detector: &detector})
+	require.NoError(t, err)
+	assert.Equal(t, "misconfig", tree.Find("leaf-c").Detector)
+}
+
+// TestPlanTree_ApplyLeafUpdate_ConcurrentCallsAreRaceFree is the actual
+// proof doc15 Step 2's Definition of Done item asks for — run with -race,
+// not just asserted correct in a single-goroutine test. Phase 6 Step 2's
+// executor dispatches leaves to parallel goroutines (deterministic and
+// LLM-assisted tiers alike), each calling ApplyLeafUpdate independently.
+func TestPlanTree_ApplyLeafUpdate_ConcurrentCallsAreRaceFree(t *testing.T) {
+	root := &agenttask.PlanNode{ID: "root"}
+	for i := 0; i < 20; i++ {
+		root.Children = append(root.Children, &agenttask.PlanNode{
+			ID: fmt.Sprintf("leaf-%d", i), Status: agenttask.StatusPending,
+		})
+	}
+	tree := &agenttask.PlanTree{Root: root}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			status := agenttask.StatusDone
+			_ = tree.ApplyLeafUpdate(fmt.Sprintf("leaf-%d", i), agenttask.PlanNodePatch{Status: &status})
+			tree.AddSpend(0.01)
+			_ = tree.Find(fmt.Sprintf("leaf-%d", i))
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < 20; i++ {
+		assert.Equal(t, agenttask.StatusDone, tree.Find(fmt.Sprintf("leaf-%d", i)).Status)
+	}
+	assert.InDelta(t, 0.20, tree.SpendSoFar(), 0.001)
+}
+
+func TestPlanTree_AddSpend_ReportsCeilingExceeded(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}, SpendCeilingUSD: 1.0}
+
+	assert.False(t, tree.AddSpend(0.5))
+	assert.False(t, tree.AddSpend(0.4))
+	assert.True(t, tree.AddSpend(0.2)) // total 1.1 > 1.0
+	assert.InDelta(t, 1.1, tree.SpendSoFar(), 0.001)
+}
+
+func TestPlanTree_AddSpend_ZeroCeilingNeverTrips(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}
+	assert.False(t, tree.AddSpend(1000))
 }
