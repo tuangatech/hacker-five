@@ -2,6 +2,7 @@ package unit
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -532,6 +533,179 @@ func TestEngineRun_LogCallback_FiresForDetectorError(t *testing.T) {
 	require.NotEmpty(t, levels)
 	assert.Contains(t, levels, "error", "the detector-error site must log at \"error\" level")
 	assert.Contains(t, strings.Join(msgs, "\n"), "running idor detector against", "must log which detector/target failed")
+}
+
+// TestEngineRun_LogCallback_ItemizesRejectedTemplate confirms loadTemplates
+// names the rejected path and both formats' reasons, not just the aggregate
+// count already covered elsewhere — doc15 Step 2's 2026-09-03 addendum item
+// 1. A template with no id: fails both loaders' validate() the same way
+// ("template has no id"), so it's genuinely rejected by both, not just
+// written in the other format.
+func TestEngineRun_LogCallback_ItemizesRejectedTemplate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	badPath := filepath.Join(dir, "no-id.yaml")
+	require.NoError(t, os.WriteFile(badPath, []byte(`
+info:
+  name: missing id
+  severity: info
+`), 0o644))
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var levels, msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		levels = append(levels, level)
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	joined := strings.Join(msgs, "\n")
+	assert.Contains(t, joined, "rejected template", "must itemize, not just count, a rejected template")
+	assert.Contains(t, joined, badPath, "the itemized line must name the rejected file's path")
+	assert.Contains(t, joined, "template has no id", "the itemized line must carry the loader's actual reason")
+	assert.Contains(t, joined, "1 rejected", "the aggregate summary line must still report the count")
+	assert.Contains(t, levels, "warn", "the itemized rejection must log at \"warn\" level")
+}
+
+// TestEngineRun_LogCallback_ItemizesTemplateExecutionError confirms a
+// template that loads fine but fails during execution against a target now
+// logs a "warn" line naming the template and target — previously silent
+// (Run's per-template loop just `continue`d). Mirrors
+// TestEngineRun_LogCallback_FiresForDetectorError's `%zz-invalid-escape`
+// trick: vars.Render doesn't validate URL escapes, so the malformed escape
+// only fails once http.NewRequestWithContext tries to parse the rendered
+// URL, a deterministic execution-time (not load-time) failure.
+func TestEngineRun_LogCallback_ItemizesTemplateExecutionError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte(`
+id: broken-request
+info:
+  name: deliberately broken request
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/%zz-invalid-escape"
+    matchers:
+      - type: status
+        status: [200]
+`), 0o644))
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var levels, msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		levels = append(levels, level)
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err, "one bad template must not fail the whole scan")
+
+	joined := strings.Join(msgs, "\n")
+	assert.Contains(t, joined, "broken-request", "must name the failing template's id")
+	assert.Contains(t, joined, server.URL, "must name the target the template failed against")
+	assert.Contains(t, levels, "warn", "a single template's execution error must log at \"warn\", not \"error\"")
+}
+
+// TestEngineRun_TemplateLoop_StopsOnContextDone confirms the per-target
+// template loop breaks (rather than continuing to try, and warn-logging,
+// every remaining template) once the scan's own context is done — doc15
+// Step 2's 2026-09-03 addendum item 1's cancellation carve-out. Detector is
+// left empty (ValidateOptions.SkipDetectorRequired) so runDetector's "" case
+// returns immediately with no network call, isolating the behavior under
+// test to the template loop itself rather than racing a detector request
+// against the context timeout too. The first template's target never
+// responds, so by the time its request would otherwise complete, ctx's own
+// short deadline has already elapsed — the second template must then never
+// be attempted at all.
+func TestEngineRun_TemplateLoop_StopsOnContextDone(t *testing.T) {
+	var hits int
+	var hitsMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsMu.Lock()
+		hits++
+		hitsMu.Unlock()
+		time.Sleep(500 * time.Millisecond) // long enough that ctx's deadline below always wins first
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	for i, id := range []string{"first-slow", "second-never-reached"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("t%d.yaml", i)), []byte(fmt.Sprintf(`
+id: %s
+info:
+  name: t
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: status
+        status: [200]
+`, id)), 0o644))
+	}
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second, // the http client's own timeout — must outlast ctx's deadline below
+	}
+	require.NoError(t, cfg.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	var mu sync.Mutex
+	var msgs []string
+	_, _ = scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(ctx)
+
+	hitsMu.Lock()
+	gotHits := hits
+	hitsMu.Unlock()
+	assert.Equal(t, 1, gotHits, "the second template must never be attempted once ctx is done")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.NotContains(t, strings.Join(msgs, "\n"), "second-never-reached", "must not log anything for a template it never attempted")
 }
 
 // TestEngineRun_PromptInjectionGuardrail_WarnsWhenConcurrencyTooHigh confirms

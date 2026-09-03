@@ -67,10 +67,11 @@ func (e *Engine) WithFindingCallback(fn func(detectors.Finding)) *Engine {
 }
 
 // WithLogCallback registers fn to be invoked alongside every stderr warning
-// Run already prints (level is "warn" for scope/skip/summary notices, "error"
-// for a failed detector run against one target) — additive, stderr output is
-// unchanged either way. See docs/12-implementation-plan-ph3.md's "Live
-// findings and logs" design.
+// Run already prints (level is "warn" for scope/skip/summary notices, a
+// rejected template, or a single template's execution error; "error" is
+// reserved for a failed detector run against one target) — additive,
+// stderr output is unchanged either way. See
+// docs/12-implementation-plan-ph3.md's "Live findings and logs" design.
 func (e *Engine) WithLogCallback(fn func(level, msg string)) *Engine {
 	e.logCB = fn
 	return e
@@ -190,6 +191,10 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 			for _, tmpl := range nucleiTemplates {
 				fs, err := nucleiExec.Run(ctx, target, tmpl)
 				if err != nil {
+					if ctx.Err() != nil {
+						break // the scan itself is stopping — trying/logging the rest is just noise
+					}
+					e.warnf("warn", "template %s against %s: %v", tmpl.ID, target, err)
 					continue // one bad template shouldn't abort the whole target's scan
 				}
 				for _, f := range fs {
@@ -200,6 +205,10 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 			for _, tmpl := range nativeTemplates {
 				fs, err := nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
 				if err != nil {
+					if ctx.Err() != nil {
+						break
+					}
+					e.warnf("warn", "template %s against %s: %v", tmpl.ID, target, err)
 					continue
 				}
 				for _, f := range fs {
@@ -272,7 +281,7 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	var (
 		nucleiTemplates []*nuclei.Template
 		nativeTemplates []*native.Template
-		rejected        int
+		rejected        []rejectedTemplate
 	)
 	for _, dir := range e.cfg.TemplatePaths {
 		if dir == "" {
@@ -286,10 +295,13 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 
 		// A file valid in one format is expected to fail the other format's
 		// own parser (it's simply not written in that format) — only a
-		// file rejected by *both* is a genuine problem worth counting. See
+		// file rejected by *both* is a genuine problem worth surfacing. See
 		// pkg/templatesync.List's countRejectedByBothFormats, the same fix
 		// applied there for the Web UI's template count.
-		rejected += countRejectedByBothFormats(nErrs, vErrs)
+		rejected = append(rejected, rejectedByBothFormats(nErrs, vErrs)...)
+	}
+	for _, rt := range rejected {
+		e.warnf("warn", "rejected template %s: not valid in either format (nuclei: %v; native: %v)", rt.Path, rt.NucleiErr, rt.NativeErr)
 	}
 
 	loadedNuclei, loadedNative := len(nucleiTemplates), len(nativeTemplates)
@@ -309,28 +321,36 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	}
 
 	e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
-		len(nucleiTemplates), len(nativeTemplates), rejected, filtered)
+		len(nucleiTemplates), len(nativeTemplates), len(rejected), filtered)
 	return nucleiTemplates, nativeTemplates
 }
 
-// countRejectedByBothFormats returns how many distinct paths appear in both
-// nErrs and vErrs — a file neither loader could parse, i.e. a genuine
-// problem rather than simply "written in the other format." Duplicated
-// (small, proportionate) from pkg/templatesync.List's own copy rather than
-// shared: pkg/scanner doesn't otherwise depend on pkg/templatesync, and
-// pulling in that whole package for one 8-line helper isn't a good trade.
-func countRejectedByBothFormats(nErrs []nuclei.LoadError, vErrs []native.LoadError) int {
-	nFailed := make(map[string]bool, len(nErrs))
+// rejectedTemplate is one file rejected by both template-format loaders —
+// a genuine problem, as opposed to a file simply written in the other
+// format (which is expected to fail one loader and succeed the other).
+type rejectedTemplate struct {
+	Path                 string
+	NucleiErr, NativeErr error
+}
+
+// rejectedByBothFormats returns every path appearing in both nErrs and
+// vErrs, paired with each format's own rejection reason — a file neither
+// loader could parse. Duplicated (small, proportionate) from
+// pkg/templatesync.List's own copy rather than shared: pkg/scanner doesn't
+// otherwise depend on pkg/templatesync, and pulling in that whole package
+// for one small helper isn't a good trade.
+func rejectedByBothFormats(nErrs []nuclei.LoadError, vErrs []native.LoadError) []rejectedTemplate {
+	nFailed := make(map[string]error, len(nErrs))
 	for _, e := range nErrs {
-		nFailed[e.Path] = true
+		nFailed[e.Path] = e.Err
 	}
-	count := 0
+	var rejected []rejectedTemplate
 	for _, e := range vErrs {
-		if nFailed[e.Path] {
-			count++
+		if nErr, ok := nFailed[e.Path]; ok {
+			rejected = append(rejected, rejectedTemplate{Path: e.Path, NucleiErr: nErr, NativeErr: e.Err})
 		}
 	}
-	return count
+	return rejected
 }
 
 // anyTemplateHasTag reports whether any loaded template (either format)
