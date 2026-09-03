@@ -80,6 +80,10 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("preparing embedded static assets: %w", err)
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	// Browsers probe GET /favicon.ico at the root regardless of the <link
+	// rel="icon"> tags in layout.html — serving it directly avoids a 404 on
+	// every page load's own request log.
+	mux.Handle("GET /favicon.ico", http.FileServer(http.FS(staticFS)))
 
 	// Order matters: CSRF checks the form field ParseForm() just populated;
 	// auth gates access before any of that, since an unauthenticated
