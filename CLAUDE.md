@@ -10,7 +10,7 @@ HackerFive — an open-source vulnerability scanner in Go, template-driven (YAML
 
 - **Language:** Go 1.21+, CLI via Cobra, templates via `gopkg.in/yaml.v3`.
 - **Layout:** `cmd/hackerfive/` (entrypoint), `pkg/{scanner,detectors,template,reporter}/`, `templates/idor/` (native detector templates), `templates/nuclei-samples/` (bundled nuclei-compatible samples), `templates/index.json` (synced-corpus index), `tests/{unit,integration,fixtures}/`.
-- **Testing:** Go `testing` + testify; integration tests run against local vulnerable targets (crAPI, DVWA, Juice Shop, vAPI) via Docker Compose — never against live/external hosts.
+- **Testing:** Go `testing` + testify; integration tests run against local vulnerable targets (crAPI, DVWA, Juice Shop, vAPI) via Docker Compose.
 - **Lint:** `golangci-lint run ./...` before considering work done.
 
 ## Verification (this environment)

@@ -385,6 +385,19 @@ func TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip(t *tes
 func TestStartLaunch_Authbypass_NoToken_DeferredNotRejected(t *testing.T) {
 	ts := newTestServer(t)
 
+	// A real local target, not a real external site: the job this submission
+	// spawns runs recon + authbypass's real HTTP checks in the background,
+	// outliving this test function — pointing that at a live host (as this
+	// test used to, via a literal http://example.com) fires uncontrolled
+	// real network requests from the test suite, which is both against this
+	// project's "never scan real external hosts" rule and the root cause of
+	// CI flakiness traced 2026-09-03 (see TestEndToEnd_StartScan_ProducesRealFindings's
+	// comment).
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(targetSrv.Close)
+
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	client := &http.Client{Jar: jar}
@@ -396,7 +409,7 @@ func TestStartLaunch_Authbypass_NoToken_DeferredNotRejected(t *testing.T) {
 
 	form := url.Values{
 		"csrf_token":      {csrfVal},
-		"target":          {"http://example.com"},
+		"target":          {targetSrv.URL},
 		"run_authbypass":  {"on"},
 		"protected_paths": {"/admin"},
 		"authorized":      {"on"},
@@ -415,6 +428,15 @@ func TestStartLaunch_Authbypass_NoToken_DeferredNotRejected(t *testing.T) {
 func TestStartLaunch_IDOR_NoToken_DeferredNotRejected(t *testing.T) {
 	ts := newTestServer(t)
 
+	// Local target, not a real external site — see the comment on
+	// TestStartLaunch_Authbypass_NoToken_DeferredNotRejected above; this one
+	// is the specific test that was firing the "idor preview:
+	// http://example.com/api/report?id=1" request seen in CI logs.
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(targetSrv.Close)
+
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	client := &http.Client{Jar: jar}
@@ -426,7 +448,7 @@ func TestStartLaunch_IDOR_NoToken_DeferredNotRejected(t *testing.T) {
 
 	form := url.Values{
 		"csrf_token": {csrfVal},
-		"target":     {"http://example.com"},
+		"target":     {targetSrv.URL},
 		"run_idor":   {"on"},
 		"endpoint":   {"/api/report?id={{id}}"},
 		"authorized": {"on"},
@@ -479,6 +501,13 @@ func TestStartLaunch_Businesslogic_MissingAuthToken_FailsImmediately(t *testing.
 func TestStartLaunch_SSRF_BlankParams_DeferredNotRejected(t *testing.T) {
 	ts := newTestServer(t)
 
+	// Local target, not a real external site — see the comment on
+	// TestStartLaunch_Authbypass_NoToken_DeferredNotRejected above.
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(targetSrv.Close)
+
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	client := &http.Client{Jar: jar}
@@ -490,7 +519,7 @@ func TestStartLaunch_SSRF_BlankParams_DeferredNotRejected(t *testing.T) {
 
 	form := url.Values{
 		"csrf_token": {csrfVal},
-		"target":     {"http://example.com"},
+		"target":     {targetSrv.URL},
 		"run_ssrf":   {"on"},
 		"authorized": {"on"},
 	}
@@ -510,6 +539,14 @@ func TestStartLaunch_SSRF_BlankParams_DeferredNotRejected(t *testing.T) {
 func TestStartLaunch_NoDetectorsChecked_StillSucceeds(t *testing.T) {
 	ts := newTestServer(t)
 
+	// Local target, not a real external site — see the comment on
+	// TestStartLaunch_Authbypass_NoToken_DeferredNotRejected above; this
+	// submission runs recon (always-on) with no detector attached.
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(targetSrv.Close)
+
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	client := &http.Client{Jar: jar}
@@ -521,7 +558,7 @@ func TestStartLaunch_NoDetectorsChecked_StillSucceeds(t *testing.T) {
 
 	form := url.Values{
 		"csrf_token": {csrfVal},
-		"target":     {"http://example.com"},
+		"target":     {targetSrv.URL},
 		"authorized": {"on"},
 		// every run_<detector> deliberately omitted
 	}
