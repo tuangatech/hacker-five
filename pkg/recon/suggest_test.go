@@ -147,6 +147,12 @@ func TestSuggestAuthBypassPathsFromRecon(t *testing.T) {
 		{URL: "https://example.com/auth/signin", Source: "wave3-auth-boundary-heuristic"},
 		{URL: "https://example.com/logout"},
 		{URL: "https://example.com/about"}, // matches nothing
+		// Found live, 2026-09-03: a static JS bundle and a degenerate "/\"
+		// path can both carry a real 401/403 from a katana crawl (bot
+		// protection, not real per-resource access control) — neither
+		// should ever be treated as a meaningful authbypass candidate.
+		{URL: "https://example.com/_next/static/chunks/660-d4913fd145d4d716.js", StatusCode: 401},
+		{URL: `https://example.com/\`, StatusCode: 403},
 	}}
 
 	protected, login, logout := SuggestAuthBypassPathsFromRecon(result)

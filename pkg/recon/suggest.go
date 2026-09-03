@@ -3,8 +3,10 @@ package recon
 import (
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // numericIDPattern/uuidPattern match a full path segment or query value that
@@ -151,7 +153,7 @@ func SuggestAuthBypassPathsFromRecon(result *ReconResult) (protected, login, log
 	seenProtected, seenLogin, seenLogout := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, ep := range result.Endpoints {
 		path := endpointPath(ep.URL)
-		if path == "" {
+		if path == "" || looksLikeStaticAssetOrJunk(path) {
 			continue
 		}
 		lower := strings.ToLower(path)
@@ -184,6 +186,43 @@ func endpointPath(rawURL string) string {
 		return ""
 	}
 	return u.Path
+}
+
+// staticAssetExtensions are front-end build-artifact extensions that are
+// never meaningful authbypass candidates, regardless of what HTTP status
+// katana happened to observe for them — a bundler chunk isn't a
+// "protected resource" in the sense this heuristic looks for, even when a
+// bot-protection layer 401/403s crawl requests against it. Found live,
+// 2026-09-03: a real target's static JS bundles dominated
+// SuggestAuthBypassPathsFromRecon's protected-path output the first time
+// runKatana's StatusCode decoding fix (see crawl.go) actually populated
+// that bucket at scale.
+var staticAssetExtensions = map[string]bool{
+	".js": true, ".css": true, ".map": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".ico": true, ".webp": true, ".avif": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".eot": true, ".otf": true,
+}
+
+// looksLikeStaticAssetOrJunk reports whether p is a front-end build
+// artifact (by extension) or too degenerate to be a real candidate (no
+// alphanumeric content at all — e.g. the lone "/\" a crawler occasionally
+// surfaces from a malformed page reference). Uses the "path" package, not
+// "path/filepath" — these are URL paths (forward-slash), not OS paths.
+func looksLikeStaticAssetOrJunk(p string) bool {
+	if staticAssetExtensions[strings.ToLower(path.Ext(p))] {
+		return true
+	}
+	return !hasAlphanumeric(p)
+}
+
+func hasAlphanumeric(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // ssrfParamKeywords is the small, hand-authored curated table
