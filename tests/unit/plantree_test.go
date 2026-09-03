@@ -46,6 +46,26 @@ func buildTestTree() *agenttask.PlanTree {
 	return &agenttask.PlanTree{Root: root}
 }
 
+func TestLeaves_FlattensDepthFirst(t *testing.T) {
+	tree := buildTestTree()
+
+	got := agenttask.Leaves(tree.Root)
+	require.Len(t, got, 2)
+	assert.Equal(t, "leaf-a", got[0].ID)
+	assert.Equal(t, "leaf-b", got[1].ID)
+}
+
+func TestLeaves_SingleNodeTreeIsItsOwnLeaf(t *testing.T) {
+	root := &agenttask.PlanNode{ID: "root"}
+	got := agenttask.Leaves(root)
+	require.Len(t, got, 1)
+	assert.Equal(t, "root", got[0].ID)
+}
+
+func TestLeaves_NilNodeReturnsNil(t *testing.T) {
+	assert.Nil(t, agenttask.Leaves(nil))
+}
+
 func TestPlanTree_Find(t *testing.T) {
 	tree := buildTestTree()
 

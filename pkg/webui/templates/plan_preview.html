@@ -1,10 +1,23 @@
+{{define "fragment_plan_tree"}}
+{{if .IndexWarn}}<div class="error">{{.IndexWarn}}</div>{{end}}
+{{if .Escalations}}<div class="error"><strong>LLM fallback escalations:</strong><ul>{{range .Escalations}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+{{if .Tree}}
+<p>LLM-fallback spend so far: ${{printf "%.4f" .SpendUSD}}</p>
+{{if .HasUnresolved}}
+<form hx-post="/plan-preview/resolve?job={{.JobID}}" hx-target="#plan-tree" hx-indicator="#resolve-indicator">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<button type="submit">Resolve unresolved leaves via LLM fallback</button>
+<span id="resolve-indicator" class="htmx-indicator">Resolving…</span>
+</form>
+{{end}}
+{{with .Tree.Root}}<ul>{{template "fragment_plan_node" .}}</ul>{{end}}
+{{end}}
+{{end}}
 {{define "plan_preview.html"}}{{template "header" .}}
 <h1>Plan Preview</h1>
 <p>Recon job: <a href="/recon/{{.JobID}}">{{.JobID}}</a> — target: <code>{{.Target}}</code></p>
-<p><em>Read-only. Approve/reject controls arrive with Phase 6's elicitation flow.</em></p>
+<p><em>Read-only for execution — "Resolve via LLM fallback" only classifies or drafts a template, it never runs anything against the live target. Approve/execute controls arrive with Phase 6 Step 4.</em></p>
 
-{{if .IndexWarn}}<div class="error">{{.IndexWarn}}</div>{{end}}
-
-{{if .Tree}}{{with .Tree.Root}}<ul>{{template "fragment_plan_node" .}}</ul>{{end}}{{end}}
+<div id="plan-tree">{{template "fragment_plan_tree" .}}</div>
 {{template "footer" .}}
 {{end}}

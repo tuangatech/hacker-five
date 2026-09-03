@@ -20,6 +20,30 @@ const (
 	defaultGlobalSpendCeilingUSD = 2.00
 )
 
+// envPerCallSpendCeiling/defaultPerCallSpendCeilingUSD: applies to a single
+// plan-resolution pass (agenttask.PlanTree.SpendCeilingUSD) when a caller
+// doesn't set one explicitly — a small, non-zero default so I4's fallback
+// pass never runs unbounded by accident. Lowered from an original $1.00
+// flat default per real user feedback (2026-09-02): $1 per single
+// plan-resolution pass is too high once a server is expected to field many
+// plan calls — $0.10 is a much tighter per-call default, and
+// GlobalSpendCeilingUSD is the separate, coarser cap on total spend across
+// every call in the process's lifetime, which is what actually bounds
+// "hundreds of tasks" aggregate cost.
+const (
+	envPerCallSpendCeiling        = "HACKERFIVE_SPEND_CEILING_USD"
+	defaultPerCallSpendCeilingUSD = 0.10
+)
+
+// PerCallDefaultSpendCeilingUSD returns the default cap for a single
+// plan-resolution pass, read fresh from the environment each call — shared
+// by pkg/mcpserver's plan tool and pkg/webui's plan-preview resolve action
+// so both apply the identical per-plan cost cap when a caller doesn't
+// override it.
+func PerCallDefaultSpendCeilingUSD() float64 {
+	return getenvFloat(envPerCallSpendCeiling, defaultPerCallSpendCeilingUSD)
+}
+
 var (
 	globalSpendMu  sync.Mutex
 	globalSpendUSD float64

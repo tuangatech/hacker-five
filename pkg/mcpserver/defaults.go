@@ -13,14 +13,6 @@ const (
 	defaultTimeout     = 30 * time.Second
 )
 
-// llmFallbackResolutionConcurrency caps how many I4 fallback calls
-// (leaf/field resolution) run at once while the plan tool builds a proposal
-// — the real budget-burn-during-resolution concern doc15 Step 2's I4
-// section names (many parallel frontier calls burn spend before H5's
-// ceiling gets a chance to trip). Small and fixed, not derived from
-// defaultConcurrency.
-const llmFallbackResolutionConcurrency = 3
-
 // llmAssistedExecConcurrency caps how many leaves whose Detector was chosen
 // by the LLM fallback (use_existing_tag), rather than deterministically by
 // R8, run concurrently once a plan is approved — a smaller blast radius on

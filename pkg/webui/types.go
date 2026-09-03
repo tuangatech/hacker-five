@@ -151,10 +151,15 @@ type ToolSetupData struct {
 	JustInstalled bool   // true only on POST /recon/setup's own response
 }
 
-// PlanPreviewData is plan_preview.html's input.
+// PlanPreviewData is plan_preview.html's (and fragment_plan_tree's) input.
 type PlanPreviewData struct {
 	JobID     string
 	Target    string
 	Tree      *agenttask.PlanTree
 	IndexWarn string // non-empty when templates/index.json couldn't be loaded — degraded, not fatal
+
+	Escalations   []string // leaves an LLM-fallback resolve pass couldn't resolve — see llmfallback.ResolveTreeLeaves
+	SpendUSD      float64  // Tree.SpendSoFar() — zero until a resolve pass has run
+	HasUnresolved bool     // drives whether the "Resolve via LLM fallback" button renders
+	CSRFToken     string
 }

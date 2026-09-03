@@ -10,26 +10,6 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
-func TestLeaves_FlattensDepthFirst(t *testing.T) {
-	leafA := &agenttask.PlanNode{ID: "leaf-a"}
-	leafB := &agenttask.PlanNode{ID: "leaf-b"}
-	branch := &agenttask.PlanNode{ID: "branch", Children: []*agenttask.PlanNode{leafA}}
-	root := &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{branch, leafB}}
-
-	got := leaves(root)
-	if len(got) != 2 || got[0].ID != "leaf-a" || got[1].ID != "leaf-b" {
-		t.Fatalf("got %v leaves, want [leaf-a leaf-b]", got)
-	}
-}
-
-func TestLeaves_SingleNodeTreeIsItsOwnLeaf(t *testing.T) {
-	root := &agenttask.PlanNode{ID: "root"}
-	got := leaves(root)
-	if len(got) != 1 || got[0].ID != "root" {
-		t.Fatalf("got %v, want [root]", got)
-	}
-}
-
 // TestRunPlan_SkipsUnexecutableLeaves confirms three of the four skip
 // reasons (unrecognized detector/template-ID, missing required field) never
 // reach scanner.New — no network call is attempted for them, only the

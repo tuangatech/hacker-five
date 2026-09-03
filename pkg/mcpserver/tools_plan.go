@@ -5,10 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -22,51 +19,8 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
 	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
-	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
-	"github.com/tuangatech/hacker-five/pkg/template/nuclei"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
-
-// envDefaultSpendCeiling/fallbackSpendCeilingUSD: applies when
-// planInput.SpendCeilingUSD is unset (<=0) — a small, non-zero default so
-// I4's fallback pass never runs unbounded by accident; a caller that
-// genuinely wants no limit must pass a deliberately high value, not rely on
-// an implicit "0 means unlimited" default (AddSpend's own zero-means-unset
-// semantics are for a caller that explicitly chose 0, not this handler's
-// default path). Lowered from an original $1.00 flat default per real user
-// feedback (2026-09-02): $1 per single plan-resolution pass is too high
-// once a server is expected to field many plan calls — $0.10 is a much
-// tighter per-call default, and llmfallback.GlobalSpendCeilingUSD() is the
-// separate, coarser cap on total spend across every call in the process's
-// lifetime (see pkg/llmfallback/spend.go), which is what actually bounds
-// "hundreds of tasks" aggregate cost.
-const (
-	envDefaultSpendCeiling  = "HACKERFIVE_SPEND_CEILING_USD"
-	fallbackSpendCeilingUSD = 0.10
-)
-
-func defaultSpendCeilingUSD() float64 {
-	v := os.Getenv(envDefaultSpendCeiling)
-	if v == "" {
-		return fallbackSpendCeilingUSD
-	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return fallbackSpendCeilingUSD
-	}
-	return f
-}
-
-// proposedTemplatesDir is where an I4 draft_template decision's YAML lands.
-// Deliberately a sibling of templates/, not a subdirectory of it: real gap
-// found while wiring this — templatesync.DefaultBundledDir is "./templates/"
-// and every existing loader (scanner.Engine, templates.list/search,
-// cmd/hackerfive templates) walks it recursively, so templates/proposed
-// would have been silently included in the live scan corpus the moment a
-// draft landed there, defeating "never running against a live target
-// without separate human promotion" outright. This path is never passed to
-// any loader/dir list in this codebase.
-const proposedTemplatesDir = "templates-proposed"
 
 // planInput extends Step 1's minimal shape (target/scope/depth) with the
 // same optional credential/behavior fields scanInput already exposes
@@ -176,14 +130,13 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	tree := registry.Resolve(result, index)
 	ceiling := in.SpendCeilingUSD
 	if ceiling <= 0 {
-		ceiling = defaultSpendCeilingUSD()
+		ceiling = llmfallback.PerCallDefaultSpendCeilingUSD()
 	}
 	tree.SpendCeilingUSD = ceiling
 
 	fb, fbErr := llmfallback.New()
 
-	var escalations []string
-	resolveLeavesWithFallback(ctx, tree, fb, fbErr, index, &escalations)
+	escalations := llmfallback.ResolveTreeLeaves(ctx, fb, fbErr, tree, registry.Capabilities, index)
 
 	baseCfg := buildBaseExecConfig(in, sc)
 	// resolveFieldSuggestions applies only the deterministic (single- or
@@ -248,112 +201,6 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 		return nil, out, err
 	}
 	return nil, out, nil
-}
-
-// resolveLeavesWithFallback walks tree for StatusUnresolved leaves and
-// resolves each via a small, budget-capped worker pool (doc15 I4's real
-// budget-burn-during-resolution concern) — every call's cost is recorded
-// against tree.SpendCeilingUSD, and once exceeded no further calls are
-// issued; any leaf still unresolved at that point is left as-is (visible,
-// StatusUnresolved), same posture as a plain registry.Resolve miss.
-func resolveLeavesWithFallback(ctx context.Context, tree *agenttask.PlanTree, fb *llmfallback.Client, fbErr error, index []templatesync.Entry, escalations *[]string) {
-	var unresolved []*agenttask.PlanNode
-	for _, leaf := range leaves(tree.Root) {
-		if leaf.Status == agenttask.StatusUnresolved {
-			unresolved = append(unresolved, leaf)
-		}
-	}
-	if len(unresolved) == 0 {
-		return
-	}
-	if fb == nil {
-		for _, leaf := range unresolved {
-			*escalations = append(*escalations, fmt.Sprintf("%s: LLM fallback unavailable (%v)", leaf.ID, fbErr))
-		}
-		return
-	}
-
-	var mu sync.Mutex
-	addEscalation := func(format string, args ...any) {
-		mu.Lock()
-		*escalations = append(*escalations, fmt.Sprintf(format, args...))
-		mu.Unlock()
-	}
-
-	pool := workerpool.New(ctx, llmFallbackResolutionConcurrency, 2*llmFallbackResolutionConcurrency)
-	for _, leaf := range unresolved {
-		leaf := leaf
-		_ = pool.Submit(func(ctx context.Context) error {
-			if tree.SpendCeilingUSD > 0 && tree.SpendSoFar() >= tree.SpendCeilingUSD {
-				addEscalation("%s: spend ceiling reached before this leaf could be resolved", leaf.ID)
-				return nil
-			}
-
-			decision, cost, err := fb.ResolveLeaf(ctx, leaf, registry.Capabilities, index)
-			if tree.AddSpend(cost) {
-				addEscalation("%s: spend ceiling exceeded resolving this leaf", leaf.ID)
-			}
-			if err != nil {
-				addEscalation("%s: LLM fallback call failed: %v", leaf.ID, err)
-				return nil
-			}
-			applyLeafDecision(tree, leaf, decision, addEscalation)
-			return nil
-		})
-	}
-	pool.Wait()
-}
-
-func applyLeafDecision(tree *agenttask.PlanTree, leaf *agenttask.PlanNode, decision llmfallback.LeafDecision, addEscalation func(format string, args ...any)) {
-	switch {
-	case decision.UseExistingTag != "":
-		detector := decision.UseExistingTag
-		status := agenttask.StatusPending
-		rationale := llmResolvedRationalePrefix + "resolved to existing tag " + detector
-		_ = tree.ApplyLeafUpdate(leaf.ID, agenttask.PlanNodePatch{Detector: &detector, Status: &status, Rationale: &rationale})
-	case decision.DraftTemplate != "":
-		path, err := writeProposedTemplate(leaf.ID, decision.DraftTemplate)
-		var rationale string
-		if err != nil {
-			rationale = "drafted template rejected: " + err.Error()
-		} else {
-			rationale = "drafted template written to " + path + " — pending human promotion, not executed by this plan run"
-		}
-		addEscalation("%s: %s", leaf.ID, rationale)
-		_ = tree.ApplyLeafUpdate(leaf.ID, agenttask.PlanNodePatch{Rationale: &rationale})
-	default:
-		reason := decision.EscalateToHuman
-		if reason == "" {
-			reason = "LLM fallback returned no usable decision"
-		}
-		addEscalation("%s: %s", leaf.ID, reason)
-		_ = tree.ApplyLeafUpdate(leaf.ID, agenttask.PlanNodePatch{Rationale: &reason})
-	}
-}
-
-// writeProposedTemplate writes yamlBody to proposedTemplatesDir and
-// validates it through the real existing untrusted-template rejection
-// pipeline (pkg/template/nuclei's checkDisallowedBlocks, exercised via
-// LoadDirDetailed) — a template that fails is deleted immediately, never
-// left behind as a silent bad file.
-func writeProposedTemplate(leafID, yamlBody string) (string, error) {
-	if err := os.MkdirAll(proposedTemplatesDir, 0o755); err != nil {
-		return "", fmt.Errorf("creating %s: %w", proposedTemplatesDir, err)
-	}
-	safeName := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-").Replace(leafID)
-	path := filepath.Join(proposedTemplatesDir, safeName+".yaml")
-	if err := os.WriteFile(path, []byte(yamlBody), 0o644); err != nil {
-		return "", fmt.Errorf("writing %s: %w", path, err)
-	}
-
-	_, loadErrs := nuclei.LoadDirDetailed(proposedTemplatesDir)
-	for _, le := range loadErrs {
-		if filepath.Clean(le.Path) == filepath.Clean(path) {
-			_ = os.Remove(path)
-			return "", le.Err
-		}
-	}
-	return path, nil
 }
 
 // resolveFieldSuggestions wires doc14 Step 7's idor/ssrf/authbypass
@@ -430,7 +277,7 @@ func resolveOneFieldMiss(ctx context.Context, fb *llmfallback.Client, fbErr erro
 
 func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations []string) string {
 	total, unresolved := 0, 0
-	for _, leaf := range leaves(tree.Root) {
+	for _, leaf := range agenttask.Leaves(tree.Root) {
 		total++
 		if leaf.Status == agenttask.StatusUnresolved {
 			unresolved++

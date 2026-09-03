@@ -118,6 +118,25 @@ func (t *PlanTree) SpendSoFar() float64 {
 	return t.spendSoFarUSD
 }
 
+// Leaves walks n depth-first, returning every node with no children — the
+// only nodes PlanTree.ApplyLeafUpdate ever mutates. Shared by
+// pkg/mcpserver's executor/plan tool and pkg/webui's plan-preview page, so
+// this tree walk is described once rather than duplicated per consumer
+// package.
+func Leaves(n *PlanNode) []*PlanNode {
+	if n == nil {
+		return nil
+	}
+	if len(n.Children) == 0 {
+		return []*PlanNode{n}
+	}
+	var out []*PlanNode
+	for _, child := range n.Children {
+		out = append(out, Leaves(child)...)
+	}
+	return out
+}
+
 func findNode(n *PlanNode, nodeID string) *PlanNode {
 	if n.ID == nodeID {
 		return n

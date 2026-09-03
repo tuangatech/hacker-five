@@ -10,6 +10,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
@@ -29,15 +30,6 @@ import (
 var recognizedDetectors = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
 }
-
-// llmResolvedRationalePrefix marks a leaf whose Detector was assigned by
-// I4's fallback (ResolveLeaf's use_existing_tag), not deterministically by
-// R8 — set on PlanNodePatch.Rationale when the plan handler applies the
-// fallback decision. The executor checks this prefix to pick a leaf's
-// concurrency tier; it's a string convention rather than a new PlanNode
-// field so agenttask's shared data model doesn't grow an executor-specific
-// concept.
-const llmResolvedRationalePrefix = "llm-fallback: "
 
 // executionResult is one leaf's dispatch outcome, folded into RunPlan's
 // return value.
@@ -68,7 +60,7 @@ func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *a
 	}
 
 	var deterministic, llmAssisted []*agenttask.PlanNode
-	for _, leaf := range leaves(tree.Root) {
+	for _, leaf := range agenttask.Leaves(tree.Root) {
 		eligible := recognizedDetectors[leaf.Detector] || (leaf.Detector != "" && knownTemplateIDs[leaf.Detector])
 		if !eligible {
 			if leaf.Detector != "" {
@@ -80,7 +72,7 @@ func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *a
 			skipped = append(skipped, fmt.Sprintf("%s: skipped — %s (same skip-and-explain posture as pkg/webui's fillReconFields)", leaf.ID, reason))
 			continue
 		}
-		if strings.HasPrefix(leaf.Rationale, llmResolvedRationalePrefix) {
+		if strings.HasPrefix(leaf.Rationale, llmfallback.ResolvedRationalePrefix) {
 			llmAssisted = append(llmAssisted, leaf)
 		} else {
 			deterministic = append(deterministic, leaf)
@@ -204,19 +196,4 @@ func runLeaf(ctx context.Context, session *mcp.ServerSession, token any, leaf *a
 		res.err = fmt.Errorf("leaf %s: %w", leaf.ID, err)
 	}
 	return res
-}
-
-// leaves walks n depth-first, returning every node with no children.
-func leaves(n *agenttask.PlanNode) []*agenttask.PlanNode {
-	if n == nil {
-		return nil
-	}
-	if len(n.Children) == 0 {
-		return []*agenttask.PlanNode{n}
-	}
-	var out []*agenttask.PlanNode
-	for _, child := range n.Children {
-		out = append(out, leaves(child)...)
-	}
-	return out
 }

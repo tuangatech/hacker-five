@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 )
@@ -83,6 +84,15 @@ type Job struct {
 	detectorSteps []WaveStatus       // the planned detector pipeline, same update-or-append shape as waves — see SetDetectorStatus
 	reconResult   *recon.ReconResult // nil until a recon phase (if any) completes
 	subs          []chan Event
+
+	// planTree/planEscalations cache a plan-preview "Resolve via LLM
+	// fallback" pass's result (doc15 Step 2's 2026-09-03 addendum item 2) —
+	// nil/empty until POST /plan-preview/resolve runs once for this job.
+	// GET /plan-preview must prefer this over a fresh registry.Resolve once
+	// set: re-resolving would silently discard the LLM's work and revert
+	// leaves back to unresolved.
+	planTree        *agenttask.PlanTree
+	planEscalations []string
 
 	renderFinding  func(detectors.Finding) template.HTML
 	renderLog      func(LogEntry) template.HTML
@@ -302,6 +312,27 @@ func (j *Job) SetReconResult(result *recon.ReconResult) {
 	j.reconResult = result
 	j.mu.Unlock()
 	j.publish(Event{Type: EventRecon, HTML: j.renderRecon(result)})
+}
+
+// PlanTree returns this job's cached, I4-resolved PlanTree from a prior
+// POST /plan-preview/resolve call, or nil if no resolve action has run yet
+// for this job — the caller falls back to a fresh registry.Resolve in that
+// case. escalations is a defensive copy, matching Snapshot's convention.
+func (j *Job) PlanTree() (tree *agenttask.PlanTree, escalations []string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.planTree, append([]string(nil), j.planEscalations...)
+}
+
+// SetPlanTree stores tree/escalations as this job's current resolved plan
+// state, overwriting any previous resolve pass's result — tree is a full
+// snapshot of the current best-known resolution (already mutated in place
+// by llmfallback.ResolveTreeLeaves), not a delta to merge.
+func (j *Job) SetPlanTree(tree *agenttask.PlanTree, escalations []string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.planTree = tree
+	j.planEscalations = escalations
 }
 
 // MarkDone transitions the job to its terminal state (done or failed) and

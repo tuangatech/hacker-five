@@ -2,14 +2,10 @@ package mcpserver
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tuangatech/hacker-five/pkg/agenttask"
-	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 )
 
@@ -88,52 +84,6 @@ func TestMissingRequiredField(t *testing.T) {
 	}
 }
 
-func TestApplyLeafDecision_UseExistingTag(t *testing.T) {
-	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
-		{ID: "leaf-1", Status: agenttask.StatusUnresolved},
-	}}}
-	var escalations []string
-	addEscalation := func(format string, args ...any) { escalations = append(escalations, format) }
-
-	applyLeafDecision(tree, tree.Find("leaf-1"), llmfallback.LeafDecision{UseExistingTag: "misconfig"}, addEscalation)
-
-	leaf := tree.Find("leaf-1")
-	if leaf.Detector != "misconfig" {
-		t.Fatalf("got Detector=%q, want misconfig", leaf.Detector)
-	}
-	if leaf.Status != agenttask.StatusPending {
-		t.Fatalf("got Status=%q, want pending", leaf.Status)
-	}
-	if len(escalations) != 0 {
-		t.Fatalf("expected no escalation for a clean use_existing_tag resolution, got %v", escalations)
-	}
-}
-
-func TestApplyLeafDecision_Escalate(t *testing.T) {
-	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
-		{ID: "leaf-1", Status: agenttask.StatusUnresolved},
-	}}}
-	var escalations []string
-	addEscalation := func(format string, args ...any) { escalations = append(escalations, format) }
-
-	applyLeafDecision(tree, tree.Find("leaf-1"), llmfallback.LeafDecision{EscalateToHuman: "not confident"}, addEscalation)
-
-	if tree.Find("leaf-1").Detector != "" {
-		t.Fatal("an escalated leaf must not gain a Detector")
-	}
-	if len(escalations) != 1 {
-		t.Fatalf("expected exactly one escalation, got %v", escalations)
-	}
-}
-
-func TestWriteProposedTemplate_RejectsDisallowedBlock(t *testing.T) {
-	t.Chdir(t.TempDir()) // writeProposedTemplate uses a relative path
-
-	_, err := writeProposedTemplate("leaf-x", "id: bad\njavascript:\n  - code: \"1\"\n")
-	if err == nil {
-		t.Fatal("expected the disallowed javascript: block to be rejected")
-	}
-	if _, statErr := os.Stat(filepath.Join(proposedTemplatesDir, "leaf-x.yaml")); !os.IsNotExist(statErr) {
-		t.Fatal("a rejected draft must not be left on disk")
-	}
-}
+// applyLeafDecision/writeProposedTemplate moved to pkg/llmfallback (doc15
+// Step 2's 2026-09-03 addendum item 2) — their tests moved with them, to
+// pkg/llmfallback/resolve_test.go.

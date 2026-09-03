@@ -73,6 +73,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("POST /templates/sync", h.syncTemplates)
 	mux.HandleFunc("POST /recon/setup", h.setupTools)
 	mux.HandleFunc("GET /plan-preview", h.planPreview)
+	mux.HandleFunc("POST /plan-preview/resolve", h.resolvePlanLeaves)
 
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {
