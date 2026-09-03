@@ -20,21 +20,26 @@ type fieldResponse struct {
 
 // ResolveField is I4's second caller: detector/field name and the raw
 // candidates a doc14 Step 7 suggester left ambiguous (zero, or — for idor's
-// EndpointTemplate specifically — more than one). One stateless local-tier
-// call; escalates outright if the local tier isn't configured, since a
-// wrong field guess costs nothing worse than a skipped detector run (doc14
-// Step 7's own reasoning) and isn't worth a frontier-tier cost.
+// EndpointTemplate specifically — more than one). One stateless call via
+// completeBestAvailable — local tier first when reachable, falling back to
+// the frontier tier when the local tier is unreachable/unconfigured, or
+// when it's reachable but the actual call fails (e.g. the configured model
+// isn't pulled — found live, 2026-09-04: a real Ollama server answered
+// its reachability probe but 404'd every completion call with "model
+// 'llama3.1' not found", and the old local-tier-only design escalated
+// outright instead of trying OpenRouter, even with a key configured).
+// Reversed from this function's original "local tier only, never worth a
+// frontier-tier cost" design (doc15 Step 2) at the user's explicit
+// request — same tiered-fallback treatment ResolveLeaf/triage already
+// give their own first call, for consistency and because the original
+// cost argument doesn't hold once a user has no local tier at all.
 func (c *Client) ResolveField(ctx context.Context, detector, field string, candidates []string) (FieldDecision, float64, error) {
-	if !c.localAvailable {
-		return FieldDecision{EscalateToHuman: "no local tier available to resolve this field suggestion"}, 0, nil
-	}
-
 	user := fmt.Sprintf("Detector: %s\nField: %s\nCandidates found (%d): %s",
 		detector, field, len(candidates), strings.Join(candidates, ", "))
 
-	text, cost, err := c.complete(ctx, tierLocal, fieldSystemPrompt, user)
+	text, cost, err := c.completeBestAvailable(ctx, fieldSystemPrompt, user)
 	if err != nil {
-		return FieldDecision{}, 0, err
+		return FieldDecision{}, cost, err
 	}
 
 	var resp fieldResponse
@@ -53,9 +58,10 @@ func (c *Client) ResolveField(ctx context.Context, detector, field string, candi
 
 // ResolveFieldMiss wraps ResolveField with the fb==nil/call-failure
 // handling every caller needs. Always returns a FieldDecision with either
-// SuggestedValue or EscalateToHuman set. cost is always 0 today (field
-// resolution is local-tier only, see ResolveField's own doc comment) but
-// returned so a spend-tracking caller doesn't need a second code path.
+// SuggestedValue or EscalateToHuman set. cost is 0 when the local tier
+// resolves it, non-zero when ResolveField fell back to the frontier tier
+// (see its own doc comment) — always returned so a spend-tracking caller
+// doesn't need a second code path.
 func ResolveFieldMiss(ctx context.Context, fb *Client, fbErr error, detector, field string, candidates []string) (FieldDecision, float64) {
 	if fb == nil {
 		return FieldDecision{EscalateToHuman: fmt.Sprintf("LLM fallback unavailable (%v)", fbErr)}, 0

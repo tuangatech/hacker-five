@@ -1,12 +1,12 @@
 {{define "fragment_recon_results"}}{{if .}}<h2>Recon Results</h2>
 <h3>Hosts</h3>
-<table>
+<table class="results-table">
 <thead><tr><th>Host</th><th>Ports</th><th>Source</th><th>Confidence</th><th>Notes</th></tr></thead>
 <tbody>{{range .Hosts}}{{template "fragment_host_row" .}}{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
 </table>
 
 <h3>Endpoints</h3>
-<table>
+<table class="results-table">
 <thead><tr><th>URL</th><th>Method</th><th>Status</th><th>Source</th><th>Confidence</th></tr></thead>
 <tbody>{{range .DisplayEndpoints}}<tr><td><code title="{{.URL}}">{{.DisplayURL}}</code>{{if gt .VariantCount 1}} <span class="variant-count">&times;{{.VariantCount}}</span>{{end}}</td><td>{{.Method}}</td><td>{{.StatusCode}}</td><td>{{.Source}}</td><td>{{.Confidence}}</td></tr>{{else}}<tr><td colspan="5"><em>none</em></td></tr>{{end}}</tbody>
 </table>
@@ -17,7 +17,7 @@
 {{end}}
 
 <h3>Tech Stack</h3>
-<table>
+<table class="results-table">
 <thead><tr><th>Name</th><th>Host</th><th>Source</th><th>Confidence</th></tr></thead>
 <tbody>{{range .TechStack}}{{template "fragment_tech_row" .}}{{else}}<tr><td colspan="4"><em>none</em></td></tr>{{end}}</tbody>
 </table>

@@ -274,9 +274,12 @@ tr.sev-info { background: var(--info-bg); }
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  margin: 2.25rem 0 0.75rem; /* restores h2's own top/bottom margin (h2 { margin: 2.25rem 0 0.75rem }), lost when h2's margin was zeroed below for flex alignment with the copy button */
 }
 
 .section-header h2 { margin: 0; }
+
+.results-table td { font-size: 0.875rem; }
 
 .icon-btn {
   background: transparent;
@@ -296,7 +299,7 @@ tr.sev-info { background: var(--info-bg); }
 .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 #logs {
-  max-height: 12rem;
+  max-height: 16rem; /* 12rem + ~3 rows at this font-size/line-height */
   overflow-y: auto;
   font-family: ui-monospace, "SF Mono", Consolas, monospace;
   font-size: 0.85rem;

@@ -13,7 +13,7 @@
 <div id="recon-results" sse-swap="recon">{{template "fragment_recon_results" (reconView .Snapshot.ReconResult)}}</div>
 
 <h2>Findings</h2>
-<table>
+<table class="results-table">
 <thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Confidence</th><th>URL &amp; Description</th></tr></thead>
 <tbody id="findings" sse-swap="finding" hx-swap="afterbegin">{{.FindingRowsHTML}}</tbody>
 </table>
