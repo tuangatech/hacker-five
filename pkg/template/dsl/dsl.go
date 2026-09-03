@@ -67,7 +67,9 @@ const (
 	tokEq
 	tokNeq
 	tokLt
+	tokLe
 	tokGt
+	tokGe
 	tokBang
 	tokLParen
 	tokRParen
@@ -113,6 +115,12 @@ func tokenize(expr string) ([]token, error) {
 		case c == '!':
 			toks = append(toks, token{tokBang, "!"})
 			i++
+		case c == '<' && i+1 < len(r) && r[i+1] == '=':
+			toks = append(toks, token{tokLe, "<="})
+			i += 2
+		case c == '>' && i+1 < len(r) && r[i+1] == '=':
+			toks = append(toks, token{tokGe, ">="})
+			i += 2
 		case c == '<':
 			toks = append(toks, token{tokLt, "<"})
 			i++
@@ -285,7 +293,7 @@ func (p *parser) parseComparison() (any, error) {
 		return nil, err
 	}
 	switch p.peek().kind {
-	case tokEq, tokNeq, tokLt, tokGt:
+	case tokEq, tokNeq, tokLt, tokLe, tokGt, tokGe:
 		opTok := p.next()
 		right, err := p.parseOperand()
 		if err != nil {
@@ -707,8 +715,12 @@ func compare(op token, a, b any) (bool, error) {
 			return ai != bi, nil
 		case tokLt:
 			return ai < bi, nil
+		case tokLe:
+			return ai <= bi, nil
 		case tokGt:
 			return ai > bi, nil
+		case tokGe:
+			return ai >= bi, nil
 		}
 	}
 	as, aIsStr := a.(string)

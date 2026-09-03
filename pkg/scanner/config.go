@@ -23,6 +23,7 @@ type Config struct {
 	Targets            []string
 	TemplatePaths      []string
 	Tags               []string // from --tags; a loaded template fires only if it carries at least one of these (OR match, mirrors upstream Nuclei's -tags). Empty = no filtering
+	TemplateID         string   // narrows loaded templates to an exact id: match, unlike Tags (which matches a template's tags: block, never its id:) — pkg/mcpserver's executor uses this for a single-template plan leaf (doc15 Step 2 addendum); "" = no ID filtering
 	Concurrency        int
 	RateLimit          int
 	ProxyURL           string
@@ -174,6 +175,16 @@ type ValidateOptions struct {
 	SkipProtectedPathsRequired bool // authbypass's ProtectedPaths may be blank for now
 	SkipSSRFParamsRequired     bool // ssrf's SSRFParams may be blank for now
 	SkipAuthTokenRequired      bool // idor/authbypass may run fully unauthenticated
+
+	// SkipDetectorRequired allows Detector == "" to pass validation — a
+	// templates-only run with no built-in detector, dispatching whatever
+	// TemplateID/Tags narrows the loaded corpus to instead. Used by
+	// pkg/mcpserver's executor for a PlanTree leaf whose Detector is a
+	// specific template ID (an R8 template-tag match or an I4
+	// use_existing_tag decision naming a template rather than one of the 5
+	// built-in detector names) — see doc15 Step 2's addendum. The CLI never
+	// sets this; --detector stays required there.
+	SkipDetectorRequired bool
 }
 
 // Validate rejects configurations that can't produce a meaningful scan.
@@ -197,7 +208,8 @@ func (c Config) validate(opts ValidateOptions) error {
 	if c.RateLimit <= 0 {
 		return fmt.Errorf("validating config: rate limit must be > 0, got %d", c.RateLimit)
 	}
-	if !recognizedDetectors[c.Detector] {
+	detectorOK := recognizedDetectors[c.Detector] || (c.Detector == "" && opts.SkipDetectorRequired)
+	if !detectorOK {
 		return fmt.Errorf("validating config: unrecognized detector %q", c.Detector)
 	}
 	if c.Detector == "idor" && c.AuthToken == "" && c.OtherAuthToken == "" && !opts.SkipAuthTokenRequired {

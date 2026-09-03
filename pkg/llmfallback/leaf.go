@@ -3,6 +3,9 @@ package llmfallback
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"sort"
+	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/registry"
@@ -139,26 +142,152 @@ func (c *Client) ResolveLeaf(ctx context.Context, leaf *agenttask.PlanNode, capa
 	}
 }
 
+// relevantTagLimit/maxLeafPromptTags bound buildLeafPrompt's tag sample in
+// two tiers: up to relevantTagLimit tags scored relevant to this leaf's own
+// tech fact (rankRelevantTags), then the existing fixed-order corpus walk
+// fills any remaining capacity up to maxLeafPromptTags — a broad,
+// deterministic base set (misconfig, exposed-panel, ...) as an escape
+// hatch even when nothing scores well. Found live (doc15 Step 2's
+// addendum, 2026-09-03): a fixed-order-only sample showed the same first
+// ~200 of a 2,952-unique-tag corpus (before this project's own template
+// categories were widened further) regardless of which tech fact
+// triggered the call — a real, measured cause of avoidable
+// needs_new_template decisions for cases that should have reused a tag.
+const (
+	relevantTagLimit  = 200
+	maxLeafPromptTags = 300
+)
+
+// techFactNamePattern extracts the tech-fact name resolveTechFact
+// (pkg/registry/decisionengine.go) embedded in an unresolved leaf's
+// Rationale (`tech fact "X" (source: ...) matched no registry capability or
+// template tag...`) — the one place that name is available to this prompt,
+// since ResolveLeaf receives the leaf, not the originating TechFact itself.
+var techFactNamePattern = regexp.MustCompile(`tech fact "([^"]*)"`)
+
+func techNameFromRationale(rationale string) string {
+	m := techFactNamePattern.FindStringSubmatch(rationale)
+	if len(m) != 2 {
+		return ""
+	}
+	return m[1]
+}
+
 func buildLeafPrompt(leaf *agenttask.PlanNode, capabilities []registry.Capability, templates []templatesync.Entry) string {
 	p := fmt.Sprintf("Unresolved leaf: target=%q\nRationale (names the unmatched tech fact): %s\n\nAvailable capabilities:\n",
 		leaf.Target, leaf.Rationale)
 	for _, cap := range capabilities {
 		p += fmt.Sprintf("- %s: %s\n", cap.Name, cap.Description)
 	}
+
 	p += "\nAvailable template tags (sample):\n"
 	seen := map[string]bool{}
 	count := 0
+	writeTag := func(tag string) {
+		if seen[tag] || count >= maxLeafPromptTags {
+			return
+		}
+		seen[tag] = true
+		count++
+		p += "- " + tag + "\n"
+	}
+
+	techName := techNameFromRationale(leaf.Rationale)
+	for _, tag := range rankRelevantTags(techName, templates, relevantTagLimit) {
+		writeTag(tag)
+	}
 	for _, t := range templates {
 		for _, tag := range t.Tags {
-			if seen[tag] || count >= 200 { // cap prompt size — a full corpus can be thousands of entries
-				continue
-			}
-			seen[tag] = true
-			count++
-			p += "- " + tag + "\n"
+			writeTag(tag)
 		}
 	}
 	return p
+}
+
+// rankRelevantTags scores every unique tag across templates by relevance to
+// techName and returns up to limit, highest-scored first — layered on top
+// of (not a replacement for) buildLeafPrompt's own fixed-order fallback
+// walk, so a techName that scores nothing still leaves the broader,
+// deterministic base sample as an escape hatch. Mirrors this project's own
+// established "cheap deterministic heuristic before an LLM read" pattern
+// (pkg/registry's techRules/matchTemplateTags) applied one level deeper,
+// inside I4's own prompt construction.
+func rankRelevantTags(techName string, templates []templatesync.Entry, limit int) []string {
+	if techName == "" || limit <= 0 {
+		return nil
+	}
+	normalized := registry.NormalizeTechName(techName)
+	if normalized == "" {
+		return nil
+	}
+	words := tagWords(normalized)
+
+	type scoredTag struct {
+		original string
+		score    int
+	}
+	seen := map[string]bool{}
+	var candidates []scoredTag
+	for _, t := range templates {
+		for _, tag := range t.Tags {
+			lower := strings.ToLower(tag)
+			if seen[lower] {
+				continue
+			}
+			score := tagRelevanceScore(normalized, words, lower)
+			if score == 0 {
+				continue
+			}
+			seen[lower] = true
+			candidates = append(candidates, scoredTag{original: tag, score: score})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].original < candidates[j].original // deterministic tiebreak
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	out := make([]string, len(candidates))
+	for i, c := range candidates {
+		out[i] = c.original
+	}
+	return out
+}
+
+// tagRelevanceScore: exact match on the normalized tech name outranks a
+// substring match either direction, which outranks a single-word overlap
+// (for a multi-word product name like "apache http server") — anything
+// else scores 0 and is dropped, not shown as a false-precision "match".
+func tagRelevanceScore(normalized string, words []string, tag string) int {
+	switch {
+	case tag == normalized:
+		return 3
+	case strings.Contains(tag, normalized) || strings.Contains(normalized, tag):
+		return 2
+	default:
+		for _, w := range words {
+			if w != "" && (tag == w || strings.Contains(tag, w)) {
+				return 1
+			}
+		}
+		return 0
+	}
+}
+
+// tagWords splits a normalized tech name on non-alphanumeric separators —
+// "apache http server" -> ["apache", "http", "server"].
+func tagWords(normalized string) []string {
+	return strings.FieldsFunc(normalized, func(r rune) bool {
+		return !isTagWordRune(r)
+	})
+}
+
+func isTagWordRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 }
 
 // completeBestAvailable tries the local tier first (the routine, low-cost

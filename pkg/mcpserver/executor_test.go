@@ -7,6 +7,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
+	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
 func TestLeaves_FlattensDepthFirst(t *testing.T) {
@@ -51,7 +52,7 @@ func TestRunPlan_SkipsUnexecutableLeaves(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, _, skipped, _ := RunPlan(ctx, nil, nil, tree, baseCfg)
+	_, _, skipped, _ := RunPlan(ctx, nil, nil, tree, baseCfg, nil) // nil templateIndex — "wordpress-xmlrpc-enabled" matches no known template ID either
 
 	if len(skipped) != 2 {
 		t.Fatalf("got %d skipped leaves, want 2 (template-id-leaf, idor-no-endpoint); skipped=%v", len(skipped), skipped)
@@ -71,11 +72,55 @@ func TestRunPlan_SkipsUnexecutableLeaves(t *testing.T) {
 	}
 }
 
+// TestRunPlan_DispatchesKnownTemplateIDLeaf locks in the fix for what was
+// previously always-skipped: a leaf whose Detector matches a real
+// templatesync.Entry.ID (not a built-in detector name) now dispatches as a
+// templates-only run instead of landing in skipped.
+func TestRunPlan_DispatchesKnownTemplateIDLeaf(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "template-id-leaf", Target: "http://127.0.0.1:1", Detector: "wordpress-xmlrpc-enabled"},
+	}}}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 2 * time.Second, OutputFormat: "json"}
+	templateIndex := []templatesync.Entry{{ID: "wordpress-xmlrpc-enabled", Tags: []string{"wordpress"}}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _, skipped, _ := RunPlan(ctx, nil, nil, tree, baseCfg, templateIndex)
+
+	if len(skipped) != 0 {
+		t.Fatalf("got skipped=%v, want none — the leaf's Detector matches a real template ID", skipped)
+	}
+	if tree.Find("template-id-leaf").Status != agenttask.StatusDone {
+		t.Fatalf("got Status=%q, want done (dispatched as a templates-only run, regardless of scan outcome)", tree.Find("template-id-leaf").Status)
+	}
+}
+
+// TestRunPlan_UnknownTemplateIDStillSkipped confirms a Detector value that
+// matches neither a built-in detector name nor any entry in templateIndex
+// (a hallucination, or a stale/renamed template) keeps the original
+// skip-and-report behavior — no new silent-execution risk from this fix.
+func TestRunPlan_UnknownTemplateIDStillSkipped(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "hallucinated-leaf", Target: "http://127.0.0.1:1", Detector: "totally-made-up-template-id"},
+	}}}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 2 * time.Second, OutputFormat: "json"}
+	templateIndex := []templatesync.Entry{{ID: "wordpress-xmlrpc-enabled", Tags: []string{"wordpress"}}}
+
+	_, _, skipped, _ := RunPlan(context.Background(), nil, nil, tree, baseCfg, templateIndex)
+
+	if len(skipped) != 1 {
+		t.Fatalf("got skipped=%v, want exactly 1 (the hallucinated Detector)", skipped)
+	}
+	if tree.Find("hallucinated-leaf").Status == agenttask.StatusDone {
+		t.Fatal("a hallucinated Detector must not be dispatched")
+	}
+}
+
 func TestRunPlan_EmptyTree_NoPanic(t *testing.T) {
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}} // root itself is a leaf, but has no Detector
 	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50}
 
-	findings, logs, skipped, err := RunPlan(context.Background(), nil, nil, tree, baseCfg)
+	findings, logs, skipped, err := RunPlan(context.Background(), nil, nil, tree, baseCfg, nil)
 	if findings != nil || logs != nil || skipped != nil || err != nil {
 		t.Fatalf("got (%v, %v, %v, %v), want all zero values for a tree with no Detector on its only leaf", findings, logs, skipped, err)
 	}

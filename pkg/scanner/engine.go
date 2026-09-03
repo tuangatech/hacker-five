@@ -297,6 +297,10 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		nucleiTemplates = filterNucleiByTags(nucleiTemplates, e.cfg.Tags)
 		nativeTemplates = filterNativeByTags(nativeTemplates, e.cfg.Tags)
 	}
+	if e.cfg.TemplateID != "" {
+		nucleiTemplates = filterNucleiByID(nucleiTemplates, e.cfg.TemplateID)
+		nativeTemplates = filterNativeByID(nativeTemplates, e.cfg.TemplateID)
+	}
 	filtered := (loadedNuclei - len(nucleiTemplates)) + (loadedNative - len(nativeTemplates))
 
 	if e.cfg.Concurrency > promptInjectionSafeConcurrency && anyTemplateHasTag(nucleiTemplates, nativeTemplates, promptInjectionTag) {
@@ -387,6 +391,33 @@ func filterNativeByTags(templates []*native.Template, wanted []string) []*native
 	return kept
 }
 
+// filterNucleiByID keeps only the template whose id: exactly matches id —
+// unlike filterNucleiByTags (an OR match against a template's tags: block,
+// which can match many templates), an id: is a stable, unique identifier,
+// so this narrows to at most one entry. Used for a PlanTree leaf whose
+// Detector names a specific template rather than one of the 5 built-in
+// detectors (pkg/mcpserver's executor, doc15 Step 2 addendum).
+func filterNucleiByID(templates []*nuclei.Template, id string) []*nuclei.Template {
+	var kept []*nuclei.Template
+	for _, tmpl := range templates {
+		if tmpl.ID == id {
+			kept = append(kept, tmpl)
+		}
+	}
+	return kept
+}
+
+// filterNativeByID is filterNucleiByID's native-format counterpart.
+func filterNativeByID(templates []*native.Template, id string) []*native.Template {
+	var kept []*native.Template
+	for _, tmpl := range templates {
+		if tmpl.ID == id {
+			kept = append(kept, tmpl)
+		}
+	}
+	return kept
+}
+
 // tagSet normalizes wanted into a lookup set. Normalizing here (not just at
 // the CLI flag) keeps filtering correct regardless of how Config.Tags was
 // built — e.g. constructed directly in a test, not parsed from --tags.
@@ -406,6 +437,12 @@ func normalizeTag(tag string) string {
 
 func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Finding, error) {
 	switch e.cfg.Detector {
+	case "":
+		// A templates-only run — no built-in detector to dispatch (see
+		// Config.TemplateID/ValidateOptions.SkipDetectorRequired). Run
+		// already executes the loaded/filtered template set unconditionally
+		// after this call returns, so there's nothing more to do here.
+		return nil, nil
 	case "idor":
 		endpointTemplate := strings.TrimRight(target, "/") + e.cfg.EndpointTemplate
 		strategy := idor.SequentialIntStrategy{Start: idEnumRangeStart, End: idEnumRangeEnd}

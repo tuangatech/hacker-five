@@ -26,12 +26,17 @@ import (
 const PinnedCommit = "0aa256a344d5b53648575163c61517ac67f57961"
 
 // Categories mirrors scripts/sync-nuclei-templates.sh's CATEGORIES array —
-// keep both in sync when either changes.
+// keep both in sync when either changes. Widened 2026-09-03 (doc15 Step 2
+// addendum): http/vulnerabilities widened from just its generic/ subset to
+// the full directory, plus http/cves, http/exposures, http/default-logins.
 var Categories = []string{
 	"http/exposed-panels",
 	"http/misconfiguration",
 	"http/technologies",
-	"http/vulnerabilities/generic",
+	"http/vulnerabilities",
+	"http/cves",
+	"http/exposures",
+	"http/default-logins",
 }
 
 const upstreamRepo = "https://github.com/projectdiscovery/nuclei-templates.git"

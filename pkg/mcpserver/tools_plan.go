@@ -232,7 +232,13 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 	}
 
 	token := req.Params.GetProgressToken()
-	findings, logs, skipped, err := RunPlan(ctx, req.Session, token, pending.tree, pending.baseCfg)
+	// Reloaded here rather than cached on pendingPlan — cheap (a JSON file
+	// read), and keeps that short-lived struct's shape minimal. A template
+	// added/removed between round 1 and round 2 (a human re-syncing mid-
+	// approval) is vanishingly unlikely to matter in practice, and either
+	// way this is the freshest index available at dispatch time.
+	templateIndex, _ := templatesync.LoadIndex(defaultTemplateIndexPath)
+	findings, logs, skipped, err := RunPlan(ctx, req.Session, token, pending.tree, pending.baseCfg, templateIndex)
 	out.Approved = true
 	out.Findings = findings
 	out.Logs = logs

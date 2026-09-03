@@ -178,9 +178,130 @@
   ```
 
   **Two boundaries worth stating explicitly, since they're easy to blur:**
-  - **"Reuse existing templates before creating new ones" (Decision 6) is bounded to whatever's already on disk at decision time — never a live download.** `pkg/templatesync` syncs 4 pinned categories (`http/exposed-panels`, `http/misconfiguration`, `http/technologies`, `http/vulnerabilities/generic`) from one fixed upstream commit into a persistent per-user directory, entirely decoupled from the release binary (only a small, hand-authored example set under `templates/` is `go:embed`-ed). The decision engine's template-tag matching only ever searches `templates/index.json` — itself only ever built from whatever `hackerfive templates sync` has *already* pulled down. Re-pinning or widening the synced categories is, by the sync code's own doc comment, *"a rare, deliberate, human-reviewed action... not a runtime toggle"* — so there is no safe middle ground where the decision engine or the LLM fallback expands template coverage on its own mid-scan; a fingerprint the synced corpus doesn't cover surfaces as a real, visible `unresolved` leaf instead. **A real gap found and fixed while drafting this diagram (2026-08-31):** this dev machine's synced directory held only a single leftover test fixture, not the real corpus — every earlier "live-verified template-tag match" claim in doc14 (Steps 3b/4) was true but exercised only the ~29 bundled example templates, not the intended corpus. Running `hackerfive templates sync` for real (1560+980+910+19 = 3469 templates pulled, 3194 indexed) and re-running `hackerfive plan` against crAPI raised the real template-tag-matched leaf count from 1 (`php-detect`) to 11 (nginx/php/phpldapadmin/etc. panel and technology templates) — the reuse-first mechanism works as designed, it just hadn't been exercised against the real corpus size until now.
+  - **"Reuse existing templates before creating new ones" (Decision 6) is bounded to whatever's already on disk at decision time — never a live download.** `pkg/templatesync` syncs 7 pinned categories (`http/exposed-panels`, `http/misconfiguration`, `http/technologies`, `http/vulnerabilities`, `http/cves`, `http/exposures`, `http/default-logins` — widened 2026-09-03 from the original 4, see below) from one fixed upstream commit into a persistent per-user directory, entirely decoupled from the release binary (only a small, hand-authored example set under `templates/` is `go:embed`-ed). The decision engine's template-tag matching only ever searches `templates/index.json` — itself only ever built from whatever `hackerfive templates sync` has *already* pulled down. Re-pinning or widening the synced categories is, by the sync code's own doc comment, *"a rare, deliberate, human-reviewed action... not a runtime toggle"* — so there is no safe middle ground where the decision engine or the LLM fallback expands template coverage on its own mid-scan; a fingerprint the synced corpus doesn't cover surfaces as a real, visible `unresolved` leaf instead. **A real gap found and fixed while drafting this diagram (2026-08-31):** this dev machine's synced directory held only a single leftover test fixture, not the real corpus — every earlier "live-verified template-tag match" claim in doc14 (Steps 3b/4) was true but exercised only the ~29 bundled example templates, not the intended corpus. Running `hackerfive templates sync` for real against the original 4 categories (1560+980+910+19 = 3469 templates pulled, 3194 indexed) and re-running `hackerfive plan` against crAPI raised the real template-tag-matched leaf count from 1 (`php-detect`) to 11 (nginx/php/phpldapadmin/etc. panel and technology templates) — the reuse-first mechanism works as designed, it just hadn't been exercised against the real corpus size until now. **2026-09-03 widening:** `cves/` (4,238 templates), `exposures/` (698, includes the leaked-credential detectors for AWS/GCP/Azure/GitHub/etc. — `http/exposures/tokens/`, `/configs/`, `/files/`), `default-logins/` (305), and the rest of `vulnerabilities/` beyond the already-synced `generic/` subset (942 more) were added — a top-level `cloud/` directory (cloud-account posture auditing, `code:`-block-based, requires cloud IAM credentials) was evaluated and rejected as out of scope for this project's threat model and disallowed-block list. Real, measured load-success against this project's own validator after a real `hackerfive templates sync` + `templates index` run against the full widened corpus: **7,716 of 9,682 templates loaded (79.7%)** — better than the 72.3% measured for `cves/` in isolation before committing to the widening. The bulk of the 1,966 rejections are OOB/interactsh-correlated matchers and cross-request DSL identifiers (`body_2`/`content_type_2` meaning "a separate `flow:` request block," not this project's `raw:`-scoped binding) this project doesn't support yet, not a surprise specific to any one new category.
   - **Parallel leaf execution (step 6) — built 2026-09-02, doc15 §2's Executor (`pkg/mcpserver/executor.go`).** Leaves under different hosts have no declared dependency on each other (`registry.Resolve` builds them as flat siblings), and `scanner.Engine`'s worker pool already parallelizes multiple templates/detectors against a target today — running several approved leaves concurrently reuses that same primitive, dispatched per-leaf; doesn't conflict with Decision 1 (a single coordinator dispatching scoped, disposable tool calls concurrently is exactly Cyber-AutoAgent's validated pattern, not a peer-agent mesh). `pkg/agenttask.PlanTree`'s mutex (added the same day) makes `ApplyLeafUpdate` safe from the executor's parallel leaf goroutines, confirmed via a `go test -race` run exercising concurrent calls, not just a single-goroutine assertion. **Not yet live-verified**: a real multi-leaf timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism rather than accidental serialization) — deferred, honestly, rather than assumed from the unit tests alone.
   - **`templates-proposed/`, not `templates/proposed/`.** A drafted template from the frontier tier lands in a directory named `templates-proposed/` at the repo root — a sibling of `templates/`, not a subdirectory of it. Real gap found wiring this up: `templates/` is walked *recursively* by every existing template loader (`scanner.Engine`, `templates.list`/`search`, `hackerfive templates`), so a subdirectory would have put an untrusted, LLM-drafted template directly into the live scan corpus the moment one was written — exactly what "never running against a live target without separate human promotion" is supposed to prevent. Fixed before any code exercised it.
+
+**Recon → TechFact → PlanTree leaf: the exact sequence, worked example** *(added 2026-09-03 after a user review found the flow diagram above doesn't show enough mechanics to answer "does the LLM extract info from recon, and which tags does it actually see?"; updated the same day once that review's follow-up fixes landed — see doc15 Step 2's addendum. Grounded in the real code paths below, not aspirational.)*
+
+**1. Recon → TechFact extraction is 100% deterministic — zero LLM involvement.** Wave 2's `httpx -tech-detect` output and `pkg/fingerprint`'s header/body/favicon/port signature table both feed `ReconResult.TechStack`, a flat list of `TechFact{Name, Host, Source, Confidence}`. No LLM ever sees a raw HTTP response, page title, or header value — this is pure Go pattern-matching, same as any other recon wave.
+
+Sample TechFacts (illustrative, a mixed WordPress + custom-API target):
+```
+TechFact{Name: "WordPress:6.4.2",    Host: "example.com",     Source: "httpx-tech-detect",  Confidence: "high"}
+TechFact{Name: "OpenResty:1.27.1.2", Host: "example.com",     Source: "httpx-tech-detect",  Confidence: "high"}
+TechFact{Name: "Craft CMS:4.5.2",    Host: "cms.example.com", Source: "fingerprint-favicon", Confidence: "low"}
+```
+(`Craft CMS` is deliberately not in `techRules` below — every real product name is, at any given time, either covered by a hand-authored rule or not; this one illustrates the "not" case, not a claim that CMS products in general go unmatched.)
+
+**2. `registry.Resolve` — deterministic dispatch, one TechFact at a time (`pkg/registry/decisionengine.go`):**
+```
+TechFact{Name: "WordPress:6.4.2", Host: "example.com", ...}
+        │
+        ├─▶ matchTechRules("wordpress")            — techRules exact-substring match → ["misconfig"]
+        └─▶ matchTemplateTags("wordpress", index)   — up to 5 templates tagged exactly "wordpress"
+        │
+        ▼
+PlanNode{Detector: "misconfig",       Status: Pending, Rationale: "tech fact ... matched registry capability \"misconfig\""}
+PlanNode{Detector: "<template-id-1>", Status: Pending, Rationale: "tech fact ... matches template tag on \"<template-id-1>\""}
+   (one leaf per match — capability matches and template-tag matches coexist as siblings)
+```
+If neither fires — e.g. `TechFact{Name: "Craft CMS:4.5.2", ...}` above, since nothing happens to be tagged exactly `craft cms` and it's not in `techRules`:
+```
+PlanNode{Target: "cms.example.com", Status: Unresolved, Rationale: "tech fact \"Craft CMS:4.5.2\" (source: fingerprint-favicon) matched no registry capability or template tag; observed on this host: GET /admin/login (200), GET /?p=admin/dashboard (401)"}
+```
+The `observed on this host: ...` suffix (up to 3 real, correlated `EndpointFact` entries — `correlatedEndpoints`/`describeEndpoints`, `pkg/registry/decisionengine.go`) is only appended when recon actually observed something on that host — added 2026-09-03 so the calls below have a real path/status to reason about instead of just a bare hostname. This unresolved leaf, and only this leaf, is what reaches I4.
+
+**3a. "Reuse an existing tag" — I4's first caller, `ResolveLeaf` (`pkg/llmfallback/leaf.go`):**
+```
+Unresolved PlanNode
+        │
+        ▼
+buildLeafPrompt(leaf, registry.Capabilities[~20], templateIndex)
+        │  catalog shown to the model:
+        │    • every registry capability name/description — all ~20, never truncated
+        │    • up to 300 UNIQUE template tags, two-tier (added 2026-09-03, rankRelevantTags):
+        │      first, up to 200 tags scored relevant to the tech name buildLeafPrompt
+        │      extracts from leaf.Rationale (exact match > substring > word overlap against
+        │      pkg/registry.NormalizeTechName's output) — "craft cms" ranks any "craft-cms"-
+        │      shaped tag first; then the remaining capacity is filled from a fixed-order
+        │      walk of the rest of the index, a broad deterministic base sample (misconfig,
+        │      exposed-panel, ...) as an escape hatch when nothing scores well. Replaces the
+        │      earlier fixed-order-only 200-tag cap, which showed the same arbitrary prefix
+        │      every call regardless of which TechFact triggered it — a real, measured cause
+        │      of avoidable needs_new_template decisions documented in doc15 Step 2.
+        ▼
+local-tier call ──▶ {"decision": "use_existing_tag", "tag": "grafana"}   — live-tested
+        │            2026-09-03 against the real corpus + a real OpenRouter model: this
+        │            exact outcome, a correct, non-hallucinated reuse decision
+        │            or {"decision": "needs_new_template", ...}  (→ 3b below)
+        │            or {"decision": "escalate", ...}
+        ▼
+applyLeafDecision (pkg/mcpserver/tools_plan.go)
+        │
+        ▼
+leaf.Detector = "grafana"   — no validation against the real catalog here; a
+leaf.Status   = Pending       hallucinated OR merely-a-tag name both fall through to
+                               RunPlan's own eligibility check below the same way
+        │
+        ▼  elicitation → human approves plan
+        ▼
+RunPlan (pkg/mcpserver/executor.go)
+        │
+        ├─ leaf.Detector ∈ {idor, misconfig, authbypass, ssrf, businesslogic}?
+        │     YES ──▶ dispatched with that built-in detector, runs for real
+        │             (the llmAssisted concurrency tier)
+        │
+        ├─ leaf.Detector matches a real templatesync.Entry.ID in the loaded index
+        │  (a specific template — R8's own template-tag matches hit this path,
+        │  since matchTemplateTags sets Detector: entry.ID, a real ID)
+        │     YES ──▶ dispatched as a templates-only run — Detector left empty,
+        │             TemplateID set to leaf.Detector (Config.TemplateID, an exact
+        │             id: match, narrower than Tags' OR-match against a tags:
+        │             block), runs for real. Added 2026-09-03 — previously *every*
+        │             specific-template leaf was informational-only, never executed
+        │             by this step regardless of whether R8 or I4 picked it.
+        │
+        └─ neither — a genuine hallucination, OR (the live-tested "grafana" case
+           above) a real but *shared* tag, since buildLeafPrompt only ever shows
+           the model tags, never per-template IDs — "grafana" matches no single
+           entry.ID (17 real templates carry it; none is id: "grafana"), so this
+           branch is where an I4 use_existing_tag decision still lands today,
+           even a correct one. Fixes R8's own matches fully; doesn't yet make an
+           I4 reuse decision executable — an open gap, doc15 Step 2's addendum.
+                 ──▶ SKIPPED — "not executed this step (unrecognized detector/
+                     template-ID ... requires separate human promotion or manual run)"
+                     — reported in `skipped`, never silently dropped, but not run either
+```
+
+**3b. "Create a new template" — I4's frontier-tier draft-authoring call (only reached from `needs_new_template` above):**
+```
+needs_new_template
+        │
+        ▼
+frontier-tier call, draftTemplateSystemPrompt (condensed rules sourced from
+docs/template-writing-guide.md's "Supported" section — see doc15 Step 2)
+        │
+        ▼
+{"draft_template": "<full YAML>"}
+        │
+        ▼
+writeProposedTemplate (pkg/mcpserver/tools_plan.go)
+        │
+        ├─ nuclei.LoadDirDetailed(templates-proposed/) — the SAME real validator every
+        │  synced/bundled template goes through (disallowed-block check, matcher/
+        │  extractor type + part validation, DSL type-checking, ...)
+        │
+        ├─ PASS ──▶ file stays in templates-proposed/; leaf.Rationale = "drafted
+        │           template written to ... — pending human promotion, not executed
+        │           by this plan run"
+        │
+        └─ FAIL ──▶ file deleted immediately; leaf.Rationale = "drafted template
+                     rejected: <real parser error>"; escalated to a human
+```
+A drafted template is **never** executed by this step's executor regardless of whether it passed validation — promotion out of `templates-proposed/` into a real scan is a separate, deliberately manual step (Phase 7, doc90 E2). Like 3a, this call's prompt embeds the same enriched `leaf.Rationale` (same `prompt` variable, built once, reused for both calls in `leaf.go`) — a real observed path/status, when one was correlated, rather than a bare hostname.
+
+**For contrast, the recon-derived *field*-suggestion path (I4's second caller, `ResolveField`) has always worked this way — real recon data in, a pick among real candidates out, never raw extraction.** `pkg/recon/suggest.go`'s `SuggestIDOREndpointCandidates`/`SuggestAuthBypassPathsFromRecon`/`SuggestSSRFParamsFromRecon` deterministically derive candidates from `ReconResult.Endpoints` (an ID-shaped path/query segment → an `{{id}}`-templated candidate; a 401/403-status endpoint → a protected-path candidate; a query key matching a curated SSRF-param keyword list → a candidate). `ResolveField` is only ever called on `idor`'s and `authbypass`'s genuine zero-or-multiple-candidate misses, and it only picks among the candidates already handed to it — it never re-reads recon output itself. `ssrf` and `authbypass`'s login/logout paths never call an LLM at all; every candidate auto-fills, since there's no ambiguity to resolve.
 
 #### 8. **Dependencies (Minimal)**
 ```

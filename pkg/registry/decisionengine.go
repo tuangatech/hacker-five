@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -61,7 +62,7 @@ func matchTechRules(techName string) []string {
 // match) — R9's template index consumed by the decision engine, per doc14
 // Step 3's R8 text.
 func matchTemplateTags(techName string, index []templatesync.Entry) []templatesync.Entry {
-	want := normalizeTechName(techName)
+	want := NormalizeTechName(techName)
 	if want == "" {
 		return nil
 	}
@@ -80,10 +81,10 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 	return matched
 }
 
-// normalizeTechName strips a version suffix (e.g. "OpenResty:1.27.1.2" ->
+// NormalizeTechName strips a version suffix (e.g. "OpenResty:1.27.1.2" ->
 // "openresty") so a TechFact's product name has a chance of matching a
 // template's own short tag.
-func normalizeTechName(name string) string {
+func NormalizeTechName(name string) string {
 	if i := strings.IndexByte(name, ':'); i >= 0 {
 		name = name[:i]
 	}
@@ -113,7 +114,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *age
 		hostNode := &agenttask.PlanNode{ID: "host:" + host, Target: host}
 		leafIdx := 0
 		for _, fact := range byHost[host] {
-			leaves := resolveTechFact(host, fact, templateIndex, &leafIdx)
+			leaves := resolveTechFact(host, fact, templateIndex, result.Endpoints, &leafIdx)
 			hostNode.Children = append(hostNode.Children, leaves...)
 		}
 		root.Children = append(root.Children, hostNode)
@@ -121,7 +122,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *age
 	return &agenttask.PlanTree{Root: root}
 }
 
-func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, leafIdx *int) []*agenttask.PlanNode {
+func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, leafIdx *int) []*agenttask.PlanNode {
 	confidence := agenttask.Confidence(fact.Confidence)
 	var leaves []*agenttask.PlanNode
 
@@ -150,14 +151,72 @@ func resolveTechFact(host string, fact recon.TechFact, templateIndex []templates
 	}
 
 	if len(leaves) == 0 {
+		rationale := fmt.Sprintf("tech fact %q (source: %s) matched no registry capability or template tag", fact.Name, fact.Source)
+		if obs := correlatedEndpoints(host, endpoints); len(obs) > 0 {
+			rationale += "; observed on this host: " + describeEndpoints(obs)
+		}
 		leaves = append(leaves, &agenttask.PlanNode{
 			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
 			Target:     host,
-			Rationale:  fmt.Sprintf("tech fact %q (source: %s) matched no registry capability or template tag", fact.Name, fact.Source),
+			Rationale:  rationale,
 			Status:     agenttask.StatusUnresolved,
 			Confidence: confidence,
 		})
 		*leafIdx++
 	}
 	return leaves
+}
+
+// maxCorrelatedEndpoints caps how many real observed endpoints get folded
+// into an unresolved leaf's Rationale — enough to give I4's LLM fallback
+// (pkg/llmfallback.ResolveLeaf and its draft-authoring call, both of which
+// embed Rationale verbatim into their prompt) something concrete to reason
+// about — a real path/status instead of a bare hostname — while staying
+// short, since Rationale is also a human-facing display field on the Web
+// UI's plan-preview page.
+const maxCorrelatedEndpoints = 3
+
+// correlatedEndpoints returns up to maxCorrelatedEndpoints EndpointFacts
+// observed on host. Not a precise "this endpoint caused this TechFact"
+// link — recon.TechFact carries no such reference — just "something real
+// recon actually saw on this host" instead of nothing at all.
+func correlatedEndpoints(host string, endpoints []recon.EndpointFact) []recon.EndpointFact {
+	var matched []recon.EndpointFact
+	for _, ep := range endpoints {
+		u, err := url.Parse(ep.URL)
+		if err != nil || u.Hostname() != host {
+			continue
+		}
+		matched = append(matched, ep)
+		if len(matched) >= maxCorrelatedEndpoints {
+			break
+		}
+	}
+	return matched
+}
+
+// describeEndpoints renders endpoints as a short, comma-separated "METHOD
+// path (status)" list — path only (scheme+host stripped, mirroring
+// pkg/recon/suggest.go's own EndpointTemplate contract), truncated so one
+// unusually long observed URL can't blow out an otherwise-short Rationale.
+func describeEndpoints(endpoints []recon.EndpointFact) string {
+	parts := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		path := ep.URL
+		if u, err := url.Parse(ep.URL); err == nil {
+			path = u.Path
+			if u.RawQuery != "" {
+				path += "?" + u.RawQuery
+			}
+		}
+		if len(path) > 60 {
+			path = path[:60] + "..."
+		}
+		status := ""
+		if ep.StatusCode != 0 {
+			status = fmt.Sprintf(" (%d)", ep.StatusCode)
+		}
+		parts = append(parts, fmt.Sprintf("%s %s%s", ep.Method, path, status))
+	}
+	return strings.Join(parts, ", ")
 }

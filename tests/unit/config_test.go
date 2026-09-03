@@ -48,6 +48,11 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: `unrecognized detector "nope"`,
 		},
 		{
+			name:    "empty detector without SkipDetectorRequired",
+			mutate:  func(c scanner.Config) scanner.Config { c.Detector = ""; return c },
+			wantErr: `unrecognized detector ""`,
+		},
+		{
 			name: "idor without any token",
 			mutate: func(c scanner.Config) scanner.Config {
 				c.Detector = "idor"
@@ -124,4 +129,22 @@ func TestConfigValidate(t *testing.T) {
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// TestConfigValidateWithOptions_SkipDetectorRequired confirms the escape
+// hatch used by pkg/mcpserver's executor for a specific-template PlanTree
+// leaf (doc15 Step 2 addendum): Detector == "" only ever passes with this
+// option explicitly set — Validate() (no options) keeps rejecting it, per
+// the table above, so a CLI-driven config (which never sets this) is
+// unaffected.
+func TestConfigValidateWithOptions_SkipDetectorRequired(t *testing.T) {
+	cfg := validConfig()
+	cfg.Detector = ""
+	cfg.TemplateID = "some-template-id"
+
+	err := cfg.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true})
+	assert.NoError(t, err)
+
+	err = cfg.ValidateWithOptions(scanner.ValidateOptions{})
+	assert.ErrorContains(t, err, `unrecognized detector ""`)
 }

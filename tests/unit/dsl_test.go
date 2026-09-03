@@ -59,6 +59,46 @@ func TestDSLEval_IntVarsFallback(t *testing.T) {
 	assert.Equal(t, true, val)
 }
 
+// TestDSLEval_OrderingOperators locks in <, <=, >, >= as top-level DSL
+// comparison operators against IntVars — none of the four had a test before
+// this one (only == and != were previously exercised at this level).
+// duration>=6-shaped expressions (real upstream CVE templates using
+// time-based checks) previously failed at the tokenizer with "unexpected
+// character '=' at ..." since <=/>= were never tokenized as two-char
+// operators, only bare < and >.
+func TestDSLEval_OrderingOperators(t *testing.T) {
+	ctx := dsl.Context{IntVars: map[string]int{"duration": 6}}
+
+	cases := []struct {
+		expr string
+		want bool
+	}{
+		{"duration < 7", true},
+		{"duration < 6", false},
+		{"duration <= 6", true},
+		{"duration <= 5", false},
+		{"duration > 5", true},
+		{"duration > 6", false},
+		{"duration >= 6", true},
+		{"duration >= 7", false},
+	}
+	for _, tc := range cases {
+		val, err := dsl.Eval(tc.expr, ctx)
+		require.NoError(t, err, tc.expr)
+		assert.Equal(t, tc.want, val, tc.expr)
+	}
+}
+
+// TestDSLEval_OrderingOperatorsRejectedForStrings confirms <=/>= fall into
+// the same "operator not supported between strings" rejection ==/!= already
+// exempt from — ordering has no defined meaning for this DSL's string type.
+func TestDSLEval_OrderingOperatorsRejectedForStrings(t *testing.T) {
+	ctx := dsl.Context{Vars: map[string]string{"v": "a"}}
+	_, err := dsl.Eval(`v <= "b"`, ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported between strings")
+}
+
 // TestDSLEval_EscapedQuoteInStringLiteral locks in the tokenizer fix for a
 // backslash-escaped quote inside a DSL string literal — found live against
 // real upstream templates (e.g. airbyte-panel.yaml's

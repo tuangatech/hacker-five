@@ -12,6 +12,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
+	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
 // recognizedDetectors mirrors pkg/scanner/config.go's own unexported set —
@@ -19,11 +20,12 @@ import (
 // stable list and cfg.Validate() (called per leaf below) remains the real
 // authority; this copy only decides whether a leaf is even worth building a
 // Config for. A leaf whose Detector is a raw template ID (registry.Resolve's
-// template-tag-match case, not a techRules capability match) is never
-// dispatched by this step's executor — matching pkg/webui's own existing
-// treatment of the same case (handlers_launch.go's guidedReadyDetectors/
-// guidedInputDetectors buckets: a template-ID leaf lands in neither and is
-// informational-only there too, not a new limitation invented here).
+// template-tag-match case, or an I4 use_existing_tag decision naming a
+// template rather than a built-in detector) is dispatched separately, as a
+// templates-only run — see RunPlan's eligibility loop and runLeaf, below
+// (doc15 Step 2 addendum, 2026-09-03 — this used to be skipped entirely,
+// matching pkg/webui's own still-informational-only treatment of the same
+// case; RunPlan is now the one place that gap is closed).
 var recognizedDetectors = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
 }
@@ -49,17 +51,26 @@ type executionResult struct {
 // scanner.Engine run, using baseCfg as the shared template (Scope,
 // AuthToken, EndpointTemplate, ProtectedPaths, SSRFParams, AllowWrites,
 // ExtraHeaders, TemplatePaths, Concurrency/RateLimit/Timeout — everything
-// except Targets/Detector, which this function fills per leaf). Only
-// eligible leaves are R8-matched or use_existing_tag-resolved leaves whose
-// Detector is one of scanner's recognized names — draft_template and
-// escalate_to_human leaves, and any raw template-ID leaf, are skipped
-// (never executed this step, per the Definition of Done's "never running
-// against a live target without separate human promotion"). Skipped leaves
-// are reported via skipped, not silently dropped.
-func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *agenttask.PlanTree, baseCfg scanner.Config) (findings []detectors.Finding, logs []string, skipped []string, err error) {
+// except Targets/Detector/TemplateID, which this function fills per leaf).
+// Eligible leaves are R8-matched or use_existing_tag-resolved leaves whose
+// Detector is either one of scanner's recognized built-in names, or a real
+// template ID/tag present in templateIndex — dispatched as a templates-only
+// run in that second case (runLeaf). draft_template and escalate_to_human
+// leaves, and any Detector matching neither a built-in name nor a real
+// template ID (a hallucination), are skipped (never executed this step,
+// per the Definition of Done's "never running against a live target
+// without separate human promotion"). Skipped leaves are reported via
+// skipped, not silently dropped.
+func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *agenttask.PlanTree, baseCfg scanner.Config, templateIndex []templatesync.Entry) (findings []detectors.Finding, logs []string, skipped []string, err error) {
+	knownTemplateIDs := make(map[string]bool, len(templateIndex))
+	for _, entry := range templateIndex {
+		knownTemplateIDs[entry.ID] = true
+	}
+
 	var deterministic, llmAssisted []*agenttask.PlanNode
 	for _, leaf := range leaves(tree.Root) {
-		if !recognizedDetectors[leaf.Detector] {
+		eligible := recognizedDetectors[leaf.Detector] || (leaf.Detector != "" && knownTemplateIDs[leaf.Detector])
+		if !eligible {
 			if leaf.Detector != "" {
 				skipped = append(skipped, fmt.Sprintf("%s: not executed this step (unrecognized detector/template-ID %q — requires separate human promotion or manual run)", leaf.ID, leaf.Detector))
 			}
@@ -141,13 +152,30 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 func runLeaf(ctx context.Context, session *mcp.ServerSession, token any, leaf *agenttask.PlanNode, baseCfg scanner.Config) executionResult {
 	cfg := baseCfg
 	cfg.Targets = []string{leaf.Target}
-	cfg.Detector = leaf.Detector
-	if err := cfg.ValidateWithOptions(scanner.ValidateOptions{
+
+	opts := scanner.ValidateOptions{
 		SkipEndpointRequired:       true,
 		SkipProtectedPathsRequired: true,
 		SkipSSRFParamsRequired:     true,
 		SkipAuthTokenRequired:      true,
-	}); err != nil {
+	}
+	if recognizedDetectors[leaf.Detector] {
+		cfg.Detector = leaf.Detector
+	} else {
+		// A specific-template leaf, not a built-in detector — RunPlan's
+		// eligibility loop only lets a leaf reach here if leaf.Detector is
+		// either a recognized detector name or a real template ID/tag, so
+		// anything not the former is the latter. TemplatePaths stays
+		// baseCfg's own (the same synced+bundled directories the whole plan
+		// already uses) — narrowing to just this one template happens by
+		// exact id: match at load time (Config.TemplateID), not by pointing
+		// at a different directory.
+		cfg.Detector = ""
+		cfg.TemplateID = leaf.Detector
+		opts.SkipDetectorRequired = true
+	}
+
+	if err := cfg.ValidateWithOptions(opts); err != nil {
 		return executionResult{err: fmt.Errorf("leaf %s: %w", leaf.ID, err)}
 	}
 
