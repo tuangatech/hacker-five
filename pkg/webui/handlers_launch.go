@@ -11,6 +11,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
+	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
@@ -377,7 +378,7 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	job.SetPhase("recon")
 	h.runLaunchRecon(job, form, cfgs)
 
-	cfgs = fillReconFields(job, cfgs)
+	cfgs = fillReconFields(h.baseCtx, job, cfgs)
 
 	// Seed the detector chain only now, from cfgs *after* fillReconFields —
 	// that call can drop a detector entirely when recon couldn't resolve a
@@ -520,8 +521,24 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 // StatusUnresolved-leaf posture (docs/14-implementation-plan-ph5.md Step 7):
 // a gap the deterministic layer can't close stays visible, never silently
 // dropped.
-func fillReconFields(job *Job, cfgs []scanner.Config) []scanner.Config {
+func fillReconFields(ctx context.Context, job *Job, cfgs []scanner.Config) []scanner.Config {
 	result := job.Snapshot().ReconResult
+
+	// fallbackClient lazily builds the I4 client at most once per job, and
+	// only when a genuine field miss is actually reached below —
+	// llmfallback.New() does a real ~2s local-reachability probe, and the
+	// common case (recon resolves the field cleanly) should never pay that
+	// cost.
+	var fb *llmfallback.Client
+	var fbErr error
+	var fbLoaded bool
+	fallbackClient := func() (*llmfallback.Client, error) {
+		if !fbLoaded {
+			fb, fbErr = llmfallback.New()
+			fbLoaded = true
+		}
+		return fb, fbErr
+	}
 
 	runnable := make([]scanner.Config, 0, len(cfgs))
 	for _, cfg := range cfgs {
@@ -532,12 +549,14 @@ func fillReconFields(job *Job, cfgs []scanner.Config) []scanner.Config {
 				switch len(candidates) {
 				case 0:
 					job.AppendLog("warn", "idor: skipped — no --endpoint given and recon found no candidate; fill in manually and re-run")
+					logFieldMiss(ctx, job, fallbackClient, "idor", "endpoint_template", "--endpoint", nil)
 					continue
 				case 1:
 					cfg.EndpointTemplate = candidates[0]
 					job.AppendLog("info", "idor: using recon-derived endpoint "+cfg.EndpointTemplate)
 				default:
 					job.AppendLog("warn", fmt.Sprintf("idor: %d recon-derived candidates found, none auto-selected — pick one via --endpoint and re-run: %s", len(candidates), strings.Join(candidates, ", ")))
+					logFieldMiss(ctx, job, fallbackClient, "idor", "endpoint_template", "--endpoint", candidates)
 					continue
 				}
 			}
@@ -546,6 +565,7 @@ func fillReconFields(job *Job, cfgs []scanner.Config) []scanner.Config {
 			if len(cfg.ProtectedPaths) == 0 {
 				if len(protected) == 0 {
 					job.AppendLog("warn", "authbypass: skipped — no --protected-paths given and recon found no candidate; fill in manually and re-run")
+					logFieldMiss(ctx, job, fallbackClient, "authbypass", "protected_paths", "--protected-paths", nil)
 					continue
 				}
 				cfg.ProtectedPaths = protected
@@ -594,6 +614,24 @@ func fillReconFields(job *Job, cfgs []scanner.Config) []scanner.Config {
 		runnable = append(runnable, cfg)
 	}
 	return runnable
+}
+
+// logFieldMiss surfaces I4's field-suggestion resolution (pkg/llmfallback,
+// the same mechanism pkg/mcpserver's resolveFieldSuggestions already uses)
+// for a recon-derived-candidate miss. Deliberately logged only, never
+// applied to cfg — matching resolveFieldSuggestions' own "not run with an
+// unreviewed guess against a live target" invariant (tools_plan.go): the
+// operator still copies the value into the form and re-launches, same as
+// a plain miss already required, just with a concrete suggestion to work
+// from instead of a blank field.
+func logFieldMiss(ctx context.Context, job *Job, client func() (*llmfallback.Client, error), detector, field, formFlag string, candidates []string) {
+	fb, fbErr := client()
+	decision, _ := llmfallback.ResolveFieldMiss(ctx, fb, fbErr, detector, field, candidates)
+	if decision.EscalateToHuman != "" {
+		job.AppendLog("info", fmt.Sprintf("%s: LLM fallback could not suggest a value for %s (%s)", detector, formFlag, decision.EscalateToHuman))
+		return
+	}
+	job.AppendLog("info", fmt.Sprintf("%s: LLM fallback suggests %s %q (%s) — not applied automatically; copy it into the form and re-run if it looks right", detector, formFlag, decision.SuggestedValue, decision.Rationale))
 }
 
 // flattenPlanTree walks tree depth-first into a flat leaf slice.

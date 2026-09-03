@@ -587,6 +587,7 @@ func containsSubstring(msgs []string, substr string) bool {
 // function only reads job.Snapshot().ReconResult (set here via
 // SetReconResult, mirroring what runLaunchRecon does for a real job).
 func TestFillReconFields_IDOR_ZeroCandidates_SkipsWithLogLine(t *testing.T) {
+	forceNoLLMTier(t)
 	job := newTestJob("job1")
 	job.SetReconResult(&recon.ReconResult{})
 
@@ -598,10 +599,51 @@ func TestFillReconFields_IDOR_ZeroCandidates_SkipsWithLogLine(t *testing.T) {
 		AuthToken:   "tok",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	assert.Empty(t, got)
 	assert.True(t, containsSubstring(logMessages(job), "idor: skipped"), "logs: %v", logMessages(job))
+}
+
+// TestFillReconFields_IDOR_ZeroCandidates_LLMFallbackSuggestsEndpoint_LoggedNotApplied
+// confirms I4's field-suggestion resolution actually fires on a genuine
+// zero-candidate miss when a local tier is configured, and — the invariant
+// this whole feature hinges on, matching pkg/mcpserver's own
+// resolveFieldSuggestions posture — that the suggestion is logged only,
+// never applied to cfg: the detector still skips, EndpointTemplate stays
+// blank, and the operator has to copy the value into the form themselves.
+func TestFillReconFields_IDOR_ZeroCandidates_LLMFallbackSuggestsEndpoint_LoggedNotApplied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"suggested_value\":\"/api/orders/{{id}}\",\"rationale\":\"common REST pattern\"}"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("HACKERFIVE_LOCAL_MODEL_URL", srv.URL)
+	t.Setenv("OPENROUTER_API_KEY", "")
+
+	job := newTestJob("job1")
+	job.SetReconResult(&recon.ReconResult{})
+
+	cfg := scanner.Config{
+		Targets:     []string{"https://example.com"},
+		Concurrency: 10,
+		RateLimit:   10,
+		Detector:    "idor",
+		AuthToken:   "tok",
+	}
+
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
+
+	assert.Empty(t, got, "an LLM-suggested endpoint must never be auto-applied — the detector still skips")
+	logs := logMessages(job)
+	assert.True(t, containsSubstring(logs, "idor: skipped"), "logs: %v", logs)
+	assert.True(t, containsSubstring(logs, "LLM fallback suggests"), "logs: %v", logs)
+	assert.True(t, containsSubstring(logs, "/api/orders/{{id}}"), "logs: %v", logs)
+	assert.True(t, containsSubstring(logs, "not applied automatically"), "logs: %v", logs)
 }
 
 func TestFillReconFields_IDOR_OneCandidate_AutoFills(t *testing.T) {
@@ -618,7 +660,7 @@ func TestFillReconFields_IDOR_OneCandidate_AutoFills(t *testing.T) {
 		AuthToken:   "tok",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "/orders/{{id}}", got[0].EndpointTemplate)
@@ -644,13 +686,14 @@ func TestFillReconFields_IDOR_OneCandidate_AutoFills_NoToken(t *testing.T) {
 		Detector:    "idor",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1, "logs: %v", logMessages(job))
 	assert.Equal(t, "/orders/{{id}}", got[0].EndpointTemplate)
 }
 
 func TestFillReconFields_IDOR_MultipleCandidates_SkipsWithoutAutoPick(t *testing.T) {
+	forceNoLLMTier(t)
 	job := newTestJob("job1")
 	job.SetReconResult(&recon.ReconResult{
 		Endpoints: []recon.EndpointFact{
@@ -667,7 +710,7 @@ func TestFillReconFields_IDOR_MultipleCandidates_SkipsWithoutAutoPick(t *testing
 		AuthToken:   "tok",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	assert.Empty(t, got)
 	assert.True(t, containsSubstring(logMessages(job), "recon-derived candidates found, none auto-selected"), "logs: %v", logMessages(job))
@@ -688,7 +731,7 @@ func TestFillReconFields_IDOR_UserTypedEndpoint_NeverOverwritten(t *testing.T) {
 		EndpointTemplate: "/manual/{{id}}",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "/manual/{{id}}", got[0].EndpointTemplate, "a user-typed value must never be overwritten even when a recon candidate also exists")
@@ -696,6 +739,7 @@ func TestFillReconFields_IDOR_UserTypedEndpoint_NeverOverwritten(t *testing.T) {
 }
 
 func TestFillReconFields_Authbypass_ZeroCandidates_SkipsWithLogLine(t *testing.T) {
+	forceNoLLMTier(t)
 	job := newTestJob("job1")
 	job.SetReconResult(&recon.ReconResult{})
 
@@ -707,7 +751,7 @@ func TestFillReconFields_Authbypass_ZeroCandidates_SkipsWithLogLine(t *testing.T
 		AuthToken:   "tok",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	assert.Empty(t, got)
 	assert.True(t, containsSubstring(logMessages(job), "authbypass: skipped"), "logs: %v", logMessages(job))
@@ -731,7 +775,7 @@ func TestFillReconFields_Authbypass_FillsProtectedLoginLogoutIndependently(t *te
 		AuthToken:   "tok",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
 	assert.Equal(t, []string{"/admin"}, got[0].ProtectedPaths)
@@ -754,7 +798,7 @@ func TestFillReconFields_Authbypass_FillsProtectedPaths_NoToken(t *testing.T) {
 		Detector:    "authbypass",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1, "logs: %v", logMessages(job))
 	assert.Equal(t, []string{"/admin"}, got[0].ProtectedPaths)
@@ -775,7 +819,7 @@ func TestFillReconFields_Authbypass_UserTypedProtectedPaths_StillFillsBlankLogin
 		ProtectedPaths: []string{"/secret"},
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
 	assert.Equal(t, []string{"/secret"}, got[0].ProtectedPaths, "a user-typed value must never be overwritten")
@@ -793,7 +837,7 @@ func TestFillReconFields_SSRF_ZeroCandidates_SkipsWithLogLine(t *testing.T) {
 		Detector:    "ssrf",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	assert.Empty(t, got)
 	assert.True(t, containsSubstring(logMessages(job), "ssrf: skipped"), "logs: %v", logMessages(job))
@@ -815,7 +859,7 @@ func TestFillReconFields_SSRF_CandidatesFillEveryMatch_NoAmbiguity(t *testing.T)
 		Detector:    "ssrf",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
 	assert.ElementsMatch(t, []string{"url", "webhook"}, got[0].SSRFParams, "unlike idor's single-endpoint choice, every recon-derived candidate is directly usable — no ambiguity to resolve")
@@ -836,7 +880,7 @@ func TestFillReconFields_SSRF_UserTypedParams_NeverOverwritten(t *testing.T) {
 		SSRFParams:  []string{"manual_param"},
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
 	assert.Equal(t, []string{"manual_param"}, got[0].SSRFParams, "a user-typed value must never be overwritten even when a recon candidate also exists")
@@ -851,6 +895,7 @@ func TestFillReconFields_SSRF_UserTypedParams_NeverOverwritten(t *testing.T) {
 // rather than failing outright, same as
 // TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables's pattern.
 func TestStartLaunch_IDORBlankEndpoint_RealReconFindsNoCandidate_SkipsAndJobStillCompletes(t *testing.T) {
+	forceNoLLMTier(t)
 	ts, _ := newTestServerHandlers(t)
 
 	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -922,7 +967,7 @@ func TestFillReconFields_Misconfig_PassesThroughUnmodified(t *testing.T) {
 		Detector:    "misconfig",
 	}
 
-	got := fillReconFields(job, []scanner.Config{cfg})
+	got := fillReconFields(context.Background(), job, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
 	assert.Equal(t, cfg, got[0])

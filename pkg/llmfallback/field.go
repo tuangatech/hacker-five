@@ -50,3 +50,19 @@ func (c *Client) ResolveField(ctx context.Context, detector, field string, candi
 	}
 	return FieldDecision{EscalateToHuman: reason}, cost, nil
 }
+
+// ResolveFieldMiss wraps ResolveField with the fb==nil/call-failure
+// handling every caller needs. Always returns a FieldDecision with either
+// SuggestedValue or EscalateToHuman set. cost is always 0 today (field
+// resolution is local-tier only, see ResolveField's own doc comment) but
+// returned so a spend-tracking caller doesn't need a second code path.
+func ResolveFieldMiss(ctx context.Context, fb *Client, fbErr error, detector, field string, candidates []string) (FieldDecision, float64) {
+	if fb == nil {
+		return FieldDecision{EscalateToHuman: fmt.Sprintf("LLM fallback unavailable (%v)", fbErr)}, 0
+	}
+	decision, cost, err := fb.ResolveField(ctx, detector, field, candidates)
+	if err != nil {
+		return FieldDecision{EscalateToHuman: fmt.Sprintf("LLM fallback call failed: %v", err)}, cost
+	}
+	return decision, cost
+}

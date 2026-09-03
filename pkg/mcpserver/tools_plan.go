@@ -258,21 +258,13 @@ func resolveFieldSuggestions(ctx context.Context, result *recon.ReconResult, fb 
 // genuine I4 field-suggestion miss — see resolveFieldSuggestions) via the
 // local-tier-only, low-stakes treatment ResolveField itself implements.
 func resolveOneFieldMiss(ctx context.Context, fb *llmfallback.Client, fbErr error, tree *agenttask.PlanTree, detector, field string, candidates []string, escalations *[]string) *agenttask.FieldSuggestion {
-	if fb == nil {
-		*escalations = append(*escalations, fmt.Sprintf("%s.%s: LLM fallback unavailable (%v)", detector, field, fbErr))
-		return &agenttask.FieldSuggestion{Detector: detector, Field: field, Candidates: candidates, EscalateToHuman: fmt.Sprintf("LLM fallback unavailable (%v)", fbErr)}
-	}
-	decision, cost, err := fb.ResolveField(ctx, detector, field, candidates)
+	decision, cost := llmfallback.ResolveFieldMiss(ctx, fb, fbErr, detector, field, candidates)
 	tree.AddSpend(cost)
-	if err != nil {
-		*escalations = append(*escalations, fmt.Sprintf("%s.%s: LLM fallback call failed: %v", detector, field, err))
-		return &agenttask.FieldSuggestion{Detector: detector, Field: field, Candidates: candidates, EscalateToHuman: err.Error()}
+	if decision.EscalateToHuman != "" {
+		*escalations = append(*escalations, fmt.Sprintf("%s.%s: %s", detector, field, decision.EscalateToHuman))
+		return &agenttask.FieldSuggestion{Detector: detector, Field: field, Candidates: candidates, EscalateToHuman: decision.EscalateToHuman}
 	}
-	if decision.SuggestedValue != "" {
-		return &agenttask.FieldSuggestion{Detector: detector, Field: field, SuggestedValue: decision.SuggestedValue, Rationale: decision.Rationale, Candidates: candidates}
-	}
-	*escalations = append(*escalations, fmt.Sprintf("%s.%s: %s", detector, field, decision.EscalateToHuman))
-	return &agenttask.FieldSuggestion{Detector: detector, Field: field, Candidates: candidates, EscalateToHuman: decision.EscalateToHuman}
+	return &agenttask.FieldSuggestion{Detector: detector, Field: field, SuggestedValue: decision.SuggestedValue, Rationale: decision.Rationale, Candidates: candidates}
 }
 
 func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations []string) string {
