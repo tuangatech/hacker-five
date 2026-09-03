@@ -101,6 +101,30 @@ func TestAuthBypassMissingAuth_NoFinding(t *testing.T) {
 	assert.Empty(t, withPrefix(findings, "authbypass-missing-auth-"))
 }
 
+// TestAuthBypassMissingAuth_TrailingSlashTarget_NoDoubleSlash guards a real
+// bug found live 2026-09-04: a Web UI-submitted target carrying its own
+// trailing slash (e.g. "https://example.com/") produced a Finding.Target
+// like "https://example.com//admin" once concatenated with a
+// leading-slash-prefixed protectedPaths entry.
+func TestAuthBypassMissingAuth_TrailingSlashTarget_NoDoubleSlash(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL+"/", "", "", []string{"/admin"})
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "authbypass-missing-auth-")
+	require.Len(t, got, 1)
+	assert.Equal(t, srv.URL+"/admin", got[0].Target)
+}
+
 func TestAuthBypassJWTAlgNone_Hit(t *testing.T) {
 	owner := signedJWT(t, "realsecret")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

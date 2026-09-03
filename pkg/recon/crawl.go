@@ -82,6 +82,7 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 		seedHosts[hostOnly(s)] = true
 	}
 
+	var authCandidates []EndpointFact
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -119,7 +120,56 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 		// along, this struct just never decoded it, silently discarding a
 		// real signal authbypass's recon-derived protected-path suggestion
 		// depends on.
-		agg.addEndpoint(EndpointFact{URL: rec.Request.Endpoint, Method: method, StatusCode: rec.Response.StatusCode, Source: "katana-crawl", Confidence: ConfidenceMedium})
+		ef := EndpointFact{URL: rec.Request.Endpoint, Method: method, StatusCode: rec.Response.StatusCode, Source: "katana-crawl", Confidence: ConfidenceMedium}
+		if ef.StatusCode == http.StatusUnauthorized || ef.StatusCode == http.StatusForbidden {
+			// Held back for verifyAuthCandidates rather than added directly
+			// — see its own doc comment for why a single crawl-time 401/403
+			// isn't trusted on its own.
+			authCandidates = append(authCandidates, ef)
+			continue
+		}
+		agg.addEndpoint(ef)
+	}
+
+	r.verifyAuthCandidates(waveCtx, agg, authCandidates)
+}
+
+// verifyAuthCandidates re-issues one direct GET per katana-observed
+// 401/403 candidate before trusting it as evidence of real access control
+// — a single crawl-time observation can come from bot-protection/a WAF
+// blocking the crawler rather than the target's own auth logic. Found
+// live, 2026-09-04: a real target's "/giftcard/" (a public redirect to a
+// third-party gift-card storefront, no auth wall at all) got a 401 during
+// the katana crawl, was trusted as "protected," and produced a false
+// authbypass "missing auth" finding once the deterministic detector
+// reasonably found it reachable unauthenticated. Only kept — at
+// ConfidenceHigh, up from katana-crawl's own ConfidenceMedium, since this
+// is now an independently reproduced signal rather than a single
+// observation — when the same status code reproduces; dropped otherwise.
+// Cost is bounded to the (typically small) subset of a crawl that actually
+// hit 401/403, not the whole crawl.
+func (r *Recon) verifyAuthCandidates(ctx context.Context, agg *aggregator, candidates []EndpointFact) {
+	for _, ef := range candidates {
+		host := hostOnly(ef.URL)
+		if r.hostErrors.ShouldSkip(host) {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ef.URL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := r.client.Do(req)
+		if err != nil {
+			r.hostErrors.RecordError(host)
+			continue
+		}
+		r.hostErrors.RecordSuccess(host)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == ef.StatusCode {
+			ef.Confidence = ConfidenceHigh
+			agg.addEndpoint(ef)
+		}
 	}
 }
 

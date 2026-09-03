@@ -158,7 +158,7 @@ func (d *Detector) checkMissingAuth(ctx context.Context, target, host, _, _ stri
 			Type:        "authbypass",
 			Severity:    "high",
 			Confidence:  "high",
-			Target:      target + path,
+			Target:      req.URL.String(),
 			Description: fmt.Sprintf("%s returned status 200 with no Authorization header at all — endpoint accepts unauthenticated requests", path),
 			Evidence: map[string]string{
 				"path":     path,
@@ -197,7 +197,7 @@ func (d *Detector) checkJWTAlgNone(ctx context.Context, target, host, ownerToken
 				Type:        "authbypass",
 				Severity:    "critical",
 				Confidence:  "high",
-				Target:      target + path,
+				Target:      req.URL.String(),
 				Description: fmt.Sprintf("%s accepted a JWT tampered with the %q bypass — the server does not verify the token's signature", path, variant),
 				Evidence: map[string]string{
 					"path":     path,
@@ -371,7 +371,7 @@ func (d *Detector) checkTokenReuse(ctx context.Context, target, host, ownerToken
 			Type:        "authbypass",
 			Severity:    "medium",
 			Confidence:  "low",
-			Target:      target + path,
+			Target:      otherReq.URL.String(),
 			Description: fmt.Sprintf("%s returned an identical response for two unrelated accounts' tokens — endpoint may not differentiate by account; needs manual triage, since a legitimately shared/non-personalized endpoint looks the same", path),
 			Evidence: map[string]string{
 				"path":     path,
@@ -424,7 +424,7 @@ func (d *Detector) checkBrokenSession(ctx context.Context, target, host, ownerTo
 		Type:        "authbypass",
 		Severity:    "high",
 		Confidence:  "high",
-		Target:      target + path,
+		Target:      req.URL.String(),
 		Description: fmt.Sprintf("%s still accepted the token after logging out via %s — the session/token was not invalidated", path, logoutPath),
 		Evidence: map[string]string{
 			"logout_path": logoutPath,
@@ -446,7 +446,13 @@ func (d *Detector) doRequest(ctx context.Context, method, target, host, path, to
 // is non-empty; ignored otherwise. Callers with a fixed body shape (like
 // checkBrokenSession's bodyless logout) can pass "", "".
 func (d *Detector) doRequestBody(ctx context.Context, method, target, host, path, token, reqBody, contentType string) (*http.Request, *http.Response, []byte, error) {
-	fullURL := target + path
+	// TrimSuffix avoids a double slash when target itself carries a
+	// trailing one (e.g. a Web UI-submitted "https://example.com/") — path
+	// is always leading-slash-prefixed (see pkg/recon/suggest.go's
+	// endpointPath), so target's own trailing slash is the only source of
+	// duplication. Found live, 2026-09-04: a real finding's Target rendered
+	// "https://www.thriftbooks.com//giftcard/".
+	fullURL := strings.TrimSuffix(target, "/") + path
 	var bodyReader io.Reader
 	if reqBody != "" {
 		bodyReader = strings.NewReader(reqBody)
