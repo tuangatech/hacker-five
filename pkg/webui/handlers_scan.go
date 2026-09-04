@@ -25,6 +25,13 @@ const (
 	defaultTimeout     = 30 * time.Second
 )
 
+// llmAssistedExecConcurrency mirrors pkg/mcpserver's own constant of the
+// same name — caps how many use_existing_tag/LLM-resolved plan leaves
+// planexec.RunPlan dispatches in parallel (doc15 Step 2's Done note: this
+// tier split is about resolution provenance, not "deterministic vs.
+// currently-costing-LLM" — execution itself never calls an LLM either way).
+const llmAssistedExecConcurrency = 3
+
 // defaultOOBServers mirrors cmd/hackerfive/scan.go's --oob-server default
 // (ssrf.DefaultOOBServers) — same source of truth, joined for the form's
 // plain-text field. A user who wants no OOB check just clears the field
@@ -53,7 +60,38 @@ func (h *handlers) scanStatus(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	executeTemplate(w, h.tmpl, "scan_status.html", h.snapshotData(job))
+	token, err := csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	executeTemplate(w, h.tmpl, "scan_status.html", h.snapshotData(job, token))
+}
+
+// cancelScan is POST /scans/{id}/cancel — the doc15 Step 4 kill switch,
+// reachable from every running job's own progress fragment (New Scan,
+// Guided Scan, and a plan-execution run alike, since all three render
+// fragment_progress). Cancels the job's own context and appends an
+// explanatory log line; the job's own goroutine observes ctx.Done() on its
+// next blocking call and calls MarkDone itself (StatusCanceled — see
+// Job.MarkDone), which is what actually stops the SSE stream and finalizes
+// the badge. This handler just acks the click with the current snapshot;
+// it does not wait for the job to actually finish unwinding.
+func (h *handlers) cancelScan(w http.ResponseWriter, r *http.Request) {
+	job, ok := h.store.Get(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	job.AppendLog("info", "cancel requested by operator")
+	job.Cancel()
+
+	snap := job.Snapshot()
+	executeTemplate(w, h.tmpl, "fragment_progress", ProgressData{
+		Status: snap.Status, Phase: snap.Phase, Err: snap.Err,
+		Waves: snap.Waves, DetectorSteps: snap.DetectorSteps,
+		Target: job.Target, JobID: job.ID, CSRFToken: readCSRFCookie(r),
+	})
 }
 
 // scanCatchup is GET /scans/{id}/catchup — fired once by the browser's own
@@ -72,7 +110,7 @@ func (h *handlers) scanCatchup(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := job.Snapshot()
 	executeTemplate(w, h.tmpl, "fragment_catchup", CatchupData{
-		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target}),
+		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: readCSRFCookie(r)}),
 		ReconHTML:    renderFragment(h.tmpl, "fragment_recon_results", newReconView(snap.ReconResult)),
 	})
 }
@@ -116,8 +154,8 @@ func (h *handlers) scanEvents(w http.ResponseWriter, r *http.Request) {
 	// A job that's already finished by the time a client connects (or
 	// reconnects) needs no live stream — send the final state once and
 	// close, rather than holding a connection open for nothing.
-	if snap := job.Snapshot(); snap.Status == StatusDone || snap.Status == StatusFailed {
-		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target})}); err == nil {
+	if snap := job.Snapshot(); snap.Status == StatusDone || snap.Status == StatusFailed || snap.Status == StatusCanceled {
+		if err := writeSSEEvent(w, Event{Type: EventDone, HTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: readCSRFCookie(r)})}); err == nil {
 			flusher.Flush()
 		}
 		return
@@ -182,7 +220,7 @@ func writeSSEEvent(w http.ResponseWriter, ev Event) error {
 // hx-swap="beforeend" on #logs; the page auto-scrolls #logs to its bottom
 // on load and on every new line so the newest entry stays visible without
 // the reversed order findings needs.
-func (h *handlers) snapshotData(job *Job) ScanStatusData {
+func (h *handlers) snapshotData(job *Job, csrfTok string) ScanStatusData {
 	snap := job.Snapshot()
 
 	var findingsHTML strings.Builder
@@ -198,9 +236,10 @@ func (h *handlers) snapshotData(job *Job) ScanStatusData {
 		JobID:           job.ID,
 		Target:          job.Target,
 		Snapshot:        snap,
+		CSRFToken:       csrfTok,
 		FindingRowsHTML: template.HTML(findingsHTML.String()), //nolint:gosec // built only from our own already-escaped fragment renders, not raw input
 		LogLinesHTML:    template.HTML(logsHTML.String()),     //nolint:gosec // same
-		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target}),
+		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: csrfTok}),
 	}
 }
 

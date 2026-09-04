@@ -65,6 +65,8 @@ type ProgressData struct {
 	Waves         []WaveStatus
 	DetectorSteps []WaveStatus
 	Target        string // this job's target — only used to build the "New scan" link once Status is terminal
+	JobID         string // this job's ID — the Cancel button's POST target (doc15 Step 4 kill switch)
+	CSRFToken     string // the Cancel button's hidden csrf_token field
 }
 
 // CatchupData is fragment_catchup.html's input — an out-of-band re-sync of
@@ -90,9 +92,10 @@ type CatchupData struct {
 // page-load/reload time, per doc12's reconnect design (render this first,
 // SSE only streams what happens after).
 type ScanStatusData struct {
-	JobID    string
-	Target   string
-	Snapshot Snapshot
+	JobID     string
+	Target    string
+	Snapshot  Snapshot
+	CSRFToken string // scan_status.html's own hidden forms (e.g. a Plan Preview link needs none, but ProgressHTML's embedded Cancel form does — kept here too for any future direct use)
 
 	FindingRowsHTML template.HTML
 	LogLinesHTML    template.HTML
@@ -159,8 +162,9 @@ type PlanPreviewData struct {
 	Tree      *agenttask.PlanTree
 	IndexWarn string // non-empty when templates/index.json couldn't be loaded — degraded, not fatal
 
-	Escalations   []string // leaves an LLM-fallback resolve pass couldn't resolve — see llmfallback.ResolveTreeLeaves
-	SpendUSD      float64  // Tree.SpendSoFar() — zero until a resolve pass has run
-	HasUnresolved bool     // drives whether the "Resolve via LLM fallback" button renders
-	CSRFToken     string
+	Escalations     []string // leaves an LLM-fallback resolve pass couldn't resolve — see llmfallback.ResolveTreeLeaves
+	SpendUSD        float64  // Tree.SpendSoFar() — zero until a resolve pass has run
+	SpendCeilingUSD float64  // Tree.SpendCeilingUSD — the budget gauge's max (doc15 Step 4); zero means unset/no ceiling, gauge hidden
+	HasUnresolved   bool     // drives whether the "Resolve via LLM fallback" button renders
+	CSRFToken       string
 }

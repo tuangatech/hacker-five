@@ -2,6 +2,7 @@
 <code>{{.Target}}</code>{{if .Detector}} &mdash; <strong>{{.Detector}}</strong>{{end}}
 {{if .Status}}<span class="status-badge{{if eq .Status "unresolved"}} badge-unresolved{{end}}">{{.Status}}</span>{{end}}
 {{if .Confidence}}<span class="status-badge">confidence: {{.Confidence}}</span>{{end}}
+{{if and .Detector (not .Children)}} <label><input type="checkbox" name="include" value="{{.ID}}" checked form="plan-execute-form"> run this leaf</label>{{end}}
 {{if .Rationale}}<div class="rationale">{{.Rationale}}</div>{{end}}
 {{if .Children}}<ul>{{range .Children}}{{template "fragment_plan_node" .}}{{end}}</ul>{{end}}
 </li>

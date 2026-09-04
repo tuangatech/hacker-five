@@ -2,7 +2,8 @@
 {{if .IndexWarn}}<div class="error">{{.IndexWarn}}</div>{{end}}
 {{if .Escalations}}<div class="error"><strong>LLM fallback escalations:</strong><ul>{{range .Escalations}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 {{if .Tree}}
-<p>LLM-fallback spend so far: ${{printf "%.4f" .SpendUSD}}</p>
+<p>LLM-fallback spend so far: ${{printf "%.4f" .SpendUSD}}{{if .SpendCeilingUSD}} of ${{printf "%.2f" .SpendCeilingUSD}} ceiling
+<progress value="{{printf "%.4f" .SpendUSD}}" max="{{printf "%.2f" .SpendCeilingUSD}}"></progress>{{end}}</p>
 {{if .HasUnresolved}}
 <form hx-post="/plan-preview/resolve?job={{.JobID}}" hx-target="#plan-tree" hx-indicator="#resolve-indicator">
 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -10,13 +11,19 @@
 <span id="resolve-indicator" class="htmx-indicator">Resolving…</span>
 </form>
 {{end}}
+<form id="plan-execute-form" action="/plan-preview/execute?job={{.JobID}}" method="post">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<button type="submit" name="action" value="approve">✅ Approve &amp; run selected leaves</button>
+<button type="submit" name="action" value="reject">🚫 Reject (run nothing)</button>
+<p><em>Approving takes you to this job's status page, where results stream in live — the same Cancel control that page already has works as this run's kill switch too.</em></p>
+</form>
 {{with .Tree.Root}}<ul>{{template "fragment_plan_node" .}}</ul>{{end}}
 {{end}}
 {{end}}
 {{define "plan_preview.html"}}{{template "header" .}}
 <h1>Plan Preview</h1>
 <p>Recon job: <a href="/recon/{{.JobID}}">{{.JobID}}</a> — target: <code>{{.Target}}</code></p>
-<p><em>Read-only for execution — "Resolve via LLM fallback" only classifies or drafts a template, it never runs anything against the live target. Approve/execute controls arrive with Phase 6 Step 4.</em></p>
+<p><em>Uncheck a leaf's "run this leaf" box to exclude it, then Approve to dispatch the rest against the live target — same executor an MCP client's own approved <code>plan</code> tool call uses.</em></p>
 
 <div id="plan-tree">{{template "fragment_plan_tree" .}}</div>
 {{template "footer" .}}

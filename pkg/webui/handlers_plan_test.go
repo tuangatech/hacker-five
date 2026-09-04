@@ -60,7 +60,13 @@ func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t 
 	assert.Contains(t, html, "confidence: low")
 	assert.Contains(t, html, "unresolved")
 	assert.Contains(t, html, "badge-unresolved")
-	assert.Contains(t, html, "Read-only")
+	// doc15 Step 4: the page is no longer read-only-for-execution — it now
+	// carries real Approve/Reject controls plus a per-leaf "run this leaf"
+	// checkbox, submitting to POST /plan-preview/execute.
+	assert.Contains(t, html, `action="/plan-preview/execute?job=job1"`)
+	assert.Contains(t, html, "Approve")
+	assert.Contains(t, html, "Reject")
+	assert.Contains(t, html, `name="include"`)
 }
 
 func TestPlanPreview_JobNotDone_Returns409(t *testing.T) {

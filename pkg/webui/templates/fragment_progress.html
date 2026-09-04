@@ -1,4 +1,8 @@
-{{define "fragment_progress"}}<span class="status-badge{{if .Phase}} phase-badge{{end}}">{{.Status}}{{if .Phase}}: {{.Phase}}{{end}}</span>{{if .Err}} <span class="error">{{.Err}}</span>{{end}}{{if or (eq .Status "done") (eq .Status "failed")}} <a href="/?target={{.Target | urlquery}}" class="icon-btn" title="Start a new scan against the same target" aria-label="Start a new scan against the same target">🔄 New scan</a>{{end}}
+{{define "fragment_progress"}}<span class="status-badge{{if .Phase}} phase-badge{{end}}">{{.Status}}{{if .Phase}}: {{.Phase}}{{end}}</span>{{if .Err}} <span class="error">{{.Err}}</span>{{end}}{{if or (eq .Status "done") (eq .Status "failed") (eq .Status "canceled")}} <a href="/?target={{.Target | urlquery}}" class="icon-btn" title="Start a new scan against the same target" aria-label="Start a new scan against the same target">🔄 New scan</a>{{end}}
+{{if or (eq .Status "queued") (eq .Status "running")}} <form action="/scans/{{.JobID}}/cancel" method="post" style="display:inline">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<button type="submit" class="icon-btn" title="Stop this run — no further detector/leaf calls are made" aria-label="Cancel this run">🛑 Cancel</button>
+</form>{{end}}
 {{if .Waves}}<div class="step-line">Recon: {{stepChain .Waves}}</div>{{end}}
 {{if .DetectorSteps}}<div class="step-line">Detectors: {{stepChain .DetectorSteps}}</div>{{end}}
 {{end}}

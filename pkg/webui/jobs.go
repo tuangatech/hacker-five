@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"context"
+	"errors"
 	"html/template"
 	"sync"
 	"time"
@@ -8,14 +10,16 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/scanner"
 )
 
 // Job statuses.
 const (
-	StatusQueued  = "queued"
-	StatusRunning = "running"
-	StatusDone    = "done"
-	StatusFailed  = "failed"
+	StatusQueued   = "queued"
+	StatusRunning  = "running"
+	StatusDone     = "done"
+	StatusFailed   = "failed"
+	StatusCanceled = "canceled" // set by Cancel — the kill switch (doc15 Step 4), distinct from an ordinary failure
 )
 
 // SSE event types — must match the sse-swap values doc12's htmx design uses.
@@ -94,6 +98,24 @@ type Job struct {
 	planTree        *agenttask.PlanTree
 	planEscalations []string
 
+	// execCfg is the shared scanner.Config template (Scope, AuthToken,
+	// RateLimit/Concurrency, ExtraHeaders, AllowWrites, TemplatePaths — see
+	// SetExecConfig's caller) this job's own detector run started from,
+	// cached so POST /plan-preview/execute (doc15 Step 4) can dispatch a
+	// decision-engine-ranked leaf against the same target with the same
+	// scope/credentials the operator already approved at launch time,
+	// without asking them to re-enter anything on the Plan Preview page.
+	execCfg scanner.Config
+
+	// ctx/cancel are this job's own lifecycle context, derived from the
+	// server's baseCtx (see bindParentContext) — every long-running call a
+	// background job goroutine makes (recon, a detector run, a plan-
+	// execution dispatch) should use ctx, not baseCtx directly, so Cancel
+	// (the doc15 Step 4 kill switch) actually stops it rather than only
+	// hiding it in the UI.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	renderFinding  func(detectors.Finding) template.HTML
 	renderLog      func(LogEntry) template.HTML
 	renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML
@@ -101,16 +123,81 @@ type Job struct {
 }
 
 func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML) *Job {
+	// A placeholder context.Background()-rooted context, immediately
+	// replaced by bindParentContext once a real caller (startLaunch) has
+	// h.baseCtx to derive from — kept here rather than making ctx/cancel
+	// required constructor args so the many existing test call sites that
+	// only care about rendering (newJob(id, target, ...)) don't all need
+	// updating for a concern (server-shutdown/kill-switch propagation)
+	// they don't exercise.
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Job{
 		ID:             id,
 		Target:         target,
 		CreatedAt:      time.Now(),
 		status:         StatusQueued,
+		ctx:            ctx,
+		cancel:         cancel,
 		renderFinding:  renderFinding,
 		renderLog:      renderLog,
 		renderProgress: renderProgress,
 		renderRecon:    renderRecon,
 	}
+}
+
+// bindParentContext replaces j's placeholder context with one derived from
+// parent (the server's own baseCtx) — called once, right after newJob, by
+// any caller that starts a real background job (startLaunch). The
+// placeholder's cancel is invoked first purely for bookkeeping (it has no
+// goroutines waiting on it yet); this is not itself a cancellation of j.
+func (j *Job) bindParentContext(parent context.Context) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.cancel()
+	j.ctx, j.cancel = context.WithCancel(parent)
+}
+
+// Ctx is this job's own lifecycle context — every long-running call a
+// background job goroutine makes should use this, not the server's baseCtx
+// directly, so Cancel actually stops it.
+func (j *Job) Ctx() context.Context {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.ctx
+}
+
+// Cancel is the doc15 Step 4 kill switch: cancels this job's own context.
+// Any in-flight recon/scanner.Engine/planexec.RunPlan call reading Ctx()
+// observes ctx.Done() on its next blocking operation and returns promptly;
+// MarkDone then records StatusCanceled rather than StatusFailed once the
+// job's own goroutine unwinds and calls it. Safe to call on an
+// already-finished job (a no-op past that point — nothing is still reading
+// ctx.Done() to react to it).
+func (j *Job) Cancel() {
+	j.mu.Lock()
+	cancel := j.cancel
+	j.mu.Unlock()
+	cancel()
+}
+
+// SetExecConfig caches cfg as this job's shared scanner.Config template —
+// see execCfg's own doc comment.
+func (j *Job) SetExecConfig(cfg scanner.Config) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.execCfg = cfg
+}
+
+// ExecConfig returns this job's cached shared scanner.Config template, the
+// zero value if SetExecConfig was never called (a job created outside the
+// normal startLaunch path, e.g. in a test) — planexec.RunPlan's own
+// per-leaf field gating (missingRequiredField) degrades a zero-value config
+// to "every recon-derived-field leaf skipped, with a clear reason," not a
+// crash.
+func (j *Job) ExecConfig() scanner.Config {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.execCfg
 }
 
 // Snapshot is everything GET /scans/{id} needs to render the job's current
@@ -341,10 +428,18 @@ func (j *Job) SetPlanTree(tree *agenttask.PlanTree, escalations []string) {
 // renders the final state directly with no SSE needed.
 func (j *Job) MarkDone(err error) {
 	j.mu.Lock()
-	if err != nil {
+	switch {
+	case err != nil && errors.Is(err, context.Canceled):
+		// The operator's own kill switch (Cancel), not a real failure —
+		// StatusCanceled reads correctly in the UI instead of showing a
+		// raw "context canceled" error. j.err deliberately stays nil: the
+		// "cancel requested by operator" log line already explains why,
+		// same info without an alarming error badge.
+		j.status = StatusCanceled
+	case err != nil:
 		j.status = StatusFailed
 		j.err = err
-	} else {
+	default:
 		j.status = StatusDone
 	}
 	j.phase = ""

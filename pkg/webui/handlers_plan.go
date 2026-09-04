@@ -52,14 +52,15 @@ func (h *handlers) planPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	executeTemplate(w, h.tmpl, "plan_preview.html", PlanPreviewData{
-		JobID:         job.ID,
-		Target:        snap.ReconResult.Target, // the scheme-normalized target recon actually ran against, not job.Target's raw form input
-		Tree:          tree,
-		IndexWarn:     indexWarn,
-		Escalations:   escalations,
-		SpendUSD:      tree.SpendSoFar(),
-		HasUnresolved: hasUnresolvedLeaf(tree),
-		CSRFToken:     token,
+		JobID:           job.ID,
+		Target:          snap.ReconResult.Target, // the scheme-normalized target recon actually ran against, not job.Target's raw form input
+		Tree:            tree,
+		IndexWarn:       indexWarn,
+		Escalations:     escalations,
+		SpendUSD:        tree.SpendSoFar(),
+		SpendCeilingUSD: tree.SpendCeilingUSD,
+		HasUnresolved:   hasUnresolvedLeaf(tree),
+		CSRFToken:       token,
 	})
 }
 
@@ -112,14 +113,15 @@ func (h *handlers) resolvePlanLeaves(w http.ResponseWriter, r *http.Request) {
 	job.SetPlanTree(tree, escalations)
 
 	executeTemplate(w, h.tmpl, "fragment_plan_tree", PlanPreviewData{
-		JobID:         job.ID,
-		Target:        snap.ReconResult.Target,
-		Tree:          tree,
-		IndexWarn:     indexWarn,
-		Escalations:   escalations,
-		SpendUSD:      tree.SpendSoFar(),
-		HasUnresolved: hasUnresolvedLeaf(tree),
-		CSRFToken:     token,
+		JobID:           job.ID,
+		Target:          snap.ReconResult.Target,
+		Tree:            tree,
+		IndexWarn:       indexWarn,
+		Escalations:     escalations,
+		SpendUSD:        tree.SpendSoFar(),
+		SpendCeilingUSD: tree.SpendCeilingUSD,
+		HasUnresolved:   hasUnresolvedLeaf(tree),
+		CSRFToken:       token,
 	})
 }
 

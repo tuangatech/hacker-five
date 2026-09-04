@@ -65,30 +65,8 @@ func TestPlanTool_InvalidDepth_Rejected(t *testing.T) {
 	}
 }
 
-func TestMissingRequiredField(t *testing.T) {
-	cases := []struct {
-		name     string
-		detector string
-		cfg      scanner.Config
-		wantMiss bool
-	}{
-		{"idor missing endpoint", "idor", scanner.Config{}, true},
-		{"idor has endpoint", "idor", scanner.Config{EndpointTemplate: "/x/{{id}}"}, false},
-		{"authbypass missing protected paths", "authbypass", scanner.Config{}, true},
-		{"authbypass has protected paths", "authbypass", scanner.Config{ProtectedPaths: []string{"/admin"}}, false},
-		{"ssrf missing params", "ssrf", scanner.Config{}, true},
-		{"ssrf has params", "ssrf", scanner.Config{SSRFParams: []string{"url"}}, false},
-		{"misconfig has no requirement", "misconfig", scanner.Config{}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := missingRequiredField(tc.detector, tc.cfg) != ""
-			if got != tc.wantMiss {
-				t.Fatalf("got miss=%v, want %v", got, tc.wantMiss)
-			}
-		})
-	}
-}
+// missingRequiredField's own tests moved to pkg/planexec/executor_test.go
+// (Phase 6 Step 4) alongside the function itself.
 
 // applyLeafDecision/writeProposedTemplate moved to pkg/llmfallback (doc15
 // Step 2's 2026-09-03 addendum item 2) — their tests moved with them, to

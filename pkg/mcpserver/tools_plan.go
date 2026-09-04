@@ -13,6 +13,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
+	"github.com/tuangatech/hacker-five/pkg/planexec"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
@@ -191,7 +192,20 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 	// approval) is vanishingly unlikely to matter in practice, and either
 	// way this is the freshest index available at dispatch time.
 	templateIndex, _ := templatesync.LoadIndex(defaultTemplateIndexPath)
-	findings, logs, skipped, err := RunPlan(ctx, req.Session, token, pending.tree, pending.baseCfg, templateIndex)
+	notify := func(target, message string) {
+		if token == nil {
+			return
+		}
+		_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+			ProgressToken: token,
+			Message:       target + ": " + message,
+		})
+	}
+	findings, logs, skipped, err := planexec.RunPlan(ctx, pending.tree, pending.baseCfg, templateIndex, planexec.ExecOptions{
+		Notify:         notify,
+		DetConcurrency: defaultConcurrency,
+		LLMConcurrency: llmAssistedExecConcurrency,
+	})
 	out.Approved = true
 	out.Findings = findings
 	out.Logs = logs

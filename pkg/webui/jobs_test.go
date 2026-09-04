@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/scanner"
 )
 
 func noopFindingRender(f detectors.Finding) template.HTML { return template.HTML(f.ID) }
@@ -181,4 +184,87 @@ func TestJobStore_List_ReflectsLiveState(t *testing.T) {
 func TestJobStore_List_Empty(t *testing.T) {
 	store := newJobStore()
 	assert.Empty(t, store.List())
+}
+
+// TestJob_Cancel_CancelsCtx locks in the doc15 Step 4 kill switch's core
+// mechanism: Cancel() cancels whatever Ctx() a caller is holding, so a
+// long-running call blocked on it (recon, a detector run, planexec.RunPlan)
+// observes ctx.Done() and can return promptly.
+func TestJob_Cancel_CancelsCtx(t *testing.T) {
+	j := newTestJob("t-cancel")
+	ctx := j.Ctx()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("Ctx() must not be already canceled before Cancel is called")
+	default:
+	}
+
+	j.Cancel()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Cancel() must cancel the context Ctx() returned")
+	}
+}
+
+// TestJob_BindParentContext_CancelsWithParent confirms a job's context is
+// really derived from the server's baseCtx (bindParentContext), not just
+// its own independent one — cancelling the parent must cancel the job too,
+// the same guarantee server shutdown (ListenAndServe's own ctx) relies on.
+func TestJob_BindParentContext_CancelsWithParent(t *testing.T) {
+	j := newTestJob("t-bind")
+	parent, cancelParent := context.WithCancel(context.Background())
+	j.bindParentContext(parent)
+
+	ctx := j.Ctx()
+	cancelParent()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("cancelling the parent context must cancel the job's own Ctx()")
+	}
+}
+
+// TestJob_MarkDone_ContextCanceled_SetsStatusCanceled confirms MarkDone
+// distinguishes an operator-initiated Cancel from a real failure — a
+// context.Canceled error must render as StatusCanceled with no Err set
+// (the "cancel requested by operator" log line already explains why),
+// never as StatusFailed with an alarming raw error badge.
+func TestJob_MarkDone_ContextCanceled_SetsStatusCanceled(t *testing.T) {
+	j := newTestJob("t-markdone-canceled")
+
+	j.MarkDone(fmt.Errorf("leaf x: %w", context.Canceled))
+
+	snap := j.Snapshot()
+	assert.Equal(t, StatusCanceled, snap.Status)
+	assert.NoError(t, snap.Err)
+}
+
+// TestJob_MarkDone_OtherError_SetsStatusFailed confirms an ordinary error
+// still renders as StatusFailed, unchanged from before Cancel existed.
+func TestJob_MarkDone_OtherError_SetsStatusFailed(t *testing.T) {
+	j := newTestJob("t-markdone-failed")
+
+	j.MarkDone(errors.New("boom"))
+
+	snap := j.Snapshot()
+	assert.Equal(t, StatusFailed, snap.Status)
+	assert.Error(t, snap.Err)
+}
+
+// TestJob_ExecConfig_RoundTrips locks in SetExecConfig/ExecConfig's simple
+// cache contract — POST /plan-preview/execute reads back exactly what
+// startLaunch cached, including a zero-value default when nothing was ever
+// set (a job built outside the normal startLaunch path).
+func TestJob_ExecConfig_RoundTrips(t *testing.T) {
+	j := newTestJob("t-execcfg")
+
+	assert.Equal(t, scanner.Config{}, j.ExecConfig(), "a job with no SetExecConfig call must return the zero value, not panic")
+
+	cfg := scanner.Config{RateLimit: 42, ScopeFile: "scope.txt"}
+	j.SetExecConfig(cfg)
+	assert.Equal(t, cfg, j.ExecConfig())
 }

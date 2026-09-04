@@ -1,12 +1,20 @@
-package mcpserver
+// Package planexec dispatches an approved agenttask.PlanTree's leaves into
+// real pkg/scanner runs. Originally pkg/mcpserver's own executor.go (Phase 6
+// Step 2) — extracted here (Phase 6 Step 4) so pkg/webui's Plan Preview page
+// can dispatch the exact same tree an MCP client's elicitation-gated `plan`
+// tool call would, instead of only ever computing it and throwing the result
+// away (docs/follow-up.md's "Live Testing" LT-1). The MCP-specific pieces
+// (mcp.ServerSession progress notifications, the elicitation round trip
+// itself) stay in pkg/mcpserver — this package only knows about
+// agenttask/scanner/templatesync, plus a small, protocol-agnostic
+// ExecOptions callback surface both callers adapt to their own transport.
+package planexec
 
 import (
 	"context"
 	"fmt"
 	"strings"
 	"sync"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
@@ -23,10 +31,7 @@ import (
 // Config for. A leaf whose Detector is a raw template ID (registry.Resolve's
 // template-tag-match case, or an I4 use_existing_tag decision naming a
 // template rather than a built-in detector) is dispatched separately, as a
-// templates-only run — see RunPlan's eligibility loop and runLeaf, below
-// (doc15 Step 2 addendum, 2026-09-03 — this used to be skipped entirely,
-// matching pkg/webui's own still-informational-only treatment of the same
-// case; RunPlan is now the one place that gap is closed).
+// templates-only run — see RunPlan's eligibility loop and runLeaf, below.
 var recognizedDetectors = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
 }
@@ -39,6 +44,41 @@ type executionResult struct {
 	err      error
 }
 
+// ExecOptions configures one RunPlan call — every field is optional/nil-safe
+// except the two concurrency sizes, which a caller should always set
+// explicitly (a non-positive value falls back to 1 rather than panicking on
+// workerpool.New, but that's a degraded-not-ideal default, not a real tuning
+// choice).
+type ExecOptions struct {
+	// Notify, if set, is called with informational progress text as each
+	// dispatched leaf's engine reports it — mirrors what
+	// mcp.ServerSession.NotifyProgress carried before this package existed;
+	// pkg/mcpserver's own call site now builds that notification from this
+	// callback instead of RunPlan doing it directly.
+	Notify func(target, message string)
+	// OnFinding, if set, is called synchronously the instant a leaf's
+	// engine reports a real Finding — lets a caller stream results live
+	// (e.g. into a running webui Job's SSE feed) instead of waiting for
+	// RunPlan to return. Findings are still also collected into the
+	// returned slice regardless, so a caller with no live-streaming need
+	// (pkg/mcpserver, a single synchronous tool-call response) can leave
+	// this nil and just use the return value, unchanged from before.
+	OnFinding func(leaf *agenttask.PlanNode, f detectors.Finding)
+	// OnLog mirrors OnFinding for scanner.Engine's log lines.
+	OnLog func(leaf *agenttask.PlanNode, level, msg string)
+	// Excluded marks leaf IDs an operator deselected before approving (a
+	// webui Plan Preview "run this leaf" checkbox left unchecked) — skipped
+	// outright, reported in the returned skipped slice like any other skip
+	// reason, never silently dropped. nil/empty means nothing is excluded.
+	Excluded map[string]bool
+	// DetConcurrency/LLMConcurrency size the two dispatch tiers (R8-matched
+	// vs. use_existing_tag/LLM-resolved, not "deterministic vs. currently-
+	// costing-LLM" — see doc15 Step 2's Done note for the corrected tier
+	// semantics).
+	DetConcurrency int
+	LLMConcurrency int
+}
+
 // RunPlan walks tree's leaves and dispatches each eligible one to a real
 // scanner.Engine run, using baseCfg as the shared template (Scope,
 // AuthToken, EndpointTemplate, ProtectedPaths, SSRFParams, AllowWrites,
@@ -48,12 +88,18 @@ type executionResult struct {
 // Detector is either one of scanner's recognized built-in names, or a real
 // template ID/tag present in templateIndex — dispatched as a templates-only
 // run in that second case (runLeaf). draft_template and escalate_to_human
-// leaves, and any Detector matching neither a built-in name nor a real
-// template ID (a hallucination), are skipped (never executed this step,
-// per the Definition of Done's "never running against a live target
-// without separate human promotion"). Skipped leaves are reported via
-// skipped, not silently dropped.
-func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *agenttask.PlanTree, baseCfg scanner.Config, templateIndex []templatesync.Entry) (findings []detectors.Finding, logs []string, skipped []string, err error) {
+// leaves, any Detector matching neither a built-in name nor a real template
+// ID (a hallucination), and any leaf ID named in opts.Excluded are skipped
+// (never executed this step) — skipped leaves are reported via skipped, not
+// silently dropped.
+func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Config, templateIndex []templatesync.Entry, opts ExecOptions) (findings []detectors.Finding, logs []string, skipped []string, err error) {
+	if opts.DetConcurrency <= 0 {
+		opts.DetConcurrency = 1
+	}
+	if opts.LLMConcurrency <= 0 {
+		opts.LLMConcurrency = 1
+	}
+
 	knownTemplateIDs := make(map[string]bool, len(templateIndex))
 	for _, entry := range templateIndex {
 		knownTemplateIDs[entry.ID] = true
@@ -61,6 +107,10 @@ func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *a
 
 	var deterministic, llmAssisted []*agenttask.PlanNode
 	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if opts.Excluded[leaf.ID] {
+			skipped = append(skipped, fmt.Sprintf("%s: excluded by operator before approval", leaf.ID))
+			continue
+		}
 		eligible := recognizedDetectors[leaf.Detector] || (leaf.Detector != "" && knownTemplateIDs[leaf.Detector])
 		if !eligible {
 			if leaf.Detector != "" {
@@ -84,7 +134,7 @@ func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *a
 		for _, leaf := range batch {
 			leaf := leaf
 			_ = pool.Submit(func(ctx context.Context) error {
-				res := runLeaf(ctx, session, token, leaf, baseCfg)
+				res := runLeaf(ctx, leaf, baseCfg, opts)
 				mu.Lock()
 				findings = append(findings, res.findings...)
 				logs = append(logs, res.logs...)
@@ -101,11 +151,11 @@ func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *a
 		}
 	}
 
-	detPool := workerpool.New(ctx, defaultConcurrency, 2*defaultConcurrency)
+	detPool := workerpool.New(ctx, opts.DetConcurrency, 2*opts.DetConcurrency)
 	dispatch(detPool, deterministic)
 	detErrs := detPool.Wait()
 
-	llmPool := workerpool.New(ctx, llmAssistedExecConcurrency, 2*llmAssistedExecConcurrency)
+	llmPool := workerpool.New(ctx, opts.LLMConcurrency, 2*opts.LLMConcurrency)
 	dispatch(llmPool, llmAssisted)
 	llmErrs := llmPool.Wait()
 
@@ -158,11 +208,11 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 	return ""
 }
 
-func runLeaf(ctx context.Context, session *mcp.ServerSession, token any, leaf *agenttask.PlanNode, baseCfg scanner.Config) executionResult {
+func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Config, opts ExecOptions) executionResult {
 	cfg := baseCfg
 	cfg.Targets = []string{leaf.Target}
 
-	opts := scanner.ValidateOptions{
+	validateOpts := scanner.ValidateOptions{
 		SkipEndpointRequired:       true,
 		SkipProtectedPathsRequired: true,
 		SkipSSRFParamsRequired:     true,
@@ -181,31 +231,33 @@ func runLeaf(ctx context.Context, session *mcp.ServerSession, token any, leaf *a
 		// at a different directory.
 		cfg.Detector = ""
 		cfg.TemplateID = leaf.Detector
-		opts.SkipDetectorRequired = true
+		validateOpts.SkipDetectorRequired = true
 	}
 
-	if err := cfg.ValidateWithOptions(opts); err != nil {
+	if err := cfg.ValidateWithOptions(validateOpts); err != nil {
 		return executionResult{err: fmt.Errorf("leaf %s: %w", leaf.ID, err)}
 	}
 
 	var res executionResult
 	notify := func(message string) {
-		if token == nil {
-			return
+		if opts.Notify != nil {
+			opts.Notify(leaf.Target, message)
 		}
-		_ = session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
-			ProgressToken: token,
-			Message:       leaf.Target + ": " + message,
-		})
 	}
 
 	engine := scanner.New(cfg).
 		WithFindingCallback(func(f detectors.Finding) {
 			res.findings = append(res.findings, f)
+			if opts.OnFinding != nil {
+				opts.OnFinding(leaf, f)
+			}
 			notify("finding: " + f.Type)
 		}).
 		WithLogCallback(func(level, msg string) {
 			res.logs = append(res.logs, level+": "+msg)
+			if opts.OnLog != nil {
+				opts.OnLog(leaf, level, msg)
+			}
 			notify(msg)
 		})
 

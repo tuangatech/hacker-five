@@ -107,7 +107,7 @@ func launchTargetScheme(target string) string {
 // startScan/startRecon/startGuidedScan. r.Form/r.PostForm are already
 // populated by csrfMiddleware.
 func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
-	form, cfgs, errs := parseLaunchSubmission(r)
+	form, cfgs, execCfg, errs := parseLaunchSubmission(r)
 
 	if len(errs) > 0 {
 		h.rerenderLaunchWithErrors(w, r, form, errs)
@@ -120,17 +120,29 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Guaranteed present: csrfMiddleware already validated this exact
+	// cookie against the request's own csrf_token field before this
+	// handler ran. Baked into the renderProgress closure below as a fixed
+	// value (rather than read fresh per-render) because that closure is
+	// called from background job goroutines with no *http.Request of their
+	// own — safe since the cookie is a stable per-browser-session value,
+	// and this job's SSE stream is only ever consumed by the browser that
+	// started it.
+	csrfTok := readCSRFCookie(r)
+
 	target := launchTargetScheme(form.Target)
 	job := newJob(id, target,
 		func(f detectors.Finding) template.HTML { return renderFragment(h.tmpl, "fragment_finding_row", f) },
 		func(entry LogEntry) template.HTML { return renderFragment(h.tmpl, "fragment_log_line", entry) },
 		func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML {
-			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves, DetectorSteps: detectorSteps, Target: target})
+			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves, DetectorSteps: detectorSteps, Target: target, JobID: id, CSRFToken: csrfTok})
 		},
 		func(result *recon.ReconResult) template.HTML {
 			return renderFragment(h.tmpl, "fragment_recon_results", newReconView(result))
 		},
 	)
+	job.bindParentContext(h.baseCtx)
+	job.SetExecConfig(execCfg)
 	// The authorization checkbox becomes the job's first log entry — the
 	// "audit trail" doc12 calls for; reuses the one logging surface that
 	// already does this rather than a separate audit mechanism.
@@ -140,7 +152,7 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 	go h.runLaunchJob(job, form, cfgs)
 
 	w.Header().Set("HX-Push-Url", "/scans/"+job.ID)
-	executeTemplate(w, h.tmpl, "fragment_scan_status_body", h.snapshotData(job))
+	executeTemplate(w, h.tmpl, "fragment_scan_status_body", h.snapshotData(job, csrfTok))
 }
 
 func (h *handlers) rerenderLaunchWithErrors(w http.ResponseWriter, r *http.Request, form LaunchFormData, errs []string) {
@@ -163,7 +175,19 @@ func (h *handlers) rerenderLaunchWithErrors(w http.ResponseWriter, r *http.Reque
 // protected_paths) is a validation error, never a silent skip — same
 // accumulate-errors-then-rerender pattern the pages this replaces already
 // used.
-func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, []string) {
+// parseLaunchSubmission's third return value, execCfg, is the shared
+// scanner.Config template cached on the Job (Job.SetExecConfig) for
+// planexec.RunPlan to clone per leaf once the operator approves a
+// decision-engine-ranked leaf from the Plan Preview page (doc15 Step 4) —
+// distinct from cfgs' own per-detector configs (each of those already has
+// Targets/Detector/TemplatePaths-assignment baked in for the native
+// checked-tab flow); execCfg carries only the fields every leaf dispatch
+// needs regardless of which detector/template it ends up being (Scope,
+// credentials, rate/concurrency, the full template corpus — never the
+// once-per-submission TemplatePaths-assignment trick cfgs' own baseCfg
+// closure uses, since a template-ID leaf genuinely needs the corpus loaded
+// to find its one match, not a shared-across-tabs optimization).
+func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, scanner.Config, []string) {
 	var errs []string
 
 	rawTarget := strings.TrimSpace(r.PostFormValue("target"))
@@ -356,7 +380,29 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, [
 		}
 	}
 
-	return form, cfgs, errs
+	execCfg := scanner.Config{
+		TemplatePaths:    defaultWebTemplateDirs(),
+		Tags:             splitCSV(form.Tags),
+		Concurrency:      concurrency,
+		RateLimit:        rateLimit,
+		Timeout:          defaultTimeout,
+		OutputFormat:     "json",
+		Insecure:         form.Insecure,
+		AuthToken:        form.AuthToken,
+		OtherAuthToken:   form.OtherAuthToken,
+		AuthHeaderName:   form.AuthHeaderName,
+		AuthHeaderFormat: form.AuthHeaderFormat,
+		ScopeFile:        form.ScopeFile,
+		ExtraHeaders:     extraHeaders,
+		// AllowWrites reuses the same operator opt-in the businesslogic tab
+		// itself gates on — a decision-engine-proposed businesslogic leaf
+		// gets exactly the same write-safety gate a checked businesslogic
+		// tab already does (planexec.RunPlan's own missingRequiredField),
+		// never a separate/looser one.
+		AllowWrites: form.AllowWrites,
+	}
+
+	return form, cfgs, execCfg, errs
 }
 
 // expandOOBServers is cmd/hackerfive/scan.go's expandOOBServers, duplicated
@@ -400,7 +446,8 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	job.SetPhase("recon")
 	h.runLaunchRecon(job, form, cfgs)
 
-	cfgs = fillReconFields(h.baseCtx, job, cfgs)
+	cfgs = fillReconFields(job.Ctx(), job, cfgs)
+	mergeReconDerivedExecFields(job, cfgs)
 
 	// Seed the detector chain only now, from cfgs *after* fillReconFields —
 	// that call can drop a detector entirely when recon couldn't resolve a
@@ -419,7 +466,7 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 		if note := noTokenNote(cfg); note != "" {
 			job.AppendLog("info", note)
 		}
-		if _, err := scanner.New(cfg).WithFindingCallback(job.AppendFinding).WithLogCallback(job.AppendLog).Run(h.baseCtx); err != nil {
+		if _, err := scanner.New(cfg).WithFindingCallback(job.AppendFinding).WithLogCallback(job.AppendLog).Run(job.Ctx()); err != nil {
 			lastErr = err
 			job.AppendLog("error", fmt.Sprintf("%s: %v", cfg.Detector, err))
 		}
@@ -427,6 +474,46 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	}
 
 	job.MarkDone(lastErr)
+}
+
+// mergeReconDerivedExecFields folds fillReconFields' recon-derived idor/
+// authbypass/ssrf field values (EndpointTemplate, ProtectedPaths,
+// LoginPaths, LogoutPaths, SSRFParams, OOBServers) back into job's cached
+// execCfg — the shared template a later POST /plan-preview/execute (doc15
+// Step 4) clones per leaf. Without this, an idor/authbypass/ssrf leaf the
+// decision engine proposes from the Plan Preview page would always be
+// skipped by planexec.RunPlan's missingRequiredField gate, even on a target
+// where recon already found exactly the candidate that field needs — the
+// native checked-tab flow already benefits from this same recon work
+// (cfgs), this just makes the plan-execution path see it too.
+func mergeReconDerivedExecFields(job *Job, cfgs []scanner.Config) {
+	execCfg := job.ExecConfig()
+	for _, cfg := range cfgs {
+		switch cfg.Detector {
+		case "idor":
+			if cfg.EndpointTemplate != "" {
+				execCfg.EndpointTemplate = cfg.EndpointTemplate
+			}
+		case "authbypass":
+			if len(cfg.ProtectedPaths) > 0 {
+				execCfg.ProtectedPaths = cfg.ProtectedPaths
+			}
+			if len(cfg.LoginPaths) > 0 {
+				execCfg.LoginPaths = cfg.LoginPaths
+			}
+			if len(cfg.LogoutPaths) > 0 {
+				execCfg.LogoutPaths = cfg.LogoutPaths
+			}
+		case "ssrf":
+			if len(cfg.SSRFParams) > 0 {
+				execCfg.SSRFParams = cfg.SSRFParams
+			}
+			if len(cfg.OOBServers) > 0 {
+				execCfg.OOBServers = cfg.OOBServers
+			}
+		}
+	}
+	job.SetExecConfig(execCfg)
 }
 
 // noTokenNote returns an informational log line when cfg is about to run
@@ -507,7 +594,7 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	}
 	rc := recon.New(client, opts...)
 
-	ctx, cancel := context.WithTimeout(h.baseCtx, reconRunTimeout)
+	ctx, cancel := context.WithTimeout(job.Ctx(), reconRunTimeout)
 	defer cancel()
 
 	result, err := rc.Run(ctx, launchTargetScheme(form.Target), recon.DepthFull)
@@ -521,15 +608,20 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	// Informational only — never gates which detectors already ran/will
 	// run, since selection was fixed before this scan started. Reuses
 	// registry.Resolve exactly as Guided Scan's own (now-retired) confirm
-	// page did.
+	// page did. Caches the tree on job (SetPlanTree) so a later GET
+	// /plan-preview?job={id} shows this exact resolution rather than
+	// silently recomputing a second one — matching P2-2's own LeafContext
+	// caching intent, and letting POST /plan-preview/execute (doc15 Step 4)
+	// dispatch precisely the leaves the operator reviewed.
 	index, _ := loadTemplateIndex(defaultTemplateIndexPath)
 	tree, _ := registry.Resolve(result, index)
+	job.SetPlanTree(tree, nil)
 	selected := make(map[string]bool, len(cfgs))
 	for _, cfg := range cfgs {
 		selected[cfg.Detector] = true
 	}
 	if suggestions := suggestedDetectorNames(tree, selected); len(suggestions) > 0 {
-		job.AppendLog("info", "recon also suggests: "+strings.Join(suggestions, ", ")+" (not run — selected before this scan started)")
+		job.AppendLog("info", "recon also suggests: "+strings.Join(suggestions, ", ")+" — review and run via Plan Preview (/plan-preview?job="+job.ID+")")
 	}
 }
 

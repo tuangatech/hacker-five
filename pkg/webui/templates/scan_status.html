@@ -1,5 +1,5 @@
 {{define "fragment_scan_status_body"}}<h1>Scan Activity: {{.JobID}}</h1>
-<p>Target: <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a></p>
+<p>Target: <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a>{{if .Snapshot.ReconResult}} — <a href="/plan-preview?job={{.JobID}}" title="Review and run decision-engine-ranked leaves beyond the detectors already checked">Plan Preview</a>{{end}}</p>
 
 <div id="sse-root" hx-ext="sse" sse-connect="/scans/{{.JobID}}/events" sse-close="done">
 {{/* A separate, inert element — not the sse-root div itself — fires the

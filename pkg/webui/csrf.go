@@ -46,6 +46,21 @@ func csrfToken(w http.ResponseWriter, r *http.Request) (string, error) {
 	return token, nil
 }
 
+// readCSRFCookie returns the current request's CSRF cookie value, or "" if
+// none is set yet — for a render path that can't safely mint a new cookie
+// (headers already flushed, e.g. scanEvents' SSE stream once it's started
+// writing). Unlike csrfToken, never sets a cookie itself; a caller in that
+// position instead relies on an earlier GET/POST on the same job having
+// already set one, which is true for every real page flow that reaches
+// this point (an SSE connection is only ever opened from a scan-status page
+// the browser already loaded via csrfToken).
+func readCSRFCookie(r *http.Request) string {
+	if c, err := r.Cookie(csrfCookieName); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
 // csrfMiddleware guards every state-changing request generically (any
 // method other than GET/HEAD/OPTIONS), so a future POST/PUT/DELETE route
 // (e.g. Week 23's POST /templates/sync) gets this protection for free

@@ -279,7 +279,7 @@ Unit tests for both hard-fail paths and the scope-creep trigger. Live verificati
 
 ---
 
-## Step 4: Approval UI — Make the Plan Preview Actionable (Week 46) — ⬜ not yet implemented
+## Step 4: Approval UI — Make the Plan Preview Actionable (Week 46) — 🟡 partially implemented, 2026-09-04
 
 ### Design
 
@@ -297,6 +297,21 @@ Doc14 Step 4 shipped a *read-only* Plan-preview page — useful for inspecting a
 
 ### Verification
 Live-verified against a real browser: approving a plan via the Web UI unblocks a session that's waiting on `elicitation`, exactly as approving via an MCP client's own UI would. The kill switch, clicked mid-scan, is confirmed to actually stop the job (no further findings/logs after the click), not just hide the UI.
+
+### Done note, 2026-09-04 — shipped, deliberately narrower than "resolves the same elicitation" above
+
+Triggered by `docs/follow-up.md`'s LT-1 ("Web UI Launch never dispatches the decision engine's own template-ranked leaves") — `pkg/webui`'s Plan Preview page computed a real, tag-ranked `PlanTree` via `registry.Resolve` but had no way to execute it; only a CLI/MCP `plan --llm-assist` run ever dispatched one.
+
+**Shipped:**
+- `pkg/planexec` (new) — `RunPlan`/`missingRequiredField`/`runLeaf` extracted from `pkg/mcpserver/executor.go` into a shared, transport-agnostic package (`ExecOptions{Notify, OnFinding, OnLog, Excluded, DetConcurrency, LLMConcurrency}`) both `pkg/mcpserver` (Step 2's `handlePlanApproval`) and `pkg/webui` now call — the exact same dispatcher, not a parallel reimplementation.
+- **Approve / Reject**, whole-plan — `POST /plan-preview/execute` (`pkg/webui/handlers_plan_exec.go`), redirects to `/scans/{id}` so results stream in live via the job's existing SSE feed.
+- **Edit, scoped to per-leaf inclusion** — `fragment_plan_node.html`'s "run this leaf" checkbox (default checked), submitted as `include`; an unchecked leaf is reported skipped (`ExecOptions.Excluded`), never silently run. Not full per-field editing (target/detector) — that was never concretely specified even in this doc's own Design section above, and per-leaf inclusion covers the real "I don't want that one to run" case.
+- **Budget gauge** — `<progress>` against `Tree.SpendSoFar()`/`Tree.SpendCeilingUSD`, `plan_preview.html`.
+- **Kill switch** — `Job.Cancel()` (new `ctx`/`cancel` on `Job`, derived from `baseCtx` via `bindParentContext`), `POST /scans/{id}/cancel`, surfaced once in `fragment_progress.html` — confirmed reachable from New Scan, Guided Scan-successor (the unified Launch flow), and a plan-execution run alike, since all three render that one fragment (the "three call sites, one control" scoping note above). `MarkDone` records a distinct `StatusCanceled` (not `StatusFailed`) for `context.Canceled`.
+
+**Deliberately not shipped — the "resolves the same `elicitation` response... interchangeably" framing above**: `pkg/mcpserver` (`hackerfive mcpserve`) and `pkg/webui` (`hackerfive serve`) are two separate, unconnected OS processes in this codebase, with no shared pending-approval store between them — confirmed by reading `cmd/hackerfive/{mcpserve,serve}.go`. Building that would mean new cross-process infrastructure (e.g. a shared file-backed or IPC pending-approval store) this step's own "Files (anticipated)" list never named. What shipped instead is the Web UI's own complete, self-contained approval surface — real Approve/Reject/Edit/budget/kill-switch, all live-reachable from the browser — not a stub deferring to that cross-process mechanism. Revisit the interop framing specifically if a real user workflow needs it (e.g. approving a live MCP-driven agent session's plan from the Web UI while the agent's own client sits disconnected) — no such workflow has surfaced yet.
+
+Verification: `go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean; new unit coverage in `pkg/planexec/executor_test.go`, `pkg/webui/{jobs_test.go,handlers_plan_exec_test.go}` (Approve dispatches included leaves and reopens a terminal job's SSE lifecycle; Reject executes nothing; excluded leaves are skipped not silently dropped; Cancel cancels the job's own context and `MarkDone` records `StatusCanceled`). Not yet live-verified against a real browser/lab target — that's still open, same as this step's own Verification paragraph above already called for.
 
 ---
 
@@ -350,7 +365,7 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 - [ ] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command
 - [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and triggers a fresh `elicitation` round trip before it's touched, live-verified
 - [ ] Cost/attempt-aware prioritization (H4) surfaces a stop-and-escalate signal on a `PlanTree` leaf after repeated low-yield attempts
-- [ ] The Web UI's Plan-preview page supports Approve/Reject/Edit, a budget gauge, and an always-reachable kill switch that actually stops a running job — and that same kill switch is confirmed on `/scans/{id}` for plain New Scan and Guided Scan runs too, not only the agent-approval flow
+- [x] The Web UI's Plan-preview page supports Approve/Reject/Edit (per-leaf inclusion, not per-field), a budget gauge, and an always-reachable kill switch that actually stops a running job — and that same kill switch is confirmed on `/scans/{id}` for plain New Scan and Guided Scan-successor (unified Launch) runs too, not only the plan-execution flow — done 2026-09-04 (Step 4's Done note); not yet live-verified against a real browser/lab target, and the cross-process "same elicitation as an MCP client" interop is explicitly out of scope (see that note)
 - [ ] A structured, persisted agent session log exists and is queryable per job, even without a live Web UI view yet
 - [ ] A full recon → plan → approve → scan → export round trip is live-verified end-to-end against at least one lab target, plus a separate run against WebGoat and/or bWAPP confirming an all-`misconfig` plan resolves every leaf deterministically with zero I4 fallback calls
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean

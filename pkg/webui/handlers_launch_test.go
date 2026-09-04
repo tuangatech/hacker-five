@@ -193,7 +193,7 @@ func TestParseLaunchSubmission_SSRFOOBServers_DefaultAndClearable(t *testing.T) 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	require.NoError(t, req.ParseForm())
 
-	_, cfgs, errs := parseLaunchSubmission(req)
+	_, cfgs, _, errs := parseLaunchSubmission(req)
 	require.Empty(t, errs)
 	require.Len(t, cfgs, 1)
 	assert.Empty(t, cfgs[0].OOBServers, "a blank oob_servers submission must clear OOB, never fall back to a default")
@@ -320,7 +320,7 @@ func TestParseLaunchSubmission_MultipleDetectorsChecked_TemplatesAttachedOnce(t 
 	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	_, cfgs, errs := parseLaunchSubmission(req)
+	_, cfgs, _, errs := parseLaunchSubmission(req)
 	require.Empty(t, errs)
 	require.Len(t, cfgs, 3)
 
@@ -641,7 +641,7 @@ func TestSnapshotData_FindingsRenderNewestFirst(t *testing.T) {
 	job.AppendFinding(detectors.Finding{ID: "first"})
 	job.AppendFinding(detectors.Finding{ID: "second"})
 
-	data := h.snapshotData(job)
+	data := h.snapshotData(job, "")
 
 	findingsHTML := string(data.FindingRowsHTML)
 	assert.Less(t, strings.Index(findingsHTML, "second"), strings.Index(findingsHTML, "first"), "the most recently appended finding must render first")
@@ -659,7 +659,7 @@ func TestSnapshotData_LogsRenderOldestFirst(t *testing.T) {
 	job.AppendLog("info", "first-log")
 	job.AppendLog("info", "second-log")
 
-	data := h.snapshotData(job)
+	data := h.snapshotData(job, "")
 
 	logsHTML := string(data.LogLinesHTML)
 	assert.Less(t, strings.Index(logsHTML, "first-log"), strings.Index(logsHTML, "second-log"), `the earliest log line must render first, matching hx-swap="beforeend"`)
