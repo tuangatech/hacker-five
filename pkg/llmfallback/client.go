@@ -93,8 +93,17 @@ func New() (*Client, error) {
 	return c, nil
 }
 
+// getenvDefault falls back to fallback only when key is entirely unset —
+// an operator who explicitly sets key to an empty value (e.g.
+// HACKERFIVE_LOCAL_MODEL_URL= in a .env, to say "I have no local model
+// runtime, don't try") gets that empty value honored, not silently
+// replaced with the built-in default (found live, 2026-09-04: the old
+// os.Getenv-based check couldn't tell "explicitly cleared" apart from
+// "never set" — clearing HACKERFIVE_LOCAL_MODEL_URL still fell back to
+// http://localhost:11434, so New() kept probing and failing against a
+// runtime that was never installed).
 func getenvDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return fallback

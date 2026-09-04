@@ -54,6 +54,19 @@ func SuggestIDOREndpointCandidates(result *ReconResult) []string {
 	seen := map[string]bool{}
 	var candidates []string
 	for _, ep := range result.Endpoints {
+		// A static build/CDN asset's ID-shaped path segment is a cache-slot
+		// or version number, not a per-record identifier — swapping it just
+		// serves a different concatenated JS/CSS bundle, never another
+		// user's data. Found live, 2026-09-04: a real WordPress target's
+		// minify-cache plugin served bundles from
+		// "/wp-content/cache/min/<N>/...", each distinct plugin bundle
+		// producing its own {{id}}-templated "candidate" — 4 static .js
+		// files, none of them a meaningful IDOR test target, surfaced as
+		// "4 candidates found, none auto-selected" instead of the more
+		// honest "recon found no candidate."
+		if IsStaticAssetPath(endpointPath(ep.URL)) {
+			continue
+		}
 		tmpl, ok := idShapedCandidate(ep.URL)
 		if !ok || seen[tmpl] {
 			continue

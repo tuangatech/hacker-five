@@ -157,6 +157,46 @@ func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {
 	assert.LessOrEqual(t, templateLeaves, maxTemplateLeavesPerTech)
 }
 
+// TestResolve_MultiWordTechName_MatchesSingleWordTag guards the
+// 2026-09-04 fix: a real target's "Yoast SEO Premium" and "LiteSpeed
+// Cache" TechFacts matched zero templates before this fix, despite the
+// synced corpus holding real CVE templates tagged "yoast"/"litespeed" for
+// exactly those plugins — the old whole-string-equality check could never
+// match a multi-word tech name against a single-word tag.
+func TestResolve_MultiWordTechName_MatchesSingleWordTag(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "yoast-fpd", Tags: []string{"wordpress", "yoast", "exposure"}},
+		{ID: "litespeed-cache-xss", Tags: []string{"wordpress", "litespeed", "xss"}},
+		{ID: "unrelated-template", Tags: []string{"wordpress"}},
+	}
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "Yoast SEO Premium:28.4", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+			{Name: "LiteSpeed Cache", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+		},
+	}
+
+	tree := Resolve(result, index)
+
+	yoastLeaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "yoast-fpd" })
+	assert.NotNil(t, yoastLeaf, "expected the yoast-tagged template to match \"Yoast SEO Premium:28.4\"")
+	litespeedLeaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "litespeed-cache-xss" })
+	assert.NotNil(t, litespeedLeaf, "expected the litespeed-tagged template to match \"LiteSpeed Cache\"")
+}
+
+// TestNormalizedTechWords_ShortGenericTag_DoesNotSpuriouslyMatch guards
+// against the word-boundary fix over-matching: a short substring
+// ("wp") that's textually contained inside a longer word ("wordpress")
+// must not be treated as a match — only a whole word counts.
+func TestNormalizedTechWords_ShortGenericTag_DoesNotSpuriouslyMatch(t *testing.T) {
+	words := normalizedTechWords("WordPress Block Editor")
+	assert.False(t, words["wp"], `"wp" must not match merely because it's a substring of "wordpress"`)
+	assert.True(t, words["wordpress"])
+	assert.True(t, words["block"])
+	assert.True(t, words["editor"])
+}
+
 func TestResolve_GroupsMultipleHostsUnderRoot(t *testing.T) {
 	result := &recon.ReconResult{
 		Target: "http://example.test",

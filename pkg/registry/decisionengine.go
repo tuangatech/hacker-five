@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/recon"
@@ -42,6 +43,7 @@ var techRules = []techRule{
 	{Match: "express", Capabilities: []string{"idor", "authbypass", "misconfig"}},
 	{Match: "django", Capabilities: []string{"misconfig"}},
 	{Match: "iis", Capabilities: []string{"misconfig"}},
+	{Match: "litespeed", Capabilities: []string{"misconfig"}},
 }
 
 // matchTechRules returns every registry Capability name techRules maps
@@ -58,18 +60,18 @@ func matchTechRules(techName string) []string {
 }
 
 // matchTemplateTags returns up to maxTemplateLeavesPerTech template entries
-// whose Tags contain techName's normalized form (case-insensitive exact tag
-// match) — R9's template index consumed by the decision engine, per doc14
-// Step 3's R8 text.
+// whose Tags contain any word of techName's normalized form (case-
+// insensitive word match, not a whole-string match) — R9's template index
+// consumed by the decision engine, per doc14 Step 3's R8 text.
 func matchTemplateTags(techName string, index []templatesync.Entry) []templatesync.Entry {
-	want := NormalizeTechName(techName)
-	if want == "" {
+	words := normalizedTechWords(techName)
+	if len(words) == 0 {
 		return nil
 	}
 	var matched []templatesync.Entry
 	for _, entry := range index {
 		for _, tag := range entry.Tags {
-			if strings.ToLower(tag) == want {
+			if words[strings.ToLower(tag)] {
 				matched = append(matched, entry)
 				break
 			}
@@ -89,6 +91,35 @@ func NormalizeTechName(name string) string {
 		name = name[:i]
 	}
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// normalizedTechWords splits NormalizeTechName's output on non-alphanumeric
+// separators into a set of words — nuclei template tags are conventionally
+// a single short word ("litespeed", "yoast"), while a Wappalyzer-style
+// TechFact.Name is often multiple words ("LiteSpeed Cache", "Yoast SEO
+// Premium"); matchTemplateTags' original whole-string-equality check meant
+// a multi-word tech name could never match any tag at all. Found live,
+// 2026-09-04: a real target's "LiteSpeed Cache" and "Yoast SEO"/"Yoast SEO
+// Premium" TechFacts matched zero templates despite the synced corpus
+// holding real, relevant CVE templates tagged "litespeed"/"yoast" for
+// exactly those plugins (CVE-2024-47374, a LiteSpeed Cache stored XSS;
+// CVE-2021-25118, a Yoast SEO information disclosure) — invisible to the
+// Plan Tree purely because of this string-matching gap, not a coverage
+// gap in the template corpus itself. Word-level equality (not a raw
+// substring check) avoids a short/generic tag spuriously matching an
+// unrelated multi-word name.
+func normalizedTechWords(name string) map[string]bool {
+	fields := strings.FieldsFunc(NormalizeTechName(name), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(fields) == 0 {
+		return nil
+	}
+	words := make(map[string]bool, len(fields))
+	for _, w := range fields {
+		words[w] = true
+	}
+	return words
 }
 
 // Resolve builds a PlanTree from result: one child node per host that

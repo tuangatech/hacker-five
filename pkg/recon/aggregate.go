@@ -50,8 +50,18 @@ type techKey struct{ name, host string }
 // — so it's merged into the existing fact's Source (comma-joined, each
 // source listed once) and promotes Confidence to whichever pass reported
 // it higher, rather than turned into a second row.
+//
+// Name is folded to lowercase for the dedup key only (the displayed row
+// keeps whichever casing was observed first) — found live, 2026-09-04: a
+// real target's Tech Stack showed both "LiteSpeed Cache" and "Litespeed
+// Cache" as two distinct rows, httpx's own embedded Wappalyzer-style
+// catalog apparently carrying both castings as separate fingerprint
+// entries for the same real plugin. Case is never a meaningful
+// distinction between two TechFacts the way Name/Host genuinely are, so
+// treating it as one is the same kind of spurious-duplicate this
+// function's own (Name, Host) merge already exists to close.
 func (a *aggregator) addTech(t TechFact) {
-	key := techKey{t.Name, t.Host}
+	key := techKey{strings.ToLower(t.Name), t.Host}
 	if idx, ok := a.techIndex[key]; ok {
 		existing := &a.techStack[idx]
 		if !contains(a.techSources[key], t.Source) {

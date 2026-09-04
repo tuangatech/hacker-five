@@ -56,6 +56,14 @@ func TestSuggestIDOREndpointCandidates(t *testing.T) {
 			urls: []string{"https://example.com/thumb?w=96&h=48&dpr=3"},
 			want: nil,
 		},
+		{
+			name: "static-asset paths under an ID-shaped cache-slot segment are not candidates — found live against a real WordPress minify-cache plugin (2026-09-04)",
+			urls: []string{
+				"https://example.com/wp-content/cache/min/1/wp-content/plugins/easy-affiliate-links/dist/public.js",
+				"https://example.com/wp-content/cache/min/1/analytics.js",
+			},
+			want: nil,
+		},
 	}
 
 	for _, tc := range cases {

@@ -46,6 +46,44 @@ func TestNew_NoTierConfigured(t *testing.T) {
 	}
 }
 
+// TestNew_LocalTierExplicitlyEmpty_TreatedAsUnconfigured guards the
+// getenvDefault fix (2026-09-04): an operator who explicitly clears
+// HACKERFIVE_LOCAL_MODEL_URL (e.g. "HACKERFIVE_LOCAL_MODEL_URL=" in a
+// .env, meaning "I have no local runtime") must not have that silently
+// replaced with the built-in localhost default — New() must treat it as
+// genuinely unconfigured, same as never setting it, not attempt a real
+// probe against a default it was explicitly told to skip.
+func TestNew_LocalTierExplicitlyEmpty_TreatedAsUnconfigured(t *testing.T) {
+	t.Setenv(envLocalModelURL, "")
+	t.Setenv(envLocalModelName, "")
+	t.Setenv(envOpenRouterKey, "")
+
+	_, err := New()
+	if err != ErrNoTierAvailable {
+		t.Fatalf("New() err = %v, want ErrNoTierAvailable", err)
+	}
+}
+
+// TestNew_LocalTierExplicitlyEmpty_OpenRouterStillUsable confirms the
+// explicit-empty local URL doesn't also disable a configured OpenRouter
+// tier — the two are independent.
+func TestNew_LocalTierExplicitlyEmpty_OpenRouterStillUsable(t *testing.T) {
+	t.Setenv(envLocalModelURL, "")
+	t.Setenv(envLocalModelName, "")
+	t.Setenv(envOpenRouterKey, "test-key")
+
+	c, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if c.localAvailable {
+		t.Fatal("expected local tier unavailable")
+	}
+	if c.openRouterKey != "test-key" {
+		t.Fatalf("openRouterKey = %q, want preserved", c.openRouterKey)
+	}
+}
+
 func TestNew_LocalTierOnly(t *testing.T) {
 	srv := fakeChatServer(t, "{}")
 	defer srv.Close()

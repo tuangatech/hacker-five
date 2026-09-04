@@ -19,6 +19,21 @@ func TestAddTech_SameNameAndHost_MergesInsteadOfDuplicating(t *testing.T) {
 	}
 }
 
+// TestAddTech_SameNameDifferentCase_MergesInsteadOfDuplicating guards the
+// 2026-09-04 fix: a real target's Tech Stack showed both "LiteSpeed Cache"
+// and "Litespeed Cache" as two rows for the same plugin — httpx's own
+// embedded fingerprint catalog carries both castings as separate entries.
+func TestAddTech_SameNameDifferentCase_MergesInsteadOfDuplicating(t *testing.T) {
+	agg := &aggregator{}
+	agg.addTech(TechFact{Name: "LiteSpeed Cache", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+	agg.addTech(TechFact{Name: "Litespeed Cache", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	if assert.Len(t, result.TechStack, 1, "the same technology observed with different casing must merge into one row, not two") {
+		assert.Equal(t, "LiteSpeed Cache", result.TechStack[0].Name, "the first-seen casing is kept as the canonical display name")
+	}
+}
+
 func TestAddTech_DifferentHost_StaysDistinct(t *testing.T) {
 	agg := &aggregator{}
 	agg.addTech(TechFact{Name: "Cloudflare", Host: "a.example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
