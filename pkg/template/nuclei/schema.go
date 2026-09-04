@@ -75,7 +75,13 @@ type Info struct {
 // HTTPRequest is one request block within a template's http: list.
 type HTTPRequest struct {
 	Method  string            `yaml:"method"`
-	Path    []string          `yaml:"path"` // every entry is tried, in order — see loader.go/executor.go; NOT Path[0]-only,
+	// Path lists every path to try, in order — NOT Path[0]-only. Normally
+	// each is tried independently (evaluate/report per entry, own
+	// StopAtFirstMatch semantics — see loader.go/executor.go) unless
+	// pathCorrelated is set, in which case every entry fires unconditionally
+	// and Matchers evaluate once against the last — see pathCorrelated's doc
+	// comment.
+	Path    []string          `yaml:"path"`
 	Headers map[string]string `yaml:"headers,omitempty"`
 	Body    string            `yaml:"body,omitempty"`
 	// StopAtFirstMatch stops trying further Path entries once one matches.
@@ -115,6 +121,23 @@ type HTTPRequest struct {
 	// does) — 0 real corpus templates use it, consistent with that. See
 	// resolvePayloads.
 	Attack string `yaml:"attack,omitempty"`
+
+	// pathCorrelated, when true, makes nuclei.Executor fire every Path entry
+	// unconditionally (once per payload iteration) and evaluate Matchers
+	// once against the last entry's response — the same "fire every entry,
+	// then bind body_N/header_N/status_code_N/content_type_N/duration_N,
+	// then match once" model Raw already always uses — instead of this
+	// project's default behavior for Path: try each entry independently,
+	// evaluating/reporting per-path (stopping early on StopAtFirstMatch).
+	// Computed once at load time by loader.go's validate
+	// (usesPathCorrelation), never set directly from YAML — a template
+	// author has no field for this; it's inferred from whether the request
+	// actually references an indexed identifier/part. Only ever true when
+	// len(Raw) == 0 && len(Path) > 1 (Raw already correlates unconditionally
+	// regardless of this flag; a single Path entry has no "N" to index).
+	// Real example needing it: CVE-2012-3153.yaml, whose two Path entries'
+	// matchers reference body_1 and body_2 together.
+	pathCorrelated bool
 }
 
 // resolvePayloads validates req.Payloads/req.Attack and returns every

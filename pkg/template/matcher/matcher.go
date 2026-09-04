@@ -110,6 +110,19 @@ func Part(part string, r Response) string {
 		// no real use for yet.
 		return Part("header", r) + string(r.Body)
 	default:
+		// An indexed body_N/header_N/content_type_N name (IsIndexedPart)
+		// resolves straight out of r.ExtraVars -- a request block that fires
+		// more than one probe (raw:'s multiple Raw entries, or a
+		// path:-multi-request block flagged for correlation, see
+		// nuclei.Executor's tryRawIteration/tryPathCorrelatedIteration) binds
+		// exactly these keys there, string-formatted the same way the bare
+		// "header"/"content_type" cases above are. Any other unrecognized
+		// part (already rejected at load time by ValidPartWithContext, so
+		// this is a defensive fallback only) falls through to the body, same
+		// as before this case existed.
+		if v, ok := r.ExtraVars[part]; ok {
+			return v
+		}
 		return string(r.Body)
 	}
 }
@@ -257,6 +270,48 @@ func ValidPart(part string) bool {
 	}
 }
 
+// indexedPartPattern matches a body_N/header_N/content_type_N part: value —
+// the per-probe indexed form real templates use to name one specific fired
+// request's own result within a request block that fires more than one
+// (real examples: CVE-2014-4592.yaml's `part: body_2` word matcher,
+// zimbra-lfi.yaml's `part: header_1`). Deliberately excludes status_code_N/
+// duration_N — those are int-typed (dsl.Context.IntVars, see
+// nuclei/loader.go's indexedDSLContext), never a "part" a word/regex matcher
+// selects text out of.
+var indexedPartPattern = regexp.MustCompile(`^(?:body|header|content_type)_[0-9]+$`)
+
+// IsIndexedPart reports whether part is a body_N/header_N/content_type_N
+// name (see indexedPartPattern). Exported so pkg/template/nuclei's loader
+// can use the exact same definition to decide whether a path:-multi-request
+// template's matchers/extractors need the raw:-style "fire every entry,
+// then bind, then match once" correlation model instead of this project's
+// default independent per-path try-until-match loop — see
+// nuclei.Executor.runPathRequest.
+func IsIndexedPart(part string) bool {
+	return indexedPartPattern.MatchString(part)
+}
+
+// ValidPartWithContext is ValidPart, but also accepts an indexed
+// body_N/header_N/content_type_N name (IsIndexedPart) when ctx.Vars actually
+// carries that exact key — i.e. N is within range of however many probes
+// THIS request fires (raw:'s Raw entries, or a path:-multi-request block's
+// Path entries once flagged for correlation). Reuses the same dummy-Vars
+// population nuclei/loader.go's indexedDSLContext already builds for DSL
+// identifier validation, so a word/regex matcher's `part: body_2` and a
+// `dsl: contains(body_2, ...)` matcher on the same request are validated by
+// the exact same "does N exist for this request" check — one request
+// referencing body_5 with only 2 probes is rejected either way.
+func ValidPartWithContext(part string, ctx dsl.Context) bool {
+	if ValidPart(part) {
+		return true
+	}
+	if !IsIndexedPart(part) || ctx.Vars == nil {
+		return false
+	}
+	_, ok := ctx.Vars[part]
+	return ok
+}
+
 // Validate reports whether m is well-formed — its Type is recognized, its
 // Part is one this project implements, every Regex pattern compiles, and
 // every DSL expression parses — without evaluating it against a real
@@ -278,7 +333,7 @@ func Validate(m Matcher) error {
 // these identifiers resolve during validation — the values themselves are
 // never used for anything but confirming the expression parses/type-checks.
 func ValidateWithContext(m Matcher, ctx dsl.Context) error {
-	if !ValidPart(m.Part) {
+	if !ValidPartWithContext(m.Part, ctx) {
 		return fmt.Errorf("matcher: unsupported part %q (likely an out-of-band/OAST check — not supported)", m.Part)
 	}
 	switch m.Type {

@@ -162,6 +162,17 @@ func (e *Executor) runPathRequest(ctx context.Context, target string, tmpl *Temp
 		iterations = []map[string]string{nil}
 	}
 
+	// pathCorrelated (see schema.go's doc comment) opts out of the
+	// independent-per-path loop below entirely — a request flagged this way
+	// needs every Path entry fired unconditionally and its matchers
+	// evaluated once against the combined body_N/header_N/... result, same
+	// as tryRaw already does for Raw. Computed once at load time
+	// (loader.go's usesPathCorrelation), so this is a cheap field check, not
+	// a re-scan of the matchers on every scan.
+	if req.pathCorrelated {
+		return e.runPathRequestCorrelated(ctx, target, tmpl, reqIdx, req, chainVars, iterations, multi)
+	}
+
 	var findings []detectors.Finding
 	chainable := false
 
@@ -188,6 +199,186 @@ payloadLoop:
 		}
 	}
 	return findings, chainable, nil
+}
+
+// runPathRequestCorrelated is runPathRequest's payload-iteration loop for a
+// pathCorrelated request — structurally identical to tryRaw's own loop (see
+// its doc comment), just delegating to tryPathCorrelatedIteration instead of
+// tryRawIteration per pass. StopAtFirstMatch stops the payload-value loop
+// early, same meaning it already has for both the independent-path loop
+// above and tryRaw — it does NOT mean "stop after the first Path entry
+// matches" here, since every Path entry always fires within one iteration
+// (that's the entire point of correlation mode).
+func (e *Executor) runPathRequestCorrelated(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, chainVars map[string]string, iterations []map[string]string, multi bool) ([]detectors.Finding, bool, error) {
+	var findings []detectors.Finding
+	chainable := false
+	for pIdx, extraVars := range iterations {
+		if ctx.Err() != nil {
+			return findings, chainable, ctx.Err()
+		}
+
+		finding, matched, ch, err := e.tryPathCorrelatedIteration(ctx, target, tmpl, reqIdx, req, chainVars, extraVars, pIdx, multi)
+		if err != nil {
+			return findings, chainable, err
+		}
+		if ch {
+			chainable = true
+		}
+		if matched {
+			findings = append(findings, finding)
+			if req.StopAtFirstMatch {
+				break
+			}
+		}
+	}
+	return findings, chainable, nil
+}
+
+// tryPathCorrelatedIteration fires every entry in req.Path once (rendering
+// each through the same method/path/headers/body pipeline tryPath uses for
+// a single entry), binds every entry's result as
+// body_N/header_N/status_code_N/content_type_N/duration_N (plus a bare
+// "duration" aliased to the last entry — mirrors tryRawIteration exactly,
+// just building each request from Method/Path/Headers/Body instead of
+// parsing a Raw text block), and evaluates req.Matchers/req.Extractors
+// against the LAST entry's response. Only ever called for a request with
+// pathCorrelated set (len(req.Raw) == 0 && len(req.Path) > 1 — see
+// schema.go's doc comment), so req.Path is never empty here in practice.
+// Same non-fatal treatment of render/network errors as tryPath/
+// tryRawIteration: any failure on any entry aborts just this one iteration.
+func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, chainVars, extraVars map[string]string, pIdx int, idSuffix bool) (finding detectors.Finding, matched bool, chainable bool, err error) {
+	renderVars := chainVars
+	if len(extraVars) > 0 {
+		renderVars = make(map[string]string, len(chainVars)+len(extraVars))
+		for k, v := range chainVars {
+			renderVars[k] = v
+		}
+		for k, v := range extraVars {
+			renderVars[k] = v
+		}
+	}
+	renderCtx := vars.Context{BaseURL: target, Vars: renderVars}
+
+	extraStrVars := make(map[string]string, len(req.Path)*3)
+	extraInts := make(map[string]int, len(req.Path)*2+1)
+	var lastReq *http.Request
+	var lastReqBody string
+	var lastFullURL string
+	var lastStatus int
+	var lastHeaders http.Header
+	var lastBody []byte
+
+	for i, path := range req.Path {
+		if ctx.Err() != nil {
+			return detectors.Finding{}, false, false, ctx.Err()
+		}
+		n := i + 1
+
+		fullURL, err := vars.Render(path, renderCtx)
+		if err != nil {
+			return detectors.Finding{}, false, false, nil
+		}
+		body, err := vars.Render(req.Body, renderCtx)
+		if err != nil {
+			return detectors.Finding{}, false, false, nil
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, methodOrDefault(req.Method), fullURL, bodyReader(body))
+		if err != nil {
+			return detectors.Finding{}, false, false, fmt.Errorf("nuclei: building request for template %s: %w", tmpl.ID, err)
+		}
+		for k, v := range e.extraHeaders {
+			httpReq.Header.Set(k, v)
+		}
+		for k, v := range req.Headers {
+			if rv, err := vars.Render(v, renderCtx); err == nil {
+				httpReq.Header.Set(k, rv)
+			}
+		}
+
+		start := time.Now()
+		resp, err := e.client.Do(httpReq)
+		if err != nil {
+			return detectors.Finding{}, false, false, nil
+		}
+		respBody, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return detectors.Finding{}, false, false, nil
+		}
+		// See tryPath's durationInts comment: measured around e.client.Do
+		// only, same narrow, accepted over-counting risk on a transient
+		// failure that triggers this client's own retry/backoff.
+		entryDuration := int(time.Since(start).Seconds())
+
+		extraStrVars[fmt.Sprintf("body_%d", n)] = string(respBody)
+		extraStrVars[fmt.Sprintf("header_%d", n)] = matcher.Part("header", matcher.Response{Headers: resp.Header})
+		extraStrVars[fmt.Sprintf("content_type_%d", n)] = resp.Header.Get("Content-Type")
+		extraInts[fmt.Sprintf("status_code_%d", n)] = resp.StatusCode
+		extraInts[fmt.Sprintf("duration_%d", n)] = entryDuration
+		extraInts["duration"] = entryDuration
+
+		lastReq, lastReqBody, lastFullURL = httpReq, body, fullURL
+		lastStatus, lastHeaders, lastBody = resp.StatusCode, resp.Header, respBody
+	}
+
+	if lastReq == nil {
+		return detectors.Finding{}, false, false, nil // req.Path empty — pathCorrelated requires len > 1, defensive only
+	}
+
+	// chainVars/extraVars merged in alongside the body_N/header_N entries —
+	// same mechanism tryRawIteration uses, see its doc comment.
+	for k, v := range chainVars {
+		extraStrVars[k] = v
+	}
+	for k, v := range extraVars {
+		extraStrVars[k] = v
+	}
+
+	baseResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: extraStrVars, ExtraInts: extraInts}
+	extracted := extractor.Extract(req.Extractors, baseResp)
+
+	mResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: mergeVars(extraStrVars, extracted), ExtraInts: extraInts}
+	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
+	chainable = evaluated || len(req.Matchers) == 0
+	matched = evaluated && hasReportableMatcher(req.Matchers)
+	if !chainable {
+		return detectors.Finding{}, false, false, nil
+	}
+
+	for k, v := range extracted {
+		chainVars[k] = v
+	}
+	if !matched {
+		return detectors.Finding{}, false, true, nil
+	}
+
+	matchedChecks := matcher.MatchingNames(req.Matchers, mResp)
+	description := tmpl.Info.Name
+	if len(matchedChecks) > 0 {
+		description = fmt.Sprintf("%s (%s)", tmpl.Info.Name, strings.Join(matchedChecks, ", "))
+	}
+
+	id := fmt.Sprintf("nuclei-%s-%d", tmpl.ID, reqIdx)
+	if idSuffix {
+		id = fmt.Sprintf("nuclei-%s-%d-%d", tmpl.ID, reqIdx, pIdx)
+	}
+
+	return detectors.Finding{
+		ID:          id,
+		Type:        "misconfig",
+		Severity:    severityOrDefault(tmpl.Info.Severity),
+		Confidence:  "high",
+		Target:      lastFullURL,
+		Description: description,
+		Evidence: map[string]string{
+			"template_id":    tmpl.ID,
+			"status":         fmt.Sprintf("%d", lastStatus),
+			"matched_checks": strings.Join(matchedChecks, ","),
+			"request":        detectors.FormatRequest(lastReq.Method, lastFullURL, lastReq.Header, []byte(lastReqBody)),
+			"response":       detectors.FormatResponse(lastStatus, lastHeaders, lastBody),
+		},
+	}, true, true, nil
 }
 
 // tryPath renders and fires one request for one Path entry, evaluates its
@@ -269,14 +460,25 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	// Elapsed time for this single request, bound as the bare "duration" DSL
 	// identifier (blind time-based SQLi templates, e.g. upstream's
 	// CVE-2023-2130.yaml: dsl: 'duration>=6') — see loader.go's
-	// rawIndexedDSLContext doc comment for why this needs an explicit
-	// IntVars entry rather than a dsl.Context field like status_code/body/
-	// header/content_type. Measured around e.client.Do only, so it includes
-	// this client's own retry/backoff time on a transient failure before the
+	// indexedDSLContext doc comment for why this needs an explicit IntVars
+	// entry rather than a dsl.Context field like status_code/body/header/
+	// content_type. Measured around e.client.Do only, so it includes this
+	// client's own retry/backoff time on a transient failure before the
 	// eventual success (see pkg/scanner/httpclient's WithRetry) — a narrow,
 	// accepted source of over-counting on a flaky connection, not something
 	// this project's retry policy special-cases for duration templates.
-	durationInts := map[string]int{"duration": int(time.Since(start).Seconds())}
+	//
+	// duration_1/status_code_1 alias the bare duration/status_code values:
+	// real Nuclei's DSL always accepts a "_1" suffix as a synonym for "the
+	// (only, or first) response", even on a genuinely single-path request
+	// with no multi-probe correlation involved at all (real examples:
+	// CVE-2023-1362.yaml's `status_code_1 == 200`,
+	// yonyou-nc-baseapp-deserialization.yaml's
+	// `contains_all(body_1, "java.io", ...)` — both single-path templates).
+	// body_1/header_1/content_type_1 get the matching string-side alias via
+	// aliasVars below, merged into dslVars.
+	elapsed := int(time.Since(start).Seconds())
+	durationInts := map[string]int{"duration": elapsed, "duration_1": elapsed, "status_code_1": resp.StatusCode}
 
 	// Extraction runs unconditionally, before matchers evaluate — not just
 	// when chainable — so a matcher in THIS SAME request can reference an
@@ -292,7 +494,12 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	// http/technologies/wordpress/plugins/*.yaml pattern:
 	// compare_versions(extracted, concat("< ", last_version))), same as it
 	// can reference an extractor's Name.
-	dslVars := mergeVars(chainVars, extraVars)
+	aliasVars := map[string]string{
+		"body_1":         string(respBody),
+		"header_1":       matcher.Part("header", matcher.Response{Headers: resp.Header}),
+		"content_type_1": resp.Header.Get("Content-Type"),
+	}
+	dslVars := mergeVars(chainVars, extraVars, aliasVars)
 	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: dslVars, ExtraInts: durationInts}
 	extracted := extractor.Extract(req.Extractors, baseResp)
 

@@ -138,7 +138,7 @@ func Validate(e Extractor) error {
 // than one Raw entry legitimately references indexed identifiers that only
 // exist once execution binds them).
 func ValidateWithContext(e Extractor, ctx dsl.Context) error {
-	if !matcher.ValidPart(e.Part) {
+	if !matcher.ValidPartWithContext(e.Part, ctx) {
 		return fmt.Errorf("extractor: unsupported part %q (likely an out-of-band/OAST check — not supported)", e.Part)
 	}
 	switch e.Type {

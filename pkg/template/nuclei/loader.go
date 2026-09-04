@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -194,7 +195,7 @@ func validate(tmpl *Template) error {
 				reqScopeNames[k] = ""
 			}
 		}
-		dslCtx := requestDSLContext(req.Raw, reqScopeNames)
+		dslCtx := requestDSLContext(req.Raw, req.Path, reqScopeNames)
 		for j, m := range req.Matchers {
 			if m.Internal && tmpl.Flow == "" {
 				return fmt.Errorf("http[%d].matchers[%d]: uses internal: true outside a flow: template — flow-control-only matcher has nothing to gate without flow:, see docs/10-implementation-plan-ph1b.md", i, j)
@@ -208,15 +209,72 @@ func validate(tmpl *Template) error {
 				return fmt.Errorf("http[%d].extractors[%d]: %w", i, j, err)
 			}
 		}
+
+		// pathCorrelated opts this specific request into the raw:-style "fire
+		// every entry, then bind body_N/header_N/..., then match once" model
+		// instead of the default independent per-path try-until-match loop —
+		// see nuclei.Executor.runPathRequest. Gated on genuinely needing it
+		// (usesPathCorrelation: a matcher/extractor actually references an
+		// indexed identifier or part) so the ~9,000+ other multi-path
+		// templates that rely on today's independent-try-each-path behavior
+		// are completely unaffected — only a request with no raw: (raw:
+		// already always correlates, see HTTPRequest.Raw) and more than one
+		// Path entry can even qualify. Real example: CVE-2012-3153.yaml fires
+		// both its Path entries every time and checks body_1/body_2 together.
+		if len(req.Raw) == 0 && len(req.Path) > 1 && usesPathCorrelation(req.Matchers, req.Extractors) {
+			tmpl.HTTP[i].pathCorrelated = true
+		}
 	}
 	return nil
 }
 
+// indexedIdentifierPattern matches a body_N/header_N/status_code_N/
+// content_type_N/duration_N DSL identifier reference (N a positive
+// integer) — the same identifier family indexedDSLContext seeds dummy
+// values for. Word-boundary-anchored so it only matches the identifier
+// itself, not an unrelated longer name that happens to contain one of these
+// as a substring.
+var indexedIdentifierPattern = regexp.MustCompile(`\b(?:body|header|status_code|content_type|duration)_[0-9]+\b`)
+
+// usesPathCorrelation reports whether matchers/extractors reference an
+// indexed body_N/header_N/... identifier — either directly in a dsl:
+// expression, or via a word/regex matcher/extractor's indexed part: value
+// (matcher.IsIndexedPart). Real corpus examples of each form:
+// CVE-2012-3153.yaml (dsl: 'contains(body_1, "Reports Servlet")'),
+// CVE-2014-4592.yaml (a word matcher with `part: body_2`). Only meaningful
+// for a plain path:-based request — req.Raw already gets unconditional
+// fire-every-entry treatment regardless of whether anything references the
+// indexed identifiers (see HTTPRequest.Raw); callers gate on
+// len(req.Raw) == 0 && len(req.Path) > 1 separately.
+func usesPathCorrelation(matchers []matcher.Matcher, extractors []extractor.Extractor) bool {
+	for _, m := range matchers {
+		if matcher.IsIndexedPart(m.Part) {
+			return true
+		}
+		for _, expr := range m.DSL {
+			if indexedIdentifierPattern.MatchString(expr) {
+				return true
+			}
+		}
+	}
+	for _, e := range extractors {
+		if matcher.IsIndexedPart(e.Part) {
+			return true
+		}
+		for _, expr := range e.DSL {
+			if indexedIdentifierPattern.MatchString(expr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // requestDSLContext builds the dsl.Context used to validate one request's
-// matchers/extractors: rawIndexedDSLContext's body_N/header_N/status_code_N/
-// content_type_N/duration_N/duration entries (same-block raw: correlation,
-// plus the always-present bare "duration"), plus a dummy entry for every name
-// in knownExtractorNames (same-request-or-earlier extractor binding — see
+// matchers/extractors: indexedDSLContext's body_N/header_N/status_code_N/
+// content_type_N/duration_N/duration entries (same-block correlation, plus
+// the always-present bare "duration"), plus a dummy entry for every name in
+// knownExtractorNames (same-request-or-earlier extractor binding — see
 // validate's knownExtractorNames comment). Both mechanisms are independent
 // and additive; either can be empty without affecting the other.
 //
@@ -227,8 +285,8 @@ func validate(tmpl *Template) error {
 // (found live: apache-httpd-eol.yaml's compare_versions(version, ...)
 // errored against an empty-string dummy — "0" parses cleanly as a version
 // while still being a harmless placeholder for any string-only function).
-func requestDSLContext(raw []string, knownExtractorNames map[string]string) dsl.Context {
-	ctx := rawIndexedDSLContext(raw)
+func requestDSLContext(raw, path []string, knownExtractorNames map[string]string) dsl.Context {
+	ctx := indexedDSLContext(raw, path)
 	if len(knownExtractorNames) == 0 {
 		return ctx
 	}
@@ -241,15 +299,31 @@ func requestDSLContext(raw []string, knownExtractorNames map[string]string) dsl.
 	return ctx
 }
 
-// rawIndexedDSLContext builds a dsl.Context with a zero-valued body_N/
+// indexedDSLContext builds a dsl.Context with a zero-valued body_N/
 // header_N/status_code_N/content_type_N/duration_N entry for every N =
-// 1..len(raw) — just enough for matcher.ValidateWithContext/
-// extractor.ValidateWithContext to confirm a dsl: expression referencing
-// those identifiers actually parses/type-checks at load time, without
-// needing (or having) real per-entry results yet (those only exist once
-// nuclei.Executor's tryRaw actually fires every entry).
+// 1..count — just enough for matcher.ValidateWithContext/
+// extractor.ValidateWithContext to confirm a dsl: expression (or an indexed
+// part: value, via matcher.ValidPartWithContext) referencing those
+// identifiers actually parses/type-checks at load time, without needing (or
+// having) real per-entry results yet (those only exist once
+// nuclei.Executor's tryRawIteration/tryPathCorrelatedIteration actually
+// fires every entry).
 //
-// A bare "duration" entry is always present, even when raw is empty: unlike
+// count is len(raw) when raw is non-empty (raw: always correlates
+// unconditionally — see HTTPRequest.Raw), else len(path). This makes
+// indexed identifiers/parts validate-able on a path:-based request too, not
+// just raw: — including the "_1" form on a genuinely single-path request
+// (real examples: CVE-2023-1362.yaml's `status_code_1 == 200`,
+// yonyou-nc-baseapp-deserialization.yaml's `contains_all(body_1, ...)`,
+// both single-path, single-request templates where Nuclei's own DSL treats
+// "_1" as a always-valid alias for the bare identifier — nuclei.Executor's
+// tryPath binds that alias directly, no correlation firing needed for it).
+// Whether execution actually runs a >1-path request in full correlation
+// mode (firing every entry, not just aliasing "_1") is a separate decision
+// — see validate's pathCorrelated flag / usesPathCorrelation — this
+// function only widens what type-checks at load time.
+//
+// A bare "duration" entry is always present, even when count is 0: unlike
 // body/header/status_code/content_type (whose bare forms are built-in
 // dsl.Context fields, populated straight from the response regardless of
 // raw:), "duration" has no such field — it's threaded through IntVars like
@@ -258,22 +332,23 @@ func requestDSLContext(raw []string, knownExtractorNames map[string]string) dsl.
 // one (real example: upstream's CVE-2023-2130.yaml, a single-path
 // blind-SQLi sleep check with no raw: at all) — nuclei.Executor's tryPath
 // binds it the same way tryRawIteration binds the aliased bare
-// status_code/body/header/content_type to the last raw entry. Non-duration,
-// non-raw templates are otherwise unaffected: this used to return a fully
-// zero-value Context when raw was empty, now it returns one with only
-// IntVars["duration"] set.
-func rawIndexedDSLContext(raw []string) dsl.Context {
+// status_code/body/header/content_type to the last raw entry.
+func indexedDSLContext(raw, path []string) dsl.Context {
+	n := len(raw)
+	if n == 0 {
+		n = len(path)
+	}
 	ints := map[string]int{"duration": 0}
-	if len(raw) == 0 {
+	if n == 0 {
 		return dsl.Context{IntVars: ints}
 	}
-	vars := make(map[string]string, len(raw)*3)
-	for n := 1; n <= len(raw); n++ {
-		vars[fmt.Sprintf("body_%d", n)] = ""
-		vars[fmt.Sprintf("header_%d", n)] = ""
-		vars[fmt.Sprintf("content_type_%d", n)] = ""
-		ints[fmt.Sprintf("status_code_%d", n)] = 0
-		ints[fmt.Sprintf("duration_%d", n)] = 0
+	vars := make(map[string]string, n*3)
+	for i := 1; i <= n; i++ {
+		vars[fmt.Sprintf("body_%d", i)] = ""
+		vars[fmt.Sprintf("header_%d", i)] = ""
+		vars[fmt.Sprintf("content_type_%d", i)] = ""
+		ints[fmt.Sprintf("status_code_%d", i)] = 0
+		ints[fmt.Sprintf("duration_%d", i)] = 0
 	}
 	return dsl.Context{Vars: vars, IntVars: ints}
 }

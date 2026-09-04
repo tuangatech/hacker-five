@@ -1107,3 +1107,212 @@ http:
 	require.NoError(t, err)
 	require.Len(t, findings, 1, "request 2's word matcher should fire; the DSL extractor referencing request 1's \"email\" must not error the template out")
 }
+
+// cve2012_3153Template is modeled directly on real upstream's
+// CVE-2012-3153.yaml: a plain path:-based request (no raw: at all) with 2
+// Path entries whose matchers-condition: and matchers correlate body_1
+// (first path's response) with body_2 (second path's response) — the
+// genuine "path:-multi-request correlation" gap. See
+// TestExecutorRun_PathCorrelation_BothProbesFireAndCorrelate and its
+// negative counterpart below.
+const cve2012_3153Template = `
+id: path-correlation-style
+info:
+  name: Path Correlation Style
+  severity: medium
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/showenv"
+      - "{{BaseURL}}/rwservlet?file:///"
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(body_1, "Reports Servlet")'
+      - type: dsl
+        dsl:
+          - '!contains(body_2, "<html")'
+`
+
+// TestExecutorRun_PathCorrelation_BothProbesFireAndCorrelate is the positive
+// case: both Path entries must actually fire (tracked via hits — proving
+// this project no longer treats Path as an independent try-until-match
+// list once a request is flagged pathCorrelated), and the finding's
+// Target/evidence must reflect the LAST entry's response, same convention
+// tryRaw already uses for req.Raw.
+func TestExecutorRun_PathCorrelation_BothProbesFireAndCorrelate(t *testing.T) {
+	var hits []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		if r.URL.Path == "/showenv" {
+			_, _ = w.Write([]byte("Oracle Reports Servlet Info"))
+			return
+		}
+		_, _ = w.Write([]byte("plain text, no html here"))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "path-correlation.yaml", cve2012_3153Template)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "both correlated probes are true, so the and-combined matcher must fire")
+	assert.ElementsMatch(t, []string{"/showenv", "/rwservlet"}, hits, "correlation mode must fire every Path entry, not stop after the first one succeeds")
+	assert.Contains(t, findings[0].Target, "/rwservlet", "Target should reflect the last-fired entry, same convention tryRaw uses")
+}
+
+// TestExecutorRun_PathCorrelation_NoMatchWhenOneProbeFails is the negative
+// counterpart: the second probe's response DOES contain "<html", so the
+// and-combined matcher must not fire — proving this isn't a matcher that
+// trivially always passes once both probes are fired.
+func TestExecutorRun_PathCorrelation_NoMatchWhenOneProbeFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/showenv" {
+			_, _ = w.Write([]byte("Oracle Reports Servlet Info"))
+			return
+		}
+		_, _ = w.Write([]byte("<html>a real login page</html>"))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "path-correlation.yaml", cve2012_3153Template)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	assert.Empty(t, findings, "the second probe's <html> body must fail !contains(body_2, \"<html\")")
+}
+
+// TestExecutorRun_IndexedWordMatcherPart_RawEntries is modeled on real
+// upstream's CVE-2014-4592.yaml: a raw:-request block with 2 Raw entries
+// whose WORD matchers use `part: body_2`/`part: header_2` — proves
+// matcher.Part actually resolves an indexed part: name out of
+// r.ExtraVars, not just a dsl: identifier referencing the same value (see
+// TestExecutorRun_RawMultiEntryCorrelation for the dsl: form, already
+// working before this change). This is the largest real bucket behind this
+// change: 239 of 246 real "unsupported part" rejections were exactly this
+// shape.
+func TestExecutorRun_IndexedWordMatcherPart_RawEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/readme.txt":
+			_, _ = w.Write([]byte("WP Planet Plugin Readme"))
+		case "/xss.php":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<script>alert(document.domain)</script>"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "indexed-part.yaml", `
+id: indexed-part-style
+info:
+  name: Indexed Part Style
+  severity: medium
+http:
+  - raw:
+      - |
+        GET /readme.txt HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /xss.php HTTP/1.1
+        Host: {{Hostname}}
+    matchers-condition: and
+    matchers:
+      - type: word
+        part: body_1
+        words:
+          - "Plugin Readme"
+      - type: word
+        part: body_2
+        words:
+          - "<script>alert(document.domain)</script>"
+      - type: word
+        part: header_2
+        words:
+          - "text/html"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "part: body_1/body_2/header_2 must each resolve to their own probe's own result")
+}
+
+// TestExecutorRun_SinglePathIndexOneAlias_Matches is modeled on real
+// upstream's CVE-2023-1362.yaml: a genuinely single-path request whose
+// matcher references the "_1"-suffixed status_code_1/body_1 form. Proves
+// tryPath's alias binding actually resolves at runtime, not just that the
+// template loads (see TestNucleiLoadDir_SinglePathIndexOneAliasLoads).
+func TestExecutorRun_SinglePathIndexOneAlias_Matches(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("BUM</b>Sys</a>"))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "single-path-alias.yaml", `
+id: single-path-index-one-style
+info:
+  name: Single Path Index One Style
+  severity: medium
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code_1 == 200 && contains(body_1, 'BUM</b>Sys</a>')"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "status_code_1/body_1 must alias the bare status_code/body values on a genuinely single-path request")
+}
+
+// TestExecutorRun_IndependentMultiPath_EachPathReportsSeparately is a
+// regression guard for the new pathCorrelated branch in runPathRequest:
+// a plain multi-path template with NO indexed identifiers anywhere (the
+// overwhelming majority of the ~9,000+ real multi-path templates) must keep
+// today's independent try-each-path behavior — every matching path reports
+// its OWN finding — not silently switch to firing all paths and reporting
+// once. Deliberately omits stop-at-first-match (already covered by
+// TestExecutorRun_MultiPathStopsAtFirstMatch) so both paths get a chance to
+// each produce their own finding.
+func TestExecutorRun_IndependentMultiPath_EachPathReportsSeparately(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("admin panel"))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "independent-multi-path-style",
+		Info: nuclei.Info{Name: "Independent Multi Path Style", Severity: "info"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method: http.MethodGet,
+			Path:   []string{"{{BaseURL}}/panel", "{{BaseURL}}/admin"},
+			Matchers: []matcher.Matcher{
+				{Type: "word", Words: []string{"admin panel"}},
+			},
+		}},
+	}
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err)
+	require.Len(t, findings, 2, "each of the two independently-matching paths must produce its own finding, not one correlated finding")
+}

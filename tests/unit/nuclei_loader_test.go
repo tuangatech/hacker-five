@@ -501,6 +501,144 @@ http:
 	assert.True(t, templates[0].HTTP[0].StopAtFirstMatch)
 }
 
+// TestNucleiLoadDir_IndexedWordMatcherPartLoads is modeled on real upstream's
+// CVE-2014-4592.yaml: a raw:-request block with 2 Raw entries whose word
+// matchers use `part: body_2`/`part: header_2` — the far larger half (239 of
+// 246 real corpus rejections) of the "body_N/header_N-as-a-part:-value" gap.
+// The raw:-only body_2/header_2 correlation itself already worked via dsl:
+// identifiers (see TestNucleiLoadDir_MultiRawEntry); the gap was specifically
+// matcher.ValidPart never recognizing an indexed part: name at all —
+// previously rejected as "unsupported part" regardless of request shape.
+func TestNucleiLoadDir_IndexedWordMatcherPartLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "indexed-part-style.yaml", `
+id: indexed-part-style
+info:
+  name: Indexed Part Style
+  severity: medium
+http:
+  - raw:
+      - |
+        GET /readme.txt HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /xss.php?url=%3Cscript%3E HTTP/1.1
+        Host: {{Hostname}}
+    matchers-condition: and
+    matchers:
+      - type: word
+        part: body_1
+        words:
+          - "Plugin Readme"
+      - type: word
+        part: body_2
+        words:
+          - "<script>"
+      - type: word
+        part: header_2
+        words:
+          - "text/html"
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_PathMultiRequestCorrelationLoads is modeled on real
+// upstream's CVE-2012-3153.yaml: a plain path:-based request (no raw: at
+// all) with 2 Path entries whose shared dsl: matcher references body_1 and
+// body_2 together — the genuine "path:-multi-request correlation" gap
+// (~40 real rejections, much smaller than the original ~220 estimate, which
+// conflated it with the much larger raw:-only indexed-part-value gap fixed
+// by TestNucleiLoadDir_IndexedWordMatcherPartLoads above). See
+// tests/unit/nuclei_executor_test.go for the actual end-to-end proof that
+// both Path entries fire and correlate; this test only confirms it loads.
+func TestNucleiLoadDir_PathMultiRequestCorrelationLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "path-correlation-style.yaml", `
+id: path-correlation-style
+info:
+  name: Path Correlation Style
+  severity: medium
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/showenv"
+      - "{{BaseURL}}/rwservlet?file:///"
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(body_1, "Reports Servlet")'
+      - type: dsl
+        dsl:
+          - '!contains(body_2, "<html")'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_SinglePathIndexOneAliasLoads is modeled on real
+// upstream's CVE-2023-1362.yaml and yonyou-nc-baseapp-deserialization.yaml:
+// a genuinely single-path request (no correlation possible — there's only
+// ever one response) whose matcher still references the "_1"-suffixed form
+// (status_code_1, body_1) as a synonym for the bare identifier. Real
+// Nuclei's own DSL always accepts this; previously rejected here since
+// indexedDSLContext only ever built index vars when raw: had entries.
+func TestNucleiLoadDir_SinglePathIndexOneAliasLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "single-path-index-one-style.yaml", `
+id: single-path-index-one-style
+info:
+  name: Single Path Index One Style
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/UploadServlet"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'status_code_1 == 200 && contains(body_1, "EOFException")'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+	assert.Len(t, templates[0].HTTP[0].Path, 1, "sanity: this template is genuinely single-path")
+}
+
+// TestNucleiLoadDir_OutOfRangeIndexedIdentifierRejected confirms an indexed
+// identifier referencing an N beyond how many probes this specific request
+// actually fires is still rejected at load time, same as before this
+// change — indexedDSLContext only seeds dummy vars for N = 1..count, it
+// doesn't make every N valid unconditionally.
+func TestNucleiLoadDir_OutOfRangeIndexedIdentifierRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "out-of-range-index.yaml", `
+id: out-of-range-index
+info:
+  name: Out Of Range Index
+  severity: medium
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/a"
+      - "{{BaseURL}}/b"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(body_3, "nope")'
+`)
+
+	_, errs := nuclei.LoadDir(dir)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "body_3")
+}
+
 // TestNucleiLoadDir_FlowLoads is modeled on upstream's real
 // apache-server-status-localhost.yaml — a 403/404/401 "is it blocked" gate
 // check (marked internal: true, meaning "never a standalone result")
