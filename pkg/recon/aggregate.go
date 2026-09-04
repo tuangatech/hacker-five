@@ -61,7 +61,7 @@ type techKey struct{ name, host string }
 // treating it as one is the same kind of spurious-duplicate this
 // function's own (Name, Host) merge already exists to close.
 func (a *aggregator) addTech(t TechFact) {
-	key := techKey{strings.ToLower(t.Name), t.Host}
+	key := techKey{strings.ToLower(t.Name), NormalizeHost(t.Host)}
 	if idx, ok := a.techIndex[key]; ok {
 		existing := &a.techStack[idx]
 		if !contains(a.techSources[key], t.Source) {
@@ -80,6 +80,27 @@ func (a *aggregator) addTech(t TechFact) {
 	a.techIndex[key] = len(a.techStack)
 	a.techSources[key] = []string{t.Source}
 	a.techStack = append(a.techStack, t)
+}
+
+// NormalizeHost folds a host into the form addTech's dedup key uses —
+// found live, 2026-09-04 (LT-14, docs/follow-up.md): a real target's Tech
+// Stack showed the same technology three times over, once each for
+// "www.example.com", "Example.com" and "example.com" — httpx probes a
+// target's bare/www./as-typed host variants independently (see
+// recon.go/active.go's host-candidate generation), and each variant
+// produces its own TechFact with a differently-cased or www.-prefixed
+// Host, none of which collided with addTech's existing (lowercased-Name,
+// raw-Host) key. Lowercasing here is the same normalization Name already
+// gets; stripping one leading "www." reflects that a bug-bounty target's
+// www.-prefixed host is conventionally the same site as its bare
+// counterpart (both commonly resolve to the same origin/CDN edge), not a
+// distinct one the way a genuine subdomain (a.example.com vs
+// b.example.com, still kept distinct — see TestAddTech_DifferentHost_
+// StaysDistinct) is. Exported so pkg/webui's collapseEndpoints (recon_view.go)
+// can apply the identical normalization to its own display-table dedup key,
+// which has the same latent gap.
+func NormalizeHost(host string) string {
+	return strings.TrimPrefix(strings.ToLower(host), "www.")
 }
 
 func confidenceRank(c string) int {

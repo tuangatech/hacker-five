@@ -639,6 +639,110 @@ http:
 	assert.Contains(t, errs[0].Error(), "body_3")
 }
 
+// TestNucleiLoadDir_BareHeaderIdentifierLoads is modeled directly on real
+// upstream's webp-server-lfi.yaml (LT-15, docs/follow-up.md): a dsl:
+// matcher referencing a bare response-header name (`server`, i.e. the
+// Server header) — previously rejected outright as "unknown identifier",
+// since load-time validation had no notion of "this bare word might be a
+// header only a live target's response can supply". See
+// TestExecutorRun_BareHeaderIdentifier_MatchesRealHeader for the runtime
+// counterpart proving it actually matches a real Server header, not just
+// that it loads.
+func TestNucleiLoadDir_BareHeaderIdentifierLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "webp-server-lfi-style.yaml", `
+id: webp-server-lfi-style
+info:
+  name: WebP Server LFI Style
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(server, "Webp-Server-Go")'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_ForwardExtractorReferenceStillRejected_NotAssumedHeader
+// guards against the LT-15 header-assumption fix over-relaxing the
+// existing forward-reference safety net (see
+// TestNucleiLoadDir_ForwardExtractorReferenceRejected, unchanged): "token"
+// here is a real extractor Name defined later in this same template, so it
+// must still be rejected as a genuine ordering bug, not silently assumed
+// to be an as-yet-unobserved header just because loader.go's
+// knownExtractorNames hasn't accumulated it yet at the point request 1 is
+// validated.
+func TestNucleiLoadDir_ForwardExtractorReferenceStillRejected_NotAssumedHeader(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "forward-ref-vs-header.yaml", `
+id: forward-ref-vs-header-style
+info:
+  name: Forward Reference vs Header Style
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/a"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'token != ""'
+  - method: GET
+    path:
+      - "{{BaseURL}}/b"
+    extractors:
+      - type: regex
+        name: token
+        regex:
+          - 'token=(\w+)'
+`)
+
+	_, errs := nuclei.LoadDir(dir)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), `unknown identifier "token"`)
+}
+
+// TestNucleiLoadDir_PartRequestExtractorLoads is modeled directly on real
+// upstream's prestashop-cartabandonmentpro-file-upload.yaml (LT-15,
+// docs/follow-up.md): an extractor using `part: request` to capture the
+// raw outgoing request text — previously rejected outright as "unsupported
+// part ... (likely an out-of-band/OAST check)", even though it has nothing
+// to do with OAST at all. See TestExecutorRun_PartRequestExtractor_
+// CapturesRawRequest for the runtime counterpart proving it actually
+// captures the real request, not just that it loads.
+func TestNucleiLoadDir_PartRequestExtractorLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "part-request-style.yaml", `
+id: part-request-style
+info:
+  name: Part Request Style
+  severity: info
+http:
+  - method: POST
+    path:
+      - "{{BaseURL}}/upload"
+    body: "filename={{randstr}}.php"
+    extractors:
+      - type: regex
+        part: request
+        name: sent_filename
+        group: 1
+        regex:
+          - 'filename=(\S+)'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
 // TestNucleiLoadDir_InteractshRawTemplateLoads is modeled on real
 // CVE-2019-6799.yaml: a raw: request embedding {{interactsh-url}} alongside
 // {{randstr}}, matched against with a `part: interactsh_protocol` word

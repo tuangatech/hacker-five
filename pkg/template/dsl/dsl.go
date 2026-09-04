@@ -2,7 +2,7 @@
 // Nuclei's DSL expression language this project supports: comparisons
 // (==, !=, <, >) against status_code/len(body), function calls
 // (contains/contains_any/contains_all/regex/to_lower/tolower/trim/md5/sha1/
-// base64_py/mmh3/compare_versions/base64_decode/concat), the status_code/body/header/content_type/response
+// base64_py/mmh3/compare_versions/base64_decode/concat), the status_code/body/header/content_type/response/request
 // built-in variables, combined with &&/||, unary "!" negation, and
 // parenthesized grouping. Anything
 // outside this grammar is a parse/eval error, not a silent false/empty
@@ -19,10 +19,16 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/bits"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// indexedIdentifierNamePattern matches a bare body_N/header_N/status_code_N/
+// content_type_N/duration_N identifier name exactly — see resolveIdent's use
+// below (LT-15, docs/follow-up.md).
+var indexedIdentifierNamePattern = regexp.MustCompile(`^(?:body|header|status_code|content_type|duration)_[0-9]+$`)
 
 // Context supplies the values a DSL expression can reference.
 type Context struct {
@@ -30,8 +36,38 @@ type Context struct {
 	Body        string
 	Header      string            // raw "Name: value\n"-per-line dump, matching Nuclei's own "header" DSL variable — see matcher.Part("header", r)
 	ContentType string            // the response's Content-Type header value alone, matching Nuclei's own "content_type" DSL identifier — see matcher.Part("content_type", r); distinct from part: content_type, real upstream templates use both forms (e.g. redoc-api-docs.yaml uses the identifier form: contains(content_type, "text/html"))
+	Headers     http.Header       // the response's actual headers, keyed by canonical name — backs resolveIdent's bare-header-name fallback (e.g. `server`, `x_powered_by`) below; nil is fine (matcher/extractor Validate's zero-Context calls), the fallback then simply never matches
+	Request     string            // the raw outgoing HTTP request text — backs the bare "request" DSL identifier, matching matcher.Part("request", ...)/Response.Request (LT-15, docs/follow-up.md)
 	Vars        map[string]string // bound template variables (native format's condition: field, e.g. "auth_token != \"\"") — checked after the built-ins below, so a bound var can't shadow status_code/body/header/content_type
 	IntVars     map[string]int    // same idea as Vars, but int-typed — needed for e.g. a raw:-multi-request template's status_code_2 (see matcher.Response.ExtraInts), since compare() only compares matching types and a real template does "status_code_1 != 404", not a string comparison
+
+	// AssumeUnknownIsHeader, when true, makes resolveIdent's last-resort
+	// fallback below succeed (returning "") for an otherwise-unresolved bare
+	// identifier not listed in ExcludedFromHeaderAssumption, instead of
+	// erroring — used only by nuclei/loader.go's load-time dsl.Validate
+	// dummy Context (LT-15, docs/follow-up.md): which response headers a
+	// live target will actually send back (and so which bare-word
+	// identifiers, e.g. `server`, will resolve — see Headers above) is
+	// fundamentally unknowable at load time, so a real, otherwise
+	// well-formed template referencing one (upstream's webp-server-lfi.yaml:
+	// contains(server, "Webp-Server-Go")) was being rejected outright as
+	// "unknown identifier". Never set true for a real per-request Eval call
+	// (matcher.go/extractor.go's evaluate paths) — there, Headers already
+	// carries the real response and an identifier that still doesn't
+	// resolve genuinely is unknown, not just "not observed yet".
+	AssumeUnknownIsHeader bool
+	// ExcludedFromHeaderAssumption names identifiers AssumeUnknownIsHeader
+	// must still treat as a hard error rather than assume-as-header — every
+	// extractor Name used anywhere in the template (loader.go's validate
+	// populates this template-wide, deliberately wider than the strictly
+	// forward-accumulated knownExtractorNames Vars stubs above). Without
+	// this, a genuine template bug — a matcher referencing an extractor's
+	// Name before that extractor has run (real Nuclei binds extractors
+	// strictly forward; see TestNucleiLoadDir_ForwardExtractorReferenceRejected)
+	// — would be silently swallowed by the header assumption instead of
+	// caught at load time, since an as-yet-unaccumulated extractor Name is
+	// indistinguishable from a genuine header name by spelling alone.
+	ExcludedFromHeaderAssumption map[string]bool
 }
 
 // Eval parses and evaluates expr against ctx. A bare comparison or an
@@ -363,6 +399,8 @@ func (p *parser) resolveIdent(name string) (any, error) {
 		return p.ctx.Header, nil
 	case "content_type":
 		return p.ctx.ContentType, nil
+	case "request":
+		return p.ctx.Request, nil
 	case "response":
 		// Same header+body alias as matcher.Part's "response" case, and the
 		// same reasoning: real usage (e.g. upstream's
@@ -376,6 +414,36 @@ func (p *parser) resolveIdent(name string) (any, error) {
 		}
 		if v, ok := p.ctx.IntVars[name]; ok {
 			return v, nil
+		}
+		// Real Nuclei exposes every response header as a bare DSL
+		// identifier too — the header's lowercased name, with any hyphen
+		// folded to an underscore (e.g. the Server header becomes the
+		// `server` identifier, X-Powered-By becomes `x_powered_by`) — found
+		// live, 2026-09-04 (LT-15, docs/follow-up.md): a real rejected
+		// template, webp-server-lfi.yaml, used exactly this form
+		// (contains(server, "Webp-Server-Go")), which this evaluator had no
+		// fallback for at all, rejecting the template outright at load
+		// time. Checked last, after Vars/IntVars, so a bound template
+		// variable can still shadow a same-named header if either were
+		// ever real (the same precedence status_code/body/header/
+		// content_type already get above).
+		if p.ctx.Headers != nil {
+			headerName := http.CanonicalHeaderKey(strings.ReplaceAll(name, "_", "-"))
+			if vals, ok := p.ctx.Headers[headerName]; ok {
+				return strings.Join(vals, ", "), nil
+			}
+		}
+		// indexedIdentifierNamePattern excludes the body_N/header_N/
+		// status_code_N/content_type_N/duration_N family from the header
+		// assumption below regardless of range — these are a distinct,
+		// reserved namespace with a well-defined valid range the loader
+		// already tracks (indexedDSLContext's dummy N=1..count entries), so
+		// an out-of-range reference (e.g. status_code_5 against a 2-entry
+		// raw: block) is a genuine template bug that must still be caught
+		// at load time, not silently assumed to be an arbitrarily-named
+		// header (see TestNucleiLoadDir_OutOfRangeIndexedIdentifierRejected).
+		if p.ctx.AssumeUnknownIsHeader && !p.ctx.ExcludedFromHeaderAssumption[name] && !indexedIdentifierNamePattern.MatchString(name) {
+			return "", nil
 		}
 		return nil, fmt.Errorf("unknown identifier %q", name)
 	}

@@ -54,6 +54,26 @@ func TestCollapseEndpoints_DistinctPaths_NotCollapsed(t *testing.T) {
 	}
 }
 
+// TestCollapseEndpoints_WwwAndCaseHostVariants_Collapses guards the LT-14
+// fix (docs/follow-up.md): this table's dedup key used the raw, un-
+// normalized host, so the same path crawled via www./bare/mixed-case host
+// variants (real example: www.nettix.com.pe, Nettix.com.pe, nettix.com.pe)
+// produced separate rows instead of one collapsed row with a VariantCount
+// — the identical latent gap aggregator.addTech had for the Tech Stack
+// table (see pkg/recon/aggregate_test.go's matching test).
+func TestCollapseEndpoints_WwwAndCaseHostVariants_Collapses(t *testing.T) {
+	facts := []recon.EndpointFact{
+		{URL: "https://www.nettix.com.pe/a", Method: "GET"},
+		{URL: "https://Nettix.com.pe/a", Method: "GET"},
+		{URL: "https://nettix.com.pe/a", Method: "GET"},
+	}
+
+	rows, _ := collapseEndpoints(facts)
+
+	require.Len(t, rows, 1, "www./bare/mixed-case host variants of the same site must collapse into one row")
+	assert.Equal(t, 3, rows[0].VariantCount)
+}
+
 func TestCollapseEndpoints_SamePathDifferentMethod_NotCollapsed(t *testing.T) {
 	facts := []recon.EndpointFact{
 		{URL: "https://example.com/a", Method: "GET"},

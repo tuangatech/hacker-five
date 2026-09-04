@@ -115,7 +115,7 @@ func extractKval(e Extractor, r matcher.Response) (string, bool) {
 
 func extractDSL(e Extractor, r matcher.Response) (string, bool) {
 	for _, expr := range e.DSL {
-		val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: matcher.Part("header", r), ContentType: r.Headers.Get("Content-Type"), Vars: r.ExtraVars, IntVars: r.ExtraInts})
+		val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: matcher.Part("header", r), ContentType: r.Headers.Get("Content-Type"), Headers: r.Headers, Request: r.Request, Vars: r.ExtraVars, IntVars: r.ExtraInts})
 		if err != nil {
 			continue
 		}
@@ -139,7 +139,11 @@ func Validate(e Extractor) error {
 // exist once execution binds them).
 func ValidateWithContext(e Extractor, ctx dsl.Context) error {
 	if !matcher.ValidPartWithContext(e.Part, ctx) {
-		return fmt.Errorf("extractor: unsupported part %q (likely an out-of-band/OAST check — not supported)", e.Part)
+		// See matcher.ValidateWithContext's matching comment (LT-15,
+		// docs/follow-up.md) — this used to always guess "likely OAST",
+		// which mislabeled the real prestashop-cartabandonmentpro-file-
+		// upload.yaml rejection (`part: request`, unrelated to OAST).
+		return fmt.Errorf("extractor: unsupported part %q (not implemented — see matcher.ValidPart for the supported list)", e.Part)
 	}
 	switch e.Type {
 	case "json", "kval":

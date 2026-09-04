@@ -37,6 +37,21 @@ type Response struct {
 	// and pkg/template/nuclei/loader.go's rawIndexedDSLContext doc comment.
 	ExtraVars map[string]string
 	ExtraInts map[string]int
+
+	// Request is the raw outgoing HTTP request text (request line + headers
+	// + body), same format detectors.FormatRequest produces for Finding
+	// evidence — backs `part: request` below (LT-15, docs/follow-up.md).
+	// Real example: prestashop-cartabandonmentpro-file-upload.yaml's
+	// extractor uses `part: request` to capture the exact bytes it just
+	// sent (a file-upload's boundary/filename), previously rejected
+	// outright as an unsupported part, mislabeled as a likely OAST check —
+	// it's unrelated to out-of-band correlation, just a part this project
+	// hadn't wired up yet. Empty string ("") when the caller hasn't
+	// supplied it (e.g. Part() calls that build a throwaway Response for a
+	// single sub-computation, like the header_N binding above) — same
+	// harmless-zero-value convention every other Response field already
+	// follows.
+	Request string
 }
 
 // Matcher checks one condition against a Response. Type selects which
@@ -100,6 +115,15 @@ func Part(part string, r Response) string {
 		return b.String()
 	case "content_type":
 		return r.Headers.Get("Content-Type")
+	case "request":
+		// The raw outgoing request text (see Response.Request's doc
+		// comment) — LT-15, docs/follow-up.md. Deliberately never falls
+		// through to the body when unset (mirrors the interactsh_ case
+		// below): a Response built without Request populated (e.g. a
+		// throwaway single-field Response for a header_N sub-computation)
+		// must resolve to "", not silently start matching against the page
+		// body instead.
+		return r.Request
 	case "all", "response":
 		// "response" is real Nuclei's full raw HTTP response (status line +
 		// headers + body). Every real "response"-part matcher sampled across
@@ -180,7 +204,7 @@ func (m Matcher) evaluate(r Response) bool {
 		return false
 	case "dsl":
 		return m.evaluateList(m.DSL, func(expr string) bool {
-			val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: Part("header", r), ContentType: r.Headers.Get("Content-Type"), Vars: r.ExtraVars, IntVars: r.ExtraInts})
+			val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: Part("header", r), ContentType: r.Headers.Get("Content-Type"), Headers: r.Headers, Request: r.Request, Vars: r.ExtraVars, IntVars: r.ExtraInts})
 			if err != nil {
 				return false
 			}
@@ -260,7 +284,8 @@ func MatchingNames(matchers []Matcher, r Response) []string {
 
 // ValidPart reports whether part is one of the response slices this project
 // actually implements ("", "body", "header", "all", "content_type",
-// "response" — "" defaults to "body" — plus the three OAST/out-of-band
+// "response", "request" — "" defaults to "body", "request" is the raw
+// outgoing request text, see Response.Request — plus the three OAST/out-of-band
 // values "interactsh_protocol", "interactsh_request", "interactsh_response"
 // used by blind-SSRF-style checks like upstream's linkerd-ssrf-detect.yaml,
 // now backed by real Interactsh-protocol infrastructure — see
@@ -278,7 +303,7 @@ func MatchingNames(matchers []Matcher, r Response) []string {
 // body for them.
 func ValidPart(part string) bool {
 	switch part {
-	case "", "body", "header", "all", "content_type", "response",
+	case "", "body", "header", "all", "content_type", "response", "request",
 		"interactsh_protocol", "interactsh_request", "interactsh_response":
 		return true
 	default:
@@ -350,7 +375,18 @@ func Validate(m Matcher) error {
 // never used for anything but confirming the expression parses/type-checks.
 func ValidateWithContext(m Matcher, ctx dsl.Context) error {
 	if !ValidPartWithContext(m.Part, ctx) {
-		return fmt.Errorf("matcher: unsupported part %q (likely an out-of-band/OAST check — not supported)", m.Part)
+		// Found live, 2026-09-04 (LT-15, docs/follow-up.md): this message
+		// used to always claim "likely an out-of-band/OAST check", but that
+		// was only ever a guess — real upstream's
+		// prestashop-cartabandonmentpro-file-upload.yaml's `part: request`
+		// rejection here had nothing to do with OAST at all, it was just a
+		// genuinely-unimplemented-until-now part (see Response.Request).
+		// The three real OAST parts (interactsh_protocol/_request/
+		// _response) are already in ValidPart's accepted set, so anything
+		// reaching this branch is, by construction, NOT one of those —
+		// stating that plainly instead of guessing avoids mislabeling a
+		// template's rejection reason to whoever reads the load-time log.
+		return fmt.Errorf("matcher: unsupported part %q (not implemented — see matcher.ValidPart for the supported list)", m.Part)
 	}
 	switch m.Type {
 	case "status", "word", "size":

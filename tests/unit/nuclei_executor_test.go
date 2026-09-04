@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -1317,6 +1318,265 @@ func TestExecutorRun_IndependentMultiPath_EachPathReportsSeparately(t *testing.T
 	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
 	require.NoError(t, err)
 	require.Len(t, findings, 2, "each of the two independently-matching paths must produce its own finding, not one correlated finding")
+}
+
+// --- LT-13 (docs/follow-up.md): malformed request URLs from path:-based
+// requests, and the coverage loss a hard error caused ---
+
+// TestExecutorRun_PathHostnamePlaceholder_Renders is the regression guard
+// for LT-13 bug 1: tryPath built its vars.Context with no Hostname field at
+// all, so any path:-based template referencing {{Host}}/{{Hostname}} (real
+// example: CVE-2018-8024.yaml's "{{Hostname}}:4040/jobs/...") rendered the
+// placeholder as an empty string rather than erroring — producing a
+// malformed URL (e.g. ":4040/jobs/...") that failed downstream with
+// "missing protocol scheme", exactly the live failure the user's
+// aceautowreckers.com scan reported. tryRaw already resolved this
+// correctly; tryPath/tryPathCorrelatedIteration did not.
+func TestExecutorRun_PathHostnamePlaceholder_Renders(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte("OK"))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "path-hostname-placeholder-style",
+		Info: nuclei.Info{Name: "Path Hostname Placeholder Style", Severity: "info"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method:   http.MethodGet,
+			Path:     []string{"{{BaseURL}}/?h={{Hostname}}"},
+			Matchers: []matcher.Matcher{{Type: "word", Words: []string{"OK"}}},
+		}},
+	}
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	u, parseErr := url.Parse(server.URL)
+	require.NoError(t, parseErr)
+	assert.Equal(t, "h="+u.Host, gotQuery, "{{Hostname}} must render as the actual target host in a path:-based request, not empty")
+}
+
+// TestExecutorRun_PathCorrelatedHostnamePlaceholder_Renders is
+// TestExecutorRun_PathHostnamePlaceholder_Renders' counterpart for
+// tryPathCorrelatedIteration (the pathCorrelated branch, used once a
+// matcher/extractor references an indexed body_N/status_code_N/... — see
+// loader.go's usesPathCorrelation) — the same missing-Hostname bug existed
+// in this second, structurally-separate call site.
+func TestExecutorRun_PathCorrelatedHostnamePlaceholder_Renders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/probe1":
+			if r.URL.Query().Get("h") != "" {
+				_, _ = w.Write([]byte("host-ok"))
+			}
+		case "/probe2":
+			_, _ = w.Write([]byte("second"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "path-correlation-hostname.yaml", `
+id: path-correlation-hostname-style
+info:
+  name: Path Correlation Hostname Style
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/probe1?h={{Hostname}}"
+      - "{{BaseURL}}/probe2"
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(body_1, "host-ok")'
+      - type: dsl
+        dsl:
+          - 'contains(body_2, "second")'
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "body_1 must contain \"host-ok\", which only happens if {{Hostname}} rendered non-empty in the first correlated probe")
+}
+
+// TestExecutorRun_PathLeadingWhitespaceTrimmed is the regression guard for
+// LT-13 bug 2: a template's baked-in leading space before {{BaseURL}} (real
+// example: aem-querybuilder-json-servlet.yaml) used to reach
+// http.NewRequestWithContext unsanitized, producing "first path segment in
+// URL cannot contain colon" once the scheme was pushed past the leading
+// space. tryPath now trims the rendered URL before building the request.
+func TestExecutorRun_PathLeadingWhitespaceTrimmed(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte("OK"))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "leading-whitespace-style",
+		Info: nuclei.Info{Name: "Leading Whitespace Style", Severity: "info"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method:   http.MethodGet,
+			Path:     []string{" {{BaseURL}}/panel"},
+			Matchers: []matcher.Matcher{{Type: "word", Words: []string{"OK"}}},
+		}},
+	}
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "a leading space baked into the template's path: entry must not stop the request from firing")
+	assert.Equal(t, "/panel", gotPath)
+}
+
+// TestExecutorRun_PathMalformedURL_SiblingPathStillTried is the regression
+// guard for LT-13 bug 3: a malformed rendered URL (real example:
+// laravel-debug-error.yaml's stray unescaped "%^&") used to return a hard
+// error from tryPath, which aborted runPathRequest's entire remaining
+// payloadLoop — silently dropping every other still-untried Path entry in
+// the same request block, not just the bad one. The first Path entry here
+// has an invalid percent-escape; the second is well-formed and must still
+// fire and be allowed to match.
+func TestExecutorRun_PathMalformedURL_SiblingPathStillTried(t *testing.T) {
+	var hits []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		if r.URL.Path == "/good" {
+			_, _ = w.Write([]byte("found"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "malformed-url-style",
+		Info: nuclei.Info{Name: "Malformed URL Style", Severity: "info"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method:   http.MethodGet,
+			Path:     []string{"{{BaseURL}}/bad%zz", "{{BaseURL}}/good"},
+			Matchers: []matcher.Matcher{{Type: "word", Words: []string{"found"}}},
+		}},
+	}
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err, "a malformed rendered URL must be skipped, not returned as a hard scan error")
+	require.Len(t, findings, 1, "the second, well-formed Path entry must still fire and match")
+	assert.Contains(t, hits, "/good", "the malformed first entry must not abort the remaining Path entries in this request block")
+}
+
+// TestExecutorRun_BareHeaderIdentifier_MatchesRealHeader is the runtime
+// counterpart to TestNucleiLoadDir_BareHeaderIdentifierLoads (LT-15,
+// docs/follow-up.md): a dsl: matcher referencing a bare header name
+// (`server`) must actually resolve against the real fired response's
+// Server header, not just parse/validate at load time.
+func TestExecutorRun_BareHeaderIdentifier_MatchesRealHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Webp-Server-Go/1.0")
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "webp-server-lfi-style.yaml", `
+id: webp-server-lfi-style
+info:
+  name: WebP Server LFI Style
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(server, "Webp-Server-Go")'
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "the bare `server` identifier must resolve to the real Server header value")
+}
+
+// TestExecutorRun_BareHeaderIdentifier_AbsentHeaderNoMatch is the negative
+// counterpart: a target that never sends a Server header at all must not
+// satisfy the same check.
+func TestExecutorRun_BareHeaderIdentifier_AbsentHeaderNoMatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "webp-server-lfi-style.yaml", `
+id: webp-server-lfi-style
+info:
+  name: WebP Server LFI Style
+  severity: high
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(server, "Webp-Server-Go")'
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	assert.Empty(t, findings, "no Server header at all must not satisfy contains(server, ...)")
+}
+
+// TestExecutorRun_PartRequestExtractor_CapturesRawRequest is the runtime
+// counterpart to TestNucleiLoadDir_PartRequestExtractorLoads (LT-15,
+// docs/follow-up.md): an extractor using `part: request` must actually
+// capture the real outgoing request text — proven here by feeding the
+// extracted value straight into a same-request dsl: matcher (the same
+// extractor->matcher binding TestExecutorRun_SameRequestExtractorBinding
+// already exercises for `part: header`).
+func TestExecutorRun_PartRequestExtractor_CapturesRawRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "part-request-style.yaml", `
+id: part-request-style
+info:
+  name: Part Request Style
+  severity: info
+http:
+  - method: POST
+    path:
+      - "{{BaseURL}}/upload"
+    body: "filename=shell.php"
+    matchers:
+      - type: dsl
+        dsl:
+          - contains(sent_filename, "shell.php")
+    extractors:
+      - type: regex
+        part: request
+        internal: true
+        name: sent_filename
+        regex:
+          - 'filename=\S+'
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "part: request must have captured the real outgoing request text (including the body's filename=shell.php), not an empty/fallback value")
 }
 
 // --- interactsh_ / OOB correlation ---

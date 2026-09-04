@@ -472,7 +472,11 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 	// One probe covers every entry in req.Path below — see prepareOOB's doc
 	// comment for why that sharing is what real correlation needs.
 	probe := e.prepareOOB(req, renderVars)
-	renderCtx := vars.Context{BaseURL: target, Vars: renderVars}
+	host, err := hostnameOf(target)
+	if err != nil {
+		return detectors.Finding{}, false, false, nil
+	}
+	renderCtx := vars.Context{BaseURL: target, Hostname: host, Vars: renderVars}
 
 	extraStrVars := make(map[string]string, len(req.Path)*3)
 	extraInts := make(map[string]int, len(req.Path)*2+1)
@@ -493,6 +497,7 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 		if err != nil {
 			return detectors.Finding{}, false, false, nil
 		}
+		fullURL = strings.TrimSpace(fullURL)
 		body, err := vars.Render(req.Body, renderCtx)
 		if err != nil {
 			return detectors.Finding{}, false, false, nil
@@ -500,7 +505,14 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 
 		httpReq, err := http.NewRequestWithContext(ctx, methodOrDefault(req.Method), fullURL, bodyReader(body))
 		if err != nil {
-			return detectors.Finding{}, false, false, fmt.Errorf("nuclei: building request for template %s: %w", tmpl.ID, err)
+			// A malformed rendered URL (bad %-escape, stray leading
+			// whitespace baked into a template, missing scheme) is a
+			// per-entry rendering problem, not a scan-fatal one — treated
+			// the same as the render failures just above so one bad entry
+			// doesn't abort every other still-untried Path entry/payload
+			// combination in runPathRequestCorrelated's loop (see its doc
+			// comment: LT-13, docs/follow-up.md).
+			return detectors.Finding{}, false, false, nil
 		}
 		for k, v := range e.extraHeaders {
 			httpReq.Header.Set(k, v)
@@ -556,10 +568,15 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 		extraStrVars[k] = v
 	}
 
-	baseResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: extraStrVars, ExtraInts: extraInts}
+	// Computed once and reused both as matcher.Response.Request (backs
+	// `part: request`, LT-15, docs/follow-up.md) and as this Finding's own
+	// "request" evidence below — same raw outgoing-request text either way.
+	lastReqFormatted := detectors.FormatRequest(lastReq.Method, lastFullURL, lastReq.Header, []byte(lastReqBody))
+
+	baseResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: extraStrVars, ExtraInts: extraInts, Request: lastReqFormatted}
 	extracted := extractor.Extract(req.Extractors, baseResp)
 
-	mResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: mergeVars(extraStrVars, extracted), ExtraInts: extraInts}
+	mResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: mergeVars(extraStrVars, extracted), ExtraInts: extraInts, Request: lastReqFormatted}
 	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
 	chainable = evaluated || len(req.Matchers) == 0
 	matched = evaluated && hasReportableMatcher(req.Matchers)
@@ -596,7 +613,7 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 			"template_id":    tmpl.ID,
 			"status":         fmt.Sprintf("%d", lastStatus),
 			"matched_checks": strings.Join(matchedChecks, ","),
-			"request":        detectors.FormatRequest(lastReq.Method, lastFullURL, lastReq.Header, []byte(lastReqBody)),
+			"request":        lastReqFormatted,
 			"response":       detectors.FormatResponse(lastStatus, lastHeaders, lastBody),
 		},
 	}, true, true, nil
@@ -648,12 +665,17 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 		}
 	}
 	probe := e.prepareOOB(req, renderVars)
-	renderCtx := vars.Context{BaseURL: target, Vars: renderVars}
+	host, err := hostnameOf(target)
+	if err != nil {
+		return detectors.Finding{}, false, false, nil
+	}
+	renderCtx := vars.Context{BaseURL: target, Hostname: host, Vars: renderVars}
 
 	fullURL, err := vars.Render(path, renderCtx)
 	if err != nil {
 		return detectors.Finding{}, false, false, nil
 	}
+	fullURL = strings.TrimSpace(fullURL)
 	body, err := vars.Render(req.Body, renderCtx)
 	if err != nil {
 		return detectors.Finding{}, false, false, nil
@@ -661,7 +683,12 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 
 	httpReq, err := http.NewRequestWithContext(ctx, methodOrDefault(req.Method), fullURL, bodyReader(body))
 	if err != nil {
-		return detectors.Finding{}, false, false, fmt.Errorf("nuclei: building request for template %s: %w", tmpl.ID, err)
+		// See tryPathCorrelatedIteration's matching comment (LT-13,
+		// docs/follow-up.md): a malformed rendered URL is a per-entry
+		// rendering problem, not a scan-fatal one — skip this one
+		// path/payload combination instead of aborting runPathRequest's
+		// entire remaining payloadLoop.
+		return detectors.Finding{}, false, false, nil
 	}
 	for k, v := range e.extraHeaders {
 		httpReq.Header.Set(k, v)
@@ -729,10 +756,13 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	// returns all three interactsh_ keys either way.
 	oobVars := e.awaitOOB(ctx, probe)
 	dslVars := mergeVars(chainVars, extraVars, aliasVars, oobVars)
-	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: dslVars, ExtraInts: durationInts}
+	// Reused for matcher.Response.Request (backs `part: request`, LT-15,
+	// docs/follow-up.md) and this Finding's own "request" evidence below.
+	reqFormatted := detectors.FormatRequest(httpReq.Method, fullURL, httpReq.Header, []byte(body))
+	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: dslVars, ExtraInts: durationInts, Request: reqFormatted}
 	extracted := extractor.Extract(req.Extractors, baseResp)
 
-	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: mergeVars(dslVars, extracted), ExtraInts: durationInts}
+	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: mergeVars(dslVars, extracted), ExtraInts: durationInts, Request: reqFormatted}
 	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
 	chainable = evaluated || len(req.Matchers) == 0
 	matched = evaluated && hasReportableMatcher(req.Matchers)
@@ -775,7 +805,7 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 			"template_id":    tmpl.ID,
 			"status":         fmt.Sprintf("%d", resp.StatusCode),
 			"matched_checks": strings.Join(matchedChecks, ","),
-			"request":        detectors.FormatRequest(httpReq.Method, fullURL, httpReq.Header, []byte(body)),
+			"request":        reqFormatted,
 			"response":       detectors.FormatResponse(resp.StatusCode, resp.Header, respBody),
 		},
 	}, true, true, nil
@@ -959,10 +989,13 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 	// Extraction runs unconditionally, before matchers evaluate — see
 	// tryPath's doc comment for why (same-request extractor->matcher
 	// binding).
-	baseResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: extraVars, ExtraInts: extraInts}
+	// Reused for matcher.Response.Request (backs `part: request`, LT-15,
+	// docs/follow-up.md) and this Finding's own "request" evidence below.
+	lastReqFormatted := detectors.FormatRequest(lastReq.Method, lastReq.URL.String(), lastReq.Header, []byte(lastReqBody))
+	baseResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: extraVars, ExtraInts: extraInts, Request: lastReqFormatted}
 	extracted := extractor.Extract(req.Extractors, baseResp)
 
-	mResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: mergeVars(extraVars, extracted), ExtraInts: extraInts}
+	mResp := matcher.Response{StatusCode: lastStatus, Headers: lastHeaders, Body: lastBody, ExtraVars: mergeVars(extraVars, extracted), ExtraInts: extraInts, Request: lastReqFormatted}
 	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
 	chainable = evaluated || len(req.Matchers) == 0
 	matched = evaluated && hasReportableMatcher(req.Matchers)
@@ -999,7 +1032,7 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 			"template_id":    tmpl.ID,
 			"status":         fmt.Sprintf("%d", lastStatus),
 			"matched_checks": strings.Join(matchedChecks, ","),
-			"request":        detectors.FormatRequest(lastReq.Method, lastReq.URL.String(), lastReq.Header, []byte(lastReqBody)),
+			"request":        lastReqFormatted,
 			"response":       detectors.FormatResponse(lastStatus, lastHeaders, lastBody),
 		},
 	}, true, true, nil

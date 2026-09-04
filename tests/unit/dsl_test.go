@@ -1,6 +1,7 @@
 package unit
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -57,6 +58,49 @@ func TestDSLEval_IntVarsFallback(t *testing.T) {
 	val, err = dsl.Eval(`status_code_2 != 200`, ctx)
 	require.NoError(t, err)
 	assert.Equal(t, true, val)
+}
+
+// TestDSLEval_BareHeaderNameFallback is the regression guard for LT-15
+// (docs/follow-up.md): real Nuclei exposes every response header as a bare
+// DSL identifier (lowercased name, hyphens folded to underscores) — a real
+// rejected template, webp-server-lfi.yaml, used exactly this form
+// (contains(server, "Webp-Server-Go")), which this evaluator had no
+// fallback for at all before resolveIdent's Headers lookup.
+func TestDSLEval_BareHeaderNameFallback(t *testing.T) {
+	ctx := dsl.Context{Headers: http.Header{"Server": []string{"Webp-Server-Go/1.0"}, "X-Powered-By": []string{"PHP/8.1"}}}
+
+	val, err := dsl.Eval(`contains(server, "Webp-Server-Go")`, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+
+	val, err = dsl.Eval(`contains(x_powered_by, "PHP")`, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
+
+// TestDSLEval_UnknownHeaderStillErrors_WhenHeadersSet confirms the header
+// fallback only resolves a header that's actually present — a genuinely
+// unknown identifier still errors during real (non-validation) evaluation,
+// same as before this change.
+func TestDSLEval_UnknownHeaderStillErrors_WhenHeadersSet(t *testing.T) {
+	ctx := dsl.Context{Headers: http.Header{"Server": []string{"nginx"}}}
+	_, err := dsl.Eval(`nonexistent_var != ""`, ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown identifier "nonexistent_var"`)
+}
+
+// TestDSLEval_AssumeUnknownIsHeader_ResolvesEmpty locks in the load-time-only
+// escape hatch nuclei/loader.go's indexedDSLContext uses (LT-15): which
+// headers a live target will actually send back is unknowable at load
+// time, so with AssumeUnknownIsHeader set, an otherwise-unresolved bare
+// identifier evaluates to an empty string rather than erroring — this is
+// what lets a template referencing an arbitrary header name validate
+// successfully at load time.
+func TestDSLEval_AssumeUnknownIsHeader_ResolvesEmpty(t *testing.T) {
+	ctx := dsl.Context{AssumeUnknownIsHeader: true}
+	val, err := dsl.Eval(`contains(server, "Webp-Server-Go")`, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, false, val, "the assumed-empty stand-in value must not itself satisfy the check")
 }
 
 // TestDSLEval_OrderingOperators locks in <, <=, >, >= as top-level DSL

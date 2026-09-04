@@ -161,6 +161,24 @@ func validate(tmpl *Template) error {
 	// type-check" counterpart, real values are never known this early.
 	knownExtractorNames := map[string]string{}
 
+	// allExtractorNames is the template-wide (not forward-accumulated)
+	// counterpart to knownExtractorNames above — every extractor Name used
+	// anywhere in the template, regardless of request order. It's the
+	// exclusion list requestDSLContext's AssumeUnknownIsHeader fallback
+	// needs (LT-15, docs/follow-up.md): an as-yet-unaccumulated extractor
+	// Name (a genuine forward-reference bug, see
+	// TestNucleiLoadDir_ForwardExtractorReferenceRejected) must still be
+	// rejected, not silently assumed to be a header just because it isn't
+	// in knownExtractorNames YET.
+	allExtractorNames := map[string]bool{}
+	for _, req := range tmpl.HTTP {
+		for _, e := range req.Extractors {
+			if e.Name != "" {
+				allExtractorNames[e.Name] = true
+			}
+		}
+	}
+
 	for i, req := range tmpl.HTTP {
 		// payloads: is also legitimately used with a plain path:-based
 		// request, not just raw: (real example: upstream's
@@ -195,7 +213,7 @@ func validate(tmpl *Template) error {
 				reqScopeNames[k] = ""
 			}
 		}
-		dslCtx := requestDSLContext(req.Raw, req.Path, reqScopeNames)
+		dslCtx := requestDSLContext(req.Raw, req.Path, reqScopeNames, allExtractorNames)
 		for j, m := range req.Matchers {
 			if m.Internal && tmpl.Flow == "" {
 				return fmt.Errorf("http[%d].matchers[%d]: uses internal: true outside a flow: template — flow-control-only matcher has nothing to gate without flow:, see docs/10-implementation-plan-ph1b.md", i, j)
@@ -324,8 +342,8 @@ func usesPathCorrelation(matchers []matcher.Matcher, extractors []extractor.Extr
 // (found live: apache-httpd-eol.yaml's compare_versions(version, ...)
 // errored against an empty-string dummy — "0" parses cleanly as a version
 // while still being a harmless placeholder for any string-only function).
-func requestDSLContext(raw, path []string, knownExtractorNames map[string]string) dsl.Context {
-	ctx := indexedDSLContext(raw, path)
+func requestDSLContext(raw, path []string, knownExtractorNames map[string]string, allExtractorNames map[string]bool) dsl.Context {
+	ctx := indexedDSLContext(raw, path, allExtractorNames)
 	if len(knownExtractorNames) == 0 {
 		return ctx
 	}
@@ -372,7 +390,7 @@ func requestDSLContext(raw, path []string, knownExtractorNames map[string]string
 // blind-SQLi sleep check with no raw: at all) — nuclei.Executor's tryPath
 // binds it the same way tryRawIteration binds the aliased bare
 // status_code/body/header/content_type to the last raw entry.
-func indexedDSLContext(raw, path []string) dsl.Context {
+func indexedDSLContext(raw, path []string, excludeFromHeaderAssumption map[string]bool) dsl.Context {
 	n := len(raw)
 	if n == 0 {
 		n = len(path)
@@ -386,7 +404,13 @@ func indexedDSLContext(raw, path []string) dsl.Context {
 	// unconditional presence matters).
 	vars := map[string]string{"interactsh_protocol": "", "interactsh_request": "", "interactsh_response": ""}
 	if n == 0 {
-		return dsl.Context{Vars: vars, IntVars: ints}
+		// AssumeUnknownIsHeader (LT-15, docs/follow-up.md): which response
+		// headers a live target actually sends back is unknowable at load
+		// time, so a bare-word identifier this dummy Context doesn't
+		// otherwise recognize (real example: webp-server-lfi.yaml's
+		// `contains(server, ...)`) is assumed to be a header name that will
+		// resolve at runtime, rather than rejecting the template outright.
+		return dsl.Context{Vars: vars, IntVars: ints, AssumeUnknownIsHeader: true, ExcludedFromHeaderAssumption: excludeFromHeaderAssumption}
 	}
 	for i := 1; i <= n; i++ {
 		vars[fmt.Sprintf("body_%d", i)] = ""
@@ -395,5 +419,5 @@ func indexedDSLContext(raw, path []string) dsl.Context {
 		ints[fmt.Sprintf("status_code_%d", i)] = 0
 		ints[fmt.Sprintf("duration_%d", i)] = 0
 	}
-	return dsl.Context{Vars: vars, IntVars: ints}
+	return dsl.Context{Vars: vars, IntVars: ints, AssumeUnknownIsHeader: true, ExcludedFromHeaderAssumption: excludeFromHeaderAssumption}
 }

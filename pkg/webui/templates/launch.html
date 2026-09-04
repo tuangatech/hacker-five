@@ -58,6 +58,9 @@
 <label for="tags">Template tags (--tags, comma-separated, optional)</label>
 <input type="text" id="tags" name="tags" value="{{.Tags}}">
 
+<label class="inline"><input type="checkbox" name="narrow_by_tech" {{if .NarrowByTech}}checked{{end}}> Narrow templates to detected tech stack</label>
+<p class="hint">Runs recon first, then loads only templates tagged relevant to what it finds running on the target, instead of the full synced corpus — faster, but narrower detection coverage. Ignored above if template tags are already given. Falls back to the full corpus if recon finds nothing actionable or the template index isn't built ("hackerfive templates index").</p>
+
 <div class="auth-shared">
 <p class="hint">Shared by IDOR, Auth Bypass, SSRF (optional), and Business Logic &mdash; misconfig ignores these. Business Logic always requires a real token; IDOR and Auth Bypass can run without one, at reduced scope.</p>
 <label for="auth_token">Auth token (--auth-token)</label>

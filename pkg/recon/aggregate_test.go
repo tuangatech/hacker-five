@@ -34,6 +34,23 @@ func TestAddTech_SameNameDifferentCase_MergesInsteadOfDuplicating(t *testing.T) 
 	}
 }
 
+// TestAddTech_WwwAndCaseHostVariants_MergeInsteadOfDuplicating guards the
+// LT-14 fix (docs/follow-up.md): a real target's Tech Stack showed the
+// same technology three times over, once each for "www.nettix.com.pe",
+// "Nettix.com.pe" and "nettix.com.pe" — httpx probes a target's bare/www./
+// as-typed host variants independently, and each produced its own TechFact
+// with a differently-cased or www.-prefixed Host, none of which collided
+// under addTech's pre-fix (lowercased-Name, raw-Host) key.
+func TestAddTech_WwwAndCaseHostVariants_MergeInsteadOfDuplicating(t *testing.T) {
+	agg := &aggregator{}
+	agg.addTech(TechFact{Name: "Site Kit", Host: "www.nettix.com.pe", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+	agg.addTech(TechFact{Name: "Site Kit", Host: "Nettix.com.pe", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+	agg.addTech(TechFact{Name: "Site Kit", Host: "nettix.com.pe", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	assert.Len(t, result.TechStack, 1, "www./bare/mixed-case variants of the same host must merge into one row, not three")
+}
+
 func TestAddTech_DifferentHost_StaysDistinct(t *testing.T) {
 	agg := &aggregator{}
 	agg.addTech(TechFact{Name: "Cloudflare", Host: "a.example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})

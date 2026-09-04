@@ -39,6 +39,16 @@ type LaunchFormData struct {
 	RaceConcurrency  int
 
 	Tags string
+	// NarrowByTech opts into LT-16's (docs/follow-up.md) tech-stack-driven
+	// template narrowing: when checked and recon detects at least one
+	// actionable technology, each detector's loaded template corpus is
+	// narrowed to tags registry.TechStackTags ranks relevant to that tech
+	// stack, instead of running the full synced corpus regardless of what
+	// recon found. Off by default — narrowing trades scan speed for
+	// detection breadth, a tradeoff this project's default posture leaves
+	// to the operator rather than silently applying to every scan (see
+	// CLAUDE.md's detection philosophy: push for coverage by default).
+	NarrowByTech bool
 
 	AuthToken        string
 	OtherAuthToken   string

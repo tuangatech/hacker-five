@@ -18,6 +18,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
 	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
+	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
 // reconRunTimeout mirrors cmd/hackerfive/recon.go's own constant — bounds
@@ -237,6 +238,7 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 		CouponApplyPath:  r.PostFormValue("coupon_apply_path"),
 		RaceConcurrency:  raceConcurrency,
 		Tags:             r.PostFormValue("tags"),
+		NarrowByTech:     r.PostFormValue("narrow_by_tech") == "on",
 		AuthToken:        r.PostFormValue("auth_token"),
 		OtherAuthToken:   r.PostFormValue("other_auth_token"),
 		AuthHeaderName:   r.PostFormValue("auth_header_name"),
@@ -448,6 +450,7 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 
 	cfgs = fillReconFields(job.Ctx(), job, cfgs)
 	mergeReconDerivedExecFields(job, cfgs)
+	cfgs = applyTechStackNarrowing(job, form, cfgs)
 
 	// Seed the detector chain only now, from cfgs *after* fillReconFields —
 	// that call can drop a detector entirely when recon couldn't resolve a
@@ -514,6 +517,72 @@ func mergeReconDerivedExecFields(job *Job, cfgs []scanner.Config) {
 		}
 	}
 	job.SetExecConfig(execCfg)
+}
+
+// applyTechStackNarrowing is LT-16's (docs/follow-up.md) opt-in fix for the
+// full ~9,000+-template synced corpus running against every target
+// regardless of what recon actually found running there. A no-op unless
+// form.NarrowByTech is checked (default false — see LaunchFormData's doc
+// comment on why this stays opt-in rather than an automatic default) or a
+// cfg already carries its own explicit Tags (the operator's own --tags-
+// equivalent narrowing is left alone, never widened or overridden). When it
+// does run: registry.TechStackTags reuses the exact same tech->tag
+// relevance scoring the Plan Preview page's registry.Resolve already uses
+// (including canonicalTechTags' false-friend exclusions), just as a union
+// allowlist instead of a capped per-tech leaf list. Degrades to the
+// unmodified full-corpus cfgs (informational log only, never an error) when
+// the template index isn't built, recon found no actionable tech, or
+// nothing in the corpus ties to any of it — same "full corpus is the safe
+// fallback" posture loadTemplateIndexOrWarn already uses for Plan Preview.
+func applyTechStackNarrowing(job *Job, form LaunchFormData, cfgs []scanner.Config) []scanner.Config {
+	if !form.NarrowByTech {
+		return cfgs
+	}
+	result := job.Snapshot().ReconResult
+	if result == nil {
+		job.AppendLog("warn", "narrow-by-tech: recon did not complete — running the full template corpus")
+		return cfgs
+	}
+	if len(result.TechStack) == 0 {
+		job.AppendLog("info", "narrow-by-tech: recon found no actionable technology — running the full template corpus")
+		return cfgs
+	}
+	index, warn := loadTemplateIndexOrWarn()
+	if warn != "" {
+		job.AppendLog("warn", "narrow-by-tech: "+warn+" — running the full template corpus")
+		return cfgs
+	}
+	return narrowConfigsByTechStack(job, result.TechStack, index, cfgs)
+}
+
+// narrowConfigsByTechStack is applyTechStackNarrowing's pure decision
+// logic, factored out so it's directly unit-testable without touching the
+// filesystem (loadTemplateIndexOrWarn reads a real templates/index.json,
+// which a test environment typically doesn't have — see
+// TestPlanPreview_MissingTemplateIndex_DegradesToWarningBanner's matching
+// note). A cfg that already carries its own explicit Tags (an operator's
+// own --tags-equivalent narrowing) is left untouched, never widened or
+// overridden by the tech-derived set.
+func narrowConfigsByTechStack(job *Job, techStack []recon.TechFact, index []templatesync.Entry, cfgs []scanner.Config) []scanner.Config {
+	tags := registry.TechStackTags(techStack, index)
+	if len(tags) == 0 {
+		job.AppendLog("info", "narrow-by-tech: none of the detected tech stack ties to a template tag — running the full template corpus")
+		return cfgs
+	}
+
+	narrowed := make([]scanner.Config, len(cfgs))
+	var narrowedDetectors []string
+	for i, cfg := range cfgs {
+		if len(cfg.Tags) == 0 {
+			cfg.Tags = tags
+			narrowedDetectors = append(narrowedDetectors, cfg.Detector)
+		}
+		narrowed[i] = cfg
+	}
+	if len(narrowedDetectors) > 0 {
+		job.AppendLog("info", fmt.Sprintf("narrow-by-tech: narrowing %s to %d tech-relevant tag(s): %s", strings.Join(narrowedDetectors, ", "), len(tags), strings.Join(tags, ", ")))
+	}
+	return narrowed
 }
 
 // noTokenNote returns an informational log line when cfg is about to run

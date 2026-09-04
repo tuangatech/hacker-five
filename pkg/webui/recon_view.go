@@ -89,7 +89,13 @@ func collapseEndpoints(facts []recon.EndpointFact) (rows []EndpointRow, assetCou
 		k := key{method: ep.Method}
 		classifyPath := ep.URL
 		if u, err := url.Parse(ep.URL); err == nil && u.Host != "" {
-			k.scheme, k.host, k.path = u.Scheme, u.Host, u.Path
+			// recon.NormalizeHost (LT-14, docs/follow-up.md): fold
+			// www./bare/mixed-case host variants of the same site into one
+			// dedup key, same normalization aggregator.addTech applies to
+			// the Tech Stack table — this table had the identical latent
+			// gap (www.example.com and example.com fell into different
+			// keys and produced separate rows for what's really one site).
+			k.scheme, k.host, k.path = u.Scheme, recon.NormalizeHost(u.Host), u.Path
 			classifyPath = u.Path
 		} else {
 			k.path = ep.URL // fallback: dedupe by the raw string verbatim

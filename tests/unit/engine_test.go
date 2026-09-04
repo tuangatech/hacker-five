@@ -583,16 +583,27 @@ info:
 	assert.Contains(t, levels, "warn", "the itemized rejection must log at \"warn\" level")
 }
 
-// TestEngineRun_LogCallback_ItemizesTemplateExecutionError confirms a
-// template that loads fine but fails during execution against a target now
-// logs a "warn" line naming the template and target — previously silent
-// (Run's per-template loop just `continue`d). Mirrors
-// TestEngineRun_LogCallback_FiresForDetectorError's `%zz-invalid-escape`
-// trick: vars.Render doesn't validate URL escapes, so the malformed escape
-// only fails once http.NewRequestWithContext tries to parse the rendered
-// URL, a deterministic execution-time (not load-time) failure.
-func TestEngineRun_LogCallback_ItemizesTemplateExecutionError(t *testing.T) {
+// TestEngineRun_MalformedTemplateURL_SkippedSilentlyWithoutLosingSiblings
+// locks in the LT-13 fix (docs/follow-up.md), replacing this test's
+// previous assumption (a template execution error logs "warn"). Before the
+// fix, a rendered URL that failed to parse (vars.Render doesn't validate
+// URL escapes, so a malformed `%zz` only fails once
+// http.NewRequestWithContext tries to parse it — a deterministic
+// execution-time, not load-time, failure) was a hard error that both
+// logged a "warn" line AND aborted every other still-untried Path entry in
+// the same request block. Now it's treated as a per-entry rendering
+// failure, same as any other unresolved-variable render error: this one
+// bad Path entry is silently skipped, with no scan-level noise, and the
+// request block's remaining Path entries still fire and can match —
+// verified end to end here through the real engine, not just
+// nuclei.Executor directly (see tests/unit/nuclei_executor_test.go's
+// TestExecutorRun_PathMalformedURL_SiblingPathStillTried for that).
+func TestEngineRun_MalformedTemplateURL_SkippedSilentlyWithoutLosingSiblings(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ok" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(server.Close)
@@ -607,6 +618,7 @@ http:
   - method: GET
     path:
       - "{{BaseURL}}/%zz-invalid-escape"
+      - "{{BaseURL}}/ok"
     matchers:
       - type: status
         status: [200]
@@ -624,18 +636,24 @@ http:
 
 	var mu sync.Mutex
 	var levels, msgs []string
-	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+	findings, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
 		mu.Lock()
 		levels = append(levels, level)
 		msgs = append(msgs, msg)
 		mu.Unlock()
 	}).Run(context.Background())
-	require.NoError(t, err, "one bad template must not fail the whole scan")
+	require.NoError(t, err, "a malformed rendered URL must not fail the whole scan")
+
+	found := false
+	for _, f := range findings {
+		if f.Evidence["template_id"] == "broken-request" {
+			found = true
+		}
+	}
+	assert.True(t, found, "the second, well-formed Path entry must still fire and match — the malformed first entry must not abort it")
 
 	joined := strings.Join(msgs, "\n")
-	assert.Contains(t, joined, "broken-request", "must name the failing template's id")
-	assert.Contains(t, joined, server.URL, "must name the target the template failed against")
-	assert.Contains(t, levels, "warn", "a single template's execution error must log at \"warn\", not \"error\"")
+	assert.NotContains(t, joined, "broken-request", "a malformed rendered URL is a per-entry rendering failure now, not a logged template execution warning")
 }
 
 // TestEngineRun_TemplateLoop_StopsOnContextDone confirms the per-target

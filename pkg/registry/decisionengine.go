@@ -332,6 +332,56 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 	return out
 }
 
+// TechStackTags returns the union of Tags from every templateIndex entry
+// matchTemplateTags ranks as relevant to at least one fact in techStack —
+// the tag allowlist scanner.Engine.loadTemplates' Config.Tags narrowing
+// needs to run only templates plausibly relevant to a target's detected
+// tech stack, instead of the full synced corpus (LT-16, docs/follow-up.md:
+// a real aceautowreckers.com run loaded and ran all ~9,244 templates
+// against a target httpx fingerprinted as running only a handful of real
+// technologies). Deliberately reuses matchTemplateTags as-is rather than
+// re-implementing its scoring: canonicalTechTags' false-friend exclusions
+// (e.g. "Nginx" not pulling in unrelated ingress-nginx/proxy-manager CVEs,
+// docs/follow-up.md P0-2) apply identically here, and every fact's own
+// maxTemplateLeavesPerTech cap only limits how many entries seed the tag
+// set per tech, not how many templates the resulting tags let back in —
+// once a tag like "wordpress" is in the returned set, every WordPress-
+// tagged template in the corpus matches it, not just the top few
+// matchTemplateTags picked for fact.Name specifically. Returns nil when
+// techStack or templateIndex is empty, or when nothing in techStack ties
+// to any template tag — scanner.Engine's documented fallback for either
+// case is running the full, unnarrowed corpus, never zero templates.
+func TechStackTags(techStack []recon.TechFact, templateIndex []templatesync.Entry) []string {
+	if len(techStack) == 0 || len(templateIndex) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(techStack))
+	tagSet := map[string]bool{}
+	for _, fact := range techStack {
+		normalized := NormalizeTechName(fact.Name)
+		if normalized == "" || seen[normalized] || nonActionableTech[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		for _, entry := range matchTemplateTags(fact.Name, templateIndex) {
+			for _, tag := range entry.Tags {
+				if t := strings.ToLower(strings.TrimSpace(tag)); t != "" {
+					tagSet[t] = true
+				}
+			}
+		}
+	}
+	if len(tagSet) == 0 {
+		return nil
+	}
+	tags := make([]string, 0, len(tagSet))
+	for t := range tagSet {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+	return tags
+}
+
 // scoreTemplateForTech scores one template entry's relevance to a tech
 // fact. ok is false when nothing ties the entry to this tech — it is then
 // dropped, never made into a leaf. year is the entry's CVE year (0 if not

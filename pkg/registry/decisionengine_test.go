@@ -518,6 +518,86 @@ func TestMatchTemplateTags_CapReturnsBestNotFileOrder(t *testing.T) {
 	assert.Equal(t, "CVE-2025-0001", got[0].ID, "the best entry must survive the cap even though it was last in file order")
 }
 
+// --- LT-16 (docs/follow-up.md): TechStackTags ---
+
+// TestTechStackTags_UnionsRelevantEntryTags confirms the basic shape: the
+// tags of every entry matchTemplateTags ranks as relevant to a detected
+// tech are unioned into one deduped, sorted allowlist.
+func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "wordpress-panel", Name: "WordPress Login Panel", Tags: []string{"wordpress", "panel"}, Severity: "info"},
+		{ID: "nginx-cve", Name: "Nginx - Real CVE", Tags: []string{"nginx", "cve"}, Severity: "high"},
+		{ID: "unrelated-panel", Name: "Some Unrelated Panel", Tags: []string{"acme", "panel"}, Severity: "info"},
+	}
+	techStack := []recon.TechFact{
+		{Name: "WordPress", Host: "example.com", Confidence: recon.ConfidenceHigh},
+		{Name: "Nginx", Host: "example.com", Confidence: recon.ConfidenceMedium},
+	}
+
+	got := TechStackTags(techStack, index)
+
+	assert.ElementsMatch(t, []string{"wordpress", "panel", "nginx", "cve"}, got, "must union both relevant entries' tags, not just the first tech's")
+}
+
+// TestTechStackTags_FalseFriendExclusionApplies confirms canonicalTechTags'
+// exclusions (already proven for matchTemplateTags itself) carry through:
+// an "Nginx" fact must not pull in the ingress-nginx-only tag.
+func TestTechStackTags_FalseFriendExclusionApplies(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "CVE-2099-0001", Name: "Nginx - Real Thing", Tags: []string{"nginx", "cve"}, Severity: "high"},
+		{ID: "ingress-nginx-CVE-2023-5044", Name: "Ingress-Nginx Annotation Injection", Tags: []string{"nginx", "ingress-nginx", "cve"}, Severity: "critical"},
+	}
+	got := TechStackTags([]recon.TechFact{{Name: "Nginx", Host: "example.com"}}, index)
+
+	assert.ElementsMatch(t, []string{"nginx", "cve"}, got, "the ingress-nginx-only entry must never have contributed \"ingress-nginx\" to the allowlist")
+}
+
+// TestTechStackTags_DedupsRepeatedTechAcrossHosts confirms the same tech
+// name observed on multiple host variants (LT-14's own www./case dedup
+// gap, upstream of this) is only matched once, not once per occurrence —
+// purely a performance/no-duplicate-work guard, not a correctness one
+// (map-based tagSet already dedups the actual output regardless).
+func TestTechStackTags_DedupsRepeatedTechAcrossHosts(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "wordpress-panel", Tags: []string{"wordpress"}, Severity: "info"},
+	}
+	techStack := []recon.TechFact{
+		{Name: "WordPress", Host: "www.example.com"},
+		{Name: "wordpress", Host: "example.com"},
+	}
+	got := TechStackTags(techStack, index)
+	assert.Equal(t, []string{"wordpress"}, got)
+}
+
+// TestTechStackTags_NonActionableTechContributesNothing confirms a
+// hosting/CDN-brand fact (nonActionableTech) never contributes tags — it
+// has no real template surface, matching resolveTechFact's own gate.
+func TestTechStackTags_NonActionableTechContributesNothing(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "some-template", Tags: []string{"cloudflare"}, Severity: "info"},
+	}
+	got := TechStackTags([]recon.TechFact{{Name: "Cloudflare", Host: "example.com"}}, index)
+	assert.Nil(t, got)
+}
+
+// TestTechStackTags_EmptyInputsReturnNil locks in the documented
+// full-corpus-unchanged fallback: no TechStack and no index both degrade
+// to nil, never an empty-but-non-nil allowlist that would accidentally
+// filter out every template.
+func TestTechStackTags_EmptyInputsReturnNil(t *testing.T) {
+	assert.Nil(t, TechStackTags(nil, []templatesync.Entry{{ID: "x", Tags: []string{"wordpress"}}}))
+	assert.Nil(t, TechStackTags([]recon.TechFact{{Name: "WordPress"}}, nil))
+}
+
+// TestTechStackTags_NoRelevantTemplatesReturnsNil confirms a detected tech
+// with no matching template in the index degrades to nil too (same
+// full-corpus fallback), not an allowlist that matches nothing.
+func TestTechStackTags_NoRelevantTemplatesReturnsNil(t *testing.T) {
+	index := []templatesync.Entry{{ID: "unrelated", Tags: []string{"acme"}, Severity: "info"}}
+	got := TechStackTags([]recon.TechFact{{Name: "WordPress", Host: "example.com"}}, index)
+	assert.Nil(t, got)
+}
+
 // TestMatchTemplateTags_FullSlugMatchesHyphenatedCompoundTag is P1-3's
 // unlock: the real synced corpus tags plugin templates by the literal
 // hyphenated slug ("contact-form-7"), but the word-decomposed matchWords
