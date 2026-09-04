@@ -163,7 +163,7 @@ func validate(tmpl *Template) error {
 				return fmt.Errorf("http[%d].raw[%d]: absolute-URI request line — proxy-relay-style raw requests unsupported in this version, see docs/10-implementation-plan-ph1b.md", i, j)
 			}
 		}
-		if _, _, err := req.resolvePayload(); err != nil {
+		if _, err := req.resolvePayloads(); err != nil {
 			return fmt.Errorf("http[%d]: %w", i, err)
 		}
 		if len(req.Raw) == 0 && len(req.Path) == 0 {

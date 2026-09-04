@@ -752,6 +752,162 @@ http:
 	require.Len(t, findings, 1, "content_type_1/content_type_2 must reflect each entry's own response header")
 }
 
+// TestExecutorRun_Pitchfork_ZipsKeysLockstep is modeled on real upstream's
+// zabbix-default-login.yaml-style credential check: two payload keys,
+// attack: pitchfork. The server only reports success for the
+// index-correlated pair (username[0]/password[0]) — pitchfork must reach
+// it, and must fire exactly 2 requests total (one per lockstep pass), never
+// the 4 a cartesian product would try.
+func TestExecutorRun_Pitchfork_ZipsKeysLockstep(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("X-User") == "admin" && r.Header.Get("X-Pass") == "pass1" {
+			_, _ = w.Write([]byte("SUCCESS"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "pitchfork.yaml", `
+id: pitchfork-style
+info:
+  name: Pitchfork Style
+  severity: high
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-User: {{username}}
+        X-Pass: {{password}}
+    attack: pitchfork
+    payloads:
+      username:
+        - admin
+        - root
+      password:
+        - pass1
+        - pass2
+    matchers:
+      - type: word
+        words:
+          - "SUCCESS"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "the index-correlated pair (admin/pass1) must be reached")
+	assert.Equal(t, 2, requests, "pitchfork must fire exactly one request per lockstep pass (2), not a cartesian product (4)")
+}
+
+// TestExecutorRun_Clusterbomb_TriesEveryCombination is
+// TestExecutorRun_Pitchfork_ZipsKeysLockstep's counterpart, proving the
+// opposite: the server's success condition is a cross combination
+// (username[0]/password[1]) that pitchfork's lockstep pairing would never
+// reach — only clusterbomb's full Cartesian product does. Also asserts all
+// 4 combinations (2x2) actually fire.
+func TestExecutorRun_Clusterbomb_TriesEveryCombination(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("X-User") == "admin" && r.Header.Get("X-Pass") == "pass2" {
+			_, _ = w.Write([]byte("SUCCESS"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "clusterbomb.yaml", `
+id: clusterbomb-style
+info:
+  name: Clusterbomb Style
+  severity: high
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-User: {{username}}
+        X-Pass: {{password}}
+    attack: clusterbomb
+    payloads:
+      username:
+        - admin
+        - root
+      password:
+        - pass1
+        - pass2
+    matchers:
+      - type: word
+        words:
+          - "SUCCESS"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "the cross combination (admin/pass2), unreachable by pitchfork, must be reached by clusterbomb")
+	assert.Equal(t, 4, requests, "clusterbomb must try every combination (2x2 = 4)")
+}
+
+// TestExecutorRun_BatteringRam_BroadcastsSingleListToAllKeys proves
+// battering ram's distinguishing behavior: one shared value list broadcast
+// into every key simultaneously, so two different keys always carry the
+// SAME value on a given pass — never an independently-chosen pair the way
+// pitchfork/clusterbomb allow.
+func TestExecutorRun_BatteringRam_BroadcastsSingleListToAllKeys(t *testing.T) {
+	var mismatched bool
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("X-A") != r.Header.Get("X-B") {
+			mismatched = true
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "batteringram.yaml", `
+id: batteringram-style
+info:
+  name: Battering Ram Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-A: {{a}}
+        X-B: {{b}}
+    attack: batteringram
+    payloads:
+      a:
+        - "1"
+        - "2"
+      b:
+        - "1"
+        - "2"
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	_, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	assert.Equal(t, 2, requests, "battering ram must fire once per value in the shared list (2), not a cartesian product")
+	assert.False(t, mismatched, "every key must carry the same broadcast value on a given pass")
+}
+
 // TestExecutorRun_SameRequestExtractorBinding is modeled on real upstream's
 // apache-httpd-eol.yaml: a single request whose matcher references its own
 // extractor's Name (compare_versions(version, ...)) — end-to-end proof

@@ -140,8 +140,8 @@ func (e *Executor) runFlow(ctx context.Context, target string, tmpl *Template) (
 	return findings, nil
 }
 
-// runPathRequest tries every payload value (or a single unbound pass — see
-// HTTPRequest.resolvePayload) around every req.Path candidate, same
+// runPathRequest tries every payload iteration (or a single unbound pass —
+// see HTTPRequest.resolvePayloads) around every req.Path candidate, same
 // combined payloads:+path: loop Run always ran directly before flow:
 // support existed — see docs/10-implementation-plan-ph1b.md's raw:/
 // payloads: note for why payloads: legitimately shows up on a plain path:
@@ -151,27 +151,22 @@ func (e *Executor) runFlow(ctx context.Context, target string, tmpl *Template) (
 // still only stops early on a genuine match, unchanged from before this
 // refactor.
 func (e *Executor) runPathRequest(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, chainVars map[string]string) ([]detectors.Finding, bool, error) {
-	// resolvePayload already validated this at load time; err is nil here
+	// resolvePayloads already validated this at load time; err is nil here
 	// in practice, checked defensively only.
-	payloadKey, payloadValues, err := req.resolvePayload()
+	iterations, err := req.resolvePayloads()
 	if err != nil {
 		return nil, false, nil
 	}
-	multi := payloadKey != ""
-	if len(payloadValues) == 0 {
-		payloadValues = []string{""}
+	multi := len(iterations) > 0
+	if !multi {
+		iterations = []map[string]string{nil}
 	}
 
 	var findings []detectors.Finding
 	chainable := false
 
 payloadLoop:
-	for pIdx, pv := range payloadValues {
-		var extraVars map[string]string
-		if multi {
-			extraVars = map[string]string{payloadKey: pv}
-		}
-
+	for pIdx, extraVars := range iterations {
 		for _, path := range req.Path {
 			if ctx.Err() != nil {
 				return findings, chainable, ctx.Err()
@@ -342,9 +337,9 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	}, true, true, nil
 }
 
-// tryRaw runs one req.Raw-based request block: once per payload value (or a
-// single unbound pass if req has no payload key — see
-// HTTPRequest.resolvePayload), firing every entry in req.Raw and evaluating
+// tryRaw runs one req.Raw-based request block: once per payload iteration
+// (or a single unbound pass if req has no payloads — see
+// HTTPRequest.resolvePayloads), firing every entry in req.Raw and evaluating
 // req.Matchers against the last entry's response, enriched with every
 // entry's body_N/header_N/status_code_N so a correlating matcher (real
 // example: upstream's open-proxy-internal.yaml, 24 probes + one shared DSL
@@ -357,13 +352,13 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 // up chainable (see tryPath's doc comment for what that means) — needed by
 // runFlow's http(N) truthiness.
 func (e *Executor) tryRaw(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, chainVars map[string]string) ([]detectors.Finding, bool, error) {
-	payloadKey, payloadValues, err := req.resolvePayload()
+	iterations, err := req.resolvePayloads()
 	if err != nil {
 		return nil, false, nil // already rejected at load time; defensive only
 	}
-	multi := payloadKey != ""
-	if len(payloadValues) == 0 {
-		payloadValues = []string{""}
+	multi := len(iterations) > 0
+	if !multi {
+		iterations = []map[string]string{nil}
 	}
 
 	host, err := hostnameOf(target)
@@ -373,18 +368,20 @@ func (e *Executor) tryRaw(ctx context.Context, target string, tmpl *Template, re
 
 	var findings []detectors.Finding
 	chainable := false
-	for pIdx, pv := range payloadValues {
+	for pIdx, payloadVars := range iterations {
 		if ctx.Err() != nil {
 			return findings, chainable, ctx.Err()
 		}
 
 		iterVars := chainVars
 		if multi {
-			iterVars = make(map[string]string, len(chainVars)+1)
+			iterVars = make(map[string]string, len(chainVars)+len(payloadVars))
 			for k, v := range chainVars {
 				iterVars[k] = v
 			}
-			iterVars[payloadKey] = pv
+			for k, v := range payloadVars {
+				iterVars[k] = v
+			}
 		}
 		renderCtx := vars.Context{BaseURL: target, Hostname: host, Vars: iterVars}
 

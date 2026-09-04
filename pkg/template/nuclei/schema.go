@@ -5,6 +5,7 @@ package nuclei
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -86,54 +87,156 @@ type HTTPRequest struct {
 	// wordlist file (rejected at load time — see loader.go's validate,
 	// "file-based payload not supported"); kept as yaml.Node rather than
 	// []string so validate() can distinguish the two shapes and reject the
-	// unsupported one with a clear error instead of a decode failure.
-	// Multiple keys (Nuclei's sniper/pitchfork/clusterbomb "attack modes")
-	// are also rejected at load time — see Attack's doc comment.
+	// unsupported one with a clear error instead of a decode failure. Two or
+	// more keys are combined per Attack's mode — see resolvePayloads.
 	Payloads map[string]yaml.Node `yaml:"payloads,omitempty"`
 
-	// Attack names Nuclei's payload "attack mode" (sniper/pitchfork/
-	// clusterbomb/batteringram, default batteringram) — only meaningful
-	// with more than one Payloads key, which this project doesn't support
-	// (see Payloads' doc comment); kept only so a rejected multi-key
-	// template's error message can name the mode it was trying to use.
+	// Attack names Nuclei's payload "attack mode" — pitchfork/clusterbomb/
+	// batteringram, default batteringram — only meaningful with more than
+	// one Payloads key (a single key iterates the same way under any mode).
+	// "sniper" is valid Nuclei syntax but not expressible via nuclei's
+	// map-shaped payloads: (each key names one fixed substitution position,
+	// not a set of positions to try one at a time the way Burp's own Sniper
+	// does) — 0 real corpus templates use it, consistent with that. See
+	// resolvePayloads.
 	Attack string `yaml:"attack,omitempty"`
 }
 
-// resolvePayload validates and decodes req.Payloads into the single
-// key/values pair this project supports (see Payloads' doc comment), or
-// ("", nil, nil) when there are none. Shared by loader.go's validate (so a
-// bad payload is a load-time error, not a scan-time surprise) and
-// executor.go's tryRaw (so execution uses the exact values validation
-// already confirmed).
-func (req HTTPRequest) resolvePayload() (key string, values []string, err error) {
+// resolvePayloads validates req.Payloads/req.Attack and returns every
+// substitution pass real Nuclei's attack mode produces, in a fixed,
+// deterministic order (nil, nil when req has no payloads: at all). Shared
+// by loader.go's validate (so a bad payload or attack mode is a load-time
+// error, not a scan-time surprise) and executor.go's runPathRequest/tryRaw
+// (so execution uses the exact iterations validation already confirmed).
+//
+// The three modes are Nuclei's own terms, borrowed directly from Burp
+// Intruder's identically-named attack types:
+//   - pitchfork: every key's list zipped together, index i of every list
+//     combined into one pass, for i = 0..min(list length)-1. Real corpus
+//     pitchfork templates aren't always equal-length across keys (7 of
+//     207 sampled); using the shortest length rather than erroring matches
+//     Burp Intruder's own documented Pitchfork behavior (request count =
+//     the smallest payload set's size) — not a guess, a known precedent.
+//   - clusterbomb: the full Cartesian product across every key's list —
+//     every combination. Mismatched lengths are normal and expected here
+//     (23 of 34 sampled), not an error condition — that's the point of
+//     "every combination."
+//   - batteringram: ONE shared list broadcast into every key at once (all
+//     positions get the identical value each pass), rather than each key
+//     using its own independently-defined list. This project uses the
+//     first (sorted) key's list as that shared source. Unverified against
+//     a genuine multi-key real example — all 13 real corpus batteringram
+//     templates define only one key, where this degenerates to the same
+//     single-list iteration every mode already agrees on — but matches the
+//     documented Nuclei/Burp Intruder semantic (one payload set applied to
+//     every position simultaneously).
+func (req HTTPRequest) resolvePayloads() ([]map[string]string, error) {
 	if len(req.Payloads) == 0 {
-		return "", nil, nil
+		return nil, nil
 	}
-	if len(req.Payloads) > 1 {
-		return "", nil, fmt.Errorf("uses %d payload keys — multi-key payloads (attack: %s and friends) unsupported in this version, see docs/10-implementation-plan-ph1b.md", len(req.Payloads), attackOrDefault(req.Attack))
-	}
+	keys := make([]string, 0, len(req.Payloads))
+	values := make(map[string][]string, len(req.Payloads))
 	for k, node := range req.Payloads {
 		switch node.Kind {
 		case yaml.SequenceNode:
 			var vals []string
 			if err := node.Decode(&vals); err != nil {
-				return "", nil, fmt.Errorf("payloads.%s: %w", k, err)
+				return nil, fmt.Errorf("payloads.%s: %w", k, err)
 			}
-			return k, vals, nil
+			if len(vals) == 0 {
+				return nil, fmt.Errorf("payloads.%s: empty payload list", k)
+			}
+			values[k] = vals
+			keys = append(keys, k)
 		case yaml.ScalarNode:
-			return "", nil, fmt.Errorf("payloads.%s: file-based payload (%q) unsupported in this version, see docs/10-implementation-plan-ph1b.md", k, node.Value)
+			return nil, fmt.Errorf("payloads.%s: file-based payload (%q) unsupported in this version, see docs/10-implementation-plan-ph1b.md", k, node.Value)
 		default:
-			return "", nil, fmt.Errorf("payloads.%s: unsupported payload shape", k)
+			return nil, fmt.Errorf("payloads.%s: unsupported payload shape", k)
 		}
 	}
-	panic("unreachable") // len == 1, loop above always returns
+	sort.Strings(keys) // deterministic pass order regardless of map iteration order
+
+	switch normalizedAttack(req.Attack) {
+	case "batteringram":
+		return batteringRamIterations(keys, values), nil
+	case "pitchfork":
+		return pitchforkIterations(keys, values), nil
+	case "clusterbomb":
+		return clusterbombIterations(keys, values), nil
+	default:
+		return nil, fmt.Errorf("attack: %q unsupported — no real corpus usage observed for this mode, see docs/10-implementation-plan-ph1b.md", req.Attack)
+	}
 }
 
-func attackOrDefault(attack string) string {
-	if attack == "" {
-		return "batteringram (default)"
+func normalizedAttack(attack string) string {
+	if strings.TrimSpace(attack) == "" {
+		return "batteringram"
 	}
-	return attack
+	return strings.ToLower(strings.TrimSpace(attack))
+}
+
+func pitchforkIterations(keys []string, values map[string][]string) []map[string]string {
+	n := len(values[keys[0]])
+	for _, k := range keys[1:] {
+		if len(values[k]) < n {
+			n = len(values[k])
+		}
+	}
+	iterations := make([]map[string]string, 0, n)
+	for i := 0; i < n; i++ {
+		iter := make(map[string]string, len(keys))
+		for _, k := range keys {
+			iter[k] = values[k][i]
+		}
+		iterations = append(iterations, iter)
+	}
+	return iterations
+}
+
+func clusterbombIterations(keys []string, values map[string][]string) []map[string]string {
+	total := 1
+	for _, k := range keys {
+		total *= len(values[k])
+	}
+	iterations := make([]map[string]string, 0, total)
+	indices := make([]int, len(keys))
+	for {
+		iter := make(map[string]string, len(keys))
+		for ki, k := range keys {
+			iter[k] = values[k][indices[ki]]
+		}
+		iterations = append(iterations, iter)
+
+		// Odometer increment: advance the last key first, carrying into
+		// earlier keys on rollover — same shape as counting in mixed radix.
+		// pos ends up -1 once every combination has been emitted.
+		pos := len(keys) - 1
+		for pos >= 0 {
+			indices[pos]++
+			if indices[pos] < len(values[keys[pos]]) {
+				break
+			}
+			indices[pos] = 0
+			pos--
+		}
+		if pos < 0 {
+			break
+		}
+	}
+	return iterations
+}
+
+func batteringRamIterations(keys []string, values map[string][]string) []map[string]string {
+	lead := values[keys[0]]
+	iterations := make([]map[string]string, 0, len(lead))
+	for _, v := range lead {
+		iter := make(map[string]string, len(keys))
+		for _, k := range keys {
+			iter[k] = v
+		}
+		iterations = append(iterations, iter)
+	}
+	return iterations
 }
 
 // hasAbsoluteRequestLine reports whether raw's first line's request target

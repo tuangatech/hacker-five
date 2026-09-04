@@ -144,10 +144,12 @@ http:
 	assert.Len(t, templates[0].HTTP[0].Raw, 1)
 }
 
-// TestNucleiLoadDir_MultiKeyPayloadsRejected locks in the v1 boundary: more
-// than one payload key (real Nuclei's sniper/pitchfork/clusterbomb "attack
-// modes") is rejected at load time — see schema.go's resolvePayload.
-func TestNucleiLoadDir_MultiKeyPayloadsRejected(t *testing.T) {
+// TestNucleiLoadDir_MultiKeyPayloadsLoad is modeled on real upstream's
+// zabbix-default-login.yaml (clusterbomb, 3 keys). Previously rejected at
+// load time — see tests/unit/nuclei_executor_test.go for the end-to-end
+// proof each attack mode actually iterates correctly, not just that it
+// loads.
+func TestNucleiLoadDir_MultiKeyPayloadsLoad(t *testing.T) {
 	dir := t.TempDir()
 	writeTemplate(t, dir, "multi-key.yaml", `
 id: multi-key-style
@@ -174,15 +176,49 @@ http:
 `)
 
 	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_UnsupportedAttackModeRejected locks in that "sniper" (and
+// any other unrecognized attack: value) is still rejected — it's valid
+// Nuclei syntax but not expressible via nuclei's map-shaped payloads:, and 0
+// real corpus templates use it.
+func TestNucleiLoadDir_UnsupportedAttackModeRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "sniper.yaml", `
+id: sniper-style
+info:
+  name: Sniper Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-A: {{a}}
+        X-B: {{b}}
+    attack: sniper
+    payloads:
+      a:
+        - "1"
+      b:
+        - "2"
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
 	require.Empty(t, templates)
 	require.Len(t, errs, 1)
-	assert.Contains(t, errs[0].Error(), "2 payload keys")
-	assert.Contains(t, errs[0].Error(), "clusterbomb")
+	assert.Contains(t, errs[0].Error(), "sniper")
 }
 
 // TestNucleiLoadDir_FileBasedPayloadRejected locks in the v1 boundary: a
 // payload value that's a bare string (a wordlist file path) rather than an
-// inline list is rejected at load time — see schema.go's resolvePayload.
+// inline list is rejected at load time — see schema.go's resolvePayloads.
 func TestNucleiLoadDir_FileBasedPayloadRejected(t *testing.T) {
 	dir := t.TempDir()
 	writeTemplate(t, dir, "file-payload.yaml", `
