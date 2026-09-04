@@ -73,14 +73,17 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 		RunIdor:       true,
 		RunAuthbypass: true,
 		RunSsrf:       true,
-		// Defaults to the owned-sites scope file rather than leaving the
-		// field blank — a blank Scope file means "no scope at all" (recon
-		// treats every discovered host as in-scope, pkg/recon/passive.go's
-		// documented nil-scope posture), so an unset default here was
-		// silently the most permissive option, not a neutral one. Still a
-		// plain path on the machine running `hackerfive serve`, editable
-		// per launch same as before.
-		ScopeFile:   ".engagements/owned-sites/scope.txt",
+		// Left blank by default (reverted 2026-09-04, user decision): a
+		// prior version defaulted this to the owned-sites scope file to
+		// avoid silently defaulting to "no scope at all" (recon treats
+		// every discovered host as in-scope with no scope file,
+		// pkg/recon/passive.go's documented nil-scope posture) — but that
+		// path is repo-relative and doesn't resolve for every environment
+		// `hackerfive serve` can run from (e.g. a WSL working directory
+		// without that file), so a wrong-but-plausible-looking default was
+		// worse than an honestly empty field. Still a plain path on the
+		// machine running `hackerfive serve`, editable per launch.
+		ScopeFile:   "",
 		OOBServers:  defaultOOBServers,
 		RateLimit:   defaultRateLimit,
 		Concurrency: defaultConcurrency,
