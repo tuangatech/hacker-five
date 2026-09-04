@@ -551,3 +551,37 @@ func TestMisconfigExposedPath_TrailingSlashTarget_NoDoubleSlash(t *testing.T) {
 	assert.Equal(t, server.URL+"/.env", got[0].Target)
 	assert.NotContains(t, got[0].Target, "//.env")
 }
+
+// TestMisconfigDisallowedMethod_GatewayErrors_NotFlagged locks in
+// docs/follow-up.md's LT-2, a real live false positive against
+// nettix.com.pe: PUT/DELETE/PATCH all returned a plain nginx 502 (the
+// reverse proxy failing to reach the origin at all, not an application
+// response) and were reported as "appears to be accepted." 502/503/504 must
+// read as inconclusive — same treatment TestMisconfigMethod_404RootNotFlagged
+// above already locks in for the Rails-404 case — not as evidence the
+// method was accepted.
+func TestMisconfigDisallowedMethod_GatewayErrors_NotFlagged(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			})
+			assert.Empty(t, withPrefix(findings, "misconfig-method-"),
+				"a %d gateway/infrastructure failure must not be reported as the method being accepted", status)
+		})
+	}
+}
+
+// TestMisconfigDisallowedMethod_500_StillFlagged confirms the LT-2 fix
+// deliberately stops short of blanket-excluding every 5xx: a plain 500 is
+// the origin application itself reporting a failure (unlike 502/503/504,
+// which are infrastructure never reaching the origin at all) — at least as
+// consistent with "the app tried to handle this method and broke" as with
+// a non-response, so it stays a real signal, not suppressed.
+func TestMisconfigDisallowedMethod_500_StillFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	got := withPrefix(findings, "misconfig-method-")
+	assert.Len(t, got, len(misconfig.DisallowedMethods), "a 500 for every disallowed method must still be flagged, one finding per method")
+}

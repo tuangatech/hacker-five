@@ -374,9 +374,21 @@ func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, aut
 // path+method combination that isn't routed at all, indistinguishable from
 // the response to a nonexistent path under any method. That's evidence the
 // method wasn't handled, not that it was accepted.
+//
+// 502/503/504 count too (docs/follow-up.md LT-2, live-confirmed against
+// nettix.com.pe): a reverse proxy/load balancer returning Bad
+// Gateway/Service Unavailable/Gateway Timeout means the request never
+// reached — or never got a real answer from — the origin application at
+// all, so there's no basis for calling the method "accepted." 500 is
+// deliberately NOT included here: unlike the other three, it's the
+// origin application itself reporting a failure, which is at least as
+// consistent with "the app tried to handle this method and broke" (still
+// evidence it wasn't rejected outright, and arguably an interesting signal
+// in its own right) as with an infrastructure-level non-response.
 func rejected(status int) bool {
 	return status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented ||
-		status == http.StatusForbidden || status == http.StatusNotFound
+		status == http.StatusForbidden || status == http.StatusNotFound ||
+		status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
 func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
