@@ -84,6 +84,22 @@ func TestNew_LocalTierExplicitlyEmpty_OpenRouterStillUsable(t *testing.T) {
 	}
 }
 
+// TestNew_LocalTierLiteralNull_TreatedAsUnconfigured guards getenvDefault's
+// "null" handling: an operator might write HACKERFIVE_LOCAL_MODEL_URL=null
+// (borrowing JSON/YAML's spelling for "no value") rather than leaving it
+// blank — that must disable the local tier the same way an empty value
+// does, not get used literally as a URL.
+func TestNew_LocalTierLiteralNull_TreatedAsUnconfigured(t *testing.T) {
+	t.Setenv(envLocalModelURL, "null")
+	t.Setenv(envLocalModelName, "NULL")
+	t.Setenv(envOpenRouterKey, "")
+
+	_, err := New()
+	if err != ErrNoTierAvailable {
+		t.Fatalf("New() err = %v, want ErrNoTierAvailable", err)
+	}
+}
+
 func TestNew_LocalTierOnly(t *testing.T) {
 	srv := fakeChatServer(t, "{}")
 	defer srv.Close()

@@ -101,12 +101,21 @@ func New() (*Client, error) {
 // os.Getenv-based check couldn't tell "explicitly cleared" apart from
 // "never set" — clearing HACKERFIVE_LOCAL_MODEL_URL still fell back to
 // http://localhost:11434, so New() kept probing and failing against a
-// runtime that was never installed).
+// runtime that was never installed). A literal "null" (any case,
+// surrounding whitespace trimmed) is treated the same as empty — a common
+// way an operator unfamiliar with .env's blank-means-unset convention
+// spells "no value" (borrowed from JSON/YAML), and taking it literally as
+// the local model's URL/name would otherwise silently point this client
+// at a nonsensical endpoint instead of actually disabling the tier.
 func getenvDefault(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
 	}
-	return fallback
+	if trimmed := strings.TrimSpace(v); trimmed == "" || strings.EqualFold(trimmed, "null") {
+		return ""
+	}
+	return v
 }
 
 func getenvFloat(key string, fallback float64) float64 {
