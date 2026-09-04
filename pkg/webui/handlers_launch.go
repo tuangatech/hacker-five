@@ -72,10 +72,18 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 		RunIdor:       true,
 		RunAuthbypass: true,
 		RunSsrf:       true,
-		OOBServers:    defaultOOBServers,
-		RateLimit:     defaultRateLimit,
-		Concurrency:   defaultConcurrency,
-		Tools:         buildToolSetupData(false, ""),
+		// Defaults to the owned-sites scope file rather than leaving the
+		// field blank — a blank Scope file means "no scope at all" (recon
+		// treats every discovered host as in-scope, pkg/recon/passive.go's
+		// documented nil-scope posture), so an unset default here was
+		// silently the most permissive option, not a neutral one. Still a
+		// plain path on the machine running `hackerfive serve`, editable
+		// per launch same as before.
+		ScopeFile:   ".engagements/owned-sites/scope.txt",
+		OOBServers:  defaultOOBServers,
+		RateLimit:   defaultRateLimit,
+		Concurrency: defaultConcurrency,
+		Tools:       buildToolSetupData(false, ""),
 	}
 	executeTemplate(w, h.tmpl, "launch.html", data)
 }

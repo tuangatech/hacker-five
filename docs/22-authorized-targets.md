@@ -57,6 +57,19 @@ A living list of real, authorized targets (found via disclose.io/HackerOne per [
 - **Real finding from first scan (2026-09-01):** `partners.shopify.com` is missing `Content-Security-Policy`/`X-Frame-Options` headers — real but likely non-actionable without a demonstrated-impact PoC per Shopify's policy (bare missing-header reports are commonly closed N/A). Scan also surfaced and fixed a real `pkg/detectors/misconfig` false-positive bug: `PUT`/`DELETE`/`PATCH` on `/` returning the same generic Rails 404 page was wrongly classified as "method accepted."
 - **Vetted:** 2026-09-01
 
+## Owned / operator-authorized targets
+
+Unlike the disclose.io/HackerOne entries above, these are the operator's own properties — the domain list itself (`.engagements/owned-sites/scope.txt`, gitignored) is the authorization, not a third-party VDP/program policy. No `security.txt`/policy page to vet, no bounty, no third-party restrictions to cross-check — but also no independent confirmation from anyone else, so treat these as lower-ceremony but not lower-caution: still read-only by default (no `--allow-writes`), still rate-limited, still logged.
+
+| Domain | Confirmed with a third party? | Notes |
+|---|---|---|
+| `aalberts.com` | Yes — see the dedicated entry above (disclose.io VDP + explicit 5-runs/day cap agreed with their security team 2026-09-02) | Listed in both places since it's both operator-confirmed *and* a real disclose.io program |
+| `andertone.com` | No | Operator-owned; user-confirmed 2026-09-04 |
+| `aceautowreckers.com` | No | Operator-owned; user-confirmed 2026-09-04 |
+| `nettix.com.pe` | No | Operator-owned; user-confirmed 2026-09-04. First HackerFive run: 2026-09-04 |
+
+**Fit for HackerFive:** all four covered by `.engagements/owned-sites/scope.txt` (`*.`-wildcarded, so subdomains are in scope too). No detector-specific restrictions recorded — apply the same defaults as any other target (`--allow-writes` opt-in only for `businesslogic`, respect `--rate-limit`).
+
 ## Also checked, not added
 
 Found via the same disclose.io search; recorded here so they aren't re-researched later.
