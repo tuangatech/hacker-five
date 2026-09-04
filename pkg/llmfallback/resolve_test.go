@@ -70,7 +70,7 @@ func TestResolveTreeLeaves_NilClientEscalatesEveryUnresolvedLeaf(t *testing.T) {
 		{ID: "leaf-2", Status: agenttask.StatusPending}, // already resolved — must not appear
 	}}}
 
-	got := ResolveTreeLeaves(context.Background(), nil, ErrNoTierAvailable, tree, nil, nil)
+	got := ResolveTreeLeaves(context.Background(), nil, ErrNoTierAvailable, tree, nil, nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d escalations, want 1: %v", len(got), got)
 	}
@@ -88,7 +88,7 @@ func TestResolveTreeLeaves_NoUnresolvedLeaves_ReturnsNilWithoutTouchingClient(t 
 		{ID: "leaf-1", Status: agenttask.StatusPending},
 	}}}
 
-	got := ResolveTreeLeaves(context.Background(), nil, nil, tree, nil, nil)
+	got := ResolveTreeLeaves(context.Background(), nil, nil, tree, nil, nil, nil)
 	if got != nil {
 		t.Fatalf("got %v, want nil", got)
 	}

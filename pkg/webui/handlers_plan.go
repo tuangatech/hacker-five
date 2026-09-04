@@ -48,7 +48,7 @@ func (h *handlers) planPreview(w http.ResponseWriter, r *http.Request) {
 	if tree == nil {
 		var index []templatesync.Entry
 		index, indexWarn = loadTemplateIndexOrWarn()
-		tree = registry.Resolve(snap.ReconResult, index)
+		tree, _ = registry.Resolve(snap.ReconResult, index)
 	}
 
 	executeTemplate(w, h.tmpl, "plan_preview.html", PlanPreviewData{
@@ -94,14 +94,21 @@ func (h *handlers) resolvePlanLeaves(w http.ResponseWriter, r *http.Request) {
 
 	index, indexWarn := loadTemplateIndexOrWarn()
 
+	// leafContexts (P2-2) only exists for a freshly-built tree — a tree
+	// pulled from the job cache (a second resolve pass, or one already
+	// partially resolved) has no cached context alongside it, so
+	// ResolveTreeLeaves falls back to its rationale-regex path for those
+	// leaves. Not a regression: that fallback is exactly this project's
+	// pre-P2-2 behavior for every leaf, not just cached ones.
+	var leafContexts map[string]registry.LeafContext
 	tree, _ := job.PlanTree()
 	if tree == nil {
-		tree = registry.Resolve(snap.ReconResult, index)
+		tree, leafContexts = registry.Resolve(snap.ReconResult, index)
 		tree.SpendCeilingUSD = llmfallback.PerCallDefaultSpendCeilingUSD()
 	}
 
 	fb, fbErr := llmfallback.New()
-	escalations := llmfallback.ResolveTreeLeaves(r.Context(), fb, fbErr, tree, registry.Capabilities, index)
+	escalations := llmfallback.ResolveTreeLeaves(r.Context(), fb, fbErr, tree, registry.Capabilities, index, leafContexts)
 	job.SetPlanTree(tree, escalations)
 
 	executeTemplate(w, h.tmpl, "fragment_plan_tree", PlanPreviewData{

@@ -216,7 +216,7 @@ func TestPlanPreview_PrefersCachedResolvedTreeOverFreshResolve(t *testing.T) {
 	job := newTestJobWithRecon("job1", fixtureReconResultForPlan())
 	h.store.Add(job)
 
-	cached := registry.Resolve(fixtureReconResultForPlan(), nil)
+	cached, _ := registry.Resolve(fixtureReconResultForPlan(), nil)
 	for _, leaf := range agenttask.Leaves(cached.Root) {
 		if leaf.Status == agenttask.StatusUnresolved {
 			status := agenttask.StatusDone

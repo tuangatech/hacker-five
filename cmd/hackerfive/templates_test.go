@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -60,4 +62,27 @@ func TestNewScanCmd_TemplatesFlagDefaultsToBundledDir(t *testing.T) {
 	flag := cmd.Flags().Lookup("templates")
 	require.NotNil(t, flag)
 	assert.Equal(t, "[./templates/]", flag.DefValue, "--templates must default to the bundled directory")
+}
+
+// TestIndexDriftWarningForDirs_EmptyDirWithNonEmptyIndexWarns and its
+// sibling below drive P2-5's CLI wiring against a real temp directory
+// (rather than this machine's actual synced-templates state — see
+// TestDefaultTemplateDirsWithLabels_Invariants' own reasoning), confirming
+// indexDriftWarningForDirs actually calls through to
+// templatesync.CountTemplateFiles/IndexDriftWarning correctly, not just
+// that those two functions work in isolation (already unit-tested in
+// pkg/templatesync).
+func TestIndexDriftWarningForDirs_EmptyDirWithNonEmptyIndexWarns(t *testing.T) {
+	dir := t.TempDir() // no .yaml files written — an empty synced dir
+	got := indexDriftWarningForDirs(500, []string{dir})
+	assert.Contains(t, got, "500 templates")
+	assert.Contains(t, got, "none on disk")
+}
+
+func TestIndexDriftWarningForDirs_MatchingCountsDoNotWarn(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "t"+string(rune('0'+i))+".yaml"), []byte("x"), 0o644))
+	}
+	assert.Equal(t, "", indexDriftWarningForDirs(5, []string{dir}))
 }

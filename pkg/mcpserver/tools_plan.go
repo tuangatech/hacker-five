@@ -127,7 +127,7 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 		return nil, planOutput{}, err
 	}
 
-	tree := registry.Resolve(result, index)
+	tree, leafContexts := registry.Resolve(result, index)
 	ceiling := in.SpendCeilingUSD
 	if ceiling <= 0 {
 		ceiling = llmfallback.PerCallDefaultSpendCeilingUSD()
@@ -136,7 +136,7 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 
 	fb, fbErr := llmfallback.New()
 
-	escalations := llmfallback.ResolveTreeLeaves(ctx, fb, fbErr, tree, registry.Capabilities, index)
+	escalations := llmfallback.ResolveTreeLeaves(ctx, fb, fbErr, tree, registry.Capabilities, index, leafContexts)
 
 	baseCfg := buildBaseExecConfig(in, sc)
 	// resolveFieldSuggestions applies only the deterministic (single- or

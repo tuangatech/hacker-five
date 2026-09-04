@@ -49,12 +49,15 @@ const resolveConcurrency = 3
 // ApplyLeafUpdate, respecting tree.SpendCeilingUSD. fb may be nil (e.g.
 // New() returned ErrNoTierAvailable, fbErr) — every unresolved leaf is then
 // reported as an escalation instead of attempting a call, rather than the
-// caller having to special-case a nil client itself. Returns one escalation
-// note per leaf that couldn't be resolved (fb unavailable, spend ceiling
-// reached, the call itself failed, or the model returned no usable
-// decision) — shared by pkg/mcpserver's plan tool and pkg/webui's
-// plan-preview page, so this orchestration is described once.
-func ResolveTreeLeaves(ctx context.Context, fb *Client, fbErr error, tree *agenttask.PlanTree, capabilities []registry.Capability, templateIndex []templatesync.Entry) []string {
+// caller having to special-case a nil client itself. leafContexts is
+// registry.Resolve's own second return value (P2-2) — a missing entry for a
+// given leaf ID degrades to ResolveLeaf's rationale-regex fallback, not an
+// error, so a nil map is a valid argument. Returns one escalation note per
+// leaf that couldn't be resolved (fb unavailable, spend ceiling reached, the
+// call itself failed, or the model returned no usable decision) — shared by
+// pkg/mcpserver's plan tool and pkg/webui's plan-preview page, so this
+// orchestration is described once.
+func ResolveTreeLeaves(ctx context.Context, fb *Client, fbErr error, tree *agenttask.PlanTree, capabilities []registry.Capability, templateIndex []templatesync.Entry, leafContexts map[string]registry.LeafContext) []string {
 	var unresolved []*agenttask.PlanNode
 	for _, leaf := range agenttask.Leaves(tree.Root) {
 		if leaf.Status == agenttask.StatusUnresolved {
@@ -91,7 +94,7 @@ func ResolveTreeLeaves(ctx context.Context, fb *Client, fbErr error, tree *agent
 				return nil
 			}
 
-			decision, cost, err := fb.ResolveLeaf(ctx, leaf, capabilities, templateIndex)
+			decision, cost, err := fb.ResolveLeaf(ctx, leaf, leafContexts[leaf.ID], capabilities, templateIndex)
 			if tree.AddSpend(cost) {
 				addEscalation("%s: spend ceiling exceeded resolving this leaf", leaf.ID)
 			}

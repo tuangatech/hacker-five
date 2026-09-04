@@ -14,7 +14,6 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
-	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 	"github.com/tuangatech/hacker-five/pkg/toolsync"
 )
 
@@ -30,12 +29,13 @@ const reconRunTimeout = 10 * time.Minute
 
 func newReconCmd(root *rootFlags) *cobra.Command {
 	var (
-		target      string
-		depth       string
-		scopeFile   string
-		rateLimit   int
-		concurrency int
-		insecure    bool
+		target       string
+		depth        string
+		scopeFile    string
+		allowNoScope bool
+		rateLimit    int
+		concurrency  int
+		insecure     bool
 	)
 
 	cmd := &cobra.Command{
@@ -52,15 +52,9 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 				return fmt.Errorf(`--recon-depth must be "passive", "active", or "full", got %q`, depth)
 			}
 
-			var s *scope.Scope
-			if scopeFile != "" {
-				parsed, err := scope.Parse(scopeFile)
-				if err != nil {
-					return fmt.Errorf("parsing --scope: %w", err)
-				}
-				s = parsed
-			} else {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: no --scope given — every host recon discovers is treated as in-scope")
+			s, err := requireScopeOrOptOut(scopeFile, allowNoScope, cmd.ErrOrStderr())
+			if err != nil {
+				return err
 			}
 
 			client := httpclient.New(httpclient.Config{
@@ -102,7 +96,8 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 
 	cmd.Flags().StringVarP(&target, "targets", "t", "", "target URL to run recon against (required)")
 	cmd.Flags().StringVar(&depth, "recon-depth", "passive", `how far to escalate: "passive" (Wave 0-1 only), "active" (+ Wave 2: DNS/port scan/HTTP probe), "full" (+ Wave 3: bounded crawl)`)
-	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to a target allow-list file (same format as scan's --scope); omitted = every discovered host is treated as in-scope, with a warning")
+	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to a target allow-list file (same format as scan's --scope; see .engagements/*/scope.txt for real examples) — required unless --allow-no-scope is set")
+	cmd.Flags().BoolVar(&allowNoScope, "allow-no-scope", false, "proceed with no --scope boundary — every host recon discovers is treated as in-scope, including unrelated infrastructure (e.g. a shared CDN/vendor domain); lab/local use only, never a real engagement")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", recon.DefaultRateLimit, "requests/sec passed to each external recon binary's own native rate-limit flag, and used for this package's own direct HTTP calls")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification for this package's own direct HTTP calls — lab targets only, never the default")

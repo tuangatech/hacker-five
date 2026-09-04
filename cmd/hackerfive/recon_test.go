@@ -47,14 +47,30 @@ func TestNewReconCmd_InvalidScopeFile_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "parsing --scope")
 }
 
-// TestNewReconCmd_NoScopeFile_WarnsAndRunsAgainstLocalServer drives the full
-// happy path against a local httptest.Server target, matching the pattern
-// pkg/webui's own tests use to keep the suite free of real external network
-// calls: --recon-depth passive skips the shelled active-probe binaries
-// entirely, and the loopback target means pkg/recon's own WHOIS/ASN guard
-// (isPrivateOrLoopbackHost) skips those too — the only real request made is
-// Wave 0's security.txt probe, straight back to this same local server.
-func TestNewReconCmd_NoScopeFile_WarnsAndRunsAgainstLocalServer(t *testing.T) {
+// TestNewReconCmd_NoScopeFile_ReturnsError confirms P2-2's hard-fail
+// (docs/follow-up.md P2-6): unlike scan's --targets (already an exact,
+// explicit list), recon can silently wander into whatever it discovers —
+// this refuses outright unless a --scope file or --allow-no-scope is given,
+// rather than the old warn-and-proceed default.
+func TestNewReconCmd_NoScopeFile_ReturnsError(t *testing.T) {
+	cmd := newReconCmd(&rootFlags{})
+	cmd.SetArgs([]string{"--targets", "http://example.com"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--scope is required")
+}
+
+// TestNewReconCmd_AllowNoScope_WarnsAndRunsAgainstLocalServer drives the
+// full happy path against a local httptest.Server target with the explicit
+// opt-out flag, matching the pattern pkg/webui's own tests use to keep the
+// suite free of real external network calls: --recon-depth passive skips
+// the shelled active-probe binaries entirely, and the loopback target means
+// pkg/recon's own WHOIS/ASN guard (isPrivateOrLoopbackHost) skips those too
+// — the only real request made is Wave 0's security.txt probe, straight
+// back to this same local server.
+func TestNewReconCmd_AllowNoScope_WarnsAndRunsAgainstLocalServer(t *testing.T) {
 	isolateFromInstalledReconBinaries(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -62,13 +78,13 @@ func TestNewReconCmd_NoScopeFile_WarnsAndRunsAgainstLocalServer(t *testing.T) {
 	defer srv.Close()
 
 	cmd := newReconCmd(&rootFlags{})
-	cmd.SetArgs([]string{"--targets", srv.URL, "--recon-depth", "passive"})
+	cmd.SetArgs([]string{"--targets", srv.URL, "--recon-depth", "passive", "--allow-no-scope"})
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 
 	require.NoError(t, cmd.Execute())
-	assert.Contains(t, errOut.String(), "no --scope given")
+	assert.Contains(t, errOut.String(), "--allow-no-scope set")
 
 	var result recon.ReconResult
 	require.NoError(t, json.Unmarshal(out.Bytes(), &result))

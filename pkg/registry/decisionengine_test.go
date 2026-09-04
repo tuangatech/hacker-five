@@ -31,7 +31,7 @@ func TestResolve_MatchedTechRule_ProducesPendingLeaf(t *testing.T) {
 		TechStack: []recon.TechFact{{Name: "PHP", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"}},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
 	require.NotNil(t, leaf, "expected a misconfig leaf for a PHP tech fact")
@@ -46,7 +46,7 @@ func TestResolve_UnmatchedTechFact_ProducesUnresolvedLeaf(t *testing.T) {
 		TechStack: []recon.TechFact{{Name: "TotallyUnknownStack", Host: "example.test", Source: "httpx-tech-detect", Confidence: "low"}},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
@@ -65,7 +65,7 @@ func TestResolve_UnmatchedTechFact_RationaleIncludesCorrelatedEndpoint(t *testin
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
@@ -77,13 +77,55 @@ func TestResolve_UnmatchedTechFact_RationaleIncludesCorrelatedEndpoint(t *testin
 	assert.NotContains(t, rationale, "other-host.test", "an endpoint on a different host must not be correlated in")
 }
 
+// TestResolve_UnmatchedTechFact_PopulatesLeafContext confirms P2-2's second
+// return value carries the originating TechFact (and correlated endpoints)
+// for an unresolved leaf, keyed by leaf ID — pkg/llmfallback.ResolveLeaf
+// reads this instead of regexing it back out of leaf.Rationale.
+func TestResolve_UnmatchedTechFact_PopulatesLeafContext(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "TotallyUnknownStack", Host: "example.test", Source: "fingerprint-header", Confidence: "medium"}},
+		Endpoints: []recon.EndpointFact{{URL: "http://example.test/graphql", Method: "GET", StatusCode: 200, Source: "wave3-crawl"}},
+	}
+
+	tree, leafContexts := Resolve(result, nil)
+
+	leaf := tree.Find("host:example.test").Children[0]
+	require.Equal(t, agenttask.StatusUnresolved, leaf.Status)
+	ctx, ok := leafContexts[leaf.ID]
+	require.True(t, ok, "expected a LeafContext entry for the unresolved leaf's ID")
+	require.NotNil(t, ctx.TechFact)
+	assert.Equal(t, "TotallyUnknownStack", ctx.TechFact.Name)
+	require.Len(t, ctx.Endpoints, 1)
+	assert.Equal(t, "http://example.test/graphql", ctx.Endpoints[0].URL)
+	assert.Nil(t, ctx.Port, "a tech-fact-driven leaf must not carry a Port context")
+}
+
+// TestResolve_UnmatchedTechFact_NoLeafContextForResolvedLeaf confirms the
+// map only ever carries entries for StatusUnresolved leaves — a resolved
+// (Pending) leaf never reaches pkg/llmfallback.ResolveLeaf, so it has no
+// reason to appear here.
+func TestResolve_UnmatchedTechFact_NoLeafContextForResolvedLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "GraphQL", Host: "example.test", Source: "fingerprint-header", Confidence: "medium"}},
+	}
+
+	tree, leafContexts := Resolve(result, nil)
+
+	leaf := tree.Find("host:example.test").Children[0]
+	require.Equal(t, agenttask.StatusPending, leaf.Status, "GraphQL matches a techRule, so this leaf resolves deterministically")
+	_, ok := leafContexts[leaf.ID]
+	assert.False(t, ok, "a resolved leaf must not appear in leafContexts")
+}
+
 func TestResolve_UnmatchedTechFact_NoEndpoints_RationaleUnchanged(t *testing.T) {
 	result := &recon.ReconResult{
 		Target:    "http://example.test",
 		TechStack: []recon.TechFact{{Name: "TotallyUnknownStack", Host: "example.test", Source: "httpx-tech-detect", Confidence: "low"}},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	rationale := tree.Find("host:example.test").Children[0].Rationale
 	assert.NotContains(t, rationale, "observed on this host:", "no real endpoints to correlate means no suffix, not an empty one")
@@ -129,7 +171,7 @@ func TestResolve_TemplateTagMatch_ProducesLeafWithTemplateIDAsDetector(t *testin
 		{ID: "unrelated-template", Tags: []string{"wordpress"}},
 	}
 
-	tree := Resolve(result, index)
+	tree, _ := Resolve(result, index)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "niche-stack-default-creds" })
 	require.NotNil(t, leaf, "expected a leaf whose Detector is the matched template's ID")
@@ -146,7 +188,7 @@ func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {
 		TechStack: []recon.TechFact{{Name: "PHP", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
 	}
 
-	tree := Resolve(result, index)
+	tree, _ := Resolve(result, index)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
@@ -179,7 +221,7 @@ func TestResolve_MultiWordTechName_MatchesSingleWordTag(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, index)
+	tree, _ := Resolve(result, index)
 
 	yoastLeaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "yoast-fpd" })
 	assert.NotNil(t, yoastLeaf, "expected the yoast-tagged template to match \"Yoast SEO Premium:28.4\"")
@@ -208,7 +250,7 @@ func TestResolve_GroupsMultipleHostsUnderRoot(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	require.NotNil(t, tree.Find("host:a.example.test"))
 	require.NotNil(t, tree.Find("host:b.example.test"))
@@ -216,7 +258,7 @@ func TestResolve_GroupsMultipleHostsUnderRoot(t *testing.T) {
 }
 
 func TestResolve_NoTechFacts_ProducesEmptyRoot(t *testing.T) {
-	tree := Resolve(&recon.ReconResult{Target: "http://example.test"}, nil)
+	tree, _ := Resolve(&recon.ReconResult{Target: "http://example.test"}, nil)
 	assert.Empty(t, tree.Root.Children)
 }
 
@@ -235,7 +277,7 @@ func TestResolve_NonActionableTech_ProducesNoLeafOrHostNode(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	assert.Empty(t, tree.Root.Children, "a host with only non-actionable tech facts must produce no host node")
 }
@@ -252,7 +294,7 @@ func TestResolve_NonActionableTech_MixedWithReal_OnlyRealSurvives(t *testing.T) 
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
@@ -274,7 +316,7 @@ func TestResolve_DuplicateCapabilityLeaves_Deduped(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
@@ -302,7 +344,7 @@ func TestResolve_DuplicateUnresolvedLeaves_DedupedByTechName(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
@@ -325,7 +367,7 @@ func TestResolve_DuplicateTemplateLeaves_Deduped(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, index)
+	tree, _ := Resolve(result, index)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
@@ -521,7 +563,7 @@ func TestResolve_EndpointOnlyHost_ProducesHostNode(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:api.example.test")
 	require.NotNil(t, hostNode, "an endpoint-only host must still produce a host node")
@@ -535,7 +577,7 @@ func TestResolve_IDShapedEndpoint_ProducesIdorLeaf(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "idor" })
 	require.NotNil(t, leaf, "an ID-shaped endpoint must produce an idor leaf even with no matching TechFact")
@@ -550,7 +592,7 @@ func TestResolve_ProtectedEndpoint_ProducesAuthbypassLeaf(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "authbypass" })
 	require.NotNil(t, leaf, "a 401/403 endpoint must produce an authbypass leaf")
@@ -564,7 +606,7 @@ func TestResolve_SSRFParamEndpoint_ProducesSsrfLeaf(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "ssrf" })
 	require.NotNil(t, leaf, "a URL-shaped query param must produce an ssrf leaf")
@@ -578,7 +620,7 @@ func TestResolve_CartEndpoint_ProducesBusinessLogicLeaf(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "businesslogic" })
 	require.NotNil(t, leaf, "a checkout-shaped endpoint must produce a businesslogic leaf")
@@ -593,7 +635,7 @@ func TestResolve_NonSignalEndpoint_NoExtraLeaf(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	assert.Nil(t, tree.Find("host:example.test"), "an endpoint with no idor/authbypass/ssrf/businesslogic/endpointSignal signal must produce no host node at all")
 }
@@ -609,7 +651,7 @@ func TestResolve_XmlrpcEndpoint_ProducesKnownTemplateLeaf(t *testing.T) {
 		{ID: "wordpress-xmlrpc-detect", Tags: []string{"wordpress"}, Severity: "info"},
 	}
 
-	tree := Resolve(result, index)
+	tree, _ := Resolve(result, index)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "wordpress-xmlrpc-detect" })
 	require.NotNil(t, leaf, "a directly-observed xmlrpc.php endpoint must produce the known template leaf")
@@ -624,7 +666,7 @@ func TestResolve_EndpointSignal_TemplateNotInIndex_NoLeafForIt(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil) // nil index — this install's corpus doesn't carry wordpress-xmlrpc-detect
+	tree, _ := Resolve(result, nil) // nil index — this install's corpus doesn't carry wordpress-xmlrpc-detect
 
 	assert.Nil(t, tree.Find("host:example.test"), "a signal whose template isn't in the index must not produce a guaranteed-skip leaf")
 }
@@ -635,7 +677,7 @@ func TestResolve_WooCommerceTechFact_ProducesMisconfigLeaf(t *testing.T) {
 		TechStack: []recon.TechFact{{Name: "WooCommerce", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
 	require.NotNil(t, leaf, "P1-5: a WooCommerce tech fact must dispatch misconfig, same as the existing wordpress techRule")
@@ -651,7 +693,7 @@ func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:staging.example.test")
 	require.NotNil(t, hostNode, "a naabu-only host (no TechFact/Endpoint) must still produce a host node")
@@ -663,6 +705,30 @@ func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
 	assert.Contains(t, leaf.Rationale, "mysql")
 }
 
+// TestResolve_InterestingPortOpen_PopulatesLeafContext confirms P2-2's
+// leafContexts map carries the originating PortFact for a port-visibility
+// leaf — the real, live gap this closes: resolvePortFacts' Rationale
+// sentence ("port %d/%s (%s) open...") never matched
+// pkg/llmfallback's old tech-fact-only regex at all, so ResolveLeaf's
+// tag-relevance ranking got zero signal for every port leaf before this.
+func TestResolve_InterestingPortOpen_PopulatesLeafContext(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 3306, Protocol: "tcp", Source: "naabu"}}},
+		},
+	}
+
+	tree, leafContexts := Resolve(result, nil)
+
+	leaf := tree.Find("host:staging.example.test").Children[0]
+	ctx, ok := leafContexts[leaf.ID]
+	require.True(t, ok, "expected a LeafContext entry for the port leaf's ID")
+	require.NotNil(t, ctx.Port)
+	assert.Equal(t, 3306, ctx.Port.Port)
+	assert.Nil(t, ctx.TechFact, "a port-driven leaf must not carry a TechFact context")
+}
+
 func TestResolve_UninterestingPortOpen_NoLeaf(t *testing.T) {
 	result := &recon.ReconResult{
 		Target: "http://example.test",
@@ -671,7 +737,7 @@ func TestResolve_UninterestingPortOpen_NoLeaf(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	assert.Nil(t, tree.Find("host:example.test"), "port 80 isn't in interestingPorts — must produce no leaf, not noise for every open port")
 }
@@ -684,7 +750,7 @@ func TestResolve_PortService_PrefersObservedOverStaticTable(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Status == agenttask.StatusUnresolved })
 	require.NotNil(t, leaf)
@@ -710,7 +776,7 @@ func TestResolve_MultipleInterestingPorts_AllProduceLeaves(t *testing.T) {
 		},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:staging.example.test")
 	require.NotNil(t, hostNode)
@@ -732,7 +798,7 @@ func TestResolve_PortLeafAndUnrelatedUnresolvedTechFact_BothSurvive(t *testing.T
 		TechStack: []recon.TechFact{{Name: "SomeUnknownStack", Host: "example.test", Source: "httpx-tech-detect", Confidence: "low"}},
 	}
 
-	tree := Resolve(result, nil)
+	tree, _ := Resolve(result, nil)
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)

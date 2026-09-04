@@ -130,7 +130,7 @@ func TestReconAndPlan_AgainstCRAPI(t *testing.T) {
 		t.Logf("templates/index.json not available (%v) — template-tag-leaf assertions skipped, registry-capability assertions still run", err)
 	}
 
-	tree := registry.Resolve(result, index)
+	tree, _ := registry.Resolve(result, index)
 	leaves := flattenPlanTree(tree)
 
 	detectors := pendingDetectors(leaves)

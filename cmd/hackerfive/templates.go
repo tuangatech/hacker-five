@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -125,6 +126,46 @@ func newTemplatesIndexCmd() *cobra.Command {
 // pkg/recon's own "missing binary -> warning, not failure" posture.
 func loadTemplateIndex(path string) ([]templatesync.Entry, error) {
 	return templatesync.LoadIndex(path)
+}
+
+// warnIndexDrift (P2-5, docs/follow-up.md) compares a loaded index's entry
+// count against a fresh on-disk file count across the same dirs
+// defaultTemplateDirsWithLabels/`templates index` itself indexes from,
+// printing a warning to stderr when they look wildly out of sync — the real
+// scenario this catches: an index generated before the synced directory was
+// cleared, or re-pointed at a different pinned commit, without re-running
+// `templates index`. Best-effort: a directory that can't be walked just
+// skips the check silently, matching the "missing optional input, warn and
+// continue" posture already used for a missing index file itself.
+func warnIndexDrift(stderr io.Writer, index []templatesync.Entry) {
+	if len(index) == 0 {
+		return
+	}
+	dirs, _ := defaultTemplateDirsWithLabels()
+	if w := indexDriftWarningForDirs(len(index), dirs); w != "" {
+		_, _ = fmt.Fprintln(stderr, w)
+	}
+}
+
+// indexDriftWarningForDirs is warnIndexDrift's dirs-parameterized core,
+// split out so a test can exercise the real counting + comparison logic
+// against temp directories rather than this machine's real
+// templates/synced-templates state (mirroring
+// TestDefaultTemplateDirsWithLabels_Invariants' own reasoning for not
+// asserting exact real-machine dir contents). Best-effort: a directory that
+// can't be walked returns "" (skips the check) rather than propagating the
+// error, matching the "missing optional input, warn and continue" posture
+// already used for a missing index file itself.
+func indexDriftWarningForDirs(indexCount int, dirs []string) string {
+	disk := 0
+	for _, dir := range dirs {
+		n, err := templatesync.CountTemplateFiles(dir)
+		if err != nil {
+			return ""
+		}
+		disk += n
+	}
+	return templatesync.IndexDriftWarning(indexCount, disk)
 }
 
 // defaultTemplateDirsWithLabels is the default two-source list both

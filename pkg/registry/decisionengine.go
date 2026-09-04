@@ -534,14 +534,40 @@ func normalizedTechWords(name string) map[string]bool {
 	return words
 }
 
+// LeafContext is the structured data resolveTechFact/resolvePortFacts
+// already have in hand when building an unresolved leaf's human-readable
+// Rationale — kept in a side map Resolve returns alongside the tree, never
+// merged into agenttask.PlanNode itself (that type is the shared MCP tool
+// output schema; jsonschema-go's reflection can't represent PlanNode's own
+// self-referential Children field, let alone a new one — see doc15's
+// planOutputSchema comment). pkg/llmfallback.ResolveLeaf reads this instead
+// of regexing a tech name back out of Rationale prose (P2-2,
+// docs/follow-up.md) — a real, live gap that regex had: P1-2's port leaves
+// use an entirely different Rationale sentence shape
+// ("port %d/%s (%s) open...") the old pattern never matched at all, so
+// ResolveLeaf's tag-relevance ranking silently got zero signal for every
+// port-open unresolved leaf. Exactly one of TechFact/Port is set, matching
+// which of the two functions below produced the leaf; Endpoints may be set
+// alongside TechFact (the same correlatedEndpoints data already folded into
+// Rationale prose).
+type LeafContext struct {
+	TechFact  *recon.TechFact
+	Port      *recon.PortFact
+	Endpoints []recon.EndpointFact
+}
+
 // Resolve builds a PlanTree from result: one child node per host that
 // produced at least one TechFact, and under each host one leaf per
 // registry/template-tag match (Status: StatusPending) or, if a TechFact
 // matched neither, one leaf with Status: StatusUnresolved — visible and
 // inspectable, never silently dropped (Decision 6). templateIndex may be
 // nil (R9's index not yet generated) — template-tag matching is simply
-// skipped in that case, the registry-capability matches still run.
-func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *agenttask.PlanTree {
+// skipped in that case, the registry-capability matches still run. The
+// second return value carries every unresolved leaf's LeafContext, keyed by
+// leaf ID (P2-2) — empty map, never nil, so a caller can range over it
+// unconditionally.
+func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*agenttask.PlanTree, map[string]LeafContext) {
+	leafContexts := make(map[string]LeafContext)
 	byHost := make(map[string][]recon.TechFact)
 	hostSet := make(map[string]bool)
 	var hosts []string
@@ -594,20 +620,20 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *age
 			hostNode.Children = append(hostNode.Children, leaf)
 		}
 		for _, fact := range byHost[host] {
-			for _, leaf := range resolveTechFact(host, fact, templateIndex, result.Endpoints, &leafIdx) {
+			for _, leaf := range resolveTechFact(host, fact, templateIndex, result.Endpoints, &leafIdx, leafContexts) {
 				addLeaf(leaf, leafDedupKey(fact, leaf))
 			}
 		}
 		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
 			addLeaf(leaf, pendingDedupKey(leaf.Target, leaf.Detector))
 		}
-		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf)
+		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf, leafContexts)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
 		}
 		root.Children = append(root.Children, hostNode)
 	}
-	return &agenttask.PlanTree{Root: root}
+	return &agenttask.PlanTree{Root: root}, leafContexts
 }
 
 // leafDedupKey returns a stable key identifying what a leaf will actually
@@ -644,7 +670,7 @@ func unresolvedDedupKey(target, techName string) string {
 	return "unresolved\x00" + target + "\x00" + NormalizeTechName(techName)
 }
 
-func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, leafIdx *int) []*agenttask.PlanNode {
+func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, leafIdx *int, leafContexts map[string]LeafContext) []*agenttask.PlanNode {
 	if nonActionableTech[NormalizeTechName(fact.Name)] {
 		return nil // transport/posture/hosting-brand fact — nothing to dispatch, not even an unresolved leaf (P0-5)
 	}
@@ -678,17 +704,20 @@ func resolveTechFact(host string, fact recon.TechFact, templateIndex []templates
 
 	if len(leaves) == 0 {
 		rationale := fmt.Sprintf("tech fact %q (source: %s) matched no registry capability or template tag", fact.Name, fact.Source)
-		if obs := correlatedEndpoints(host, endpoints); len(obs) > 0 {
+		obs := correlatedEndpoints(host, endpoints)
+		if len(obs) > 0 {
 			rationale += "; observed on this host: " + describeEndpoints(obs)
 		}
-		leaves = append(leaves, &agenttask.PlanNode{
+		leaf := &agenttask.PlanNode{
 			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
 			Target:     host,
 			Rationale:  rationale,
 			Status:     agenttask.StatusUnresolved,
 			Confidence: confidence,
-		})
+		}
 		*leafIdx++
+		leafContexts[leaf.ID] = LeafContext{TechFact: &fact, Endpoints: obs}
+		leaves = append(leaves, leaf)
 	}
 	return leaves
 }
@@ -827,7 +856,7 @@ func endpointsForHost(host string, endpoints []recon.EndpointFact) []recon.Endpo
 // both normalize to the same "port" key and silently dedup two genuinely
 // different ports down to one leaf; caught live against the real
 // andertone.com data, which has both 21 and 3306 open on the same host).
-func resolvePortFacts(host string, ports []recon.PortFact, leafIdx *int, addLeaf func(*agenttask.PlanNode, string)) {
+func resolvePortFacts(host string, ports []recon.PortFact, leafIdx *int, addLeaf func(*agenttask.PlanNode, string), leafContexts map[string]LeafContext) {
 	for _, p := range ports {
 		service, known := interestingPorts[p.Port]
 		if !known {
@@ -844,6 +873,7 @@ func resolvePortFacts(host string, ports []recon.PortFact, leafIdx *int, addLeaf
 			Confidence: agenttask.ConfidenceMedium,
 		}
 		*leafIdx++
+		leafContexts[leaf.ID] = LeafContext{Port: &p}
 		addLeaf(leaf, unresolvedDedupKey(host, fmt.Sprintf("port-%d", p.Port)))
 	}
 }

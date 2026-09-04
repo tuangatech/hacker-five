@@ -13,12 +13,12 @@ import (
 )
 
 const leafSystemPrompt = `You are HackerFive's template-selection assistant. Given one unresolved recon tech fact and the project's own capability/template catalog, decide ONE of:
-- an existing detector/template tag already covers this fact
+- an existing detector capability, or one specific existing template, already covers this fact
 - nothing in the catalog covers it and a brand-new nuclei template is warranted
 - you are not confident enough either way and a human should decide
 
 Respond with ONLY a JSON object, no other text, matching exactly one of these shapes:
-{"decision": "use_existing_tag", "tag": "<exact name from the catalog>", "reason": "<short reason>"}
+{"decision": "use_existing_tag", "tag": "<exact capability name from "Available capabilities", OR exact template id from "Available templates" — never a bare tag/category name, it must be dispatchable as-is>", "reason": "<short reason>"}
 {"decision": "needs_new_template", "reason": "<short reason nothing in the catalog fits>"}
 {"decision": "escalate", "reason": "<short reason you are not confident>"}`
 
@@ -80,16 +80,18 @@ type draftTemplateResponse struct {
 }
 
 // ResolveLeaf is I4's first caller: leaf is an agenttask.StatusUnresolved
-// PlanTree leaf (registry.Resolve found no registry/template-tag match —
-// leaf.Rationale already documents which tech fact and why, so this takes
-// no separate TechFact parameter), and this issues at most two stateless
-// calls — one local-tier call to decide
-// use_existing_tag/needs_new_template/escalate, and, only if that call says
-// needs_new_template, one frontier-tier call to draft a new template.
-// costUSD is the sum of every call actually made (0 if only the local tier
-// was used).
-func (c *Client) ResolveLeaf(ctx context.Context, leaf *agenttask.PlanNode, capabilities []registry.Capability, templates []templatesync.Entry) (LeafDecision, float64, error) {
-	prompt := buildLeafPrompt(leaf, capabilities, templates)
+// PlanTree leaf (registry.Resolve found no registry/template-tag match).
+// leafCtx is registry.Resolve's own structured record of what produced this
+// leaf (P2-2, docs/follow-up.md) — the TechFact/Port/Endpoints buildLeafPrompt
+// ranks against, preferred over regexing leaf.Rationale's prose; its zero
+// value is valid (a caller with no LeafContext to hand falls back to
+// techNameFromRationale). This issues at most two stateless calls — one
+// local-tier call to decide use_existing_tag/needs_new_template/escalate,
+// and, only if that call says needs_new_template, one frontier-tier call to
+// draft a new template. costUSD is the sum of every call actually made (0 if
+// only the local tier was used).
+func (c *Client) ResolveLeaf(ctx context.Context, leaf *agenttask.PlanNode, leafCtx registry.LeafContext, capabilities []registry.Capability, templates []templatesync.Entry) (LeafDecision, float64, error) {
+	prompt := buildLeafPrompt(leaf, leafCtx, capabilities, templates)
 
 	text, cost, err := c.completeBestAvailable(ctx, leafSystemPrompt, prompt)
 	if err != nil {
@@ -161,8 +163,10 @@ const (
 // techFactNamePattern extracts the tech-fact name resolveTechFact
 // (pkg/registry/decisionengine.go) embedded in an unresolved leaf's
 // Rationale (`tech fact "X" (source: ...) matched no registry capability or
-// template tag...`) — the one place that name is available to this prompt,
-// since ResolveLeaf receives the leaf, not the originating TechFact itself.
+// template tag...`) — techNameForRanking's fallback for a caller with no
+// LeafContext to hand (P2-2 made the structured TechFact/Port name the
+// preferred source; this regex predates that and remains the degrade path,
+// not the primary one).
 var techFactNamePattern = regexp.MustCompile(`tech fact "([^"]*)"`)
 
 func techNameFromRationale(rationale string) string {
@@ -173,33 +177,54 @@ func techNameFromRationale(rationale string) string {
 	return m[1]
 }
 
-func buildLeafPrompt(leaf *agenttask.PlanNode, capabilities []registry.Capability, templates []templatesync.Entry) string {
-	p := fmt.Sprintf("Unresolved leaf: target=%q\nRationale (names the unmatched tech fact): %s\n\nAvailable capabilities:\n",
+// techNameForRanking prefers leafCtx's structured data (P2-2) over
+// techNameFromRationale's regex scrape — the real, live gap the regex had:
+// resolvePortFacts' leaves use an entirely different Rationale sentence
+// shape ("port %d/%s (%s) open...") the pattern never matched at all, so
+// rankRelevantTags/rankRelevantTemplates got zero signal for a port-open
+// unresolved leaf. Falls back to the regex only when leafCtx is its zero
+// value (e.g. a caller without a Resolve-produced LeafContext).
+func techNameForRanking(leaf *agenttask.PlanNode, leafCtx registry.LeafContext) string {
+	switch {
+	case leafCtx.TechFact != nil:
+		return leafCtx.TechFact.Name
+	case leafCtx.Port != nil && leafCtx.Port.Service != "":
+		return leafCtx.Port.Service
+	default:
+		return techNameFromRationale(leaf.Rationale)
+	}
+}
+
+func buildLeafPrompt(leaf *agenttask.PlanNode, leafCtx registry.LeafContext, capabilities []registry.Capability, templates []templatesync.Entry) string {
+	p := fmt.Sprintf("Unresolved leaf: target=%q\nRationale (names the unmatched tech fact): %s\n\nAvailable capabilities (dispatchable by name directly):\n",
 		leaf.Target, leaf.Rationale)
 	for _, cap := range capabilities {
 		p += fmt.Sprintf("- %s: %s\n", cap.Name, cap.Description)
 	}
 
-	p += "\nAvailable template tags (sample):\n"
-	seen := map[string]bool{}
+	// P2-3 (docs/follow-up.md, doc15 Open Issue #2): listed by exact
+	// dispatchable id, not by shared tag — RunPlan can only dispatch a leaf
+	// whose Detector is a real capability name or templatesync.Entry.ID,
+	// never a bare tag string, so a use_existing_tag decision naming a tag
+	// used to be undispatchable in practice.
+	p += "\nAvailable templates (sample — respond with the exact id of one of these):\n"
+	seenID := map[string]bool{}
 	count := 0
-	writeTag := func(tag string) {
-		if seen[tag] || count >= maxLeafPromptTags {
+	writeTemplate := func(e templatesync.Entry) {
+		if seenID[e.ID] || count >= maxLeafPromptTags {
 			return
 		}
-		seen[tag] = true
+		seenID[e.ID] = true
 		count++
-		p += "- " + tag + "\n"
+		p += fmt.Sprintf("- %s: %s\n", e.ID, e.Name)
 	}
 
-	techName := techNameFromRationale(leaf.Rationale)
-	for _, tag := range rankRelevantTags(techName, templates, relevantTagLimit) {
-		writeTag(tag)
+	techName := techNameForRanking(leaf, leafCtx)
+	for _, e := range rankRelevantTemplates(techName, templates, relevantTagLimit) {
+		writeTemplate(e)
 	}
-	for _, t := range templates {
-		for _, tag := range t.Tags {
-			writeTag(tag)
-		}
+	for _, e := range templates {
+		writeTemplate(e)
 	}
 	return p
 }
@@ -256,6 +281,61 @@ func rankRelevantTags(techName string, templates []templatesync.Entry, limit int
 		out[i] = c.original
 	}
 	return out
+}
+
+// rankRelevantTemplates maps rankRelevantTags' ranked tag list back onto the
+// templates carrying each tag, preserving relevance order and dropping
+// duplicate template IDs (a template with several tags could otherwise
+// appear once per matching tag) — this is what buildLeafPrompt shows the
+// model (P2-3): a specific dispatchable template ID instead of a shared tag.
+// Reuses rankRelevantTags rather than re-scoring from scratch, so the two
+// stay consistent by construction.
+func rankRelevantTemplates(techName string, templates []templatesync.Entry, limit int) []templatesync.Entry {
+	rankedTags := rankRelevantTags(techName, templates, limit)
+	if len(rankedTags) == 0 {
+		return nil
+	}
+	tagRank := make(map[string]int, len(rankedTags))
+	for i, t := range rankedTags {
+		tagRank[strings.ToLower(t)] = i
+	}
+
+	type ranked struct {
+		entry templatesync.Entry
+		rank  int
+	}
+	seenID := map[string]bool{}
+	var out []ranked
+	for _, e := range templates {
+		if seenID[e.ID] {
+			continue
+		}
+		best := -1
+		for _, tag := range e.Tags {
+			if r, ok := tagRank[strings.ToLower(tag)]; ok && (best == -1 || r < best) {
+				best = r
+			}
+		}
+		if best == -1 {
+			continue
+		}
+		seenID[e.ID] = true
+		out = append(out, ranked{entry: e, rank: best})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].rank != out[j].rank {
+			return out[i].rank < out[j].rank
+		}
+		return out[i].entry.ID < out[j].entry.ID // deterministic tiebreak
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	result := make([]templatesync.Entry, len(out))
+	for i, r := range out {
+		result[i] = r.entry
+	}
+	return result
 }
 
 // tagRelevanceScore: exact match on the normalized tech name outranks a

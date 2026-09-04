@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
+	"github.com/tuangatech/hacker-five/pkg/registry"
 )
 
 func TestResolveLeaf_UseExistingTag(t *testing.T) {
@@ -14,7 +15,7 @@ func TestResolveLeaf_UseExistingTag(t *testing.T) {
 
 	leaf := &agenttask.PlanNode{ID: "leaf-1", Target: "example.com", Rationale: `tech fact "wordpress" matched no registry capability or template tag`}
 
-	got, cost, err := c.ResolveLeaf(context.Background(), leaf, nil, nil)
+	got, cost, err := c.ResolveLeaf(context.Background(), leaf, registry.LeafContext{}, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveLeaf: %v", err)
 	}
@@ -35,7 +36,7 @@ func TestResolveLeaf_Escalate(t *testing.T) {
 	c := newTestClient(t, srv.URL)
 
 	leaf := &agenttask.PlanNode{ID: "leaf-1"}
-	got, _, err := c.ResolveLeaf(context.Background(), leaf, nil, nil)
+	got, _, err := c.ResolveLeaf(context.Background(), leaf, registry.LeafContext{}, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveLeaf: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestResolveLeaf_NeedsNewTemplate_NoFrontierConfigured_Escalates(t *testing.
 	c := newTestClient(t, srv.URL) // OpenRouter deliberately unconfigured
 
 	leaf := &agenttask.PlanNode{ID: "leaf-1"}
-	got, _, err := c.ResolveLeaf(context.Background(), leaf, nil, nil)
+	got, _, err := c.ResolveLeaf(context.Background(), leaf, registry.LeafContext{}, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveLeaf: %v", err)
 	}

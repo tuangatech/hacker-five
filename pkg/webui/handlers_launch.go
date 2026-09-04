@@ -515,7 +515,7 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	// registry.Resolve exactly as Guided Scan's own (now-retired) confirm
 	// page did.
 	index, _ := loadTemplateIndex(defaultTemplateIndexPath)
-	tree := registry.Resolve(result, index)
+	tree, _ := registry.Resolve(result, index)
 	selected := make(map[string]bool, len(cfgs))
 	for _, cfg := range cfgs {
 		selected[cfg.Detector] = true
