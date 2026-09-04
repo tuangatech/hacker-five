@@ -117,12 +117,22 @@ func RunPlan(ctx context.Context, session *mcp.ServerSession, token any, tree *a
 }
 
 // missingRequiredField reports, in plain text, which of idor's
-// EndpointTemplate, authbypass's ProtectedPaths, or ssrf's SSRFParams is
-// still empty on cfg for detector — "" if detector has no such requirement
-// or it's already filled. Mirrors pkg/webui's fillReconFields: a detector
-// that needs a field recon/I4 couldn't resolve is skipped outright, never
-// run against a live target with SkipXRequired papering over a blank
-// value.
+// EndpointTemplate, authbypass's ProtectedPaths, ssrf's SSRFParams, or
+// businesslogic's --allow-writes/auth-token is still unset on cfg for
+// detector — "" if detector has no such requirement or it's already
+// filled. Mirrors pkg/webui's fillReconFields: a detector that needs a
+// field recon/I4 couldn't resolve — or, for businesslogic, a gate only a
+// human can set — is skipped outright, never run against a live target
+// with SkipXRequired papering over a blank value.
+//
+// businesslogic's case (P1-1, docs/follow-up.md): registry.Resolve can now
+// emit a businesslogic leaf from an observed cart/checkout/coupon-shaped
+// endpoint alone, with no idea whether the operator has opted into
+// mutating checks. Without this gate that leaf would reach cfg.Validate
+// and fail loudly instead of skipping cleanly — --allow-writes/AuthToken
+// are exactly the two things recon/I4 must never supply on their own
+// (CLAUDE.md's write-safety rule), so this only ever narrows what already
+// requires a human, it never relaxes it.
 func missingRequiredField(detector string, cfg scanner.Config) string {
 	switch detector {
 	case "idor":
@@ -136,6 +146,13 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 	case "ssrf":
 		if len(cfg.SSRFParams) == 0 {
 			return "no --ssrf-param given and recon found no usable candidate"
+		}
+	case "businesslogic":
+		if !cfg.AllowWrites {
+			return "--allow-writes not set — businesslogic's mutating checks are never run without explicit opt-in"
+		}
+		if cfg.AuthToken == "" {
+			return "no --auth-token given — businesslogic requires an owner auth token"
 		}
 	}
 	return ""

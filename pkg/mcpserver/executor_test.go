@@ -52,6 +52,36 @@ func TestRunPlan_SkipsUnexecutableLeaves(t *testing.T) {
 	}
 }
 
+// TestMissingRequiredField_BusinessLogic_GatesOnAllowWritesAndAuthToken
+// locks in P1-1's new businesslogic gate: registry.Resolve can now emit a
+// businesslogic leaf from endpoint signal alone, with no idea whether the
+// operator opted into mutating checks — this must skip cleanly, not reach
+// cfg.Validate and fail loudly, exactly like idor/authbypass/ssrf's own
+// existing field gates above.
+func TestMissingRequiredField_BusinessLogic_GatesOnAllowWritesAndAuthToken(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         scanner.Config
+		wantMissing bool
+	}{
+		{"neither set", scanner.Config{}, true},
+		{"allow-writes only", scanner.Config{AllowWrites: true}, true},
+		{"auth-token only", scanner.Config{AuthToken: "tok"}, true},
+		{"both set", scanner.Config{AllowWrites: true, AuthToken: "tok"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := missingRequiredField("businesslogic", tc.cfg)
+			if tc.wantMissing && reason == "" {
+				t.Fatal("got no missing-field reason, want one (businesslogic needs --allow-writes and --auth-token)")
+			}
+			if !tc.wantMissing && reason != "" {
+				t.Fatalf("got missing-field reason %q, want none (both required fields are set)", reason)
+			}
+		})
+	}
+}
+
 // TestRunPlan_DispatchesKnownTemplateIDLeaf locks in the fix for what was
 // previously always-skipped: a leaf whose Detector matches a real
 // templatesync.Entry.ID (not a built-in detector name) now dispatches as a

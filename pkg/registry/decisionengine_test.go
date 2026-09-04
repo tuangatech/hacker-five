@@ -474,3 +474,168 @@ func TestMatchTemplateTags_CapReturnsBestNotFileOrder(t *testing.T) {
 	require.Len(t, got, maxTemplateLeavesPerTech)
 	assert.Equal(t, "CVE-2025-0001", got[0].ID, "the best entry must survive the cap even though it was last in file order")
 }
+
+// TestMatchTemplateTags_FullSlugMatchesHyphenatedCompoundTag is P1-3's
+// unlock: the real synced corpus tags plugin templates by the literal
+// hyphenated slug ("contact-form-7"), but the word-decomposed matchWords
+// path alone (primary="contact") would never equal that compound tag.
+// Fixture tags mirror the real wp-contact-form-7-fpd entry (2026-09-04).
+func TestMatchTemplateTags_FullSlugMatchesHyphenatedCompoundTag(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "wp-contact-form-7-fpd", Name: "Contact Form 7 Plugin - Full Path Disclosure", Tags: []string{"debug", "wordpress", "wp", "wp-plugin", "contact-form-7", "fpd"}, Severity: "low"},
+		// Shares no word with "contact"/"form" (matchWords), so this entry
+		// only matters as a negative control against the fullSlug tier
+		// specifically, not against the pre-existing word-level path too.
+		{ID: "unrelated-panel-template", Name: "Unrelated Admin Panel - Detect", Tags: []string{"panel", "builder"}, Severity: "info"},
+	}
+	got := matchTemplateTags("contact-form-7:5.7.1", index)
+
+	require.Len(t, got, 1, "only the entry carrying the literal contact-form-7 slug tag should match")
+	assert.Equal(t, "wp-contact-form-7-fpd", got[0].ID)
+}
+
+// TestMatchTemplateTags_FullSlugSingleWordNameUnaffected is a regression
+// guard: a plain, non-hyphenated name's matching must be unchanged by the
+// fullSlug addition (fullSlug is "" whenever normalized has no hyphen).
+func TestMatchTemplateTags_FullSlugSingleWordNameUnaffected(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "CVE-2021-25118", Name: "Yoast SEO < 17.2 - Information Disclosure", Tags: []string{"cve", "cve2021", "wordpress", "yoast"}, Severity: "medium"},
+	}
+	got := matchTemplateTags("Yoast SEO", index)
+	require.Len(t, got, 1)
+	assert.Equal(t, "CVE-2021-25118", got[0].ID)
+}
+
+// --- P1-1: endpoint-driven leaf emission ---
+
+// TestResolve_EndpointOnlyHost_ProducesHostNode locks in the host-set fix:
+// a host that never appears in TechStack, only in Endpoints, must still get
+// a host node when it has real endpoint-driven signal — the root-cause gap
+// docs/follow-up.md named ("Resolve reasons only over TechStack").
+func TestResolve_EndpointOnlyHost_ProducesHostNode(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/report/482", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	hostNode := tree.Find("host:api.example.test")
+	require.NotNil(t, hostNode, "an endpoint-only host must still produce a host node")
+}
+
+func TestResolve_IDShapedEndpoint_ProducesIdorLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/mechanic_report?report_id=482", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "idor" })
+	require.NotNil(t, leaf, "an ID-shaped endpoint must produce an idor leaf even with no matching TechFact")
+	assert.Equal(t, agenttask.StatusPending, leaf.Status)
+}
+
+func TestResolve_ProtectedEndpoint_ProducesAuthbypassLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/admin", Method: "GET", StatusCode: 401, Source: "wave3-crawl"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "authbypass" })
+	require.NotNil(t, leaf, "a 401/403 endpoint must produce an authbypass leaf")
+}
+
+func TestResolve_SSRFParamEndpoint_ProducesSsrfLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/fetch?callback=http://internal", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "ssrf" })
+	require.NotNil(t, leaf, "a URL-shaped query param must produce an ssrf leaf")
+}
+
+func TestResolve_CartEndpoint_ProducesBusinessLogicLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/checkout", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "businesslogic" })
+	require.NotNil(t, leaf, "a checkout-shaped endpoint must produce a businesslogic leaf")
+	assert.Contains(t, leaf.Rationale, "--allow-writes", "the leaf's own rationale must be honest that a human gate still applies")
+}
+
+func TestResolve_NonSignalEndpoint_NoExtraLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/about-us", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	assert.Nil(t, tree.Find("host:example.test"), "an endpoint with no idor/authbypass/ssrf/businesslogic/endpointSignal signal must produce no host node at all")
+}
+
+func TestResolve_XmlrpcEndpoint_ProducesKnownTemplateLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/xmlrpc.php", Method: "POST", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+	index := []templatesync.Entry{
+		{ID: "wordpress-xmlrpc-detect", Tags: []string{"wordpress"}, Severity: "info"},
+	}
+
+	tree := Resolve(result, index)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "wordpress-xmlrpc-detect" })
+	require.NotNil(t, leaf, "a directly-observed xmlrpc.php endpoint must produce the known template leaf")
+	assert.Equal(t, agenttask.ConfidenceHigh, leaf.Confidence, "a directly-observed endpoint signature is high-confidence evidence")
+}
+
+func TestResolve_EndpointSignal_TemplateNotInIndex_NoLeafForIt(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/xmlrpc.php", Method: "POST", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+
+	tree := Resolve(result, nil) // nil index — this install's corpus doesn't carry wordpress-xmlrpc-detect
+
+	assert.Nil(t, tree.Find("host:example.test"), "a signal whose template isn't in the index must not produce a guaranteed-skip leaf")
+}
+
+func TestResolve_WooCommerceTechFact_ProducesMisconfigLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "WooCommerce", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+	}
+
+	tree := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, leaf, "P1-5: a WooCommerce tech fact must dispatch misconfig, same as the existing wordpress techRule")
+}

@@ -70,6 +70,51 @@ var techRules = []techRule{
 	{Match: "django", Capabilities: []string{"misconfig"}},
 	{Match: "iis", Capabilities: []string{"misconfig"}},
 	{Match: "litespeed", Capabilities: []string{"misconfig"}},
+	{Match: "woocommerce", Capabilities: []string{"misconfig"}},
+}
+
+// businessLogicPathKeywords are endpoint-path substrings (case-insensitive)
+// suggesting a coupon/cart/checkout flow exists — enough signal to surface
+// a businesslogic leaf worth a human's --allow-writes decision, not enough
+// to auto-derive real mint/apply paths for a non-crAPI target (P1-1,
+// docs/follow-up.md). businesslogic's own checks stay hardcoded to
+// --coupon-mint-path/--coupon-apply-path (or crAPI's defaults) either way —
+// deriving real mutating-request paths from a heuristic is exactly the kind
+// of guess CLAUDE.md's write-safety rule warns against, so this only
+// decides whether the leaf appears at all, gated at execution time by
+// missingRequiredField (pkg/mcpserver/executor.go) on --allow-writes and an
+// auth token, neither of which recon can supply or should auto-enable.
+var businessLogicPathKeywords = []string{"cart", "checkout", "coupon", "add-to-cart", "promo"}
+
+func looksLikeCouponOrCartFlow(path string) bool {
+	lower := strings.ToLower(path)
+	for _, kw := range businessLogicPathKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointSignal ties a directly-observed endpoint signature to specific
+// synced-template IDs — stronger evidence than a tag match, since it
+// confirms the exact behavior the template checks for (P1-1,
+// docs/follow-up.md), rather than inferring plausibility from a tag like
+// "wordpress" shared with hundreds of unrelated CVE templates that can
+// crowd an info-severity fingerprint template out of matchTemplateTags' own
+// top-N ranking (docs/15-implementation-plan-ph6.md Step 2's Batch 2
+// addendum hit exactly this: wordpress-user-enum outranked by real CVEs on
+// a real target). A signal whose template ID isn't present in
+// templateIndex is silently skipped — the synced corpus this install has
+// may not carry it. IDs verified against the real synced corpus, 2026-09-04.
+type endpointSignal struct {
+	pathSubstr  string
+	templateIDs []string
+}
+
+var endpointSignals = []endpointSignal{
+	{pathSubstr: "xmlrpc.php", templateIDs: []string{"wordpress-xmlrpc-detect", "wordpress-xmlrpc-listmethods"}},
+	{pathSubstr: "wp-json/wp/v2/users", templateIDs: []string{"wordpress-user-enum"}},
 }
 
 // nonActionableTech is a small denylist of TechFact names that should
@@ -202,6 +247,19 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 		return nil
 	}
 	primary := primaryTechWord(normalized)
+	// fullSlug catches a hyphenated multi-word name the corpus tags as one
+	// literal compound token — "contact-form-7", "wp-fastest-cache",
+	// "litespeed-cache" all confirmed tagged this way on the real synced
+	// corpus (P1-3, docs/follow-up.md), but primary/matchWords below always
+	// word-split on non-alphanumeric separators (including hyphens), so
+	// neither would ever equal a compound tag like that. Only relevant for
+	// slug-shaped names (wp-plugin facts, see pkg/recon's plugin-path
+	// extraction); a plain multi-word name like "Yoast SEO Premium" has no
+	// hyphen and this stays "", unchanged behavior.
+	fullSlug := ""
+	if strings.Contains(normalized, "-") {
+		fullSlug = normalized
+	}
 	exclude := lowerSet(q.exclude)
 
 	type scored struct {
@@ -214,7 +272,7 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 		if hasAnyTag(entry, exclude) || idContainsAny(entry.ID, q.excludeIDSubstr) {
 			continue
 		}
-		score, year, ok := scoreTemplateForTech(entry, matchWords, primary, version)
+		score, year, ok := scoreTemplateForTech(entry, matchWords, primary, fullSlug, version)
 		if !ok {
 			continue
 		}
@@ -246,14 +304,14 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 // fact. ok is false when nothing ties the entry to this tech — it is then
 // dropped, never made into a leaf. year is the entry's CVE year (0 if not
 // a CVE template), used as a sort tiebreak by the caller.
-func scoreTemplateForTech(entry templatesync.Entry, matchWords map[string]bool, primary, version string) (score int, year int, ok bool) {
+func scoreTemplateForTech(entry templatesync.Entry, matchWords map[string]bool, primary, fullSlug, version string) (score int, year int, ok bool) {
 	tagHit, primaryTagHit := false, false
 	for _, raw := range entry.Tags {
 		tag := strings.ToLower(strings.TrimSpace(raw))
 		if tag == "" {
 			continue
 		}
-		if primary != "" && tag == primary {
+		if (primary != "" && tag == primary) || (fullSlug != "" && tag == fullSlug) {
 			primaryTagHit = true
 			tagHit = true
 		} else if matchWords[tag] {
@@ -453,32 +511,57 @@ func normalizedTechWords(name string) map[string]bool {
 // skipped in that case, the registry-capability matches still run.
 func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *agenttask.PlanTree {
 	byHost := make(map[string][]recon.TechFact)
+	hostSet := make(map[string]bool)
 	var hosts []string
-	for _, fact := range result.TechStack {
-		if _, seen := byHost[fact.Host]; !seen {
-			hosts = append(hosts, fact.Host)
+	addHost := func(h string) {
+		if h != "" && !hostSet[h] {
+			hostSet[h] = true
+			hosts = append(hosts, h)
 		}
+	}
+	for _, fact := range result.TechStack {
+		addHost(fact.Host)
 		byHost[fact.Host] = append(byHost[fact.Host], fact)
 	}
+	// A host can appear only in Endpoints (never fingerprinted with a
+	// TechFact) and still carry real endpoint-driven signal — P1-1's
+	// endpoint-driven pass below is otherwise unreachable for such a host,
+	// since the loop used to build hosts from result.TechStack alone (the
+	// root cause diagnosis in docs/follow-up.md's "Decision Engine &
+	// Recon→Plan Signal Use" section: Resolve reasoned only over TechStack,
+	// never Endpoints or Hosts[].Ports).
+	for _, ep := range result.Endpoints {
+		addHost(endpointHostname(ep.URL))
+	}
 	sort.Strings(hosts) // deterministic tree shape for the same input
+
+	templateByID := make(map[string]templatesync.Entry, len(templateIndex))
+	for _, entry := range templateIndex {
+		templateByID[entry.ID] = entry
+	}
 
 	root := &agenttask.PlanNode{ID: "root", Target: result.Target}
 	for _, host := range hosts {
 		hostNode := &agenttask.PlanNode{ID: "host:" + host, Target: host}
 		leafIdx := 0
 		seen := make(map[string]bool)
+		addLeaf := func(leaf *agenttask.PlanNode, key string) {
+			if seen[key] {
+				return // an earlier leaf already produced this exact check (P0-4)
+			}
+			seen[key] = true
+			hostNode.Children = append(hostNode.Children, leaf)
+		}
 		for _, fact := range byHost[host] {
 			for _, leaf := range resolveTechFact(host, fact, templateIndex, result.Endpoints, &leafIdx) {
-				key := leafDedupKey(fact, leaf)
-				if seen[key] {
-					continue // an earlier TechFact already produced this exact check (P0-4)
-				}
-				seen[key] = true
-				hostNode.Children = append(hostNode.Children, leaf)
+				addLeaf(leaf, leafDedupKey(fact, leaf))
 			}
 		}
+		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
+			addLeaf(leaf, pendingDedupKey(leaf.Target, leaf.Detector))
+		}
 		if len(hostNode.Children) == 0 {
-			continue // every TechFact on this host was non-actionable (P0-5) — no empty host node
+			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
 		}
 		root.Children = append(root.Children, hostNode)
 	}
@@ -502,7 +585,14 @@ func leafDedupKey(fact recon.TechFact, leaf *agenttask.PlanNode) string {
 	if leaf.Status == agenttask.StatusUnresolved {
 		return "unresolved\x00" + leaf.Target + "\x00" + NormalizeTechName(fact.Name)
 	}
-	return "pending\x00" + leaf.Target + "\x00" + leaf.Detector
+	return pendingDedupKey(leaf.Target, leaf.Detector)
+}
+
+// pendingDedupKey is leafDedupKey's pending-leaf half, factored out so
+// resolveEndpointFacts' leaves — which carry no originating TechFact — can
+// dedup against the same per-host `seen` set Resolve already maintains.
+func pendingDedupKey(target, detector string) string {
+	return "pending\x00" + target + "\x00" + detector
 }
 
 func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, leafIdx *int) []*agenttask.PlanNode {
@@ -554,6 +644,126 @@ func resolveTechFact(host string, fact recon.TechFact, templateIndex []templates
 	return leaves
 }
 
+// resolveEndpointFacts is P0-2's tech-fact-driven resolveTechFact's
+// sibling: it reasons directly over host's observed EndpointFacts (P1-1,
+// docs/follow-up.md), rather than only over TechStack. idor/authbypass/ssrf
+// reuse the exact same recon.Suggest*FromRecon functions that already fill
+// scanner.Config.EndpointTemplate/ProtectedPaths/SSRFParams elsewhere in the
+// plan pipeline (pkg/mcpserver/tools_plan.go's resolveFieldSuggestions,
+// pkg/webui's fillReconFields) — those functions were already deriving the
+// right candidate values, Resolve simply never emitted a leaf to use them,
+// so idor/authbypass/ssrf could go fully unresolved on a real target with
+// textbook surface but no TechFact matching techRules' small capability
+// table. No new candidate-derivation logic and no PlanNode schema change:
+// the leaf just names the capability, and the already-independently-filled
+// baseCfg field supplies the value at execution time. businesslogic and the
+// endpointSignals template-ID map are new signal, not reuse — see their own
+// doc comments.
+func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateByID map[string]templatesync.Entry, leafIdx *int) []*agenttask.PlanNode {
+	hostEndpoints := endpointsForHost(host, endpoints)
+	if len(hostEndpoints) == 0 {
+		return nil
+	}
+	hostResult := &recon.ReconResult{Endpoints: hostEndpoints}
+	var leaves []*agenttask.PlanNode
+
+	if candidates := recon.SuggestIDOREndpointCandidates(hostResult); len(candidates) > 0 {
+		leaves = append(leaves, newEndpointLeaf(host, "idor", agenttask.ConfidenceMedium,
+			fmt.Sprintf("recon observed %d ID-shaped endpoint candidate(s) on this host (e.g. %s)", len(candidates), candidates[0]), leafIdx))
+	}
+	if protected, _, _ := recon.SuggestAuthBypassPathsFromRecon(hostResult); len(protected) > 0 {
+		leaves = append(leaves, newEndpointLeaf(host, "authbypass", agenttask.ConfidenceMedium,
+			fmt.Sprintf("recon observed %d endpoint(s) returning 401/403 on this host (e.g. %s)", len(protected), protected[0]), leafIdx))
+	}
+	if params := recon.SuggestSSRFParamsFromRecon(hostResult); len(params) > 0 {
+		leaves = append(leaves, newEndpointLeaf(host, "ssrf", agenttask.ConfidenceMedium,
+			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx))
+	}
+	for _, ep := range hostEndpoints {
+		if p := endpointURLPath(ep.URL); looksLikeCouponOrCartFlow(p) {
+			leaves = append(leaves, newEndpointLeaf(host, "businesslogic", agenttask.ConfidenceLow,
+				fmt.Sprintf("recon observed a cart/checkout/coupon-shaped endpoint on this host (%s) — still requires --allow-writes and real coupon paths for a non-crAPI target", p), leafIdx))
+			break // one is enough to justify the leaf; not every matching endpoint
+		}
+	}
+
+	for _, sig := range endpointSignals {
+		for _, ep := range hostEndpoints {
+			if !strings.Contains(strings.ToLower(ep.URL), sig.pathSubstr) {
+				continue
+			}
+			for _, id := range sig.templateIDs {
+				entry, ok := templateByID[id]
+				if !ok {
+					continue // this install's synced corpus doesn't carry it
+				}
+				leaves = append(leaves, &agenttask.PlanNode{
+					ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+					Target:     host,
+					Detector:   entry.ID,
+					Rationale:  fmt.Sprintf("recon directly observed %s — matches synced template %q", endpointURLPath(ep.URL), entry.ID),
+					Status:     agenttask.StatusPending,
+					Confidence: agenttask.ConfidenceHigh,
+				})
+				*leafIdx++
+			}
+			break // one observed match is enough to justify this signal's leaves
+		}
+	}
+	return leaves
+}
+
+// newEndpointLeaf builds one Pending leaf for resolveEndpointFacts —
+// factored out since every one of its cases shares the same shape, unlike
+// resolveTechFact's leaves which additionally carry a source TechFact.
+func newEndpointLeaf(host, detector string, confidence agenttask.Confidence, rationale string, leafIdx *int) *agenttask.PlanNode {
+	leaf := &agenttask.PlanNode{
+		ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+		Target:     host,
+		Detector:   detector,
+		Rationale:  rationale,
+		Status:     agenttask.StatusPending,
+		Confidence: confidence,
+	}
+	*leafIdx++
+	return leaf
+}
+
+// endpointHostname returns rawURL's hostname, "" on a malformed URL.
+func endpointHostname(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// endpointURLPath returns rawURL's path (+query, if any), falling back to
+// the raw string on a malformed URL — display-only, mirrors
+// describeEndpoints' own path extraction.
+func endpointURLPath(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if u.RawQuery != "" {
+		return u.Path + "?" + u.RawQuery
+	}
+	return u.Path
+}
+
+// endpointsForHost returns every EndpointFact in endpoints whose URL
+// hostname equals host, preserving order.
+func endpointsForHost(host string, endpoints []recon.EndpointFact) []recon.EndpointFact {
+	var matched []recon.EndpointFact
+	for _, ep := range endpoints {
+		if endpointHostname(ep.URL) == host {
+			matched = append(matched, ep)
+		}
+	}
+	return matched
+}
+
 // maxCorrelatedEndpoints caps how many real observed endpoints get folded
 // into an unresolved leaf's Rationale — enough to give I4's LLM fallback
 // (pkg/llmfallback.ResolveLeaf and its draft-authoring call, both of which
@@ -568,16 +778,9 @@ const maxCorrelatedEndpoints = 3
 // link — recon.TechFact carries no such reference — just "something real
 // recon actually saw on this host" instead of nothing at all.
 func correlatedEndpoints(host string, endpoints []recon.EndpointFact) []recon.EndpointFact {
-	var matched []recon.EndpointFact
-	for _, ep := range endpoints {
-		u, err := url.Parse(ep.URL)
-		if err != nil || u.Hostname() != host {
-			continue
-		}
-		matched = append(matched, ep)
-		if len(matched) >= maxCorrelatedEndpoints {
-			break
-		}
+	matched := endpointsForHost(host, endpoints)
+	if len(matched) > maxCorrelatedEndpoints {
+		matched = matched[:maxCorrelatedEndpoints]
 	}
 	return matched
 }

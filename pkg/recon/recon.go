@@ -165,6 +165,16 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 		r.progress("wave3", "running")
 		r.runWave3(ctx, agg, target, liveHosts)
 		r.progress("wave3", "done")
+
+		// P1-3 (docs/follow-up.md): a third tech-signature layer, alongside
+		// httpx's own -tech-detect and pkg/fingerprint's header/body/port
+		// matching (runWave2) — parses wp-content plugin/theme asset paths
+		// Wave 3's crawl just collected, no new network round trip. Only
+		// reachable at DepthFull since Endpoints (agg.endpoints) are empty
+		// before Wave 3 runs.
+		for _, t := range wordPressPluginFacts(agg.endpoints) {
+			agg.addTech(t)
+		}
 	}
 
 	return agg.finalize(), nil
