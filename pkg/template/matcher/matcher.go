@@ -109,6 +109,16 @@ func Part(part string, r Response) string {
 		// safe and avoids synthesizing a fake status line this project has
 		// no real use for yet.
 		return Part("header", r) + string(r.Body)
+	case "interactsh_protocol", "interactsh_request", "interactsh_response":
+		// Deliberately never falls through to the body, unlike the default
+		// case below — these three are always resolved from r.ExtraVars
+		// even when the key is entirely absent (a bare/hand-built Response
+		// that never went through nuclei.Executor's awaitOOB, e.g.), zero
+		// value "" and all. See ValidPart's doc comment for the exact
+		// live false-positive class this guards: "does the interactsh
+		// callback log contain 'http'" must never become "does the page
+		// body contain 'http'" just because no callback was ever recorded.
+		return r.ExtraVars[part]
 	default:
 		// An indexed body_N/header_N/content_type_N name (IsIndexedPart)
 		// resolves straight out of r.ExtraVars -- a request block that fires
@@ -250,20 +260,26 @@ func MatchingNames(matchers []Matcher, r Response) []string {
 
 // ValidPart reports whether part is one of the response slices this project
 // actually implements ("", "body", "header", "all", "content_type",
-// "response" — "" defaults to "body"). Real templates also use
-// protocol-specific parts this project
-// doesn't have the underlying protocol support for, most notably the OAST/
-// out-of-band values ("interactsh_protocol", "interactsh_request",
-// "interactsh_response") used by blind-SSRF-style checks like upstream's
-// linkerd-ssrf-detect.yaml — this project has no interactsh/OOB callback
-// infrastructure. Found the hard way: an unrecognized Part used to silently
-// fall through to matching against the body in Part(), so a template
-// checking "does the interactsh callback log contain 'http'" was actually
-// checking "does the page body contain the substring 'http'" — true for
-// nearly any HTML page, a live false positive against a real target.
+// "response" — "" defaults to "body" — plus the three OAST/out-of-band
+// values "interactsh_protocol", "interactsh_request", "interactsh_response"
+// used by blind-SSRF-style checks like upstream's linkerd-ssrf-detect.yaml,
+// now backed by real Interactsh-protocol infrastructure — see
+// nuclei.Executor's prepareOOB/awaitOOB). Found the hard way, before that
+// infrastructure existed: an unrecognized Part used to silently fall
+// through to matching against the body in Part(), so a template checking
+// "does the interactsh callback log contain 'http'" was actually checking
+// "does the page body contain the substring 'http'" — true for nearly any
+// HTML page, a live false positive against a real target. The three
+// interactsh_ names are safe to always accept here (unlike an indexed
+// body_N — see ValidPartWithContext) because nuclei.Executor's awaitOOB
+// unconditionally populates all three in r.ExtraVars for every request,
+// real callback or not (real values, or "" on no callback/no probe/OOB not
+// configured) — Part()'s ExtraVars lookup below never falls through to the
+// body for them.
 func ValidPart(part string) bool {
 	switch part {
-	case "", "body", "header", "all", "content_type", "response":
+	case "", "body", "header", "all", "content_type", "response",
+		"interactsh_protocol", "interactsh_request", "interactsh_response":
 		return true
 	default:
 		return false

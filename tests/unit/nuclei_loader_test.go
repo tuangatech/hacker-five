@@ -639,6 +639,68 @@ http:
 	assert.Contains(t, errs[0].Error(), "body_3")
 }
 
+// TestNucleiLoadDir_InteractshRawTemplateLoads is modeled on real
+// CVE-2019-6799.yaml: a raw: request embedding {{interactsh-url}} alongside
+// {{randstr}}, matched against with a `part: interactsh_protocol` word
+// matcher — the exact real-corpus shape that used to be rejected at load
+// time twice over (matcher: unsupported part "interactsh_protocol"; dsl:
+// unknown identifier, for a template using the DSL form instead). See
+// tests/unit/nuclei_executor_test.go for the actual end-to-end
+// callback-correlation proof; this test only confirms it loads.
+func TestNucleiLoadDir_InteractshRawTemplateLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "interactsh-raw.yaml", `
+id: interactsh-raw
+info:
+  name: Interactsh Raw
+  severity: medium
+http:
+  - raw:
+      - |
+        GET /?cb={{interactsh-url}}&x={{randstr}} HTTP/1.1
+        Host: {{Hostname}}
+    matchers-condition: and
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        words:
+          - http
+      - type: word
+        words:
+          - OK
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_InteractshDSLTemplateLoads is the dsl:-matcher
+// counterpart — real CVE-2025-2611.yaml-style templates check
+// contains(interactsh_protocol, "dns") directly rather than via a `part:`
+// word matcher.
+func TestNucleiLoadDir_InteractshDSLTemplateLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "interactsh-dsl.yaml", `
+id: interactsh-dsl
+info:
+  name: Interactsh DSL
+  severity: medium
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?cb={{interactsh-url}}"
+    matchers:
+      - type: dsl
+        dsl:
+          - 'contains(interactsh_protocol, "dns")'
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
 // TestNucleiLoadDir_FlowLoads is modeled on upstream's real
 // apache-server-status-localhost.yaml — a 403/404/401 "is it blocked" gate
 // check (marked internal: true, meaning "never a standalone result")

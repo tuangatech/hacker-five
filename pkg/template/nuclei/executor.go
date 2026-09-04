@@ -3,14 +3,17 @@ package nuclei
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
 	"fmt"
 	"io"
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/oob"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/vars"
 	"github.com/tuangatech/hacker-five/pkg/template/extractor"
@@ -21,6 +24,18 @@ import (
 type Executor struct {
 	client       *httpclient.Client
 	extraHeaders map[string]string
+
+	// oobServers are the Interactsh-protocol server URL(s) a request
+	// embedding {{interactsh-url}} registers against and polls for a
+	// correlated out-of-band callback — see WithOOBServers/prepareOOB/
+	// awaitOOB. Empty (the default) means every interactsh_protocol/
+	// interactsh_request/interactsh_response reference silently evaluates
+	// to "" (no match, never an error) — same "silently skipped, no
+	// warning" convention as ssrf.Detector.Run's own oobServers parameter.
+	oobServers []string
+
+	oobOnce   sync.Once
+	oobPoller *oob.Poller
 }
 
 // New constructs an Executor.
@@ -51,6 +66,197 @@ func (e *Executor) WithHeaders(headers map[string]string) *Executor {
 	return e
 }
 
+// WithOOBServers configures the Interactsh-protocol server(s) used for
+// every {{interactsh-url}}-embedding request this Executor fires (see
+// prepareOOB/awaitOOB). Registration against the first reachable server
+// (oob.NewClientWithFallback) is deferred until the first template that
+// actually needs it (ensureOOBPoller), not done here: most scans (a
+// curated --templates set especially) never load an interactsh_ template
+// at all, so eagerly registering on every Executor construction would be
+// needless traffic — including, when servers is left at its CLI/config
+// default (ssrf.DefaultOOBServers), needless traffic to a real public
+// Interactsh server before it's known whether this scan will ever fire an
+// OOB probe. A nil/empty servers is a no-op, leaving any prior
+// WithOOBServers call's value in place — mirrors WithHeaders. Call Close
+// when done with this Executor to stop the background poll loop and
+// release the registration.
+func (e *Executor) WithOOBServers(servers []string) *Executor {
+	if len(servers) > 0 {
+		e.oobServers = servers
+	}
+	return e
+}
+
+// oobHTTPTimeout bounds one register/poll/deregister call to the OOB
+// server itself — independent of e.client (the target-facing HTTP client,
+// with its own retry/rate-limit middleware not appropriate for talking to
+// the OOB server instead of a scan target), same convention as
+// ssrf/oob_check.go's own plain http.Client.
+const oobHTTPTimeout = 10 * time.Second
+
+// oobPollInterval/oobWaitTimeout govern how a fired interactsh-url probe
+// gets correlated: the shared background poller (see ensureOOBPoller)
+// ticks every oobPollInterval, and awaitOOB blocks up to oobWaitTimeout per
+// probe — long enough to reliably span at least two ticks regardless of
+// how a probe's fire time lines up with the poll cadence. Deliberately
+// short, not ssrf/oob_check.go's own 5s-wait-then-poll-once (applied once
+// per whole batch of SSRF params fired together): here every interactsh_
+// template pays this wait serially, inline, one at a time — this project's
+// scan loop fires templates against one target sequentially (see
+// scanner/engine.go's Run), so a longer timeout multiplied across the
+// ~500 interactsh_ templates in the synced corpus would make a full-corpus
+// scan impractically slow. A smarter fire-everything-then-correlate-once
+// design (real Nuclei's own approach) is a known follow-up, not
+// implemented here — see docs/follow-up.md's OOB item.
+const (
+	oobPollInterval = 2 * time.Second
+	oobWaitTimeout  = 6 * time.Second
+)
+
+// oobDisabledHost is substituted for {{interactsh-url}} when OOB isn't
+// configured (WithOOBServers never called, or every server failed
+// registration) — a request embedding it must still render and fire (its
+// other, non-OOB matchers, if any, should still get a fair chance to run),
+// it just never correlates any interaction: awaitOOB always returns ""
+// for interactsh_protocol/request/response when prepareOOB returned a nil
+// probe. ".invalid" is the RFC 2606-reserved TLD guaranteed never to
+// resolve in the real DNS root, so this never accidentally looks like — or
+// becomes — a real reachable host.
+const oobDisabledHost = "oob-disabled.invalid"
+
+// ensureOOBPoller lazily registers against e.oobServers (first reachable
+// one, oob.NewClientWithFallback) and starts its background poll loop, at
+// most once per Executor (sync.Once) — reused by every request that needs
+// it for the rest of this Executor's lifetime. Returns nil when oobServers
+// is empty (OOB not configured) or registration failed against every
+// server; either way, callers treat a nil poller as "can't correlate,"
+// never as a scan-fatal error — matches every other soft-fail already in
+// this file.
+func (e *Executor) ensureOOBPoller() *oob.Poller {
+	e.oobOnce.Do(func() {
+		if len(e.oobServers) == 0 {
+			return
+		}
+		client, err := oob.NewClientWithFallback(context.Background(), &http.Client{Timeout: oobHTTPTimeout}, e.oobServers)
+		if err != nil {
+			return
+		}
+		poller := oob.NewPoller(client, oobPollInterval)
+		poller.Start(context.Background())
+		e.oobPoller = poller
+	})
+	return e.oobPoller
+}
+
+// Close stops this Executor's background OOB poll loop (if one was ever
+// started) and best-effort deregisters its session. Callers (e.g.
+// scanner.Engine.Run) should defer this once per Executor, so a scan
+// doesn't leave a poll goroutine — and, when configured against a real
+// public server, a lingering registered session — running past the scan's
+// own lifetime. A no-op Executor that never fired an interactsh_ template
+// (ensureOOBPoller never reached) is safe to Close too.
+func (e *Executor) Close() {
+	if e.oobPoller != nil {
+		e.oobPoller.Stop()
+	}
+}
+
+// oobProbe is what prepareOOB hands back to awaitOOB — the nonce
+// (oob.Client.NewPayloadHost's second return value) a later poll
+// correlates a callback to. nil means "this request doesn't use
+// interactsh-url" or "OOB isn't configured/registration failed" — either
+// way, awaitOOB has nothing to wait for.
+type oobProbe struct {
+	nonce string
+}
+
+// prepareOOB is called once per request execution — once at the top of
+// tryPath, or once before tryRawIteration's/tryPathCorrelatedIteration's
+// own per-entry loop — never once per individual req.Raw/req.Path entry
+// within it, so every entry sharing one iteration's renderVars also shares
+// the same {{interactsh-url}} value. That matters for a template that
+// plants the URL in one raw:/path: entry and expects a later entry in the
+// SAME block to be what actually triggers the target's outbound callback —
+// both need to resolve to the identical probe for correlation to work.
+// Does nothing (returns nil) unless req.usesInteractsh: the cost of
+// registering/polling is only ever paid by a request that actually
+// references {{interactsh-url}}. renderVars must already be a map this
+// call is free to mutate (never the shared chainVars map directly) —
+// callers are responsible for that copy, same discipline tryPath/
+// tryRawIteration/tryPathCorrelatedIteration already apply for payload
+// variables.
+func (e *Executor) prepareOOB(req HTTPRequest, renderVars map[string]string) *oobProbe {
+	if !req.usesInteractsh {
+		return nil
+	}
+	poller := e.ensureOOBPoller()
+	if poller == nil {
+		renderVars["interactsh-url"] = oobDisabledHost
+		return nil
+	}
+	host, nonce := poller.NewPayloadHost()
+	renderVars["interactsh-url"] = host
+	return &oobProbe{nonce: nonce}
+}
+
+// awaitOOB, called once per request execution right after every entry
+// probe has fired (never before — the target needs to actually receive and
+// act on the request before it can make any outbound callback), waits up
+// to oobWaitTimeout for a correlated interaction when probe is non-nil.
+// Always returns all three of interactsh_protocol/interactsh_request/
+// interactsh_response, even on a nil probe or a timeout — deliberately
+// never omits them: matcher.Part's r.ExtraVars lookup for an unrecognized
+// part name falls through to matching against the response body (see
+// matcher.ValidPart's doc comment for the exact historical false-positive
+// class that caused), so an omitted key here would silently reintroduce
+// that bug for any interactsh_-part matcher on a request that either
+// doesn't use interactsh-url or never received a callback.
+func (e *Executor) awaitOOB(ctx context.Context, probe *oobProbe) map[string]string {
+	out := map[string]string{"interactsh_protocol": "", "interactsh_request": "", "interactsh_response": ""}
+	if probe == nil {
+		return out
+	}
+	it, ok := e.oobPoller.Wait(ctx, probe.nonce, oobWaitTimeout)
+	if !ok {
+		return out
+	}
+	out["interactsh_protocol"] = it.Protocol
+	out["interactsh_request"] = it.RawRequest
+	out["interactsh_response"] = it.RawResponse
+	return out
+}
+
+// randstrAlphabet/randstrLen match real Nuclei's own {{randstr}} output
+// shape: a short lowercase-alphanumeric string, used for cache-busting/
+// uniqueness in a real template (e.g. CVE-2019-6799.yaml's
+// pma_username={{randstr}}) — found unimplemented (an "undefined variable"
+// render error) while measuring the interactsh_ corpus, since real
+// interactsh_ templates commonly pair {{interactsh-url}} with {{randstr}}
+// in the same probe; fixed alongside since ~50 synced-corpus templates
+// depend on it. See docs/follow-up.md's OOB item.
+const (
+	randstrAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	randstrLen      = 8
+)
+
+// randstr generates one random lowercase-alphanumeric string. Called once
+// per Run()/runFlow() call (see their chainVars seeding) and reused for
+// every {{randstr}} occurrence across every request in that one template
+// execution — matches real Nuclei's per-template-execution dynamic-
+// variable scope (a fresh value per scan of one template against one
+// target, not a fresh value per individual request within it, which would
+// break a template that embeds it once and expects to see the same value
+// reflected back later).
+func randstr() string {
+	buf := make([]byte, randstrLen)
+	_, _ = cryptorand.Read(buf)
+	out := make([]byte, randstrLen)
+	for i, b := range buf {
+		out[i] = randstrAlphabet[int(b)%len(randstrAlphabet)]
+	}
+	return string(out)
+}
+
 // Run fires every request in tmpl.HTTP, in order, against target — or, for a
 // flow: template (tmpl.flowAST != nil), fires them under the parsed flow
 // script's boolean control instead (see runFlow). Each request's Path
@@ -79,7 +285,10 @@ func (e *Executor) Run(ctx context.Context, target string, tmpl *Template) ([]de
 	}
 
 	var findings []detectors.Finding
-	chainVars := map[string]string{}
+	// randstr() is seeded once per Run() call, not per request — see its
+	// own doc comment for why every {{randstr}} occurrence across this
+	// entire template execution must resolve to the same value.
+	chainVars := map[string]string{"randstr": randstr()}
 
 	for reqIdx, req := range tmpl.HTTP {
 		if ctx.Err() != nil {
@@ -119,7 +328,7 @@ func (e *Executor) runRequest(ctx context.Context, target string, tmpl *Template
 // short-circuiting.
 func (e *Executor) runFlow(ctx context.Context, target string, tmpl *Template) ([]detectors.Finding, error) {
 	var findings []detectors.Finding
-	chainVars := map[string]string{}
+	chainVars := map[string]string{"randstr": randstr()}
 
 	call := func(n int) (bool, error) {
 		if ctx.Err() != nil {
@@ -248,8 +457,11 @@ func (e *Executor) runPathRequestCorrelated(ctx context.Context, target string, 
 // tryRawIteration: any failure on any entry aborts just this one iteration.
 func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, chainVars, extraVars map[string]string, pIdx int, idSuffix bool) (finding detectors.Finding, matched bool, chainable bool, err error) {
 	renderVars := chainVars
-	if len(extraVars) > 0 {
-		renderVars = make(map[string]string, len(chainVars)+len(extraVars))
+	// req.usesInteractsh also forces the copy below — see tryPath's matching
+	// comment for why prepareOOB must never write into the shared chainVars
+	// map directly.
+	if len(extraVars) > 0 || req.usesInteractsh {
+		renderVars = make(map[string]string, len(chainVars)+len(extraVars)+1)
 		for k, v := range chainVars {
 			renderVars[k] = v
 		}
@@ -257,6 +469,9 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 			renderVars[k] = v
 		}
 	}
+	// One probe covers every entry in req.Path below — see prepareOOB's doc
+	// comment for why that sharing is what real correlation needs.
+	probe := e.prepareOOB(req, renderVars)
 	renderCtx := vars.Context{BaseURL: target, Vars: renderVars}
 
 	extraStrVars := make(map[string]string, len(req.Path)*3)
@@ -332,6 +547,12 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 		extraStrVars[k] = v
 	}
 	for k, v := range extraVars {
+		extraStrVars[k] = v
+	}
+	// awaitOOB waits (only when probe != nil) now that every req.Path entry
+	// has fired — see its own doc comment for why it always returns all
+	// three interactsh_ keys either way.
+	for k, v := range e.awaitOOB(ctx, probe) {
 		extraStrVars[k] = v
 	}
 
@@ -414,8 +635,11 @@ func (e *Executor) tryPathCorrelatedIteration(ctx context.Context, target string
 // iterations (see the Finding.ID line below).
 func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, path string, chainVars, extraVars map[string]string, pIdx int, idSuffix bool) (finding detectors.Finding, matched bool, chainable bool, err error) {
 	renderVars := chainVars
-	if len(extraVars) > 0 {
-		renderVars = make(map[string]string, len(chainVars)+len(extraVars))
+	// req.usesInteractsh also forces the copy below: prepareOOB may write
+	// "interactsh-url" into renderVars, which must never land in the shared
+	// chainVars map (see prepareOOB's doc comment).
+	if len(extraVars) > 0 || req.usesInteractsh {
+		renderVars = make(map[string]string, len(chainVars)+len(extraVars)+1)
 		for k, v := range chainVars {
 			renderVars[k] = v
 		}
@@ -423,6 +647,7 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 			renderVars[k] = v
 		}
 	}
+	probe := e.prepareOOB(req, renderVars)
 	renderCtx := vars.Context{BaseURL: target, Vars: renderVars}
 
 	fullURL, err := vars.Render(path, renderCtx)
@@ -499,7 +724,11 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 		"header_1":       matcher.Part("header", matcher.Response{Headers: resp.Header}),
 		"content_type_1": resp.Header.Get("Content-Type"),
 	}
-	dslVars := mergeVars(chainVars, extraVars, aliasVars)
+	// awaitOOB only actually blocks when probe != nil (req.usesInteractsh
+	// and OOB configured) — see its own doc comment for why it always
+	// returns all three interactsh_ keys either way.
+	oobVars := e.awaitOOB(ctx, probe)
+	dslVars := mergeVars(chainVars, extraVars, aliasVars, oobVars)
 	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: dslVars, ExtraInts: durationInts}
 	extracted := extractor.Extract(req.Extractors, baseResp)
 
@@ -628,6 +857,23 @@ func (e *Executor) tryRaw(ctx context.Context, target string, tmpl *Template, re
 // doc comment for the matched/chainable distinction, which applies here
 // identically (a matcher-less raw: block is trivially chainable too).
 func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx int, req HTTPRequest, renderCtx vars.Context, chainVars, payloadVars map[string]string, pIdx int, idSuffix bool) (finding detectors.Finding, matched bool, chainable bool, err error) {
+	// prepareOOB may write "interactsh-url" into renderCtx.Vars — reassigning
+	// the local renderCtx.Vars to a fresh copy first (rather than mutating
+	// whatever map tryRaw's iterVars/chainVars passed in) means that write
+	// never leaks into the caller's own map; renderCtx itself was already
+	// passed by value, so this reassignment is invisible to tryRaw. One
+	// probe covers every entry in req.Raw below — see prepareOOB's doc
+	// comment for why that sharing is what real correlation needs.
+	var probe *oobProbe
+	if req.usesInteractsh {
+		freshVars := make(map[string]string, len(renderCtx.Vars)+1)
+		for k, v := range renderCtx.Vars {
+			freshVars[k] = v
+		}
+		renderCtx.Vars = freshVars
+		probe = e.prepareOOB(req, renderCtx.Vars)
+	}
+
 	extraVars := make(map[string]string, len(req.Raw)*3)
 	extraInts := make(map[string]int, len(req.Raw)*2+1)
 	var lastReq *http.Request
@@ -701,6 +947,12 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 		extraVars[k] = v
 	}
 	for k, v := range payloadVars {
+		extraVars[k] = v
+	}
+	// awaitOOB waits (only when probe != nil) now that every req.Raw entry
+	// has fired — see its own doc comment for why it always returns all
+	// three interactsh_ keys either way.
+	for k, v := range e.awaitOOB(ctx, probe) {
 		extraVars[k] = v
 	}
 

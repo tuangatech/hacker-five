@@ -5,12 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tuangatech/hacker-five/pkg/oob"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/template/extractor"
 	"github.com/tuangatech/hacker-five/pkg/template/matcher"
@@ -1315,4 +1317,162 @@ func TestExecutorRun_IndependentMultiPath_EachPathReportsSeparately(t *testing.T
 	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
 	require.NoError(t, err)
 	require.Len(t, findings, 2, "each of the two independently-matching paths must produce its own finding, not one correlated finding")
+}
+
+// --- interactsh_ / OOB correlation ---
+//
+// Every test below uses newFakeOOBServer (detector_ssrf_test.go, same
+// package) — a real RSA-OAEP+AES-256-CTR Interactsh-protocol server
+// stand-in served locally via httptest.NewServer (127.0.0.1, an
+// OS-assigned loopback port). None of these tests ever construct a
+// nuclei.Executor with a real oast.pro/oast.live (or any other) public
+// server URL — WithOOBServers is only ever pointed at oobSrv.URL below.
+
+// interactshRawTemplate mirrors real CVE-2019-6799.yaml's shape (see
+// TestNucleiLoadDir_InteractshRawTemplateLoads): one raw: request embedding
+// {{interactsh-url}}, matched with a `part: interactsh_protocol` word
+// matcher AND a plain body word matcher — both must hold for a Finding.
+const interactshRawTemplate = `
+id: interactsh-raw-style
+info:
+  name: Interactsh Raw Style
+  severity: medium
+http:
+  - raw:
+      - |
+        GET /probe?cb={{interactsh-url}} HTTP/1.1
+        Host: {{Hostname}}
+    matchers-condition: and
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        words:
+          - http
+      - type: word
+        words:
+          - OK
+`
+
+// TestExecutorRun_InteractshCorrelation_RealEncryptedRoundTrip_Matches
+// proves the full path end to end: nuclei.Executor renders
+// {{interactsh-url}} into a real probe URL, fires it against a real target
+// server, then correlates a real RSA-OAEP+AES-256-CTR-encrypted interaction
+// (from the fake OOB server) back to that exact probe via its nonce — the
+// same crypto/correlation ssrf's own
+// TestSSRFOOBCallback_RealEncryptedRoundTrip_Hit already proves, now
+// through nuclei.Executor's prepareOOB/awaitOOB instead.
+func TestExecutorRun_InteractshCorrelation_RealEncryptedRoundTrip_Matches(t *testing.T) {
+	oobSrv, fake := newFakeOOBServer(t)
+	defer oobSrv.Close()
+
+	probedURLCh := make(chan string, 4)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probedURLCh <- r.URL.String()
+		_, _ = w.Write([]byte("OK"))
+	}))
+	t.Cleanup(target.Close)
+
+	// The probe's own query string is "?cb=<correlationID><nonce>.<bareHost>"
+	// (oob.Client.NewPayloadHost's shape) — extracting the nonce this way,
+	// rather than predicting it, mirrors detector_ssrf_test.go's own
+	// TestSSRFOOBCallback_RealEncryptedRoundTrip_Hit technique exactly.
+	go func() {
+		for u := range probedURLCh {
+			const marker = "cb="
+			idx := strings.Index(u, marker)
+			if idx < 0 {
+				continue
+			}
+			after := u[idx+len(marker):]
+			dot := strings.Index(after, ".")
+			if dot < 0 || dot <= oob.CorrelationIDLen {
+				continue
+			}
+			nonce := after[oob.CorrelationIDLen:dot]
+			<-fake.mu
+			fake.nonce = nonce
+			fake.mu <- struct{}{}
+			return
+		}
+	}()
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "interactsh-raw-style.yaml", interactshRawTemplate)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	exec := nuclei.New(newExecutorClient()).WithOOBServers([]string{oobSrv.URL})
+	t.Cleanup(exec.Close)
+	findings, err := exec.Run(context.Background(), target.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "a real correlated interactsh callback plus the OK body match should both hold")
+}
+
+// TestExecutorRun_InteractshCorrelation_NoCallback_NoMatch is the negative
+// counterpart: OOB is configured (registration against oobSrv succeeds,
+// same fake server) but the probe's nonce is never told to the fake
+// server, so its /poll responses never correlate to anything — matching a
+// genuinely non-vulnerable real target that never makes the outbound
+// callback. interactsh_protocol must resolve to "" (never fall through to
+// the response body — see matcher.ValidPart's doc comment), so the
+// matchers-condition: and template must not match at all.
+func TestExecutorRun_InteractshCorrelation_NoCallback_NoMatch(t *testing.T) {
+	oobSrv, _ := newFakeOOBServer(t)
+	defer oobSrv.Close()
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("OK"))
+	}))
+	t.Cleanup(target.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "interactsh-raw-style.yaml", interactshRawTemplate)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	exec := nuclei.New(newExecutorClient()).WithOOBServers([]string{oobSrv.URL})
+	t.Cleanup(exec.Close)
+	findings, err := exec.Run(context.Background(), target.URL, templates[0])
+	require.NoError(t, err)
+	assert.Empty(t, findings, "no correlated callback means interactsh_protocol stays empty, so the AND'd matcher must not fire")
+}
+
+// TestExecutorRun_InteractshURL_RendersAndFiresWithoutOOBConfigured proves
+// a request embedding {{interactsh-url}} still renders and fires when no
+// OOB server is configured at all (WithOOBServers never called — this
+// project's default Executor) — the placeholder resolves to
+// oobDisabledHost rather than making Render fail with "undefined
+// variable", so any of the template's OTHER, non-OOB matchers still get a
+// fair chance to run. Uses a body-only matcher (no interactsh_ part) so a
+// match here can only be explained by the request actually having fired.
+func TestExecutorRun_InteractshURL_RendersAndFiresWithoutOOBConfigured(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("OK " + r.URL.RawQuery))
+	}))
+	t.Cleanup(target.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "interactsh-no-oob.yaml", `
+id: interactsh-no-oob
+info:
+  name: Interactsh No OOB
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?cb={{interactsh-url}}"
+    matchers:
+      - type: word
+        words:
+          - "OK"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), target.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "the request must still render (via oobDisabledHost) and fire even with no OOB server configured")
 }

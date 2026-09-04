@@ -114,6 +114,14 @@ type Config struct {
 	// still run without it. See docs/13-implementation-plan-ph4.md's design
 	// tension 1 for the underlying leak-tradeoff reasoning, which is
 	// unchanged — only the default acceptance of it changed.
+	//
+	// As of 2026-09-04 (docs/follow-up.md's OOB item), the same value also
+	// feeds nuclei.Executor.WithOOBServers (engine.go's Run) — one config
+	// surface, not a second OOB-server flag, for the ~500 synced-corpus
+	// interactsh_ templates' own out-of-band checks. Registration is lazy
+	// (only the first time a loaded template actually embeds
+	// {{interactsh-url}}), so a scan whose loaded templates never reference
+	// it never talks to an OOB server regardless of this value.
 	OOBServers []string
 
 	// AllowWrites (from --allow-writes) gates every mutating check the

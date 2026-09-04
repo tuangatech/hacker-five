@@ -143,7 +143,16 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 	e.warnIfWritesUngated()
 
 	nucleiTemplates, nativeTemplates := e.loadTemplates()
-	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders)
+	// WithOOBServers reuses the same cfg.OOBServers --oob-server/--no-oob
+	// value the ssrf detector's own blind check already uses (see
+	// cfg.OOBServers' doc comment) — one config surface, not a second
+	// OOB-server flag just for template-driven interactsh_ checks.
+	// Registration against it only actually happens (nuclei.Executor.
+	// ensureOOBPoller) the first time a loaded template embeds
+	// {{interactsh-url}}, so a scan/--templates set with none never talks
+	// to an OOB server at all, default or not.
+	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders).WithOOBServers(e.cfg.OOBServers)
+	defer nucleiExec.Close()
 	nativeExec := native.New(e.client, e.idorOptions()...).WithHeaders(e.cfg.ExtraHeaders)
 
 	var (

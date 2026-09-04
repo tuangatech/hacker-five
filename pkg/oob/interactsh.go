@@ -108,12 +108,17 @@ const (
 )
 
 // Interaction mirrors the subset of Interactsh's real Interaction JSON
-// shape callers actually use.
+// shape callers actually use. RawResponse is included for fidelity with
+// the real protocol (the server does send one) even though, as of
+// 2026-09-04, no template in the synced corpus references
+// interactsh_response (only interactsh_protocol/interactsh_request) — see
+// docs/follow-up.md's OOB item.
 type Interaction struct {
 	Protocol      string `json:"protocol"`
 	UniqueID      string `json:"unique-id"`
 	FullID        string `json:"full-id"`
 	RawRequest    string `json:"raw-request"`
+	RawResponse   string `json:"raw-response"`
 	RemoteAddress string `json:"remote-address"`
 }
 

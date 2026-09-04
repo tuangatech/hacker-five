@@ -17,20 +17,34 @@ type Context struct {
 	Vars     map[string]string
 }
 
-var placeholderPattern = regexp.MustCompile(`\{\{(\w+)\}\}`)
+// placeholderPattern accepts a hyphen alongside \w — real Nuclei's own
+// {{interactsh-url}} is the one common built-in variable name that isn't a
+// plain word-character identifier; \w+ alone silently failed to match it at
+// all (found via the interactsh_ OOB work, docs/follow-up.md), so instead
+// of being substituted it passed straight through Render as the literal
+// text "{{interactsh-url}}" in the outgoing request — no error, just a
+// request that could never actually work.
+var placeholderPattern = regexp.MustCompile(`\{\{([\w-]+)\}\}`)
 
-// Render expands {{BaseURL}} and every {{name}} present in ctx.Vars within
-// input. An unresolved placeholder is an error rather than being left
-// verbatim — a request built from a silently-unexpanded template would be a
-// broken URL, not a working one.
+// Render expands {{BaseURL}}/{{RootURL}}, {{Hostname}}/{{Host}}, and every
+// {{name}} present in ctx.Vars within input. An unresolved placeholder is
+// an error rather than being left verbatim — a request built from a
+// silently-unexpanded template would be a broken URL, not a working one.
 func Render(input string, ctx Context) (string, error) {
 	var firstErr error
 	result := placeholderPattern.ReplaceAllStringFunc(input, func(match string) string {
 		name := placeholderPattern.FindStringSubmatch(match)[1]
-		if name == "BaseURL" {
+		switch name {
+		case "BaseURL", "RootURL":
+			// RootURL is treated as an alias of BaseURL. Real Nuclei's
+			// RootURL is scheme://host with no path, distinct from BaseURL
+			// when the target itself carries a path — this project's
+			// targets are conventionally bare origins (--target), so the
+			// two coincide in the common case; a target submitted with its
+			// own path is the one case this simplification doesn't
+			// capture, not worth a URL-parsing pass just for that.
 			return ctx.BaseURL
-		}
-		if name == "Hostname" {
+		case "Hostname", "Host":
 			return ctx.Hostname
 		}
 		if v, ok := ctx.Vars[name]; ok {

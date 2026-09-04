@@ -224,8 +224,47 @@ func validate(tmpl *Template) error {
 		if len(req.Raw) == 0 && len(req.Path) > 1 && usesPathCorrelation(req.Matchers, req.Extractors) {
 			tmpl.HTTP[i].pathCorrelated = true
 		}
+
+		// usesInteractsh gates nuclei.Executor's OOB machinery (prepareOOB/
+		// awaitOOB) — only a request that actually embeds {{interactsh-url}}
+		// pays the cost of generating a probe and polling for a correlated
+		// callback afterward. See HTTPRequest.usesInteractsh's doc comment.
+		if usesInteractshURL(req) {
+			tmpl.HTTP[i].usesInteractsh = true
+		}
 	}
 	return nil
+}
+
+// interactshURLPlaceholder is real Nuclei's own out-of-band correlation
+// variable — see nuclei.Executor's prepareOOB for what firing one actually
+// does. Literal, not regex-matched: real templates always spell it exactly
+// this way (docs/follow-up.md's OOB item measured the real synced corpus to
+// confirm before relying on this).
+const interactshURLPlaceholder = "{{interactsh-url}}"
+
+// usesInteractshURL reports whether any of req's Raw/Path/Body/Headers
+// content embeds interactshURLPlaceholder.
+func usesInteractshURL(req HTTPRequest) bool {
+	if strings.Contains(req.Body, interactshURLPlaceholder) {
+		return true
+	}
+	for _, s := range req.Raw {
+		if strings.Contains(s, interactshURLPlaceholder) {
+			return true
+		}
+	}
+	for _, s := range req.Path {
+		if strings.Contains(s, interactshURLPlaceholder) {
+			return true
+		}
+	}
+	for _, v := range req.Headers {
+		if strings.Contains(v, interactshURLPlaceholder) {
+			return true
+		}
+	}
+	return false
 }
 
 // indexedIdentifierPattern matches a body_N/header_N/status_code_N/
@@ -339,10 +378,16 @@ func indexedDSLContext(raw, path []string) dsl.Context {
 		n = len(path)
 	}
 	ints := map[string]int{"duration": 0}
+	// interactsh_protocol/interactsh_request/interactsh_response are always
+	// present, regardless of n or of whether this specific request actually
+	// uses {{interactsh-url}} — cheap (3 fixed entries, not indexed/scaling)
+	// and matches how nuclei.Executor's awaitOOB always populates all three
+	// at runtime (see matcher.ValidPart's doc comment for why that
+	// unconditional presence matters).
+	vars := map[string]string{"interactsh_protocol": "", "interactsh_request": "", "interactsh_response": ""}
 	if n == 0 {
-		return dsl.Context{IntVars: ints}
+		return dsl.Context{Vars: vars, IntVars: ints}
 	}
-	vars := make(map[string]string, n*3)
 	for i := 1; i <= n; i++ {
 		vars[fmt.Sprintf("body_%d", i)] = ""
 		vars[fmt.Sprintf("header_%d", i)] = ""

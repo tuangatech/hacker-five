@@ -138,6 +138,16 @@ type HTTPRequest struct {
 	// Real example needing it: CVE-2012-3153.yaml, whose two Path entries'
 	// matchers reference body_1 and body_2 together.
 	pathCorrelated bool
+
+	// usesInteractsh reports whether this request's Raw/Path/Body/Headers
+	// embed the literal "{{interactsh-url}}" placeholder — computed once at
+	// load time by loader.go's validate/usesInteractshURL, never set
+	// directly from YAML. Gates nuclei.Executor.prepareOOB/awaitOOB: only a
+	// request that actually plants an interactsh-url probe pays the cost of
+	// registering/polling for a correlated out-of-band callback afterward —
+	// the ~9,000+ other synced-corpus templates with no OOB component are
+	// completely unaffected. See docs/follow-up.md's OOB item.
+	usesInteractsh bool
 }
 
 // resolvePayloads validates req.Payloads/req.Attack and returns every

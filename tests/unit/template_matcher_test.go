@@ -115,18 +115,36 @@ func TestEvaluateAll_Empty(t *testing.T) {
 	assert.False(t, matcher.EvaluateAll([]matcher.Matcher{}, matcher.Or, matcher.Response{}), "same for an explicit empty slice, either condition")
 }
 
-// TestMatcherValidate_RejectsOutOfBandPart locks in a fix for a second real,
-// live false positive: upstream's linkerd-ssrf-detect.yaml matches
-// `part: interactsh_protocol` (an out-of-band callback value this project
-// has no interactsh/OAST infrastructure to supply) against the word "http".
-// Part() used to silently fall through to the response body for any
-// unrecognized part, so this matched the literal substring "http" appearing
-// anywhere in an ordinary HTML page — true for nearly any real website, not
-// evidence of SSRF. Now rejected at load time instead.
-func TestMatcherValidate_RejectsOutOfBandPart(t *testing.T) {
-	err := matcher.Validate(matcher.Matcher{Type: "word", Part: "interactsh_protocol", Words: []string{"http"}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "out-of-band")
+// TestMatcherValidate_AcceptsInteractshPart locks in the fix for a real,
+// live false positive that predates this project's OOB infrastructure:
+// upstream's linkerd-ssrf-detect.yaml matches `part: interactsh_protocol`
+// against the word "http". Part() used to silently fall through to the
+// response body for any unrecognized part, so this matched the literal
+// substring "http" appearing anywhere in an ordinary HTML page — true for
+// nearly any real website, not evidence of SSRF. As of the interactsh_ OOB
+// work (docs/follow-up.md), interactsh_protocol/interactsh_request/
+// interactsh_response are real, supported parts (see ValidPart's doc
+// comment) — Validate now accepts this matcher rather than rejecting it,
+// and the original false-positive class is prevented at runtime instead:
+// nuclei.Executor.awaitOOB unconditionally populates all three in
+// r.ExtraVars for every request (real callback or not), so Part()'s
+// r.ExtraVars lookup for them never falls through to the body.
+func TestMatcherValidate_AcceptsInteractshPart(t *testing.T) {
+	for _, part := range []string{"interactsh_protocol", "interactsh_request", "interactsh_response"} {
+		err := matcher.Validate(matcher.Matcher{Type: "word", Part: part, Words: []string{"http"}})
+		require.NoError(t, err, "part %q should be a recognized, supported part now", part)
+	}
+}
+
+// TestMatcherPart_InteractshFallsBackToEmpty_NotBody is the direct
+// regression guard for the false-positive class TestMatcherValidate_
+// AcceptsInteractshPart's doc comment describes: a request that never got
+// an interactsh_ ExtraVars entry at all (e.g. a hand-built Response, or a
+// bug that skipped awaitOOB) must never have Part("interactsh_protocol",
+// ...) silently return the response body instead.
+func TestMatcherPart_InteractshFallsBackToEmpty_NotBody(t *testing.T) {
+	resp := matcher.Response{Body: []byte("<html>...http...</html>")}
+	assert.Equal(t, "", matcher.Part("interactsh_protocol", resp), "an unset interactsh_ part must resolve to empty, never fall through to the body")
 }
 
 // TestMatchingNames locks in the fix for a real usefulness gap: a
