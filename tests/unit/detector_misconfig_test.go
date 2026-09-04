@@ -524,3 +524,30 @@ func TestMisconfigDefaultCreds_Fail(t *testing.T) {
 	got := withPrefix(findings, "misconfig-default-creds-")
 	assert.Empty(t, got)
 }
+
+// TestMisconfigExposedPath_TrailingSlashTarget_NoDoubleSlash guards the
+// 2026-09-04 fix (docs/follow-up.md P0-3): a target submitted with its own
+// trailing slash (e.g. a Web UI form value "https://example.com/") used to
+// produce a Finding.Target like "https://example.com//.env" — the fired
+// request URL was already correct, only the reported Target was wrong.
+// Every misconfig Finding.Target now derives from the built request URL.
+func TestMisconfigExposedPath_TrailingSlashTarget_NoDoubleSlash(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.env" && r.URL.RawQuery == "" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("DB_PASSWORD=hunter2\nAPP_KEY=abc"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	detector := misconfig.New(newMisconfigClient())
+	findings, err := detector.Run(context.Background(), server.URL+"/", "")
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "misconfig-exposed-path-.env")
+	require.Len(t, got, 1)
+	assert.Equal(t, server.URL+"/.env", got[0].Target)
+	assert.NotContains(t, got[0].Target, "//.env")
+}

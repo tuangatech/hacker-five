@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
@@ -63,7 +65,23 @@ func TestReconAndPlan_AgainstDVWA(t *testing.T) {
 	detectors := pendingDetectors(leaves)
 	assert.True(t, detectors["misconfig"], "expected a pending misconfig leaf from DVWA's Apache/PHP tech facts, got detectors: %v", detectors)
 	if index != nil {
-		assert.True(t, detectors["php-detect"], "expected a real php-detect template-tag leaf once the corpus is synced, got detectors: %v", detectors)
+		// P0-2 (2026-09-04): matchTemplateTags now returns the highest-scoring
+		// templates per tech fact, not the first maxTemplateLeavesPerTech in
+		// file order — so an info-severity fingerprint template like
+		// "php-detect" is legitimately outranked by real PHP CVE templates and
+		// may not appear. Assert the structural guarantee instead: at least one
+		// template-ID leaf (a Detector that isn't one of the 5 built-ins) was
+		// selected from a PHP tech fact.
+		var phpTemplateLeaf bool
+		builtin := map[string]bool{"misconfig": true, "idor": true, "authbypass": true, "ssrf": true, "businesslogic": true}
+		for _, n := range leaves {
+			if n.Status == agenttask.StatusPending && n.Detector != "" && !builtin[n.Detector] &&
+				strings.Contains(strings.ToLower(n.Rationale), `tech fact "php`) {
+				phpTemplateLeaf = true
+				break
+			}
+		}
+		assert.True(t, phpTemplateLeaf, "expected at least one synced-template leaf selected from a PHP tech fact once the corpus is synced")
 	}
 
 	// Same live-non-determinism caveat as TestReconAndPlan_AgainstCRAPI:

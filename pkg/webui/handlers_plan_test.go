@@ -17,18 +17,23 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/registry"
 )
 
-// fixtureReconResultForPlan carries three TechFacts chosen to exercise every
+// fixtureReconResultForPlan carries TechFacts chosen to exercise every
 // PlanTree.Confidence band through the real registry.Resolve, plus one
 // unmatched tech name to produce a genuine StatusUnresolved leaf — same
 // "real decision engine, fixture input" approach fixtureReconResult takes.
+// Each surviving leaf must have a distinct (detector, confidence) — the
+// decision engine now dedups leaves that would run the identical check
+// (doc15 Step 2 addendum, P0-4), so PHP+nginx+mysql (all -> misconfig) no
+// longer yield three separate misconfig leaves in three bands. Instead:
+// PHP -> misconfig @ high; swagger -> idor @ medium (its misconfig leaf
+// dedups against PHP's); the unmatched fact @ low -> unresolved leaf.
 func fixtureReconResultForPlan() *recon.ReconResult {
 	return &recon.ReconResult{
 		Target: "https://example.com",
 		TechStack: []recon.TechFact{
-			{Name: "PHP", Host: "example.com", Source: "httpx-tech-detect", Confidence: recon.ConfidenceHigh},                  // techRules match -> pending, high
-			{Name: "nginx", Host: "example.com", Source: "fingerprint-header", Confidence: recon.ConfidenceMedium},             // techRules match -> pending, medium
-			{Name: "mysql", Host: "example.com", Source: "fingerprint-port", Confidence: recon.ConfidenceLow},                  // techRules match -> pending, low
-			{Name: "SomeUnknownFramework", Host: "example.com", Source: "httpx-tech-detect", Confidence: recon.ConfidenceHigh}, // no match -> unresolved
+			{Name: "PHP", Host: "example.com", Source: "httpx-tech-detect", Confidence: recon.ConfidenceHigh},       // techRules match -> misconfig pending, high
+			{Name: "swagger", Host: "example.com", Source: "httpx-tech-detect", Confidence: recon.ConfidenceMedium}, // techRules match -> idor pending, medium (misconfig leaf dedups away)
+			{Name: "SomeUnknownFramework", Host: "example.com", Source: "httpx-tech-detect", Confidence: recon.ConfidenceLow}, // no match -> unresolved, low
 		},
 		GeneratedAt: time.Now(),
 	}

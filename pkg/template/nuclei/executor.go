@@ -61,6 +61,18 @@ func (e *Executor) WithHeaders(headers map[string]string) *Executor {
 // "{{BaseURL}}" and any bound chain variable resolve the same way the
 // native format (Step 3) will use them.
 func (e *Executor) Run(ctx context.Context, target string, tmpl *Template) ([]detectors.Finding, error) {
+	// Normalize the target's trailing slash once, up front. Templates
+	// conventionally write "{{BaseURL}}/path" — upstream Nuclei's own
+	// convention, where {{BaseURL}} carries no trailing slash — so a target
+	// submitted with one (e.g. a Web UI form value "https://example.com/")
+	// otherwise renders as "https://example.com//path" in both the fired
+	// request and the resulting Finding.Target. Covers the path: renderer
+	// (BaseURL in renderCtx) and the raw: builder (buildRawRequest's
+	// target+path concat) alike, and runFlow below inherits the fix since
+	// it's only ever reached from here. Mirrors the same trailing-slash fix
+	// made for the authbypass detector (doc15 Step 2 addendum, 2026-09-04).
+	target = strings.TrimRight(target, "/")
+
 	if tmpl.flowAST != nil {
 		return e.runFlow(ctx, target, tmpl)
 	}

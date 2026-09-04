@@ -209,7 +209,7 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 			Type:        "misconfig",
 			Severity:    rule.Severity,
 			Confidence:  "high",
-			Target:      target + rule.Path,
+			Target:      req.URL.String(),
 			Description: fmt.Sprintf("%s returned status %d with sensitive content matching a keyword for an exposed-path rule", rule.Path, resp.StatusCode),
 			Evidence: map[string]string{
 				"path":     rule.Path,
@@ -248,7 +248,7 @@ func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken 
 			Type:        "misconfig",
 			Severity:    "low",
 			Confidence:  "high",
-			Target:      target + path,
+			Target:      req.URL.String(),
 			Description: fmt.Sprintf("%s returned status %d with a directory-listing banner in the body", pathOrRoot(path), resp.StatusCode),
 			Evidence: map[string]string{
 				"path":     path,
@@ -354,7 +354,7 @@ func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, aut
 			Type:        "misconfig",
 			Severity:    "medium",
 			Confidence:  "high",
-			Target:      target + rule.Path,
+			Target:      req.URL.String(),
 			Description: fmt.Sprintf("%s appears to be accepted (status %d) instead of rejected", rule.Method, resp.StatusCode),
 			Evidence: map[string]string{
 				"method":   rule.Method,
@@ -429,7 +429,7 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 			Type:        "misconfig",
 			Severity:    "medium",
 			Confidence:  "high",
-			Target:      target + path,
+			Target:      req.URL.String(),
 			Description: "response to a malformed request contains a verbose error message (stack trace, internal path, or internal IP)",
 			Evidence: map[string]string{
 				"path":     path,
@@ -494,7 +494,7 @@ func (d *Detector) checkDefaultCreds(ctx context.Context, target, host, _ string
 			Type:        "misconfig",
 			Severity:    "critical",
 			Confidence:  "high",
-			Target:      target + rule.LoginPath,
+			Target:      req.URL.String(),
 			Description: fmt.Sprintf("login succeeded at %s using a well-known default credential pair (%s)", rule.LoginPath, rule.Username),
 			Evidence: map[string]string{
 				"login_path":          rule.LoginPath,

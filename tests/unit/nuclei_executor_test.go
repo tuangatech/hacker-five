@@ -396,6 +396,39 @@ func TestExecutorRun_NoMatchNoFinding(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+// TestExecutorRun_TrailingSlashTarget_NoDoubleSlash guards the 2026-09-04
+// fix (docs/follow-up.md P0-3): templates conventionally write
+// "{{BaseURL}}/path", so a target passed with its own trailing slash
+// rendered "http://host//path" in both the fired request and the reported
+// Finding.Target. Executor.Run now trims a trailing slash from the target
+// once, up front.
+func TestExecutorRun_TrailingSlashTarget_NoDoubleSlash(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path == "/panel" {
+			_, _ = w.Write([]byte("admin panel"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "panel-detect",
+		Info: nuclei.Info{Name: "Panel detect", Severity: "info"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method:   http.MethodGet,
+			Path:     []string{"{{BaseURL}}/panel"},
+			Matchers: []matcher.Matcher{{Type: "word", Words: []string{"admin panel"}}},
+		}},
+	}
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL+"/", tmpl)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "/panel", gotPath, "the fired request path must not be doubled")
+	assert.Equal(t, server.URL+"/panel", findings[0].Target)
+}
+
 func TestExecutorRun_ChainedRequestsUseExtractedVariable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

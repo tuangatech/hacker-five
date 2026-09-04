@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -216,4 +217,260 @@ func TestResolve_GroupsMultipleHostsUnderRoot(t *testing.T) {
 func TestResolve_NoTechFacts_ProducesEmptyRoot(t *testing.T) {
 	tree := Resolve(&recon.ReconResult{Target: "http://example.test"}, nil)
 	assert.Empty(t, tree.Root.Children)
+}
+
+// TestResolve_NonActionableTech_ProducesNoLeafOrHostNode guards P0-4/P0-5
+// (2026-09-04): a host whose only TechFacts are transport/posture/hosting-
+// brand facts must contribute nothing to the tree — not an unresolved
+// leaf, not even an empty host node.
+func TestResolve_NonActionableTech_ProducesNoLeafOrHostNode(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "HTTP/3", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"},
+			{Name: "HSTS", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"},
+			{Name: "Hostinger CDN", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+			{Name: "WordPress Block Editor", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	assert.Empty(t, tree.Root.Children, "a host with only non-actionable tech facts must produce no host node")
+}
+
+// TestResolve_NonActionableTech_MixedWithReal_OnlyRealSurvives confirms the
+// denylist filters per-fact, not per-host: a real, actionable fact on the
+// same host as denylisted ones still produces its leaf.
+func TestResolve_NonActionableTech_MixedWithReal_OnlyRealSurvives(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "HTTP/3", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"},
+			{Name: "PHP", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	hostNode := tree.Find("host:example.test")
+	require.NotNil(t, hostNode)
+	require.Len(t, hostNode.Children, 1, "only the PHP fact should produce a leaf")
+	assert.Equal(t, "misconfig", hostNode.Children[0].Detector)
+}
+
+// TestResolve_DuplicateCapabilityLeaves_Deduped guards P0-4: four distinct
+// TechFacts that all map to the misconfig capability must collapse to one
+// misconfig leaf, and the first fact in recon order supplies its rationale.
+func TestResolve_DuplicateCapabilityLeaves_Deduped(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "PHP", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+			{Name: "WordPress", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"},
+			{Name: "MySQL", Host: "example.test", Source: "fingerprint-port", Confidence: "low"},
+			{Name: "nginx", Host: "example.test", Source: "fingerprint-header", Confidence: "high"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	hostNode := tree.Find("host:example.test")
+	require.NotNil(t, hostNode)
+	misconfigLeaves := 0
+	var kept *agenttask.PlanNode
+	for _, leaf := range hostNode.Children {
+		if leaf.Detector == "misconfig" {
+			misconfigLeaves++
+			kept = leaf
+		}
+	}
+	require.Equal(t, 1, misconfigLeaves, "four misconfig-mapping tech facts must produce exactly one misconfig leaf")
+	assert.Contains(t, kept.Rationale, `"PHP"`, "the first fact in recon order should supply the surviving leaf's rationale")
+}
+
+// TestResolve_DuplicateUnresolvedLeaves_DedupedByTechName guards P0-4 for
+// the unresolved case: the same product seen by two recon sources is one
+// unresolved leaf, not two.
+func TestResolve_DuplicateUnresolvedLeaves_DedupedByTechName(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "MysteryStack", Host: "example.test", Source: "httpx-tech-detect", Confidence: "low"},
+			{Name: "MysteryStack", Host: "example.test", Source: "fingerprint-header", Confidence: "medium"},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	hostNode := tree.Find("host:example.test")
+	require.NotNil(t, hostNode)
+	require.Len(t, hostNode.Children, 1, "the same unknown product from two sources must produce one unresolved leaf")
+	assert.Equal(t, agenttask.StatusUnresolved, hostNode.Children[0].Status)
+}
+
+// TestResolve_DuplicateTemplateLeaves_Deduped guards P0-4 for template-ID
+// leaves: two tech-fact name variants that match the same template tag
+// produce one leaf for that template, not one per variant.
+func TestResolve_DuplicateTemplateLeaves_Deduped(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "yoast-fpd", Tags: []string{"wordpress", "yoast", "exposure"}},
+	}
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "Yoast SEO", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+			{Name: "Yoast SEO Premium:28.4", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+		},
+	}
+
+	tree := Resolve(result, index)
+
+	hostNode := tree.Find("host:example.test")
+	require.NotNil(t, hostNode)
+	yoastLeaves := 0
+	for _, leaf := range hostNode.Children {
+		if leaf.Detector == "yoast-fpd" {
+			yoastLeaves++
+		}
+	}
+	assert.Equal(t, 1, yoastLeaves, "two name variants matching the same template tag must produce one leaf")
+}
+
+// --- P0-2: ranked template-tag selection + canonical map ---
+
+// TestMatchTemplateTags_CanonicalExcludeDropsFalseFriend guards P0-2: a
+// "Nginx" fact must not pull in ingress-nginx / nginx-proxy-manager
+// templates that merely carry an "nginx" tag too.
+func TestMatchTemplateTags_CanonicalExcludeDropsFalseFriend(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "CVE-2099-0001", Name: "Nginx - Real Thing", Tags: []string{"nginx", "cve"}, Severity: "high"},
+		{ID: "nginx-proxy-manager-default-login", Name: "Nginx Proxy Manager Default Login", Tags: []string{"nginx", "proxy-manager", "default-login"}, Severity: "high"},
+		{ID: "ingress-nginx-CVE-2023-5044", Name: "Ingress-Nginx Annotation Injection", Tags: []string{"nginx", "ingress-nginx", "cve"}, Severity: "critical"},
+	}
+	got := matchTemplateTags("Nginx", index)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "CVE-2099-0001", got[0].ID)
+}
+
+// TestMatchTemplateTags_JQueryExcludesFileUploadPlugin is the second
+// observed false-friend from the andertone.com review.
+func TestMatchTemplateTags_JQueryExcludesFileUploadPlugin(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "jquery-file-upload-rce", Name: "jQuery File Upload RCE", Tags: []string{"jquery", "jquery-file-upload", "rce"}, Severity: "critical"},
+		{ID: "jquery-version-detect", Name: "jQuery version", Tags: []string{"jquery", "tech"}, Severity: "info"},
+	}
+	got := matchTemplateTags("jQuery", index)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "jquery-version-detect", got[0].ID)
+}
+
+// TestMatchTemplateTags_GenericWordAloneDoesNotMatch guards P0-2: a tag
+// that is only a generic word ("cache", "editor") is not a match.
+func TestMatchTemplateTags_GenericWordAloneDoesNotMatch(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "some-cache-plugin-xss", Name: "Some Cache Plugin XSS", Tags: []string{"cache", "xss"}, Severity: "high"},
+		{ID: "acme-widget-sqli", Name: "Acme Widget SQLi", Tags: []string{"acme", "sqli"}, Severity: "high"},
+	}
+	// "Acme Cache Manager" -> words {acme, cache, manager}; only "acme" is
+	// non-generic, so the cache-only template must not match.
+	got := matchTemplateTags("Acme Cache Manager", index)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "acme-widget-sqli", got[0].ID)
+}
+
+// TestMatchTemplateTags_RanksRecentSevereFirst guards P0-2's core: the
+// most recent, most severe CVE for a product ranks first, not whatever sat
+// earliest in the index file.
+func TestMatchTemplateTags_RanksRecentSevereFirst(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "CVE-2011-1111", Name: "WordPress old", Tags: []string{"wordpress", "cve"}, Severity: "low"},
+		{ID: "CVE-2013-3333", Name: "WordPress older", Tags: []string{"wordpress", "cve"}, Severity: "medium"},
+		{ID: "CVE-2024-9999", Name: "WordPress recent", Tags: []string{"wordpress", "cve"}, Severity: "critical"},
+	}
+	got := matchTemplateTags("WordPress", index)
+
+	require.NotEmpty(t, got)
+	assert.Equal(t, "CVE-2024-9999", got[0].ID, "recent+critical must rank first")
+	// file-order-first would have returned CVE-2011-1111 first.
+}
+
+// TestMatchTemplateTags_KnownVersionDeprioritizesAncientCVE guards P0-1a:
+// with an explicit current-looking version, a decade-old critical CVE
+// ranks below a recent lower-severity one.
+func TestMatchTemplateTags_KnownVersionDeprioritizesAncientCVE(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "CVE-2012-1823", Name: "PHP CGI argument injection", Tags: []string{"php", "rce", "cve"}, Severity: "critical"},
+		{ID: "CVE-2023-4444", Name: "PHP recent issue", Tags: []string{"php", "cve"}, Severity: "medium"},
+	}
+	got := matchTemplateTags("PHP:8.3.30", index)
+
+	require.Len(t, got, 2)
+	assert.Equal(t, "CVE-2023-4444", got[0].ID, "a modern version makes the 2012 CVE implausible — it should rank second")
+}
+
+// TestMatchTemplateTags_NoProductTagNoMatch is the new contract after the
+// ID/Name-token tier was dropped (it pulled in product-prefixed false
+// friends like "weaver-jquery-file-upload" on the live corpus): a template
+// with no product tag does not match, even if its Name mentions the
+// product.
+func TestMatchTemplateTags_NoProductTagNoMatch(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "CVE-2021-25118", Name: "Yoast SEO < 17.2 - Information Disclosure", Tags: []string{"cve", "cve2021", "exposure"}, Severity: "medium"},
+	}
+	assert.Empty(t, matchTemplateTags("Yoast SEO", index),
+		"a template with no yoast/seo tag must not match on Name text alone")
+}
+
+// TestMatchTemplateTags_ExcludeByIDSubstring guards the excludeIDSubstr
+// path: the jQuery-File-Upload plugin templates carry a bare "jquery" tag,
+// so only an ID-substring exclusion catches them.
+func TestMatchTemplateTags_ExcludeByIDSubstring(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "exposed-jquery-file-upload", Name: "jQuery File Upload - Exposure", Tags: []string{"jquery", "exposure", "misconfig"}, Severity: "critical"},
+		{ID: "jquery-prototype-pollution", Name: "jQuery Prototype Pollution", Tags: []string{"jquery", "cve"}, Severity: "medium"},
+	}
+	got := matchTemplateTags("jQuery", index)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "jquery-prototype-pollution", got[0].ID)
+}
+
+// TestMatchTemplateTags_MySQLExcludesProductFalseFriends: several
+// product-specific templates carry a bare "mysql" tag on the live corpus.
+func TestMatchTemplateTags_MySQLExcludesProductFalseFriends(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "esafenet-mysql-fileread", Name: "Esafenet CDG mysql - File Read", Tags: []string{"esafenet", "lfi", "mysql"}, Severity: "high"},
+		{ID: "eventum-panel", Name: "Eventum Login Panel - Detect", Tags: []string{"panel", "eventum", "mysql"}, Severity: "info"},
+		{ID: "mysql-config-exposure", Name: "MySQL Config - Exposure", Tags: []string{"mysql", "config", "exposure"}, Severity: "medium"},
+	}
+	got := matchTemplateTags("MySQL", index)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "mysql-config-exposure", got[0].ID)
+}
+
+// TestMatchTemplateTags_NilIndex is the documented soft-degrade.
+func TestMatchTemplateTags_NilIndex(t *testing.T) {
+	assert.Nil(t, matchTemplateTags("WordPress", nil))
+}
+
+// TestMatchTemplateTags_CapReturnsBestNotFileOrder confirms the cap keeps
+// the top maxTemplateLeavesPerTech by score, not the first N seen.
+func TestMatchTemplateTags_CapReturnsBestNotFileOrder(t *testing.T) {
+	var index []templatesync.Entry
+	// maxTemplateLeavesPerTech+3 low-value entries first...
+	for i := 0; i < maxTemplateLeavesPerTech+3; i++ {
+		index = append(index, templatesync.Entry{ID: fmt.Sprintf("CVE-2010-%04d", i), Tags: []string{"wordpress", "cve"}, Severity: "low"})
+	}
+	// ...then one clearly best entry last.
+	index = append(index, templatesync.Entry{ID: "CVE-2025-0001", Tags: []string{"wordpress", "cve"}, Severity: "critical"})
+
+	got := matchTemplateTags("WordPress", index)
+
+	require.Len(t, got, maxTemplateLeavesPerTech)
+	assert.Equal(t, "CVE-2025-0001", got[0].ID, "the best entry must survive the cap even though it was last in file order")
 }
