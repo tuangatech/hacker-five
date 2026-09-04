@@ -16,6 +16,17 @@ func writeTemplate(t *testing.T, dir, name, content string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
 }
 
+// writePayloadFile writes a file-based payloads: companion file at
+// relPath (corpus-root-relative, same as a real template's own
+// payloads: value — see schema.go's readPayloadFile), creating any
+// intermediate directories.
+func writePayloadFile(t *testing.T, dir, relPath, content string) {
+	t.Helper()
+	full := filepath.Join(dir, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+}
+
 func TestNucleiLoadDir_ValidTemplate(t *testing.T) {
 	dir := t.TempDir()
 	writeTemplate(t, dir, "valid.yaml", `
@@ -216,11 +227,15 @@ http:
 	assert.Contains(t, errs[0].Error(), "sniper")
 }
 
-// TestNucleiLoadDir_FileBasedPayloadRejected locks in the v1 boundary: a
-// payload value that's a bare string (a wordlist file path) rather than an
-// inline list is rejected at load time — see schema.go's resolvePayloads.
-func TestNucleiLoadDir_FileBasedPayloadRejected(t *testing.T) {
+// TestNucleiLoadDir_FileBasedPayloadLoads is modeled on real upstream's
+// http/technologies/wordpress/plugins/*.yaml pattern (237 templates): a
+// payloads: value that's a bare string names a wordlist file, resolved
+// relative to the corpus root (dir here — the same root LoadDir was called
+// with), not the template's own subdirectory. Previously rejected
+// unconditionally at load time.
+func TestNucleiLoadDir_FileBasedPayloadLoads(t *testing.T) {
 	dir := t.TempDir()
+	writePayloadFile(t, dir, "helpers/wordlists/adminer-paths.txt", "/adminer.php\n/_adminer.php\n")
 	writeTemplate(t, dir, "file-payload.yaml", `
 id: file-payload-style
 info:
@@ -240,9 +255,105 @@ http:
 `)
 
 	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_FileBasedPayloadMissingFileRejected preserves the
+// error-path coverage TestNucleiLoadDir_FileBasedPayloadLoads' rewrite
+// otherwise dropped: a payloads: file reference that doesn't actually exist
+// on disk is still a load-time error, not a scan-time surprise.
+func TestNucleiLoadDir_FileBasedPayloadMissingFileRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "file-payload-missing.yaml", `
+id: file-payload-missing-style
+info:
+  name: File Payload Missing Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET {{path}} HTTP/1.1
+        Host: {{Hostname}}
+    payloads:
+      path: helpers/wordlists/does-not-exist.txt
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
 	require.Empty(t, templates)
 	require.Len(t, errs, 1)
-	assert.Contains(t, errs[0].Error(), "file-based payload")
+	assert.Contains(t, errs[0].Error(), "does-not-exist.txt")
+}
+
+// TestNucleiLoadDir_FileBasedPayloadPathTraversalRejected confirms a
+// payloads: file reference can't escape the corpus root via "../" — a
+// defensive check kept even though real templates come from a pinned,
+// vetted upstream commit, not attacker-controlled input.
+func TestNucleiLoadDir_FileBasedPayloadPathTraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "file-payload-traversal.yaml", `
+id: file-payload-traversal-style
+info:
+  name: File Payload Traversal Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET {{path}} HTTP/1.1
+        Host: {{Hostname}}
+    payloads:
+      path: ../../etc/passwd
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, templates)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "outside")
+}
+
+// TestNucleiLoadDir_NullPayloadEntryLoads is modeled on real upstream's
+// softether-vpn-default-login.yaml: `password: [null]`, a genuine "try an
+// empty password" default-login check. Real bug found while re-measuring
+// against the full corpus: yaml.v3's node.Decode(&[]string{}) silently
+// drops a `!!null` entry rather than decoding it as "" (confirmed:
+// `[null]` decodes to a zero-length slice) — this template was the one
+// real corpus casualty, rejected as "empty payload list" even though it
+// legitimately has one (blank) value. See schema.go's
+// decodeStringSequence.
+func TestNucleiLoadDir_NullPayloadEntryLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "null-payload.yaml", `
+id: null-payload-style
+info:
+  name: Null Payload Style
+  severity: info
+http:
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+
+        user=admin&pass={{password}}
+    payloads:
+      password:
+        - null
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
 }
 
 // TestNucleiLoadDir_AbsoluteURIRawRejected locks in the v1 boundary: a raw:

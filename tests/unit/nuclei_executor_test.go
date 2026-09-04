@@ -2,6 +2,7 @@ package unit
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -906,6 +907,100 @@ http:
 	require.NoError(t, err)
 	assert.Equal(t, 2, requests, "battering ram must fire once per value in the shared list (2), not a cartesian product")
 	assert.False(t, mismatched, "every key must carry the same broadcast value on a given pass")
+}
+
+// TestExecutorRun_FileBasedPayload_WordPressVersionPattern is modeled
+// end-to-end on real upstream's http/technologies/wordpress/plugins/
+// wp-crontrol.yaml: a single-value file-based payload (last_version) +
+// same-request extractor→matcher binding + concat()/compare_versions() —
+// proves the full real pattern actually works, not just that the file
+// reads.
+func TestExecutorRun_FileBasedPayload_WordPressVersionPattern(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-content/plugins/wp-crontrol/readme.txt" {
+			_, _ = w.Write([]byte("Stable tag: 1.0.0\n"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writePayloadFile(t, dir, "helpers/wordpress/plugins/wp-crontrol.txt", "1.16.2\n")
+	writeTemplate(t, dir, "wp-crontrol.yaml", `
+id: wordpress-wp-crontrol-style
+info:
+  name: WP Crontrol Detection Style
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/wp-content/plugins/wp-crontrol/readme.txt"
+    payloads:
+      last_version: helpers/wordpress/plugins/wp-crontrol.txt
+    extractors:
+      - type: regex
+        part: body
+        internal: true
+        name: internal_detected_version
+        group: 1
+        regex:
+          - '(?i)Stable.tag:\s?([\w.]+)'
+    matchers:
+      - type: dsl
+        name: outdated_version
+        dsl:
+          - compare_versions(internal_detected_version, concat("< ", last_version))
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "the live 1.0.0 is older than the file-loaded last_version (1.16.2), compare_versions/concat/file-based payload must all connect correctly")
+}
+
+// TestExecutorRun_NullPayloadEntry_RendersAsEmptyString is modeled on real
+// upstream's softether-vpn-default-login.yaml: a `password: [null]` entry
+// must render as a genuinely empty string in the fired request — not the
+// literal text "null" or "<nil>" — proving schema.go's decodeStringSequence
+// fix works end-to-end, not just that the template loads.
+func TestExecutorRun_NullPayloadEntry_RendersAsEmptyString(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "null-payload.yaml", `
+id: null-payload-style
+info:
+  name: Null Payload Style
+  severity: info
+http:
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+
+        user=admin&pass={{password}}
+    payloads:
+      password:
+        - null
+    matchers:
+      - type: status
+        status:
+          - 200
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	_, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	assert.Equal(t, "user=admin&pass=\n", gotBody, "a null payload entry must render as an empty string, not the literal text \"null\"")
 }
 
 // TestExecutorRun_SameRequestExtractorBinding is modeled on real upstream's

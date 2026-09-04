@@ -153,7 +153,7 @@ func (e *Executor) runFlow(ctx context.Context, target string, tmpl *Template) (
 func (e *Executor) runPathRequest(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, chainVars map[string]string) ([]detectors.Finding, bool, error) {
 	// resolvePayloads already validated this at load time; err is nil here
 	// in practice, checked defensively only.
-	iterations, err := req.resolvePayloads()
+	iterations, err := req.resolvePayloads(tmpl.sourceDir)
 	if err != nil {
 		return nil, false, nil
 	}
@@ -285,10 +285,18 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	// '<=2.2.34') where "version" is extracted by this same request). It's
 	// a pure function over the already-fetched response, so computing it
 	// unconditionally has no side effect until its results are used below.
-	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: chainVars, ExtraInts: durationInts}
+	// extraVars (this iteration's bound payloads: values, e.g. WP-crontrol-
+	// style last_version) must reach the DSL context here too, not just the
+	// request-rendering pass above — a real template can reference its own
+	// payload variable directly in a dsl: matcher (upstream's
+	// http/technologies/wordpress/plugins/*.yaml pattern:
+	// compare_versions(extracted, concat("< ", last_version))), same as it
+	// can reference an extractor's Name.
+	dslVars := mergeVars(chainVars, extraVars)
+	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: dslVars, ExtraInts: durationInts}
 	extracted := extractor.Extract(req.Extractors, baseResp)
 
-	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: mergeVars(chainVars, extracted), ExtraInts: durationInts}
+	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: mergeVars(dslVars, extracted), ExtraInts: durationInts}
 	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
 	chainable = evaluated || len(req.Matchers) == 0
 	matched = evaluated && hasReportableMatcher(req.Matchers)
@@ -352,7 +360,7 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 // up chainable (see tryPath's doc comment for what that means) — needed by
 // runFlow's http(N) truthiness.
 func (e *Executor) tryRaw(ctx context.Context, target string, tmpl *Template, reqIdx int, req HTTPRequest, chainVars map[string]string) ([]detectors.Finding, bool, error) {
-	iterations, err := req.resolvePayloads()
+	iterations, err := req.resolvePayloads(tmpl.sourceDir)
 	if err != nil {
 		return nil, false, nil // already rejected at load time; defensive only
 	}
@@ -385,7 +393,7 @@ func (e *Executor) tryRaw(ctx context.Context, target string, tmpl *Template, re
 		}
 		renderCtx := vars.Context{BaseURL: target, Hostname: host, Vars: iterVars}
 
-		finding, matched, ch, err := e.tryRawIteration(ctx, tmpl, reqIdx, req, renderCtx, chainVars, pIdx, multi)
+		finding, matched, ch, err := e.tryRawIteration(ctx, tmpl, reqIdx, req, renderCtx, chainVars, payloadVars, pIdx, multi)
 		if err != nil {
 			return findings, chainable, err
 		}
@@ -412,7 +420,7 @@ func (e *Executor) tryRaw(ctx context.Context, target string, tmpl *Template, re
 // whole scan. Returns (finding, matched, chainable, err) — see tryPath's
 // doc comment for the matched/chainable distinction, which applies here
 // identically (a matcher-less raw: block is trivially chainable too).
-func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx int, req HTTPRequest, renderCtx vars.Context, chainVars map[string]string, pIdx int, idSuffix bool) (finding detectors.Finding, matched bool, chainable bool, err error) {
+func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx int, req HTTPRequest, renderCtx vars.Context, chainVars, payloadVars map[string]string, pIdx int, idSuffix bool) (finding detectors.Finding, matched bool, chainable bool, err error) {
 	extraVars := make(map[string]string, len(req.Raw)*3)
 	extraInts := make(map[string]int, len(req.Raw)*2+1)
 	var lastReq *http.Request
@@ -476,10 +484,16 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 		return detectors.Finding{}, false, false, nil // req.Raw was empty — rejected at load time, defensive only
 	}
 
-	// chainVars merged in alongside the body_N/header_N entries so a
-	// matcher/extractor here can also reference an earlier request's named
-	// extractor result — same mechanism tryPath uses, see its doc comment.
+	// chainVars/payloadVars merged in alongside the body_N/header_N entries
+	// so a matcher/extractor here can also reference an earlier request's
+	// named extractor result, or this iteration's own bound payloads: value
+	// (real example: upstream's wp-crontrol.yaml-style
+	// compare_versions(extracted, concat("< ", last_version))) — same
+	// mechanism tryPath uses, see its doc comment.
 	for k, v := range chainVars {
+		extraVars[k] = v
+	}
+	for k, v := range payloadVars {
 		extraVars[k] = v
 	}
 

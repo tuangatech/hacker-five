@@ -39,6 +39,18 @@ var Categories = []string{
 	"http/default-logins",
 }
 
+// SupportDirs are sparse-checked-out alongside Categories but aren't
+// template categories themselves — real templates' `payloads:` fields can
+// name a file under here (e.g. `helpers/wordpress/plugins/wp-crontrol.txt`,
+// relative to the sync root, same as a template's own path), so the
+// referenced file needs to actually exist locally for
+// pkg/template/nuclei's file-based-payload support to read it. Kept
+// separate from Categories rather than appended to it: Categories also
+// drives CategoryCounts/the CLI+Web UI's per-category template-count
+// display, and "helpers: 0 templates" there would just be confusing noise
+// — it holds .txt wordlists, not .yaml templates.
+var SupportDirs = []string{"helpers"}
+
 const upstreamRepo = "https://github.com/projectdiscovery/nuclei-templates.git"
 
 // ErrGitNotFound is returned when the system git binary isn't on PATH.
@@ -72,10 +84,13 @@ func Sync(ctx context.Context, destDir string) (*Result, error) {
 		return nil, fmt.Errorf("creating %s: %w", destDir, err)
 	}
 
+	sparsePaths := make([]string, 0, len(Categories)+len(SupportDirs))
+	sparsePaths = append(sparsePaths, Categories...)
+	sparsePaths = append(sparsePaths, SupportDirs...)
 	steps := [][]string{
 		{"clone", "--filter=blob:none", "--no-checkout", upstreamRepo, "."},
 		{"sparse-checkout", "init", "--cone"},
-		append([]string{"sparse-checkout", "set"}, Categories...),
+		append([]string{"sparse-checkout", "set"}, sparsePaths...),
 		{"checkout", PinnedCommit},
 	}
 	for _, args := range steps {

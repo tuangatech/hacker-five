@@ -66,7 +66,7 @@ func LoadDirDetailed(dir string) (templates []*Template, errs []LoadError) {
 		if ext != ".yaml" && ext != ".yml" {
 			return nil
 		}
-		tmpl, err := loadFile(path)
+		tmpl, err := loadFile(path, dir)
 		if err != nil {
 			errs = append(errs, LoadError{Path: path, Err: err})
 			return nil
@@ -77,7 +77,7 @@ func LoadDirDetailed(dir string) (templates []*Template, errs []LoadError) {
 	return templates, errs
 }
 
-func loadFile(path string) (*Template, error) {
+func loadFile(path, sourceDir string) (*Template, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading file: %w", err)
@@ -92,6 +92,7 @@ func loadFile(path string) (*Template, error) {
 	if err := dec.Decode(&tmpl); err != nil {
 		return nil, fmt.Errorf("parsing yaml: %w", err)
 	}
+	tmpl.sourceDir = sourceDir
 
 	if err := validate(&tmpl); err != nil {
 		return nil, err
@@ -138,13 +139,22 @@ func validate(tmpl *Template) error {
 		}
 		tmpl.flowAST = ast
 	}
-	// knownExtractorNames accumulates every extractor Name seen so far —
-	// seeded with the current request's own names before that request's
-	// matchers/extractors are checked (so a same-request reference like
-	// apache-httpd-eol.yaml's compare_versions(version, ...) resolves),
-	// then carried forward unmodified into later requests (so a
-	// cross-request reference like google-iap-detect.yaml's request 2
-	// dsl: ["email"], extracted by request 1, resolves too). See
+	// knownExtractorNames accumulates every extractor Name seen so far, plus
+	// (despite the name) every payloads: key of the CURRENT request only —
+	// both bind a DSL-visible string variable the same way, so they share
+	// one dummy-Vars mechanism. Extractor names: seeded with the current
+	// request's own names before that request's matchers/extractors are
+	// checked (so a same-request reference like apache-httpd-eol.yaml's
+	// compare_versions(version, ...) resolves), then carried forward
+	// unmodified into later requests (so a cross-request reference like
+	// google-iap-detect.yaml's request 2 dsl: ["email"], extracted by
+	// request 1, resolves too). Payload keys: NOT carried forward past the
+	// request that declares them (each request's payloads: is its own
+	// substitution scope, unlike an extractor's binding) — added fresh each
+	// iteration below, real example: upstream's wp-crontrol.yaml's
+	// compare_versions(internal_detected_version, concat("< ",
+	// last_version)), where last_version is a file-based payloads: key
+	// referenced directly in the same request's own dsl: matcher. See
 	// nuclei.Executor's tryPath/tryRawIteration for the matching runtime
 	// behavior — this is purely the load-time "does this expression
 	// type-check" counterpart, real values are never known this early.
@@ -163,7 +173,7 @@ func validate(tmpl *Template) error {
 				return fmt.Errorf("http[%d].raw[%d]: absolute-URI request line — proxy-relay-style raw requests unsupported in this version, see docs/10-implementation-plan-ph1b.md", i, j)
 			}
 		}
-		if _, err := req.resolvePayloads(); err != nil {
+		if _, err := req.resolvePayloads(tmpl.sourceDir); err != nil {
 			return fmt.Errorf("http[%d]: %w", i, err)
 		}
 		if len(req.Raw) == 0 && len(req.Path) == 0 {
@@ -174,7 +184,17 @@ func validate(tmpl *Template) error {
 				knownExtractorNames[e.Name] = ""
 			}
 		}
-		dslCtx := requestDSLContext(req.Raw, knownExtractorNames)
+		reqScopeNames := knownExtractorNames
+		if len(req.Payloads) > 0 {
+			reqScopeNames = make(map[string]string, len(knownExtractorNames)+len(req.Payloads))
+			for k, v := range knownExtractorNames {
+				reqScopeNames[k] = v
+			}
+			for k := range req.Payloads {
+				reqScopeNames[k] = ""
+			}
+		}
+		dslCtx := requestDSLContext(req.Raw, reqScopeNames)
 		for j, m := range req.Matchers {
 			if m.Internal && tmpl.Flow == "" {
 				return fmt.Errorf("http[%d].matchers[%d]: uses internal: true outside a flow: template — flow-control-only matcher has nothing to gate without flow:, see docs/10-implementation-plan-ph1b.md", i, j)

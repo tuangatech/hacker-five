@@ -5,6 +5,8 @@ package nuclei
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -38,6 +40,19 @@ type Template struct {
 	// template. Unexported: only nuclei.Executor.runFlow reads it, and it
 	// has no YAML shape of its own (populated after decode, not by it).
 	flowAST flowExpr
+
+	// sourceDir is the root directory this template was loaded from
+	// (LoadDir/LoadDirDetailed's dir argument — the synced-corpus root,
+	// e.g. ~/.config/hackerfive/nuclei-templates, not the individual
+	// template file's own subdirectory). A request's file-based payloads:
+	// entry (e.g. "helpers/wordpress/plugins/wp-crontrol.txt") resolves
+	// relative to this, same as real Nuclei resolves it relative to the
+	// corpus root rather than the template's own location — see
+	// resolvePayloads. Populated by loader.go's loadFile after parsing;
+	// empty for a Template built directly (e.g. in a test), in which case a
+	// file-based payload reference fails clearly rather than resolving
+	// against an unrelated working directory.
+	sourceDir string
 }
 
 // Info carries the fields that affect a Finding (Name, Severity), plus the
@@ -83,11 +98,11 @@ type HTTPRequest struct {
 
 	// Payloads maps a placeholder name (referenced as {{name}} in Raw) to
 	// its list of substitution values. Real Nuclei allows either an inline
-	// YAML list (supported here) or a bare string naming an external
-	// wordlist file (rejected at load time — see loader.go's validate,
-	// "file-based payload not supported"); kept as yaml.Node rather than
-	// []string so validate() can distinguish the two shapes and reject the
-	// unsupported one with a clear error instead of a decode failure. Two or
+	// YAML list or a bare string naming an external wordlist file, resolved
+	// relative to the synced-corpus root (see readPayloadFile) — both
+	// supported; kept as yaml.Node rather than []string so validate() can
+	// distinguish the two shapes and read the file-based one via
+	// resolvePayloads instead of a decode failure. Two or
 	// more keys are combined per Attack's mode — see resolvePayloads.
 	Payloads map[string]yaml.Node `yaml:"payloads,omitempty"`
 
@@ -105,9 +120,14 @@ type HTTPRequest struct {
 // resolvePayloads validates req.Payloads/req.Attack and returns every
 // substitution pass real Nuclei's attack mode produces, in a fixed,
 // deterministic order (nil, nil when req has no payloads: at all). Shared
-// by loader.go's validate (so a bad payload or attack mode is a load-time
-// error, not a scan-time surprise) and executor.go's runPathRequest/tryRaw
-// (so execution uses the exact iterations validation already confirmed).
+// by loader.go's validate (so a bad payload, attack mode, or missing
+// wordlist file is a load-time error, not a scan-time surprise) and
+// executor.go's runPathRequest/tryRaw (so execution uses the exact
+// iterations validation already confirmed). baseDir resolves a file-based
+// entry's relative path (see readPayloadFile) — callers pass the
+// synced-corpus root: loader.go's validate passes the dir LoadDir/
+// LoadDirDetailed was called with directly; executor.go passes the loaded
+// Template's own tmpl.sourceDir.
 //
 // The three modes are Nuclei's own terms, borrowed directly from Burp
 // Intruder's identically-named attack types:
@@ -130,7 +150,7 @@ type HTTPRequest struct {
 //     single-list iteration every mode already agrees on — but matches the
 //     documented Nuclei/Burp Intruder semantic (one payload set applied to
 //     every position simultaneously).
-func (req HTTPRequest) resolvePayloads() ([]map[string]string, error) {
+func (req HTTPRequest) resolvePayloads(baseDir string) ([]map[string]string, error) {
 	if len(req.Payloads) == 0 {
 		return nil, nil
 	}
@@ -139,8 +159,8 @@ func (req HTTPRequest) resolvePayloads() ([]map[string]string, error) {
 	for k, node := range req.Payloads {
 		switch node.Kind {
 		case yaml.SequenceNode:
-			var vals []string
-			if err := node.Decode(&vals); err != nil {
+			vals, err := decodeStringSequence(node)
+			if err != nil {
 				return nil, fmt.Errorf("payloads.%s: %w", k, err)
 			}
 			if len(vals) == 0 {
@@ -149,7 +169,12 @@ func (req HTTPRequest) resolvePayloads() ([]map[string]string, error) {
 			values[k] = vals
 			keys = append(keys, k)
 		case yaml.ScalarNode:
-			return nil, fmt.Errorf("payloads.%s: file-based payload (%q) unsupported in this version, see docs/10-implementation-plan-ph1b.md", k, node.Value)
+			vals, err := readPayloadFile(baseDir, node.Value)
+			if err != nil {
+				return nil, fmt.Errorf("payloads.%s: %w", k, err)
+			}
+			values[k] = vals
+			keys = append(keys, k)
 		default:
 			return nil, fmt.Errorf("payloads.%s: unsupported payload shape", k)
 		}
@@ -166,6 +191,75 @@ func (req HTTPRequest) resolvePayloads() ([]map[string]string, error) {
 	default:
 		return nil, fmt.Errorf("attack: %q unsupported — no real corpus usage observed for this mode, see docs/10-implementation-plan-ph1b.md", req.Attack)
 	}
+}
+
+// decodeStringSequence decodes a YAML sequence node into a []string,
+// treating a `null` entry as an empty string rather than dropping it —
+// node.Decode(&[]string{}) silently drops `!!null` entries entirely
+// (confirmed: `[null]` decodes to a zero-length slice, not `[""]`), which
+// would otherwise make a real, legitimate blank-credential entry (e.g.
+// upstream's softether-vpn-default-login.yaml: `password: [null]`, a
+// genuine "try an empty password" default-login check) look like an empty
+// payload list and get rejected outright.
+func decodeStringSequence(node yaml.Node) ([]string, error) {
+	vals := make([]string, 0, len(node.Content))
+	for _, c := range node.Content {
+		if c.Tag == "!!null" {
+			vals = append(vals, "")
+			continue
+		}
+		var v string
+		if err := c.Decode(&v); err != nil {
+			return nil, err
+		}
+		vals = append(vals, v)
+	}
+	return vals, nil
+}
+
+// readPayloadFile reads relPath (a real template's file-based payloads:
+// value, e.g. "helpers/wordpress/plugins/wp-crontrol.txt") relative to
+// baseDir — the synced-corpus root real Nuclei itself resolves these paths
+// against, not the individual template file's own directory (confirmed:
+// upstream's http/technologies/wordpress/plugins/*.yaml templates all
+// reference "helpers/..." as a corpus-root-relative path). One value per
+// non-empty line, trimmed; most real examples are a single line (a plugin's
+// current version string for a compare_versions() check — see
+// docs/follow-up.md's "file-based payloads:" entry), but a genuine
+// multi-line wordlist works the same way. See pkg/templatesync.SupportDirs
+// for why "helpers" is synced alongside the http/ template categories.
+func readPayloadFile(baseDir, relPath string) ([]string, error) {
+	if baseDir == "" {
+		return nil, fmt.Errorf("file-based payload %q referenced but this template's source directory is unknown", relPath)
+	}
+	if filepath.IsAbs(relPath) {
+		return nil, fmt.Errorf("file-based payload %q: absolute paths unsupported", relPath)
+	}
+	cleanBase := filepath.Clean(baseDir)
+	full := filepath.Join(cleanBase, relPath)
+	// Path-traversal guard: relPath must resolve to somewhere inside
+	// baseDir, not escape it via "../" — templates come from a pinned,
+	// vetted upstream commit, but this is a cheap, unconditional check
+	// worth keeping regardless of how trusted the source is today.
+	if full != cleanBase && !strings.HasPrefix(full, cleanBase+string(filepath.Separator)) {
+		return nil, fmt.Errorf("file-based payload %q: resolves outside the template source directory", relPath)
+	}
+
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return nil, fmt.Errorf("reading file-based payload %q: %w", relPath, err)
+	}
+	var vals []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			vals = append(vals, line)
+		}
+	}
+	if len(vals) == 0 {
+		return nil, fmt.Errorf("file-based payload %q: no non-empty lines", relPath)
+	}
+	return vals, nil
 }
 
 func normalizedAttack(attack string) string {

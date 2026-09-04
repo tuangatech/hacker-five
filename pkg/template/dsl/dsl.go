@@ -2,7 +2,7 @@
 // Nuclei's DSL expression language this project supports: comparisons
 // (==, !=, <, >) against status_code/len(body), function calls
 // (contains/contains_any/contains_all/regex/to_lower/tolower/trim/md5/sha1/
-// base64_py/mmh3/compare_versions/base64_decode), the status_code/body/header/content_type/response
+// base64_py/mmh3/compare_versions/base64_decode/concat), the status_code/body/header/content_type/response
 // built-in variables, combined with &&/||, unary "!" negation, and
 // parenthesized grouping. Anything
 // outside this grammar is a parse/eval error, not a silent false/empty
@@ -464,6 +464,22 @@ func callFunc(name string, args []any) (any, error) {
 		return strconv.FormatInt(int64(int32(mmh3Sum32(s))), 10), nil
 	case "compare_versions":
 		return compareVersions(args)
+	case "concat":
+		if len(args) == 0 {
+			return nil, fmt.Errorf("concat() takes at least 1 argument, got 0")
+		}
+		var sb strings.Builder
+		for _, a := range args {
+			switch v := a.(type) {
+			case string:
+				sb.WriteString(v)
+			case int:
+				sb.WriteString(strconv.Itoa(v))
+			default:
+				return nil, fmt.Errorf("concat() argument must be a string or int, got %T", a)
+			}
+		}
+		return sb.String(), nil
 	case "base64_decode":
 		s, err := oneStringArg(name, args)
 		if err != nil {

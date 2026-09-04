@@ -11,6 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestSupportDirs_HelpersPresentAndDisjointFromCategories locks in that
+// "helpers" (real templates' file-based payloads: reference paths under it,
+// e.g. helpers/wordpress/plugins/wp-crontrol.txt) is sparse-checked-out
+// alongside Categories (see Sync's sparsePaths construction) without also
+// being treated as a template category for CategoryCounts/CLI+Web UI
+// display purposes.
+func TestSupportDirs_HelpersPresentAndDisjointFromCategories(t *testing.T) {
+	assert.Contains(t, SupportDirs, "helpers")
+	for _, dir := range SupportDirs {
+		assert.NotContains(t, Categories, dir, "SupportDirs entries must not double as a displayed template category")
+	}
+}
+
 func TestDefaultSyncDir_EndsInHackerfiveNucleiTemplates(t *testing.T) {
 	dir, err := DefaultSyncDir()
 	require.NoError(t, err)
