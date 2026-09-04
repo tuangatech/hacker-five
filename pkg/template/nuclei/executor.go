@@ -8,6 +8,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
@@ -260,6 +261,7 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 		}
 	}
 
+	start := time.Now()
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
 		return detectors.Finding{}, false, false, nil
@@ -269,6 +271,17 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	if err != nil {
 		return detectors.Finding{}, false, false, nil
 	}
+	// Elapsed time for this single request, bound as the bare "duration" DSL
+	// identifier (blind time-based SQLi templates, e.g. upstream's
+	// CVE-2023-2130.yaml: dsl: 'duration>=6') — see loader.go's
+	// rawIndexedDSLContext doc comment for why this needs an explicit
+	// IntVars entry rather than a dsl.Context field like status_code/body/
+	// header/content_type. Measured around e.client.Do only, so it includes
+	// this client's own retry/backoff time on a transient failure before the
+	// eventual success (see pkg/scanner/httpclient's WithRetry) — a narrow,
+	// accepted source of over-counting on a flaky connection, not something
+	// this project's retry policy special-cases for duration templates.
+	durationInts := map[string]int{"duration": int(time.Since(start).Seconds())}
 
 	// Extraction runs unconditionally, before matchers evaluate — not just
 	// when chainable — so a matcher in THIS SAME request can reference an
@@ -277,10 +290,10 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	// '<=2.2.34') where "version" is extracted by this same request). It's
 	// a pure function over the already-fetched response, so computing it
 	// unconditionally has no side effect until its results are used below.
-	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: chainVars}
+	baseResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: chainVars, ExtraInts: durationInts}
 	extracted := extractor.Extract(req.Extractors, baseResp)
 
-	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: mergeVars(chainVars, extracted)}
+	mResp := matcher.Response{StatusCode: resp.StatusCode, Headers: resp.Header, Body: respBody, ExtraVars: mergeVars(chainVars, extracted), ExtraInts: durationInts}
 	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
 	chainable = evaluated || len(req.Matchers) == 0
 	matched = evaluated && hasReportableMatcher(req.Matchers)
@@ -393,16 +406,18 @@ func (e *Executor) tryRaw(ctx context.Context, target string, tmpl *Template, re
 }
 
 // tryRawIteration fires every entry in req.Raw once (rendering each through
-// renderCtx), binds every entry's result as body_N/header_N/status_code_N,
-// and evaluates req.Matchers/req.Extractors against the last entry's
+// renderCtx), binds every entry's result as body_N/header_N/status_code_N/
+// content_type_N/duration_N (plus a bare "duration" aliased to the last
+// entry, same as the existing bare status_code/body/header/content_type
+// aliasing), and evaluates req.Matchers/req.Extractors against the last entry's
 // response — same non-fatal treatment of render/parse/network errors as
 // tryPath: any failure on any entry aborts just this one iteration, not the
 // whole scan. Returns (finding, matched, chainable, err) — see tryPath's
 // doc comment for the matched/chainable distinction, which applies here
 // identically (a matcher-less raw: block is trivially chainable too).
 func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx int, req HTTPRequest, renderCtx vars.Context, chainVars map[string]string, pIdx int, idSuffix bool) (finding detectors.Finding, matched bool, chainable bool, err error) {
-	extraVars := make(map[string]string, len(req.Raw)*2)
-	extraInts := make(map[string]int, len(req.Raw))
+	extraVars := make(map[string]string, len(req.Raw)*3)
+	extraInts := make(map[string]int, len(req.Raw)*2+1)
 	var lastReq *http.Request
 	var lastReqBody string
 	var lastStatus int
@@ -431,6 +446,7 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 				httpReq.Header.Set(k, v)
 			}
 		}
+		start := time.Now()
 		resp, err := e.client.Do(httpReq)
 		if err != nil {
 			return detectors.Finding{}, false, false, nil
@@ -440,10 +456,20 @@ func (e *Executor) tryRawIteration(ctx context.Context, tmpl *Template, reqIdx i
 		if err != nil {
 			return detectors.Finding{}, false, false, nil
 		}
+		// See tryPath's durationInts comment: measured around e.client.Do
+		// only, so it includes this entry's own retry/backoff time on a
+		// transient failure — same narrow, accepted over-counting risk.
+		entryDuration := int(time.Since(start).Seconds())
 
 		extraVars[fmt.Sprintf("body_%d", n)] = string(respBody)
 		extraVars[fmt.Sprintf("header_%d", n)] = matcher.Part("header", matcher.Response{Headers: resp.Header})
+		extraVars[fmt.Sprintf("content_type_%d", n)] = resp.Header.Get("Content-Type")
 		extraInts[fmt.Sprintf("status_code_%d", n)] = resp.StatusCode
+		extraInts[fmt.Sprintf("duration_%d", n)] = entryDuration
+		// Bare "duration" aliases to the last entry, same as the bare
+		// status_code/body/header/content_type identifiers already do via
+		// lastStatus/lastBody/lastHeaders below.
+		extraInts["duration"] = entryDuration
 
 		lastReq, lastReqBody = httpReq, reqBody
 		lastStatus, lastHeaders, lastBody = resp.StatusCode, resp.Header, respBody

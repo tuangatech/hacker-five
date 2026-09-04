@@ -23,14 +23,18 @@ type Response struct {
 
 	// ExtraVars/ExtraInts supply additional named values a dsl: matcher or
 	// extractor can reference beyond the status_code/body/header/
-	// content_type/response built-ins — used by a raw:-request block with
-	// more than one Raw entry to bind body_N/header_N (string) and
-	// status_code_N (int) for N = 1..len(Raw), so a real template's shared
-	// correlating matcher (e.g. upstream's open-proxy-internal.yaml:
-	// contains(body_1, ...) || contains(body_2, ...) ...) can actually
-	// reference each fired probe's own result — see nuclei.Executor's
-	// tryRaw. Nil for every non-raw Response (the existing path:-based
-	// flow), so this is a zero-behavior-change addition there.
+	// content_type/response built-ins. A raw:-request block with more than
+	// one Raw entry binds body_N/header_N/content_type_N (string) and
+	// status_code_N/duration_N (int) for N = 1..len(Raw), so a real
+	// template's shared correlating matcher (e.g. upstream's
+	// open-proxy-internal.yaml: contains(body_1, ...) || contains(body_2,
+	// ...) ...) can actually reference each fired probe's own result — see
+	// nuclei.Executor's tryRaw. Every Response (raw: or plain path:-based)
+	// also carries a bare ExtraInts["duration"] — elapsed seconds of the
+	// request actually evaluated (the last raw entry, or the single path:
+	// request) — since "duration" has no dedicated Context field the way
+	// status_code/body/header/content_type do; see nuclei.Executor's tryPath
+	// and pkg/template/nuclei/loader.go's rawIndexedDSLContext doc comment.
 	ExtraVars map[string]string
 	ExtraInts map[string]int
 }

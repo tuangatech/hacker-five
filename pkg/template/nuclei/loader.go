@@ -193,8 +193,9 @@ func validate(tmpl *Template) error {
 }
 
 // requestDSLContext builds the dsl.Context used to validate one request's
-// matchers/extractors: rawIndexedDSLContext's body_N/header_N/status_code_N
-// entries (same-block raw: correlation), plus a dummy entry for every name
+// matchers/extractors: rawIndexedDSLContext's body_N/header_N/status_code_N/
+// content_type_N/duration_N/duration entries (same-block raw: correlation,
+// plus the always-present bare "duration"), plus a dummy entry for every name
 // in knownExtractorNames (same-request-or-earlier extractor binding — see
 // validate's knownExtractorNames comment). Both mechanisms are independent
 // and additive; either can be empty without affecting the other.
@@ -221,24 +222,38 @@ func requestDSLContext(raw []string, knownExtractorNames map[string]string) dsl.
 }
 
 // rawIndexedDSLContext builds a dsl.Context with a zero-valued body_N/
-// header_N/status_code_N entry for every N = 1..len(raw) — just enough for
-// matcher.ValidateWithContext/extractor.ValidateWithContext to confirm a
-// dsl: expression referencing those identifiers actually parses/type-checks
-// at load time, without needing (or having) real per-entry results yet
-// (those only exist once nuclei.Executor's tryRaw actually fires every
-// entry). Returns a zero-value Context (identical to the old
-// dsl.Context{}-everywhere behavior) when raw is empty, so non-raw
-// templates are completely unaffected.
+// header_N/status_code_N/content_type_N/duration_N entry for every N =
+// 1..len(raw) — just enough for matcher.ValidateWithContext/
+// extractor.ValidateWithContext to confirm a dsl: expression referencing
+// those identifiers actually parses/type-checks at load time, without
+// needing (or having) real per-entry results yet (those only exist once
+// nuclei.Executor's tryRaw actually fires every entry).
+//
+// A bare "duration" entry is always present, even when raw is empty: unlike
+// body/header/status_code/content_type (whose bare forms are built-in
+// dsl.Context fields, populated straight from the response regardless of
+// raw:), "duration" has no such field — it's threaded through IntVars like
+// the indexed identifiers, so it needs an explicit dummy entry here too. A
+// duration check is just as valid on a plain path:-based request as a raw:
+// one (real example: upstream's CVE-2023-2130.yaml, a single-path
+// blind-SQLi sleep check with no raw: at all) — nuclei.Executor's tryPath
+// binds it the same way tryRawIteration binds the aliased bare
+// status_code/body/header/content_type to the last raw entry. Non-duration,
+// non-raw templates are otherwise unaffected: this used to return a fully
+// zero-value Context when raw was empty, now it returns one with only
+// IntVars["duration"] set.
 func rawIndexedDSLContext(raw []string) dsl.Context {
+	ints := map[string]int{"duration": 0}
 	if len(raw) == 0 {
-		return dsl.Context{}
+		return dsl.Context{IntVars: ints}
 	}
-	vars := make(map[string]string, len(raw)*2)
-	ints := make(map[string]int, len(raw))
+	vars := make(map[string]string, len(raw)*3)
 	for n := 1; n <= len(raw); n++ {
 		vars[fmt.Sprintf("body_%d", n)] = ""
 		vars[fmt.Sprintf("header_%d", n)] = ""
+		vars[fmt.Sprintf("content_type_%d", n)] = ""
 		ints[fmt.Sprintf("status_code_%d", n)] = 0
+		ints[fmt.Sprintf("duration_%d", n)] = 0
 	}
 	return dsl.Context{Vars: vars, IntVars: ints}
 }

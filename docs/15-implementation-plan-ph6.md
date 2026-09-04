@@ -192,6 +192,19 @@ Tests: `pkg/registry/decisionengine_test.go` — `TestResolve_{InterestingPortOp
 
 ---
 
+**Addendum, 2026-09-04 — P1-4 (partial): `content_type_N`/`duration`/`duration_N` DSL support.** `pkg/template/nuclei/`. Real corpus measurement first (the doc's "1-10 templates each" estimate for these was stale): of 1,966 templates rejected at load, `duration`/`duration_N` alone was 280 (14%) and `content_type_N` 63 (3%) — by far the largest addressable DSL gaps, not the small ones the estimate suggested.
+
+1. **`content_type_N`** — a direct extension of the pre-existing `body_N`/`header_N`/`status_code_N` mechanism (`loader.go`'s `rawIndexedDSLContext`, `executor.go`'s `tryRawIteration`): same per-raw:-entry binding, same load-time dummy-context validation, no new design.
+2. **`duration`/`duration_N`** (elapsed whole seconds) needed no new `dsl.Context` field — routed through the existing `IntVars` map, the same mechanism `status_code_N` already uses, since a bare identifier here has no dedicated Context field to alias from (unlike `status_code`/`body`/`header`/`content_type`). Bound in `tryRawIteration` (per raw: entry, plus a bare `duration` aliased to the last entry) *and* `tryPath` (bare `duration` only) — real corpus check showed 227/230 duration-using templates are raw:-based but 3 are plain `path:`-based (e.g. upstream's `CVE-2023-2130.yaml`), so both request styles needed it. All 230 real threshold comparisons use integer seconds with `>=`/`>` (none exact-equality, none fractional) — confirmed before implementing, so int-truncated-seconds is a faithful representation, not a shortcut.
+3. **Known, accepted caveat**: measured duration is wall-clock around `client.Do`, so it includes this project's own retry/backoff time (`pkg/scanner/httpclient`'s `WithRetry`, up to ~3 attempts) on a transient failure — a narrow over-counting risk on a flaky connection, not specially excluded.
+4. **Real-data result**: re-running the same load-time classification against the full corpus, 1,966 → 1,634 rejected (332 templates newly loadable). The `dsl: duration`/`dsl: content_type_N` buckets are gone except 3 genuine edge cases (2 templates hit a second, still-open gap behind the one just fixed; 1 references an out-of-range `duration_2` on a single-raw-entry block, same class as the pre-existing out-of-range `body_N` cases).
+5. **Also corrected while measuring**: `docs/follow-up.md`'s multi-key `payloads:` (sniper/pitchfork/clusterbomb) estimate — "2 templates only" was wrong; real count is 485, the single largest rejection bucket (25%). Left as a separate follow-up item, not folded into this pass (unrelated feature — payload-iteration strategy, not a DSL/`part:` gap).
+6. **Deliberately not in this pass** (all still open, see `docs/follow-up.md`'s P1-4 entry for the full list): the larger `body_N`/`header_N`-as-`part:`-value gap for `path:`-multi-request templates (~220 templates — a real correlation-model refactor, not a small addition), `interactsh_*`/OOB (~350, separate infra project), and several smaller items (`location`/`server`/`set_cookie` parts, `xpath` extractor type, `flow:` `set`/`for`, DSL `+`/`replace`/`trim_space`/`startswith`).
+
+Tests: `tests/unit/nuclei_loader_test.go` — `TestNucleiLoadDir_{MultiRawEntry_ContentTypeAndDurationLoad,BareDurationOnPlainPathTemplateLoads}`; `tests/unit/nuclei_executor_test.go` — `TestExecutorRun_{PathDuration_SlowResponseMatches,PathDuration_FastResponseNoMatch,RawDurationN_CorrelatesPerEntry,RawContentTypeN_Correlates}` (real `httptest` servers, including an actual slow-vs-fast timing comparison). `go build`/`vet`/`test -race`/`golangci-lint` clean (incl. `-tags integration`).
+
+---
+
 ## Step 3: Hard Safety Blockers + Scope-Creep Gate + Cost-Aware Prioritization (Weeks 44-45) — ⬜ not yet implemented
 
 ### Design

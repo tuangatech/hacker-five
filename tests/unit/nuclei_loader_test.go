@@ -268,6 +268,65 @@ http:
 	assert.Len(t, templates[0].HTTP[0].Raw, 2)
 }
 
+// TestNucleiLoadDir_MultiRawEntry_ContentTypeAndDurationLoad is
+// TestNucleiLoadDir_MultiRawEntry extended with content_type_N/duration_N —
+// real upstream examples: CVE-2015-2755.yaml (content_type_2),
+// CVE-2015-2196.yaml (duration_1) — both previously rejected at load time as
+// "unknown identifier" since rawIndexedDSLContext only seeded body_N/
+// header_N/status_code_N.
+func TestNucleiLoadDir_MultiRawEntry_ContentTypeAndDurationLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "multi-raw-content-duration.yaml", `
+id: multi-raw-content-duration-style
+info:
+  name: Multi Raw Content/Duration Style
+  severity: high
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /slow HTTP/1.1
+        Host: {{Hostname}}
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(content_type_1, \"json\") && duration_2 >= 6"
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
+// TestNucleiLoadDir_BareDurationOnPlainPathTemplateLoads is modeled on real
+// upstream's CVE-2023-2130.yaml: a bare "duration" DSL identifier on a plain
+// path:-based request, no raw: at all. Previously rejected — the pre-fix
+// rawIndexedDSLContext returned a fully empty dsl.Context whenever raw was
+// empty, so "duration" had no entry to resolve against.
+func TestNucleiLoadDir_BareDurationOnPlainPathTemplateLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "bare-duration-style.yaml", `
+id: bare-duration-style
+info:
+  name: Bare Duration Style
+  severity: medium
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/search?q=1) OR SLEEP(6)-- -"
+    matchers:
+      - type: dsl
+        dsl:
+          - "duration>=6"
+`)
+
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+}
+
 func TestNucleiLoadDir_MultiPathPanelTemplate(t *testing.T) {
 	dir := t.TempDir()
 	writeTemplate(t, dir, "panel.yaml", `

@@ -615,6 +615,143 @@ http:
 	require.Len(t, findings, 1, "the correlating matcher should fire once both probes' results are bound")
 }
 
+// TestExecutorRun_PathDuration_SlowResponseMatches is modeled on real
+// upstream's CVE-2023-2130.yaml: a plain path:-based (non-raw:) blind-SQLi
+// sleep check using the bare "duration" DSL identifier. Proves tryPath now
+// times its single request and binds it — before this, path:-based
+// templates had no timing signal at all (only tryRaw did).
+func TestExecutorRun_PathDuration_SlowResponseMatches(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1100 * time.Millisecond)
+	}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "bare-duration-style",
+		Info: nuclei.Info{Name: "Bare Duration Style", Severity: "medium"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method: http.MethodGet,
+			Path:   []string{"{{BaseURL}}/"},
+			Matchers: []matcher.Matcher{
+				{Type: "dsl", DSL: []string{"duration>=1"}},
+			},
+		}},
+	}
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "a genuinely slow response must satisfy duration>=1")
+}
+
+// TestExecutorRun_PathDuration_FastResponseNoMatch is
+// TestExecutorRun_PathDuration_SlowResponseMatches' negative counterpart —
+// an immediate response must not satisfy the same duration>=1 threshold,
+// confirming this isn't a matcher that trivially always fires.
+func TestExecutorRun_PathDuration_FastResponseNoMatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	tmpl := &nuclei.Template{
+		ID:   "bare-duration-style",
+		Info: nuclei.Info{Name: "Bare Duration Style", Severity: "medium"},
+		HTTP: []nuclei.HTTPRequest{{
+			Method: http.MethodGet,
+			Path:   []string{"{{BaseURL}}/"},
+			Matchers: []matcher.Matcher{
+				{Type: "dsl", DSL: []string{"duration>=1"}},
+			},
+		}},
+	}
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, tmpl)
+	require.NoError(t, err)
+	require.Empty(t, findings, "an immediate response must not satisfy duration>=1")
+}
+
+// TestExecutorRun_RawDurationN_CorrelatesPerEntry is modeled on real
+// upstream's CVE-2015-2196.yaml-style raw:-multi-request blind SQLi: a fast
+// baseline probe followed by a deliberately slow one, correlated via
+// duration_1/duration_2 in one shared DSL matcher — proves tryRawIteration
+// times each raw: entry independently, not just the last one.
+func TestExecutorRun_RawDurationN_CorrelatesPerEntry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			time.Sleep(1100 * time.Millisecond)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "raw-duration.yaml", `
+id: raw-duration-correlation-style
+info:
+  name: Raw Duration Correlation Style
+  severity: high
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /slow HTTP/1.1
+        Host: {{Hostname}}
+    matchers:
+      - type: dsl
+        dsl:
+          - "duration_1 < 1 && duration_2 >= 1"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "duration_1/duration_2 must reflect each entry's own elapsed time, not a shared or last-entry-only value")
+}
+
+// TestExecutorRun_RawContentTypeN_Correlates is modeled on real upstream's
+// CVE-2015-2755.yaml-style raw:-multi-request check correlating each probe's
+// own Content-Type — proves tryRawIteration binds content_type_N per entry,
+// the same way it already binds body_N/header_N/status_code_N.
+func TestExecutorRun_RawContentTypeN_Correlates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "application/json")
+		case "/other":
+			w.Header().Set("Content-Type", "text/plain")
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeTemplate(t, dir, "raw-content-type.yaml", `
+id: raw-content-type-correlation-style
+info:
+  name: Raw Content-Type Correlation Style
+  severity: info
+http:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /other HTTP/1.1
+        Host: {{Hostname}}
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(content_type_1, \"json\") && contains(content_type_2, \"text/plain\")"
+`)
+	templates, errs := nuclei.LoadDir(dir)
+	require.Empty(t, errs)
+	require.Len(t, templates, 1)
+
+	findings, err := nuclei.New(newExecutorClient()).Run(context.Background(), server.URL, templates[0])
+	require.NoError(t, err)
+	require.Len(t, findings, 1, "content_type_1/content_type_2 must reflect each entry's own response header")
+}
+
 // TestExecutorRun_SameRequestExtractorBinding is modeled on real upstream's
 // apache-httpd-eol.yaml: a single request whose matcher references its own
 // extractor's Name (compare_versions(version, ...)) — end-to-end proof
