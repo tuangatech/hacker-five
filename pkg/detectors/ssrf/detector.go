@@ -87,6 +87,19 @@ func (d *Detector) Run(ctx context.Context, target, authToken string, params []s
 		return nil, fmt.Errorf("ssrf: %w", err)
 	}
 
+	// One inert baseline probe per param, up front — establishes what the
+	// target's own response looks like when nothing was actually fetched,
+	// so every real payload below can be judged against it instead of in
+	// isolation. See probeBaseline's own doc comment (checks.go) for the
+	// real false-positive class this closes.
+	baselines := make(map[string]probeBaseline, len(params))
+	for _, param := range params {
+		if ctx.Err() != nil {
+			break
+		}
+		baselines[param] = d.fetchBaseline(ctx, target, authToken, param)
+	}
+
 	var findings []detectors.Finding
 	// checkSchemeBasedTargets first, deliberately: checkInternalTargets'
 	// encoded-bypass payloads (hex/IPv6 forms especially) can make a
@@ -97,7 +110,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string, params []s
 	// curl-confirmed file:// finding) of a working connection. Running the
 	// higher-value, non-hanging scheme-based family first means a
 	// resource-exhaustion cascade from the other family can't suppress it.
-	checks := []func(context.Context, string, string, []string) ([]detectors.Finding, error){
+	checks := []func(context.Context, string, string, []string, map[string]probeBaseline) ([]detectors.Finding, error){
 		d.checkSchemeBasedTargets,
 		d.checkInternalTargets,
 	}
@@ -105,7 +118,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string, params []s
 		if ctx.Err() != nil {
 			return findings, ctx.Err()
 		}
-		fs, err := check(ctx, target, authToken, params)
+		fs, err := check(ctx, target, authToken, params, baselines)
 		if err != nil {
 			return findings, err
 		}

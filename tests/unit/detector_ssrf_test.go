@@ -132,6 +132,63 @@ func TestSSRFSchemeBased_Rejected_NoFinding(t *testing.T) {
 	assert.Empty(t, withPrefix(findings, "ssrf-scheme-based-"))
 }
 
+// TestSSRFInternalTarget_ResponseIndistinguishableFromBaseline_Suppressed
+// guards a real false-positive class found live, 2026-09-04: a target
+// whose url parameter is simply unused returns its own normal homepage
+// for every payload tried, regardless of payload — previously every one
+// of them (file://, gopher://, dict://, every loopback encoding, every
+// RFC1918 sample, every cloud-metadata path) was misread as "the server
+// fetched it." One inert baseline probe per param now establishes what
+// "nothing was fetched" looks like, and a payload's response
+// indistinguishable from it is never turned into a finding.
+func TestSSRFInternalTarget_ResponseIndistinguishableFromBaseline_Suppressed(t *testing.T) {
+	homepage := strings.Repeat("<html>same homepage regardless of payload</html>", 5)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(homepage))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "ssrf-internal-target-"), "every payload's response matches the baseline — none should be treated as evidence of a real fetch")
+	assert.Empty(t, withPrefix(findings, "ssrf-cloud-metadata-"))
+	assert.Empty(t, withPrefix(findings, "ssrf-scheme-based-"))
+}
+
+// TestSSRFInternalTarget_DistinctFromBaseline_StillFires is the previous
+// test's counterpart: a payload whose response is genuinely different from
+// the baseline must still fire, and baseline suppression must not swallow
+// it just because other, unrelated payloads share the app's own normal
+// page.
+func TestSSRFInternalTarget_DistinctFromBaseline_StillFires(t *testing.T) {
+	homepage := strings.Repeat("<html>normal homepage</html>", 10) // deliberately far from the fetched-content body's length below
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		url := r.URL.Query().Get("url")
+		if url == "http://127.0.0.1/" {
+			data := base64.StdEncoding.EncodeToString([]byte("root:x:0:0"))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":"` + data + `"}`))
+			return
+		}
+		// baseline and every other payload get the app's own normal page
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(homepage))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil)
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "ssrf-internal-target-url-127-0-0-1")
+	require.Len(t, got, 1, "a response genuinely distinct from the baseline must still fire")
+
+	assert.Empty(t, withPrefix(findings, "ssrf-internal-target-url-10-0-0-1"), "a payload matching the baseline must be suppressed even though a different payload fired")
+}
+
 // TestSSRFAuthHeader_Override proves WithAuthHeader actually changes the
 // header carrying authToken on every probe — same convention as
 // authbypass's equivalent test.
