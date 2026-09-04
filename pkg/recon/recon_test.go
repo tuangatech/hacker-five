@@ -52,6 +52,56 @@ func namesOf(calls []invocation) []string {
 	return out
 }
 
+// TestRun_LoopbackTarget_SkipsWHOISAndASN guards a real bug found via CI,
+// 2026-09-04: runWave1 used to call the real WHOIS/ASN lookups (whois.go's
+// native TCP/DNS clients, not subject to withRun's fake-binary override)
+// unconditionally, including for a target like this test's own
+// httptest.Server ("127.0.0.1"). WHOIS has no record for a private address,
+// so that was a real, live network round-trip to whois.iana.org on every
+// single Run — including this very test, before this fix — burning up to
+// whoisDialTimeout of wall-clock time for zero useful data, and on a slow
+// or restricted network (a CI runner) that latency looked like unrelated
+// test flakiness rather than this call.
+func TestRun_LoopbackTarget_SkipsWHOISAndASN(t *testing.T) {
+	calls, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthPassive)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	_ = calls // WHOIS/ASN aren't shelled binaries, so recordingRun can't see them either way.
+
+	for _, h := range result.Hosts {
+		assert.NotEqual(t, "passive-whois-asn", h.Source, "a loopback target must never produce a WHOIS/ASN host fact")
+	}
+	joined := strings.Join(result.Warnings, " | ")
+	assert.Contains(t, joined, "private/loopback address", "expected a warning explaining why WHOIS/ASN was skipped")
+}
+
+func TestIsPrivateOrLoopbackHost(t *testing.T) {
+	for _, tc := range []struct {
+		domain string
+		want   bool
+	}{
+		{"127.0.0.1", true},
+		{"localhost", true},
+		{"LOCALHOST", true},
+		{"::1", true},
+		{"10.0.0.5", true},
+		{"192.168.1.1", true},
+		{"169.254.1.1", true},
+		{"0.0.0.0", true},
+		{"example.com", false},
+		{"8.8.8.8", false},
+		{"not-an-ip-or-localhost", false},
+	} {
+		assert.Equal(t, tc.want, isPrivateOrLoopbackHost(tc.domain), "domain %q", tc.domain)
+	}
+}
+
 func TestRun_PassiveDepth_NeverInvokesActiveBinaries(t *testing.T) {
 	calls, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))

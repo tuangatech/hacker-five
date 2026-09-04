@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,7 +75,11 @@ func (r *Recon) runWave1(ctx context.Context, agg *aggregator, domain string) []
 		}
 	}
 
-	r.runWHOISAndASN(ctx, agg, domain)
+	if isPrivateOrLoopbackHost(domain) {
+		agg.addWarning("wave1: %s is a private/loopback address — WHOIS/ASN lookups skipped (no public registry data exists for it)", domain)
+	} else {
+		r.runWHOISAndASN(ctx, agg, domain)
+	}
 
 	out := make([]string, 0, len(candidates))
 	for h := range candidates {
@@ -154,6 +159,28 @@ func (r *Recon) runTLSX(ctx context.Context, domain string) ([]string, error) {
 		hosts = append(hosts, rec.SubjectAN...)
 	}
 	return hosts, nil
+}
+
+// isPrivateOrLoopbackHost reports whether domain is a loopback/private/
+// link-local IP literal, or the literal "localhost" — the only cases
+// runWave1 skips WHOIS/ASN for. Found live via CI, 2026-09-04: recon always
+// runs (no opt-out), and runWHOISAndASN used to fire unconditionally,
+// including for local lab/test targets like "127.0.0.1" — WHOIS has no
+// record for a private address, so lookupWHOIS's real TCP dial to
+// whois.iana.org was pure wasted latency (up to whoisDialTimeout per dial,
+// twice if IANA names a referral) with no data to show for it, and on a
+// network that can't reach or is slow to reach the real internet (a CI
+// runner, an air-gapped lab), that latency was misattributed to the test
+// suite being flaky rather than to this call.
+func isPrivateOrLoopbackHost(domain string) bool {
+	if strings.EqualFold(domain, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(domain)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
 // runWHOISAndASN best-effort attaches WHOIS/ASN facts to domain's HostFact
