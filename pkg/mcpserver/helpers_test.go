@@ -2,9 +2,24 @@ package mcpserver
 
 import (
 	"context"
+	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// isolateFromInstalledReconBinaries forces resolveBinaryPath's two lookup
+// paths (PATH, then toolsync.DefaultInstallDir()) to both miss, regardless
+// of whether this machine has actually run `hackerfive recon setup` — see
+// cmd/hackerfive/recon_test.go's identical helper for the full story (found
+// live, 2026-09-03: a dev machine with the real recon binaries installed
+// turned an apparently-safe local-httptest-target test into one that shelled
+// out for real, burning ~30s per run on live passive-DNS queries).
+func isolateFromInstalledReconBinaries(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+}
 
 // connect wires server to a fresh in-memory client session — the same
 // pattern the SDK's own example tests use (mcp.NewInMemoryTransports),

@@ -2,10 +2,13 @@ package mcpserver
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stretchr/testify/require"
 )
 
 // TestScanTool_MissingScope_RefusedBeforeAnyRequest covers D3's two defense
@@ -59,6 +62,69 @@ func TestScanTool_MissingScope_RefusedBeforeAnyRequest(t *testing.T) {
 			t.Errorf("expected requireScope's own message, got %q", text)
 		}
 	})
+}
+
+// TestScanTool_ValidationError_MissingEndpointForIDOR confirms
+// scanner.Config.Validate()'s own required-field check surfaces as a
+// tool-level error, not a panic or a silently-empty result — reached only
+// after requireScope passes, so scope is set here to a value that would
+// otherwise let the call through.
+func TestScanTool_ValidationError_MissingEndpointForIDOR(t *testing.T) {
+	ctx := context.Background()
+	session, err := connect(ctx, New())
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":  []string{"http://127.0.0.1:1/"},
+			"scope":    []string{"127.0.0.1"},
+			"detector": "idor",
+		},
+	})
+	require.NoError(t, err)
+	if !res.IsError {
+		t.Fatal("expected IsError=true for detector=idor with no endpoint_template")
+	}
+}
+
+// TestScanTool_HappyPath_MisconfigAgainstLocalTarget drives the scan tool's
+// real handler end to end (cfg construction, engine.New/Run, the
+// finding/log callbacks) against a local httptest.Server — matching the
+// pattern pkg/webui's own end-to-end launch tests already use to stay free
+// of live external network dependency.
+func TestScanTool_HappyPath_MisconfigAgainstLocalTarget(t *testing.T) {
+	// Without this, a machine that has ever run 'hackerfive templates sync'
+	// (this repo's own dev environment has) would load the full ~9,652-
+	// template synced corpus on top of the bundled dir, turning this test
+	// from a few real requests into thousands — same class of hidden local-
+	// state dependency as isolateFromInstalledReconBinaries fixes for the
+	// recon binaries; see pkg/webui's newTestServer for the same fix applied
+	// there first.
+	isolateFromInstalledReconBinaries(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	session, err := connect(ctx, New())
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":  []string{srv.URL},
+			"scope":    []string{"127.0.0.1"},
+			"detector": "misconfig",
+		},
+	})
+	require.NoError(t, err)
+	if res.IsError {
+		t.Fatalf("expected a successful scan run against a local target, got error result: %s", textContent(t, res))
+	}
 }
 
 // textContent extracts the first TextContent block's text from a
