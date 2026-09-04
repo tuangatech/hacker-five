@@ -887,3 +887,123 @@ func TestResolve_PortLeafAndUnrelatedUnresolvedTechFact_BothSurvive(t *testing.T
 	// genuinely different findings and must both survive as distinct leaves.
 	assert.Len(t, hostNode.Children, 2)
 }
+
+// --- LT-3 (docs/follow-up.md): APISpec now dispatches like a TechFact ---
+
+func TestResolve_OpenAPISpec_ProducesMisconfigAndIdorLeaves(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:  "http://example.test",
+		APISpec: &recon.APISpecFact{Kind: "openapi", URL: "http://example.test/swagger.json"},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	misconfig := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, misconfig, "a real swagger.json hit must dispatch misconfig, same as the 'swagger' techRule")
+	assert.Equal(t, agenttask.StatusPending, misconfig.Status)
+	assert.Equal(t, agenttask.ConfidenceHigh, misconfig.Confidence)
+	assert.Contains(t, misconfig.Rationale, "swagger.json")
+
+	idor := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "idor" })
+	require.NotNil(t, idor, "the 'swagger' techRule also maps to idor")
+}
+
+func TestResolve_GraphQLSpec_ReusesGraphQLTechRule(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:  "http://example.test",
+		APISpec: &recon.APISpecFact{Kind: "graphql-sdl", URL: "http://example.test/graphql"},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	misconfig := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, misconfig, "graphql-sdl must reuse the 'graphql' techRule's capabilities")
+}
+
+func TestResolve_APISpec_UnrecognizedKind_NoLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:  "http://example.test",
+		APISpec: &recon.APISpecFact{Kind: "something-new", URL: "http://example.test/spec"},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	assert.Nil(t, tree.Find("host:example.test"), "an unrecognized Kind must produce no leaf and no empty host node (P0-5), not a guess")
+}
+
+// TestResolve_APISpec_HostOnlyKnownViaSpec_StillGetsHostNode guards the
+// defensive addHost call: an APISpecFact whose host never appears in
+// TechStack/Endpoints/Hosts must still surface a host node, not be silently
+// dropped from the tree.
+func TestResolve_APISpec_HostOnlyKnownViaSpec_StillGetsHostNode(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:  "http://example.test",
+		APISpec: &recon.APISpecFact{Kind: "openapi", URL: "http://spec-only.example.test/swagger.json"},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	assert.NotNil(t, tree.Find("host:spec-only.example.test"))
+}
+
+// TestResolve_APISpec_DoesNotLeakOntoUnrelatedHost guards addAPISpec's
+// "first one wins, global, not per-host" storage (pkg/recon/aggregate.go):
+// a multi-host recon run must dispatch the spec-derived leaves only to the
+// host its URL actually names, never to every host in the tree.
+func TestResolve_APISpec_DoesNotLeakOntoUnrelatedHost(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "TotallyUnknownStack", Host: "other.example.test", Source: "httpx-tech-detect", Confidence: "low"},
+		},
+		APISpec: &recon.APISpecFact{Kind: "openapi", URL: "http://example.test/swagger.json"},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	otherHost := tree.Find("host:other.example.test")
+	require.NotNil(t, otherHost)
+	for _, leaf := range otherHost.Children {
+		assert.NotEqual(t, "misconfig", leaf.Detector, "the api spec belongs to example.test, not other.example.test")
+	}
+}
+
+// TestResolve_APISpec_DedupsAgainstExistingTechFactLeaf guards P0-4 for this
+// new path: a host that already has a real "Swagger UI" TechFact (fingerprint
+// matched the UI page) plus a swagger.json APISpecFact must still produce
+// exactly one misconfig leaf, not two.
+func TestResolve_APISpec_DedupsAgainstExistingTechFactLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "Swagger UI", Host: "example.test", Source: "fingerprint-body", Confidence: "high"}},
+		APISpec:   &recon.APISpecFact{Kind: "openapi", URL: "http://example.test/swagger.json"},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	hostNode := tree.Find("host:example.test")
+	require.NotNil(t, hostNode)
+	misconfigLeaves := 0
+	for _, leaf := range hostNode.Children {
+		if leaf.Detector == "misconfig" {
+			misconfigLeaves++
+		}
+	}
+	assert.Equal(t, 1, misconfigLeaves, "a TechFact-driven and an APISpec-driven misconfig leaf on the same host must dedup to one")
+}
+
+func TestResolve_APISpec_MatchesTemplateTags(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "swagger-api-docs", Tags: []string{"swagger", "exposure"}},
+		{ID: "unrelated-template", Tags: []string{"wordpress"}},
+	}
+	result := &recon.ReconResult{
+		Target:  "http://example.test",
+		APISpec: &recon.APISpecFact{Kind: "openapi", URL: "http://example.test/swagger.json"},
+	}
+
+	tree, _ := Resolve(result, index)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "swagger-api-docs" })
+	require.NotNil(t, leaf, "an openapi spec should also rank synced templates tagged 'swagger', same as a real swagger TechFact would")
+}

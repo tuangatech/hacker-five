@@ -73,6 +73,18 @@ var techRules = []techRule{
 	{Match: "woocommerce", Capabilities: []string{"misconfig"}},
 }
 
+// apiSpecTechName maps an APISpecFact.Kind to the techRules tech name whose
+// capabilities/template-tag matching resolveAPISpecFact reuses (LT-3,
+// docs/follow-up.md): an APISpecFact is a stronger-than-usual signal for
+// exactly the same tech a fingerprint would otherwise guess at from a UI
+// page (e.g. "Swagger UI" via fingerprint's swagger-ui body match), so it
+// earns identical dispatch — not a second, bespoke rule to keep in sync by
+// hand. An unlisted Kind produces no leaves, not a guess.
+var apiSpecTechName = map[string]string{
+	"openapi":     "swagger",
+	"graphql-sdl": "graphql",
+}
+
 // businessLogicPathKeywords are endpoint-path substrings (case-insensitive)
 // suggesting a coupon/cart/checkout flow exists — enough signal to surface
 // a businesslogic leaf worth a human's --allow-writes decision, not enough
@@ -650,6 +662,14 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 		addHost(hf.Host)
 		portsByHost[hf.Host] = hf.Ports
 	}
+	// LT-3 (docs/follow-up.md): an APISpecFact's host is usually already
+	// covered by the Endpoints loop above (probeCommonPaths always records
+	// both), but that's a coincidence of today's caller, not a guarantee —
+	// add it explicitly so a host known only via its API spec still gets a
+	// host node.
+	if result.APISpec != nil {
+		addHost(endpointHostname(result.APISpec.URL))
+	}
 	sort.Strings(hosts) // deterministic tree shape for the same input
 
 	templateByID := make(map[string]templatesync.Entry, len(templateIndex))
@@ -674,6 +694,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 				addLeaf(leaf, leafDedupKey(fact, leaf))
 			}
 		}
+		resolveAPISpecFact(host, result.APISpec, templateIndex, &leafIdx, addLeaf)
 		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
 			addLeaf(leaf, pendingDedupKey(leaf.Target, leaf.Detector))
 		}
@@ -925,6 +946,54 @@ func resolvePortFacts(host string, ports []recon.PortFact, leafIdx *int, addLeaf
 		*leafIdx++
 		leafContexts[leaf.ID] = LeafContext{Port: &p}
 		addLeaf(leaf, unresolvedDedupKey(host, fmt.Sprintf("port-%d", p.Port)))
+	}
+}
+
+// resolveAPISpecFact dispatches result.APISpec — recorded at most once per
+// Resolve call, never per-host (addAPISpec's "first one wins": see its own
+// doc comment and pkg/recon/aggregate.go) — to the one host its URL actually
+// names, so it doesn't leak onto every other host in a multi-host recon run.
+// Fixes LT-3 (docs/follow-up.md): a real swagger.json/openapi.json hit is
+// recorded as an APISpecFact, not a TechFact (nothing fingerprints raw spec
+// JSON as "Swagger UI" the way it does an HTML page containing "swagger-ui"),
+// so matchTechRules — which only ever read TechStack — never dispatched
+// idor/misconfig for it at all, even though the "swagger" techRule exists
+// specifically for this signal. Leaves route through addLeaf so they dedup
+// (pendingDedupKey) against any leaf a same-capability TechFact already
+// produced on this host.
+func resolveAPISpecFact(host string, spec *recon.APISpecFact, templateIndex []templatesync.Entry, leafIdx *int, addLeaf func(*agenttask.PlanNode, string)) {
+	if spec == nil || endpointHostname(spec.URL) != host {
+		return
+	}
+	techName, ok := apiSpecTechName[spec.Kind]
+	if !ok {
+		return // unrecognized Kind — no rule to reuse, not a guess
+	}
+	rationale := fmt.Sprintf("api spec (%s) publicly reachable at %s", spec.Kind, spec.URL)
+
+	for _, capName := range matchTechRules(techName) {
+		leaf := &agenttask.PlanNode{
+			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+			Target:     host,
+			Detector:   capName,
+			Rationale:  rationale,
+			Status:     agenttask.StatusPending,
+			Confidence: agenttask.ConfidenceHigh,
+		}
+		*leafIdx++
+		addLeaf(leaf, pendingDedupKey(host, capName))
+	}
+	for _, entry := range matchTemplateTags(techName, templateIndex) {
+		leaf := &agenttask.PlanNode{
+			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+			Target:     host,
+			Detector:   entry.ID,
+			Rationale:  rationale,
+			Status:     agenttask.StatusPending,
+			Confidence: agenttask.ConfidenceHigh,
+		}
+		*leafIdx++
+		addLeaf(leaf, pendingDedupKey(host, entry.ID))
 	}
 }
 
