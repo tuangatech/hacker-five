@@ -577,6 +577,60 @@ func TestLaunchTargetScheme(t *testing.T) {
 	assert.Equal(t, "https://127.0.0.1:8888", launchTargetScheme("127.0.0.1:8888"))
 }
 
+// TestScanStatus_NewScanLink_ShownOnlyOnceTerminal guards the "reload same
+// target" affordance (2026-09-03): the link must not appear on a mid-scan
+// page (nothing to relaunch to yet) and must appear once the job reaches a
+// terminal state, carrying the target forward via a plain query param so it
+// keeps working even against a server that no longer has this job in its
+// in-memory store (see launchForm's own doc comment on why).
+func TestScanStatus_NewScanLink_ShownOnlyOnceTerminal(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job.SetRunning()
+	h.store.Add(job)
+
+	resp, err := http.Get(ts.URL + "/scans/job1")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.NotContains(t, string(body), "New scan", "a running job has nothing to relaunch to yet")
+
+	job.MarkDone(nil)
+
+	resp, err = http.Get(ts.URL + "/scans/job1")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+	assert.Contains(t, html, `href="/?target=https%3A%2F%2Fexample.com"`, "the New scan link must carry the job's own target forward")
+	assert.Contains(t, html, "New scan")
+}
+
+// TestLaunchForm_PrefillsTargetFromQueryParam guards the other half of the
+// "reload same target" affordance: GET /?target=... (what the New scan link
+// above sends the browser to) must prefill the form's target field without
+// auto-checking "authorized" — re-launching a scan still needs an explicit,
+// deliberate re-confirmation each time (CLAUDE.md's human-in-the-loop
+// posture), never a one-click, no-confirmation resubmit.
+func TestLaunchForm_PrefillsTargetFromQueryParam(t *testing.T) {
+	ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/?target=" + url.QueryEscape("https://reused-target.example"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+
+	assert.Contains(t, html, `value="https://reused-target.example"`)
+	assert.NotContains(t, html, `name="authorized" checked`, "re-launching must still require explicit re-confirmation")
+}
+
 // TestSnapshotData_FindingsRenderNewestFirst guards the "Scan Activity"
 // newest-on-top redesign (doc14 Step 6): the initial render must already
 // match the order live SSE appends (hx-swap="afterbegin") produce.

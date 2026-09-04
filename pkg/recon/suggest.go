@@ -204,13 +204,31 @@ var staticAssetExtensions = map[string]bool{
 	".woff": true, ".woff2": true, ".ttf": true, ".eot": true, ".otf": true,
 }
 
+// IsStaticAssetPath reports whether p (a URL path) ends in a front-end
+// build-artifact extension — a bundler/CDN output file, never a meaningful
+// application route or API endpoint regardless of what status code it
+// returned. Exported for pkg/webui's Endpoints table (recon_view.go),
+// which uses this narrower, extension-only check to declutter the display
+// without pkg/webui's own suite of unrelated failure modes; kept separate
+// from looksLikeStaticAssetOrJunk's own "too degenerate to be a real
+// candidate" half below, which would wrongly also flag a bare "/" (the
+// homepage root — real signal, not noise) as junk. Uses the "path"
+// package, not "path/filepath" — these are URL paths (forward-slash), not
+// OS paths.
+func IsStaticAssetPath(p string) bool {
+	return staticAssetExtensions[strings.ToLower(path.Ext(p))]
+}
+
 // looksLikeStaticAssetOrJunk reports whether p is a front-end build
 // artifact (by extension) or too degenerate to be a real candidate (no
 // alphanumeric content at all — e.g. the lone "/\" a crawler occasionally
-// surfaces from a malformed page reference). Uses the "path" package, not
-// "path/filepath" — these are URL paths (forward-slash), not OS paths.
+// surfaces from a malformed page reference). Only used by
+// SuggestAuthBypassPathsFromRecon, whose narrower "protected-path
+// candidate" semantics can afford to also drop a bare "/" — unlike
+// IsStaticAssetPath above, which the Endpoints table display uses and
+// which must keep it.
 func looksLikeStaticAssetOrJunk(p string) bool {
-	if staticAssetExtensions[strings.ToLower(path.Ext(p))] {
+	if IsStaticAssetPath(p) {
 		return true
 	}
 	return !hasAlphanumeric(p)

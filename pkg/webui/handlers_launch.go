@@ -41,13 +41,26 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// A "New scan" link from a finished job's status badge
+	// (fragment_progress.html) carries its target forward as ?target=... —
+	// prefilling the form with it (not auto-submitting: authorized still
+	// defaults unchecked below) is the only thing that link does, so it
+	// keeps working even against a freshly restarted server that no longer
+	// has the original Job in its in-memory store (docs/12-implementation-
+	// plan-ph3.md's "Async job model": the store doesn't survive a
+	// restart, but the target string was already baked into the rendered
+	// HTML page, not fetched from the store again by this link).
+	target := "https://www.aalberts.com"
+	// aalberts.com is a vetted real target (docs/22-authorized-targets.md)
+	// — automated scanning explicitly confirmed with their security team
+	// (2026-09-02), capped at 5 runs/day, a limit HackerFive can't
+	// enforce itself; not a placeholder/documentation domain.
+	if q := strings.TrimSpace(r.URL.Query().Get("target")); q != "" {
+		target = q
+	}
 	data := LaunchFormData{
 		CSRFToken:    token,
-		// aalberts.com is a vetted real target (docs/22-authorized-targets.md)
-		// — automated scanning explicitly confirmed with their security team
-		// (2026-09-02), capped at 5 runs/day, a limit HackerFive can't
-		// enforce itself; not a placeholder/documentation domain.
-		Target:       "https://www.aalberts.com",
+		Target:       target,
 		RunMisconfig: true,
 		// idor/authbypass/ssrf default on too — "run whatever recon can
 		// support without any input" (user decision, 2026-09-01): a
@@ -99,11 +112,12 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := newJob(id, launchTargetScheme(form.Target),
+	target := launchTargetScheme(form.Target)
+	job := newJob(id, target,
 		func(f detectors.Finding) template.HTML { return renderFragment(h.tmpl, "fragment_finding_row", f) },
 		func(entry LogEntry) template.HTML { return renderFragment(h.tmpl, "fragment_log_line", entry) },
 		func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML {
-			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves, DetectorSteps: detectorSteps})
+			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves, DetectorSteps: detectorSteps, Target: target})
 		},
 		func(result *recon.ReconResult) template.HTML {
 			return renderFragment(h.tmpl, "fragment_recon_results", newReconView(result))

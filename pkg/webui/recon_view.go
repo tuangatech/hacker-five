@@ -18,6 +18,19 @@ import (
 type ReconResultView struct {
 	*recon.ReconResult
 	DisplayEndpoints []EndpointRow
+
+	// AssetEndpointCount is how many of ReconResult.Endpoints were static
+	// build/CDN assets (recon.IsStaticAssetPath) — omitted from
+	// DisplayEndpoints, not the underlying ReconResult, so the JSON export
+	// and every detector/suggester that reads recon.ReconResult directly
+	// still sees every one of them; only this table's rendering is
+	// decluttered. Found live against a real target, 2026-09-04: a Next.js
+	// app's hashed JS/CSS bundle chunks made up 50 of 114 Endpoints rows
+	// (44%), each indistinguishable from a real application route in the
+	// table — a human operator had no way to tell "this recon found a
+	// route worth investigating" from "this is a bundler output file" for
+	// any given row.
+	AssetEndpointCount int
 }
 
 // EndpointRow is one collapsed row: the first-seen EndpointFact matching
@@ -52,7 +65,8 @@ func newReconView(r *recon.ReconResult) *ReconResultView {
 	if r == nil {
 		return nil
 	}
-	return &ReconResultView{ReconResult: r, DisplayEndpoints: collapseEndpoints(r.Endpoints)}
+	rows, assetCount := collapseEndpoints(r.Endpoints)
+	return &ReconResultView{ReconResult: r, DisplayEndpoints: rows, AssetEndpointCount: assetCount}
 }
 
 // collapseEndpoints groups facts by scheme+host+path+method, ignoring the
@@ -61,22 +75,32 @@ func newReconView(r *recon.ReconResult) *ReconResultView {
 // for IDOR-candidate generation, applied here to the raw display table too.
 // A row's displayed URL drops its query string once a second variant
 // arrives, so the surviving representative doesn't imply that one
-// particular variant was special.
-func collapseEndpoints(facts []recon.EndpointFact) []EndpointRow {
+// particular variant was special. A fact whose path is a static
+// build/CDN-asset extension (recon.IsStaticAssetPath) is counted but never
+// turned into a row — see ReconResultView.AssetEndpointCount's own doc
+// comment for why.
+func collapseEndpoints(facts []recon.EndpointFact) (rows []EndpointRow, assetCount int) {
 	type key struct{ scheme, host, path, method string }
 
 	order := make([]key, 0, len(facts))
-	rows := make(map[key]*EndpointRow, len(facts))
+	byKey := make(map[key]*EndpointRow, len(facts))
 
 	for _, ep := range facts {
 		k := key{method: ep.Method}
+		classifyPath := ep.URL
 		if u, err := url.Parse(ep.URL); err == nil && u.Host != "" {
 			k.scheme, k.host, k.path = u.Scheme, u.Host, u.Path
+			classifyPath = u.Path
 		} else {
 			k.path = ep.URL // fallback: dedupe by the raw string verbatim
 		}
 
-		if row, ok := rows[k]; ok {
+		if recon.IsStaticAssetPath(classifyPath) {
+			assetCount++
+			continue
+		}
+
+		if row, ok := byKey[k]; ok {
 			row.VariantCount++
 			if row.VariantCount == 2 {
 				row.URL = stripQuery(row.URL)
@@ -84,17 +108,17 @@ func collapseEndpoints(facts []recon.EndpointFact) []EndpointRow {
 			continue
 		}
 		row := &EndpointRow{EndpointFact: ep, VariantCount: 1}
-		rows[k] = row
+		byKey[k] = row
 		order = append(order, k)
 	}
 
-	result := make([]EndpointRow, 0, len(order))
+	rows = make([]EndpointRow, 0, len(order))
 	for _, k := range order {
-		row := *rows[k]
+		row := *byKey[k]
 		row.DisplayURL = truncateForDisplay(row.URL)
-		result = append(result, row)
+		rows = append(rows, row)
 	}
-	return result
+	return rows, assetCount
 }
 
 func stripQuery(rawURL string) string {

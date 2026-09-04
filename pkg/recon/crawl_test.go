@@ -128,3 +128,42 @@ func TestRunKatana_401Reproduced_EndpointKeptAtHighConfidence(t *testing.T) {
 	}
 	assert.True(t, found, "expected the reproduced 401 to be kept")
 }
+
+// TestRunKatana_EscapedJSArtifacts_Dropped guards the fix for a real false-
+// signal class found live against useruby.care, 2026-09-04: katana's -jc
+// extractor, parsing an inline <script> tag's JSON-serialized route data
+// (a Next.js app escapes its own paths as "\/en\/..." there), mis-parsed
+// those escapes into endpoints like "/en%5C" and "/favicon.png%5C%5C" — a
+// literal backslash is never valid in a real URL path, so these are always
+// parsing artifacts, not genuine discovered endpoints, and must never reach
+// the aggregated result (the Endpoints table, the JSON export, or any
+// suggester that reads it) regardless of what status code katana reported
+// for them.
+func TestRunKatana_EscapedJSArtifacts_Dropped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	responses := map[string]string{
+		"katana": `{"request":{"endpoint":"` + srv.URL + `/en%5C","method":"GET","attribute":"text"},"response":{"status_code":404}}
+{"request":{"endpoint":"` + srv.URL + `/about","method":"GET","attribute":"href"},"response":{"status_code":200}}`,
+	}
+	_, fake := recordingRun(t, responses)
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	for _, ep := range result.Endpoints {
+		assert.NotContains(t, ep.URL, "%5C", "an escaped-backslash artifact must never reach the aggregated result")
+		assert.NotContains(t, ep.URL, `\`, "a raw backslash artifact must never reach the aggregated result")
+	}
+	found := false
+	for _, ep := range result.Endpoints {
+		if ep.Source == "katana-crawl" && ep.URL == srv.URL+"/about" {
+			found = true
+		}
+	}
+	assert.True(t, found, "a genuine katana-crawl endpoint alongside the artifact must still be kept")
+}

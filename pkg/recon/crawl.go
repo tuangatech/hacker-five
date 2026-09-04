@@ -110,6 +110,9 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 			}
 			continue // not a confirmed endpoint — katana didn't actually fetch it
 		}
+		if looksLikeEscapedJSArtifact(rec.Request.Endpoint) {
+			continue // see looksLikeEscapedJSArtifact's own doc comment
+		}
 		method := rec.Request.Method
 		if method == "" {
 			method = http.MethodGet
@@ -132,6 +135,27 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	}
 
 	r.verifyAuthCandidates(waveCtx, agg, authCandidates)
+}
+
+// looksLikeEscapedJSArtifact reports whether endpoint carries a literal
+// backslash or its percent-encoded form ("%5C"/"%5c") — never valid in a
+// real URL path, so this is always a JS-parsing artifact, not a genuine
+// endpoint. Found live against a real target, 2026-09-04: katana's -jc
+// extractor, run against a Next.js app whose pages embed a JSON-serialized
+// route tree inside an inline <script> tag (escaped as "\/en\/..." in the
+// raw HTML source), mis-parsed those escapes into endpoints like
+// "/en%5C", "/favicon.png%5C%5C", "/r-wordmark.svg%5C%5C%5C%5C" — 14 of
+// this one target's 128 raw katana observations (~11%), all correctly
+// 404s (nothing real was ever at those addresses), each one always
+// carrying source attribute "text" (inline script content, not a real
+// href/src) rather than the "href"/"src"/"link" attributes a genuine
+// discovered link has. Dropped here, at ingestion, rather than filtered
+// only from display — this is wrong data outright, not just low-value
+// noise (contrast IsStaticAssetPath in suggest.go), so no downstream
+// consumer (the Endpoints table, JSON export, authbypass/idor/ssrf
+// suggesters) should ever see it.
+func looksLikeEscapedJSArtifact(endpoint string) bool {
+	return strings.ContainsRune(endpoint, '\\') || strings.Contains(strings.ToUpper(endpoint), "%5C")
 }
 
 // verifyAuthCandidates re-issues one direct GET per katana-observed

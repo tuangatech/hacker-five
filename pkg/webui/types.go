@@ -64,6 +64,7 @@ type ProgressData struct {
 	Err           error
 	Waves         []WaveStatus
 	DetectorSteps []WaveStatus
+	Target        string // this job's target — only used to build the "New scan" link once Status is terminal
 }
 
 // CatchupData is fragment_catchup.html's input — an out-of-band re-sync of
