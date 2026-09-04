@@ -117,6 +117,38 @@ var endpointSignals = []endpointSignal{
 	{pathSubstr: "wp-json/wp/v2/users", templateIDs: []string{"wordpress-user-enum"}},
 }
 
+// interestingPorts is a small, hand-authored table of non-HTTP service
+// ports worth surfacing when naabu finds one open (P1-2, docs/follow-up.md)
+// — real recon signal that currently goes entirely unused downstream of a
+// single low-confidence fingerprint-port TechFact. Deliberately produces
+// only a visible StatusUnresolved leaf, never a dispatched one: no built-in
+// detector or loadable template can check any of these today —
+// pkg/template/nuclei/loader.go's disallowedBlocks hard-rejects any
+// template with a top-level tcp:/network: block at load time, so the
+// entire class of templates that could test "anonymous FTP" or "unauth
+// Redis" is unloadable in this codebase, not just currently unmatched. A
+// real TCP-capable detector is tracked separately (follow-up.md's
+// "Detection Coverage — TCP" row) — this is visibility only, closing the
+// gap for an MCP client, whose planOutput carries no raw ReconResult and
+// so has no other way to see an open port at all (the Web UI's own Hosts
+// table already shows this for a human operator).
+//
+// Known, accepted cost: an unresolved leaf reaches
+// llmfallback.ResolveTreeLeaves like any other, which fires a real
+// (frontier-tier, if no local tier is configured) LLM call per leaf even
+// though a port leaf can never resolve into anything real — accepted
+// deliberately rather than adding a new PlanNodeStatus to exclude it, per
+// the explicit 2026-09-04 scoping call (docs/follow-up.md).
+var interestingPorts = map[int]string{
+	21:    "ftp",
+	23:    "telnet",
+	3306:  "mysql",
+	5432:  "postgresql",
+	6379:  "redis",
+	9200:  "elasticsearch",
+	27017: "mongodb",
+}
+
 // nonActionableTech is a small denylist of TechFact names that should
 // produce no PlanTree leaf at all — not even a visible unresolved one.
 // Each entry is either a transport/protocol fact ("HTTP/2", "HTTP/3"), a
@@ -533,6 +565,15 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *age
 	for _, ep := range result.Endpoints {
 		addHost(endpointHostname(ep.URL))
 	}
+	// Same reasoning for Hosts[].Ports (P1-2): a naabu-only host (a raw TCP
+	// service with no HTTP surface at all, so httpx/fingerprint never
+	// produced a TechFact and katana never crawled it) would otherwise be
+	// unreachable too.
+	portsByHost := make(map[string][]recon.PortFact, len(result.Hosts))
+	for _, hf := range result.Hosts {
+		addHost(hf.Host)
+		portsByHost[hf.Host] = hf.Ports
+	}
 	sort.Strings(hosts) // deterministic tree shape for the same input
 
 	templateByID := make(map[string]templatesync.Entry, len(templateIndex))
@@ -560,6 +601,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *age
 		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
 			addLeaf(leaf, pendingDedupKey(leaf.Target, leaf.Detector))
 		}
+		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
 		}
@@ -583,7 +625,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) *age
 // (merging those across duplicates is a deliberate later polish, not P0).
 func leafDedupKey(fact recon.TechFact, leaf *agenttask.PlanNode) string {
 	if leaf.Status == agenttask.StatusUnresolved {
-		return "unresolved\x00" + leaf.Target + "\x00" + NormalizeTechName(fact.Name)
+		return unresolvedDedupKey(leaf.Target, fact.Name)
 	}
 	return pendingDedupKey(leaf.Target, leaf.Detector)
 }
@@ -593,6 +635,13 @@ func leafDedupKey(fact recon.TechFact, leaf *agenttask.PlanNode) string {
 // dedup against the same per-host `seen` set Resolve already maintains.
 func pendingDedupKey(target, detector string) string {
 	return "pending\x00" + target + "\x00" + detector
+}
+
+// unresolvedDedupKey is leafDedupKey's unresolved-leaf half, factored out
+// so resolvePortFacts' leaves — which carry no originating TechFact, just a
+// synthetic "port:<N>" name — can dedup the same way.
+func unresolvedDedupKey(target, techName string) string {
+	return "unresolved\x00" + target + "\x00" + NormalizeTechName(techName)
 }
 
 func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, leafIdx *int) []*agenttask.PlanNode {
@@ -762,6 +811,41 @@ func endpointsForHost(host string, endpoints []recon.EndpointFact) []recon.Endpo
 		}
 	}
 	return matched
+}
+
+// resolvePortFacts is P1-2's port-driven pass (docs/follow-up.md): one
+// StatusUnresolved leaf per open port on host that interestingPorts
+// recognizes — visibility only, see that map's own doc comment for why
+// this deliberately never dispatches. Takes addLeaf directly (rather than
+// returning a slice, like resolveTechFact/resolveEndpointFacts do) because
+// its dedup key needs the specific port number, which isn't reconstructable
+// from the returned PlanNode alone (Detector stays "" like any other
+// unresolved leaf) — this way the key is computed right where p.Port is in
+// scope, using a "port-<N>" synthetic name (a dash, not a colon —
+// unresolvedDedupKey normalizes via NormalizeTechName, which strips
+// everything from the first ':' onward, so "port:21" and "port:3306" would
+// both normalize to the same "port" key and silently dedup two genuinely
+// different ports down to one leaf; caught live against the real
+// andertone.com data, which has both 21 and 3306 open on the same host).
+func resolvePortFacts(host string, ports []recon.PortFact, leafIdx *int, addLeaf func(*agenttask.PlanNode, string)) {
+	for _, p := range ports {
+		service, known := interestingPorts[p.Port]
+		if !known {
+			continue
+		}
+		if p.Service != "" {
+			service = p.Service // naabu/httpx's own service-detection name, when present, is more specific than our static table
+		}
+		leaf := &agenttask.PlanNode{
+			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+			Target:     host,
+			Rationale:  fmt.Sprintf("port %d/%s (%s) open (source: %s) — no automated check exists yet for this protocol; manually verify", p.Port, p.Protocol, service, p.Source),
+			Status:     agenttask.StatusUnresolved,
+			Confidence: agenttask.ConfidenceMedium,
+		}
+		*leafIdx++
+		addLeaf(leaf, unresolvedDedupKey(host, fmt.Sprintf("port-%d", p.Port)))
+	}
 }
 
 // maxCorrelatedEndpoints caps how many real observed endpoints get folded

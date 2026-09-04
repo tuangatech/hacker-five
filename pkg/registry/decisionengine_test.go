@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -638,4 +639,105 @@ func TestResolve_WooCommerceTechFact_ProducesMisconfigLeaf(t *testing.T) {
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
 	require.NotNil(t, leaf, "P1-5: a WooCommerce tech fact must dispatch misconfig, same as the existing wordpress techRule")
+}
+
+// --- P1-2: port-driven visibility leaves ---
+
+func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 3306, Protocol: "tcp", Source: "naabu"}}},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	hostNode := tree.Find("host:staging.example.test")
+	require.NotNil(t, hostNode, "a naabu-only host (no TechFact/Endpoint) must still produce a host node")
+	require.Len(t, hostNode.Children, 1)
+	leaf := hostNode.Children[0]
+	assert.Equal(t, agenttask.StatusUnresolved, leaf.Status)
+	assert.Empty(t, leaf.Detector, "a port-visibility leaf must never dispatch — no loadable check exists for it")
+	assert.Contains(t, leaf.Rationale, "3306")
+	assert.Contains(t, leaf.Rationale, "mysql")
+}
+
+func TestResolve_UninterestingPortOpen_NoLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "example.test", Ports: []recon.PortFact{{Port: 80, Protocol: "tcp", Source: "naabu"}}},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	assert.Nil(t, tree.Find("host:example.test"), "port 80 isn't in interestingPorts — must produce no leaf, not noise for every open port")
+}
+
+func TestResolve_PortService_PrefersObservedOverStaticTable(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "example.test", Ports: []recon.PortFact{{Port: 6379, Protocol: "tcp", Service: "redis-server-6.2", Source: "naabu"}}},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Status == agenttask.StatusUnresolved })
+	require.NotNil(t, leaf)
+	assert.Contains(t, leaf.Rationale, "redis-server-6.2", "naabu's own service string should be used when present, not just the static table's generic name")
+}
+
+// TestResolve_MultipleInterestingPorts_AllProduceLeaves is a regression
+// guard for a real bug caught against the saved andertone.com recon data
+// (staging.andertone.com has both 21 and 3306 open): unresolvedDedupKey
+// normalizes via NormalizeTechName, which strips everything after the
+// first ':' — an earlier "port:<N>" synthetic name collapsed every port on
+// one host down to whichever came first. Must use a separator
+// NormalizeTechName doesn't split on.
+func TestResolve_MultipleInterestingPorts_AllProduceLeaves(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "staging.example.test", Ports: []recon.PortFact{
+				{Port: 21, Protocol: "tcp", Source: "naabu"},
+				{Port: 3306, Protocol: "tcp", Source: "naabu"},
+				{Port: 80, Protocol: "tcp", Source: "naabu"}, // not in interestingPorts — must not produce a leaf
+			}},
+		},
+	}
+
+	tree := Resolve(result, nil)
+
+	hostNode := tree.Find("host:staging.example.test")
+	require.NotNil(t, hostNode)
+	require.Len(t, hostNode.Children, 2, "both port 21 and port 3306 must produce their own leaf")
+	var rationales []string
+	for _, l := range hostNode.Children {
+		rationales = append(rationales, l.Rationale)
+	}
+	assert.Contains(t, strings.Join(rationales, "|"), "21")
+	assert.Contains(t, strings.Join(rationales, "|"), "3306")
+}
+
+func TestResolve_PortLeafAndUnrelatedUnresolvedTechFact_BothSurvive(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "example.test", Ports: []recon.PortFact{{Port: 21, Protocol: "tcp", Source: "naabu"}}},
+		},
+		TechStack: []recon.TechFact{{Name: "SomeUnknownStack", Host: "example.test", Source: "httpx-tech-detect", Confidence: "low"}},
+	}
+
+	tree := Resolve(result, nil)
+
+	hostNode := tree.Find("host:example.test")
+	require.NotNil(t, hostNode)
+	// The port leaf's synthetic dedup name ("port:21") must never collide
+	// with a real unmatched TechFact's own unresolvedDedupKey — both are
+	// genuinely different findings and must both survive as distinct leaves.
+	assert.Len(t, hostNode.Children, 2)
 }
