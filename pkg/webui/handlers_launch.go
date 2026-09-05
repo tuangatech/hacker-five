@@ -191,10 +191,10 @@ func (h *handlers) rerenderLaunchWithErrors(w http.ResponseWriter, r *http.Reque
 // Targets/Detector/TemplatePaths-assignment baked in for the native
 // checked-tab flow); execCfg carries only the fields every leaf dispatch
 // needs regardless of which detector/template it ends up being (Scope,
-// credentials, rate/concurrency, the full template corpus — never the
-// once-per-submission TemplatePaths-assignment trick cfgs' own baseCfg
-// closure uses, since a template-ID leaf genuinely needs the corpus loaded
-// to find its one match, not a shared-across-tabs optimization).
+// credentials, rate/concurrency, the full template corpus). RunPlan does its
+// own once-per-host corpus assignment across leaves (doc15 Step 6c) —
+// keeping the full corpus on execCfg here, not the cfgs-closure trick, so a
+// template-ID leaf can still load it to resolve its one id: match.
 func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, scanner.Config, []string) {
 	var errs []string
 

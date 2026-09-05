@@ -2,6 +2,13 @@ package planexec
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +16,44 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
+
+// writeOneTemplate drops a single always-matching nuclei template (status
+// matcher) into a fresh dir and returns the dir — the minimal corpus for the
+// doc15 Step 6c once-per-host tests below.
+func writeOneTemplate(t *testing.T, id string, status int) string {
+	t.Helper()
+	dir := t.TempDir()
+	body := fmt.Sprintf(`
+id: %s
+info:
+  name: %s
+  severity: info
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: status
+        status: [%d]
+`, id, id, status)
+	if err := os.WriteFile(filepath.Join(dir, "t.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("writing template: %v", err)
+	}
+	return dir
+}
+
+// countCorpusLoads tallies engine "loaded N nuclei-compatible" log lines by
+// N — the once-per-host corpus signal doc15 Step 6c's tests assert on.
+func countCorpusLoads(logs []string) (withCorpus, withoutCorpus int) {
+	for _, l := range logs {
+		switch {
+		case strings.Contains(l, "loaded 1 nuclei-compatible"):
+			withCorpus++
+		case strings.Contains(l, "loaded 0 nuclei-compatible"):
+			withoutCorpus++
+		}
+	}
+	return withCorpus, withoutCorpus
+}
 
 func testOpts() ExecOptions {
 	return ExecOptions{DetConcurrency: 2, LLMConcurrency: 2}
@@ -197,5 +242,103 @@ func TestRunPlan_EmptyTree_NoPanic(t *testing.T) {
 	findings, logs, skipped, err := RunPlan(context.Background(), tree, baseCfg, nil, testOpts())
 	if findings != nil || logs != nil || skipped != nil || err != nil {
 		t.Fatalf("got (%v, %v, %v, %v), want all zero values for a tree with no Detector on its only leaf", findings, logs, skipped, err)
+	}
+}
+
+// TestRunPlan_CorpusLoadsOncePerHost locks in doc15 Step 6c: the additive
+// template corpus attaches to only the first builtin-capability leaf per host,
+// not once per leaf (docs/follow-up.md LT-18). Three misconfig leaves on one
+// host, a one-template corpus: exactly one leaf loads it, the other two run
+// their detector alone.
+func TestRunPlan_CorpusLoadsOncePerHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := writeOneTemplate(t, "corpus-probe", http.StatusNotFound)
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-a", Target: server.URL, Detector: "misconfig"},
+		{ID: "leaf-b", Target: server.URL, Detector: "misconfig"},
+		{ID: "leaf-c", Target: server.URL, Detector: "misconfig"},
+	}}}
+	baseCfg := scanner.Config{TemplatePaths: []string{dir}, Concurrency: 1, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	var mu sync.Mutex
+	var logs []string
+	opts := testOpts()
+	opts.OnLog = func(_ *agenttask.PlanNode, _, msg string) { mu.Lock(); logs = append(logs, msg); mu.Unlock() }
+
+	if _, _, _, err := RunPlan(context.Background(), tree, baseCfg, nil, opts); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+
+	withCorpus, withoutCorpus := countCorpusLoads(logs)
+	if withCorpus != 1 {
+		t.Fatalf("got %d leaves loading the corpus, want 1 (once per host); logs=%v", withCorpus, logs)
+	}
+	if withoutCorpus != 2 {
+		t.Fatalf("got %d leaves running detector-only, want 2; logs=%v", withoutCorpus, logs)
+	}
+}
+
+// TestRunPlan_CorpusLoadsPerDistinctHost is the counterpart: two builtin
+// leaves on two different hosts each load the corpus once — the dedup key is
+// the host, not the whole plan.
+func TestRunPlan_CorpusLoadsPerDistinctHost(t *testing.T) {
+	s1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	t.Cleanup(s1.Close)
+	s2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	t.Cleanup(s2.Close)
+
+	dir := writeOneTemplate(t, "corpus-probe", http.StatusNotFound)
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "h1", Target: s1.URL, Detector: "misconfig"},
+		{ID: "h2", Target: s2.URL, Detector: "misconfig"},
+	}}}
+	baseCfg := scanner.Config{TemplatePaths: []string{dir}, Concurrency: 2, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	var mu sync.Mutex
+	var logs []string
+	opts := testOpts()
+	opts.OnLog = func(_ *agenttask.PlanNode, _, msg string) { mu.Lock(); logs = append(logs, msg); mu.Unlock() }
+
+	if _, _, _, err := RunPlan(context.Background(), tree, baseCfg, nil, opts); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+
+	if withCorpus, _ := countCorpusLoads(logs); withCorpus != 2 {
+		t.Fatalf("got %d corpus loads across 2 distinct hosts, want 2; logs=%v", withCorpus, logs)
+	}
+}
+
+// TestRunPlan_TemplateIDLeafKeepsCorpus confirms Step 6c's caveat: a
+// specific-template leaf always loads the corpus (it needs a full parse to
+// resolve its id:), even when a builtin leaf on the same host already carries
+// the once-per-host pass — so both load it here.
+func TestRunPlan_TemplateIDLeafKeepsCorpus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := writeOneTemplate(t, "pick-me", http.StatusOK)
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "builtin", Target: server.URL, Detector: "misconfig"},
+		{ID: "by-id", Target: server.URL, Detector: "pick-me"},
+	}}}
+	baseCfg := scanner.Config{TemplatePaths: []string{dir}, Concurrency: 1, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	var mu sync.Mutex
+	var logs []string
+	opts := testOpts()
+	opts.OnLog = func(_ *agenttask.PlanNode, _, msg string) { mu.Lock(); logs = append(logs, msg); mu.Unlock() }
+
+	if _, _, skipped, err := RunPlan(context.Background(), tree, baseCfg, []templatesync.Entry{{ID: "pick-me"}}, opts); err != nil || len(skipped) != 0 {
+		t.Fatalf("RunPlan: err=%v skipped=%v", err, skipped)
+	}
+
+	if withCorpus, _ := countCorpusLoads(logs); withCorpus != 2 {
+		t.Fatalf("got %d corpus loads, want 2 (builtin bearer + template-ID leaf); logs=%v", withCorpus, logs)
 	}
 }

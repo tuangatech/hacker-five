@@ -13,6 +13,7 @@ package planexec
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -84,6 +85,14 @@ type ExecOptions struct {
 // AuthToken, EndpointTemplate, ProtectedPaths, SSRFParams, AllowWrites,
 // ExtraHeaders, TemplatePaths, Concurrency/RateLimit/Timeout — everything
 // except Targets/Detector/TemplateID, which this function fills per leaf).
+//
+// The loaded template corpus (baseCfg.TemplatePaths) runs additively against
+// a target for every leaf, so on a host with several builtin-capability
+// leaves it would otherwise re-parse and re-fire the whole corpus once per
+// leaf — same corpus, same target, pure duplicate load (docs/follow-up.md
+// LT-18). RunPlan attaches TemplatePaths to only the first builtin leaf per
+// host; the rest run their own detector alone. A specific-template leaf
+// always keeps the corpus — it needs a full load to resolve its one id:.
 // Eligible leaves are R8-matched or use_existing_tag-resolved leaves whose
 // Detector is either one of scanner's recognized built-in names, or a real
 // template ID/tag present in templateIndex — dispatched as a templates-only
@@ -129,12 +138,36 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 		}
 	}
 
+	// LT-18 part (c): decide which leaves carry the additive template-corpus
+	// pass. A specific-template leaf always does (it needs a full load to
+	// match its one id:); among builtin-capability leaves, only the first per
+	// host does — the rest run their detector alone. Decided here, before
+	// dispatch, in the same order leaves run (deterministic batch, then
+	// llmAssisted).
+	corpusLeaves := make(map[string]bool)
+	if len(baseCfg.TemplatePaths) > 0 {
+		seenHost := make(map[string]bool)
+		for _, batch := range [][]*agenttask.PlanNode{deterministic, llmAssisted} {
+			for _, leaf := range batch {
+				if !recognizedDetectors[leaf.Detector] {
+					corpusLeaves[leaf.ID] = true
+					continue
+				}
+				if host := targetHostKey(leaf.Target); !seenHost[host] {
+					seenHost[host] = true
+					corpusLeaves[leaf.ID] = true
+				}
+			}
+		}
+	}
+
 	var mu sync.Mutex
 	dispatch := func(pool *workerpool.Pool, batch []*agenttask.PlanNode) {
 		for _, leaf := range batch {
 			leaf := leaf
+			loadCorpus := corpusLeaves[leaf.ID]
 			_ = pool.Submit(func(ctx context.Context) error {
-				res := runLeaf(ctx, leaf, baseCfg, opts)
+				res := runLeaf(ctx, leaf, baseCfg, loadCorpus, opts)
 				mu.Lock()
 				findings = append(findings, res.findings...)
 				logs = append(logs, res.logs...)
@@ -208,9 +241,27 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 	return ""
 }
 
-func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Config, opts ExecOptions) executionResult {
+// targetHostKey reduces a leaf's Target URL to a scheme+host key, so leaves
+// on the same host (identical, or differing only in path) share one
+// once-per-host corpus pass. Falls back to the raw string if it doesn't
+// parse as a URL with a host.
+func targetHostKey(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		return target
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Config, loadCorpus bool, opts ExecOptions) executionResult {
 	cfg := baseCfg
 	cfg.Targets = []string{leaf.Target}
+	if !loadCorpus {
+		// Another leaf on this host already carries the once-per-host additive
+		// template-corpus pass (see RunPlan) — this builtin-detector leaf runs
+		// its own check only.
+		cfg.TemplatePaths = nil
+	}
 
 	validateOpts := scanner.ValidateOptions{
 		SkipEndpointRequired:       true,
@@ -224,11 +275,12 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		// A specific-template leaf, not a built-in detector — RunPlan's
 		// eligibility loop only lets a leaf reach here if leaf.Detector is
 		// either a recognized detector name or a real template ID/tag, so
-		// anything not the former is the latter. TemplatePaths stays
-		// baseCfg's own (the same synced+bundled directories the whole plan
-		// already uses) — narrowing to just this one template happens by
-		// exact id: match at load time (Config.TemplateID), not by pointing
-		// at a different directory.
+		// anything not the former is the latter. Such a leaf always has
+		// loadCorpus true (RunPlan), so TemplatePaths is baseCfg's own
+		// (the same synced+bundled directories the whole plan uses) —
+		// narrowing to just this one template happens by exact id: match at
+		// load time (Config.TemplateID), not by pointing at a different
+		// directory.
 		cfg.Detector = ""
 		cfg.TemplateID = leaf.Detector
 		validateOpts.SkipDetectorRequired = true
