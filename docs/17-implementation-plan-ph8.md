@@ -23,11 +23,11 @@ inspection, never literal command execution on a target.
 
 1. ⬜ **TCP protocol support + network-service exposure detector** (Weeks 57-58)
 2. ⬜ **TLS/SSL passive checks** (Week 59)
-3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript** (Weeks 60-61)
+3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
 4. ⬜ **OOB blind-RCE verification** (Week 62)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
 6. ⬜ **Recon-depth & JS-rendered crawl** (Week 63) — closes LT-8
-7. ⬜ **Remaining template-format gaps needing a dependency or larger design** (Week 64) — `xpath`, `flow:` cross-block `_N`
+7. ⬜ **Remaining template-format gaps needing a dependency or larger design** (Week 64) — `xpath`, `flow:` cross-block `_N`, `flow:` script constructs, `substr`/`date_time`/`generate_jwt` DSL
 8. ⬜ **Eval maturity + release** (Week 64) — `v0.8.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step lands, same convention as doc09-16.)
@@ -57,7 +57,7 @@ engine. **Two steps carry a real "verify before adding" gate:**
   and a `go.mod` diff before committing, exactly as doc02 §8's `interactsh-client`
   lesson requires. If disproportionate, implement only the query subset real templates
   use directly.
-- **Step 5 (`generate_jwt` DSL function, if still open)** — HMAC signing is stdlib;
+- **Step 7 (`generate_jwt` DSL function)** — HMAC signing is stdlib;
   RSA/EC signing may want the JWT library Phase 2 already pinned. Confirm it's the same
   version, no new module, before use.
 
@@ -136,7 +136,7 @@ weak lab endpoint (findings match the fixture expectations).
 
 ---
 
-## Step 3: JS Static Analysis — Secrets & Endpoints in Served JavaScript (Weeks 60-61) — ⬜ not yet implemented
+## Step 3: JS Static Analysis — Secrets, Endpoints & Cloud-Provider Signals (Weeks 60-61) — ⬜ not yet implemented
 
 ### Design
 
@@ -156,14 +156,24 @@ what it fetched.
   line + redacted match. Deliberately conservative pattern set — this feeds the
   <5% false-positive target ([03-development-roadmap.md](03-development-roadmap.md)),
   so a doubtful pattern is left out, not guessed.
+- **Cloud-provider fingerprinting → `aws`/`s3`/`gcp` template tags**
+  ([follow-up.md](follow-up.md) P1-5). The corpus carries `aws`/`s3`/`gcp`-tagged
+  exposure templates the decision engine currently can't dispatch: `pkg/fingerprint`
+  produces nothing more specific than the denylisted "Google Cloud" brand fact. A small
+  signal pass — response headers (`x-amz-*`, `x-goog-*`, `Server: AmazonS3`), known
+  bucket-URL shapes in crawled endpoints and in the JS bodies this step already scans —
+  folds an actionable `aws`/`s3`/`gcp` fact into `TechStack`, so `matchTemplateTags`
+  dispatches the cloud-exposure templates. Shares the AWS-key pattern work above: same
+  bodies, same pass.
 
-Both are pure functions over response bodies recon already has in hand — no new fetch,
+All three are pure functions over data recon already has in hand — no new fetch,
 no new dependency.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/recon/jsstatic.go` (new) — endpoint + secret extraction over Wave 3's fetched JS bodies; endpoints folded into `aggregate.go`'s endpoint set.
 - `pkg/detectors/misconfig/` — a `checkJSSecrets` rule consuming the extraction output (or a thin `jssecret` detector if that keeps the rule set cleaner).
 - `pkg/registry/decisionengine.go` — no new capability needed if secrets route through `misconfig`; endpoints flow through the existing P1-1 path automatically.
+- `pkg/fingerprint/` (or `pkg/recon/jsstatic.go`) — cloud-provider fact extraction from headers / bucket-URL shapes → `aws`/`s3`/`gcp` `TechStack` facts (P1-5).
 - `tests/unit/jsstatic_test.go` — fixture JS bundles with known planted endpoints/secrets and known decoys that must NOT match.
 
 ### Verification
@@ -233,12 +243,15 @@ carries no affected-version constraints.
   (P1-3) and httpx tech-detect already yields some (`WooCommerce:11.1.0`), but not for
   Nginx/Apache/etc. Add a Wave 2/3 `Server:`-header + known-path version parse for the
   handful of high-value server products, feeding the same `:version` suffix shape
-  `matchTemplateTags` already consumes.
+  `matchTemplateTags` already consumes. Also close the **P1-3 leftover**: for a
+  WordPress plugin/theme slug whose crawled URLs carried no `?ver=`, one `readme.txt` /
+  `style.css` GET per unversioned slug (the only new active fetch in this step) parsing
+  `Stable tag:` / `Version:`, so plugin-CVE gating has a real version to work against.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/templatesync/index.go` — `Entry.AffectedRange`; the generator's extraction pass.
 - `pkg/registry/decisionengine.go` — `matchTemplateTags`/`scoreTemplateForTech` gain the range gate; `techVersionSuffix` reused.
-- `pkg/recon/` — server-product version parse (`Server:` header + a small known-path table), folded into `TechStack` as a `:version` suffix.
+- `pkg/recon/` — server-product version parse (`Server:` header + a small known-path table), and `wpplugins.go`'s `readme.txt`/`style.css` probe for unversioned plugin/theme slugs (P1-3 leftover), folded into `TechStack` as a `:version` suffix.
 - `tests/unit/` — index-extraction fixtures; `decisionengine_test.go` cases proving an out-of-range CVE is dropped and an in-range one kept.
 
 ### Verification
@@ -303,16 +316,31 @@ are already done across Phase 6 addenda and the 2026-09-05 Tier-1 batch):
   shipped. Needs `runFlow` to thread a running global counter (or full per-request
   history) across its `http(N)` calls. Small in template count, genuinely distinct in
   design — hence deferred to here rather than folded into the per-block work.
+- **`substr()` / `date_time()` / `generate_jwt` DSL functions**
+  ([follow-up.md](follow-up.md)). Not stdlib one-liners: `substr` needs Nuclei's
+  end-vs-length argument semantics pinned against real templates, `date_time` is
+  strftime-style formatting, `generate_jwt` is JWT signing (HMAC = stdlib; RSA/EC = the
+  JWT library Phase 2 already pinned — confirm same version, no new module, per this
+  doc's Dependencies note). Modest corpus-coverage gain; do the three together since they
+  share the DSL-function registration surface.
+- **`flow:` `if` / `set` / `for` / `let` / `var` script constructs**
+  ([follow-up.md](follow-up.md), ~42 corpus templates). The larger `flow:` item: a
+  `runFlow` redesign to carry mutable script state across blocks. Sequenced after the
+  cross-block `_N` counter above (which establishes the per-`flow:` global-state
+  plumbing this builds on), and descopable with a stated reason if the week runs short —
+  biggest single template-format gap left, also the deepest.
 
-The remaining LT-22 buckets (`binary` matcher, the ~12 missing DSL functions, the
-string/int coercion gap) are self-contained and handled in the 2026-09-05 simple-fix
-batch — not this step.
+The other LT-22 buckets (`binary` matcher, 10 of the missing DSL functions, the
+string/int coercion gap) are self-contained and were handled in the 2026-09-05
+simple-fix batch — not this step; the last DSL three
+(`substr`/`date_time`/`generate_jwt`) are the bullet above.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/template/extractor/extractor.go`, `pkg/template/matcher/matcher.go` — `xpath` type.
-- `pkg/template/nuclei/{loader,executor}.go` — `flow:` global `_N` counter threaded through `runFlow`.
+- `pkg/template/nuclei/{loader,executor}.go` — `flow:` global `_N` counter threaded through `runFlow`; `runFlow` carries mutable `if`/`set`/`for`/`let`/`var` script state across blocks.
+- `pkg/template/dsl/dsl.go` — `substr`/`date_time`/`generate_jwt` registered on the DSL-function surface.
 - `go.mod` — only if the xpath footprint check passes.
-- `tests/unit/` — real sampled `xpath` + `flow:` cross-block templates as fixtures.
+- `tests/unit/` — real sampled `xpath` + `flow:` cross-block + `flow:` script-construct templates, and `substr`/`date_time`/`generate_jwt` cases, as fixtures.
 
 ### Verification
 Corpus rejection re-measurement before/after each sub-item (the same
@@ -348,10 +376,12 @@ stated reason.
 - [ ] A `netservice` detector reports anonymous-FTP / unauthenticated-DB / open-Elasticsearch exposure, read-only, `--scope`-gated; `resolvePortFacts` dispatches it instead of only emitting `StatusUnresolved`
 - [ ] A `tls` detector reports expired/weak/mismatched certs, sub-1.2 protocols, and weak ciphers, via stdlib `crypto/tls`, no new dependency
 - [ ] Served-JS static analysis folds extracted endpoints into `ReconResult.Endpoints` (`Source: "js-static"`) and reports high-signal hardcoded secrets as `misconfig` findings, with its decoy-set false-positive rate measured
+- [ ] Cloud-provider exposure facts (`aws`/`s3`/`gcp`) are extracted from headers / URL shapes and dispatch the corpus's cloud-exposure templates (P1-5 closed)
 - [ ] OOB blind-RCE verification proves execution via a callback-only payload, never runs an attacker-meaningful command, and reuses `pkg/oob` unchanged; no real public OOB server in code or tests
 - [ ] `templates/index.json` carries optional `AffectedRange` data; `matchTemplateTags` drops an out-of-affected-range CVE template when the `TechFact` version is known, and real multi-version Nginx hosts get different template lists (LT-7 closed)
+- [ ] An unversioned WordPress plugin/theme slug gets a `readme.txt`/`style.css` version probe (P1-3 leftover closed)
 - [ ] Crawl depth is configurable (default unchanged) and an opt-in JS-rendered crawl merges into the Wave 3 endpoint set with a per-host timeout ceiling (LT-8 closed)
-- [ ] `xpath` matcher/extractor support ships (dependency footprint verified first) or is explicitly descoped with a stated reason; `flow:` cross-block `_N` indexing ships or is explicitly descoped
+- [ ] `xpath` matcher/extractor support ships (dependency footprint verified first) or is explicitly descoped with a stated reason; `flow:` cross-block `_N` indexing ships or is explicitly descoped; `substr`/`date_time`/`generate_jwt` DSL functions ship; `flow:` `if`/`set`/`for` script constructs ship or are explicitly descoped
 - [ ] New-detector yield and any new false-positive mode measured against all lab targets, tracked against the <5% target, with full cost accounting
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.8.0` tagged and released, or explicitly held with a stated reason

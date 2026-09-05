@@ -36,7 +36,7 @@ See [template-writing-guide.md](template-writing-guide.md) for the format and [1
 
 ### Concurrency: goroutines + bounded worker pool
 
-Configurable pool (`pkg/scanner/workerpool`), a global rate limiter shared across the whole scan, progress tracking, graceful cancellation. Note the current limitation: the per-target template loop runs **serially**, and plan execution re-runs the corpus once per builtin-capability leaf — [follow-up.md](follow-up.md) LT-18, scheduled as [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Step 6.
+Two fan-out axes, both bounded and both throttled by one global rate limiter shared across the whole scan: a cross-target worker pool (`pkg/scanner/workerpool`, `--concurrency`) and, within each target, a bounded template fan-out (`Engine.runTemplates`, `--template-concurrency`, default 10; auto-capped to 5 when a prompt-injection template is loaded) — doc15 Step 6b. Plan execution (`pkg/planexec`) loads the template corpus once per host, not once per builtin-capability leaf — doc15 Step 6c. Plus progress tracking and graceful cancellation.
 
 ### Result storage & reporting
 

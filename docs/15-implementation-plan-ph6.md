@@ -268,10 +268,13 @@ Tests: `tests/unit/nuclei_loader_test.go` — `TestNucleiLoadDir_{MultiKeyPayloa
 
 **H4 — cost/attempt-aware prioritization.** A per-leaf attempt counter and running spend tracker on doc14's `PlanTree`, applying MAPTA's own measured finding as a concrete rule: rising tool-call count, dollar cost, token count, and elapsed time on one leaf are each independently correlated with *falling* odds of success (r = −0.66, −0.61, −0.59, −0.56 per doc90 §2) — "still grinding after N attempts with no confidence increase" surfaces as a stop-and-escalate signal to the coordinator (via the leaf's `Status`), not a reason to allocate more budget to the same leaf.
 
+**`Retry-After`-aware backoff (small, from [follow-up.md](follow-up.md)).** `pkg/scanner/httpclient`'s `WithRetry` uses fixed exponential backoff and ignores a `429`/`503` `Retry-After` header. Honor it (clamped to a sane ceiling) so an unattended or agent-driven run stays inside a program's stated rate limits with nobody watching stderr — the same "an unattended run needs the protection a present operator would give" reasoning P2-6 applied to the scope hard-fail. Not agent-specific; it rides here because this is the step about respecting program constraints.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/mcpserver/tools_scan.go`/`tools_recon.go` — D2/D3 checks added at the top of each tool handler, before any request is fired.
 - `pkg/mcpserver/tools_plan.go` — B4's out-of-scope check and re-elicitation trigger.
 - `pkg/agenttask/` (doc14's `PlanTree` location) — `PlanNode` gains `Attempts`, `Spend`, and the stop-and-escalate signal derived from H4's rule.
+- `pkg/scanner/httpclient/` — `WithRetry` honors a `429`/`503` `Retry-After` header (capped), not just fixed exponential backoff.
 - `tests/unit/preflight_test.go` — D2 (policy-disallowed target rejected) and D3 (missing scope rejected, not warned) cases.
 - `tests/unit/scope_creep_test.go` — a `ReconResult` fixture carrying `OutOfScope` entries triggers a fresh elicitation rather than proceeding.
 
@@ -339,7 +342,7 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 
 ---
 
-## Step 6: Scan-Execution Efficiency — Corpus Scoping + Concurrency + Corpus-Once-Per-Host (added 2026-09-05) — 🟡 part (a) done 2026-09-06; (b)/(c) not yet
+## Step 6: Scan-Execution Efficiency — Corpus Scoping + Concurrency + Corpus-Once-Per-Host (added 2026-09-05) — 🟡 (a) done 2026-09-06, (b)+(c) done 2026-09-05; (d) not yet
 
 ### Design
 
@@ -400,6 +403,18 @@ unrelated to the target," from [follow-up.md](follow-up.md) LT-18 (live-measured
   builtin-capability leaves. Fix: `RunPlan` runs the corpus at most once per host — attach
   `TemplatePaths` to exactly one leaf per host, pass `nil` to the rest.
 
+- **(d) Rejected-template log hygiene ([follow-up.md](follow-up.md)).** `loadTemplates`
+  prints one `warn` line per template rejected by both engines — ~200 on every
+  full-corpus scan, none actionable at scan time, identical run-to-run — and also picks
+  up non-template `.yml` files. Since (b) is already reworking this loop and its output:
+  (1) skip non-template files (`.pre-commit-config.yml`, `helpers/*.yml` — matched only
+  by `.yml` extension, always fail "template has no id"); (2) collapse the per-file lines
+  into one bucketed summary by normalized reason (the LT-22 histogram is the model);
+  (3) downgrade by-design refusals (`tcp:`/`ssl:`/`code:`/`javascript:`/`headless:`
+  blocks, `internal:` outside `flow:`, absolute-URI raw — ~90 of ~200) below `warn`;
+  keep `warn` only for genuinely malformed YAML (can signal a corrupt/partial sync);
+  (4) full per-file list behind `--verbose` or `--log-rejected <file>`.
+
 Sequenced after Step 4 (the executor and the Web UI dispatch path both exist to change)
 and **before Step 5's `v0.6.0` tag** — a release whose headline feature is
 approve-then-execute plans shouldn't ship with plan execution taking hours.
@@ -434,16 +449,38 @@ floor ("via explicit --tags"); `--narrow-by-tech=false` loaded everything. Nativ
 templates (all `idor`-tagged) correctly drop out of a `misconfig` run and stay in an
 `idor` one. `go build`/`vet`/`test ./... -race`/`golangci-lint` all clean.
 
-Parts (b) intra-target concurrency and (c) corpus-once-per-host are still open.
+Part (d) rejected-template log hygiene is still open.
 
-### Files (anticipated for (b)/(c); (a) as built above)
-- `pkg/registry/decisionengine.go` — `DetectorTemplateTags(detector string) []string` (the category floor), next to `TechStackTags`.
-- `pkg/scanner/config.go` — `Config.AllTemplates bool` (escape hatch); `pkg/scanner/engine.go` — `loadTemplates` composes floor ∪ extras into the tag filter when no explicit `Tags` and `!AllTemplates`; bounded-worker-pool parallelism inside the per-target template loop; the `engine.go:196-199` "pre-existing characteristic" comment updated.
-- `cmd/hackerfive/scan.go` — `--narrow-by-tech` default `true`; new `--all-templates`; `narrowScanConfigByTech` composes the detector floor even when `--recon-file` is absent.
-- `pkg/webui/handlers_launch.go` — narrow-by-tech default-on + floor; `execCfg` doc comment updated.
-- `pkg/mcpserver/tools_scan.go` — same default-on + floor for the `scan` tool.
-- `pkg/planexec/executor.go` — `runLeaf`/`RunPlan` attach the corpus to at most one leaf per host.
-- Tests: `pkg/registry/decisionengine_test.go` (`DetectorTemplateTags` per detector), `tests/unit/engine_test.go` (floor-scoped load count; per-target loop parallel — elapsed ≈ slowest template, not sum), `pkg/planexec/executor_test.go` (multi-builtin-leaf tree loads the corpus once), `cmd/hackerfive/scan_test.go` (`--all-templates` restores full load; default narrow-by-tech applies the floor).
+### Done note — part (b), 2026-09-05
+
+The per-target template loop, previously strictly sequential, is now a bounded
+parallel fan-out (`--template-concurrency`, default 10). The shared rate limiter is
+untouched and still the real throttle — parallelism only removes a sequential loop's
+per-request round-trip dead time. Prompt-injection templates still cap the fan-out at
+5. `ctx` cancellation stops dispatch of not-yet-started templates; in-flight ones
+finish. Per-template warn-and-skip and per-batch finding callbacks are unchanged;
+returned finding order is now completion order (nothing downstream depends on it).
+
+Unit-verified (parallel timing, ctx-stop, prompt-injection cap). Not yet live-verified
+against a real target — the "~1 hour → minutes" wall-clock check is folded into Step
+5's lab round trip alongside the Step 4 browser/kill-switch checks (Open Issue #4).
+
+### Done note — part (c), 2026-09-05
+
+`planexec.RunPlan` previously re-parsed and re-fired the whole template corpus once
+per builtin-capability leaf — on the `andertone.com` tree, the same corpus against the
+same host 6× over. It now attaches the corpus to only the first builtin leaf per host;
+the rest run their detector alone. Findings are unchanged (they deduped on `Finding.ID`
+anyway); the removed passes were pure duplicate request load. A specific-template leaf
+still always loads the corpus — it needs a full parse to resolve its one `id:`. No
+caller change; unit-verified (once per host, once per distinct host, template-ID leaf
+keeps its load).
+
+### Files — (d), anticipated
+
+(a), (b), (c) are done — see their Done notes above.
+
+- **(d)** `pkg/scanner/engine.go` — `loadTemplates` skips non-template files and emits a bucketed rejection summary; full per-file list behind `--verbose`/`--log-rejected`; by-design refusals below `warn`.
 
 ### Verification
 Unit: `DetectorTemplateTags` returns the right floor per detector; a `misconfig` load with
@@ -468,7 +505,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 | 2 | An I4 `use_existing_tag` decision still can't dispatch via item 4's new template-ID path — `buildLeafPrompt` only ever shows the model *tags* (shared across many templates), never per-template IDs, so the decision rarely matches a real `Entry.ID`. Fully fixed for R8's own deterministic matches; not for I4's. | Needs its own design decision: run every template carrying the chosen tag? A second, narrower call to pick one ID? Change the catalog to show IDs instead of tags? |
 | 3 | **Pre-existing, unrelated test failure**: `TestEndToEnd_StartScan_ProducesRealFindings` (`pkg/webui`) fails — confirmed via a clean worktree of the last commit that it fails identically there too, so not caused by any change in this doc. | Investigate separately; not a regression to chase down as part of this phase's own work. |
 | 4 | Not yet live-verified: a real multi-leaf concurrency timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism); Step 3's B4 scope-creep trigger names the executor as its future caller, but that hook doesn't exist in `RunPlan` yet. | Timing check: do alongside Step 5's lab-target round trip. B4 hook: correctly Step 3's job, not a gap in Step 2 itself. |
-| 5 | **A scan spends its wall-clock on templates unrelated to the target**: `scan --detector X` loads the whole ~9.5k corpus regardless of `X` or detected tech (`--narrow-by-tech` is opt-in + needs `--recon-file`, and `TechStackTags` has no generic floor); `engine.go`'s per-target template loop is serial; `RunPlan` re-runs the corpus once per builtin leaf ([follow-up.md](follow-up.md) LT-18 + the 2026-09-06 nettix.com.pe review). | Now scheduled as **Step 6** above (three parts: detector-category floor ∪ tech-fact extras with `--narrow-by-tech` default-on; bounded-worker-pool intra-target concurrency; corpus once per host), gating Step 5's `v0.6.0` release. |
+| 5 | **A scan spends its wall-clock on templates unrelated to the target** ([follow-up.md](follow-up.md) LT-18 + the 2026-09-06 nettix.com.pe review). | **Step 6**: (a) detector-category floor ∪ tech-fact extras, `--narrow-by-tech` default-on — ✅ 2026-09-06; (b) bounded intra-target template fan-out (`--template-concurrency`) — ✅ 2026-09-05; (c) corpus once per host in `RunPlan` — ✅ 2026-09-05; (d) rejected-template log hygiene — open. Live wall-clock re-check + (d) gate Step 5's `v0.6.0` release. |
 | 6 | **Duplicate findings for one underlying fact** ([follow-up.md](follow-up.md) LT-6): a native `misconfig-missing-header-*` finding and the nuclei `http-missing-security-headers` template both fire on the same response — 5 findings for one fact. `reporter.Dedup` is exact-`Finding.ID`-only by deliberate design (see its doc comment: cross-format semantic dedup "deliberately not attempted"). | Needs a real design decision, not a quick fix — a naive topic-level key risks over-suppressing genuinely distinct findings (the nuclei finding is one aggregate row covering *many* headers; the native ones are one-per-header — an N:1 relationship, not "same key twice"). Options: split the nuclei aggregate into per-header sub-facts before dedup; or a `(target, finding-class)` key with `finding-class` derived only for the known missing-header overlap; or accept the duplication as "two detectors agreeing" and only collapse in the report view. Do during Step 5's release-hardening pass, or defer to Phase 7 Step 3's Exporter work — not before the design is settled. |
 | 7 | **SSE `/catchup` doesn't replay `#logs`/`#findings`** ([follow-up.md](follow-up.md) LT-5), only the idempotent progress/recon fragments — a late-connecting or reconnecting client permanently loses everything before connect. `CatchupData`'s doc comment records this as a *deliberate* narrow scope (blind replay would duplicate already-streamed append-list rows). | Needs a monotonic sequence/cursor on `Job`'s log/finding accumulation so catchup can replay only entries after the client's last-seen marker (and a client-side change to report it). Scheduled as a bullet on **Phase 7 Step 3** (Observability Upgrade) — that step reworks the SSE streams anyway. |
 
@@ -488,12 +525,14 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 - [ ] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command
 - [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and triggers a fresh `elicitation` round trip before it's touched, live-verified
 - [ ] Cost/attempt-aware prioritization (H4) surfaces a stop-and-escalate signal on a `PlanTree` leaf after repeated low-yield attempts
+- [ ] The scan HTTP client honors a `429`/`503` `Retry-After` header (capped) rather than only fixed exponential backoff
 - [x] The Web UI's Plan-preview page supports Approve/Reject/Edit (per-leaf inclusion, not per-field), a budget gauge, and an always-reachable kill switch that actually stops a running job — and that same kill switch is confirmed on `/scans/{id}` for plain New Scan and Guided Scan-successor (unified Launch) runs too, not only the plan-execution flow — done 2026-09-04 (Step 4's Done note); not yet live-verified against a real browser/lab target, and the cross-process "same elicitation as an MCP client" interop is explicitly out of scope (see that note)
 - [ ] A structured, persisted agent session log exists and is queryable per job, even without a live Web UI view yet
 - [ ] A full recon → plan → approve → scan → export round trip is live-verified end-to-end against at least one lab target, plus a separate run against WebGoat and/or bWAPP confirming an all-`misconfig` plan resolves every leaf deterministically with zero I4 fallback calls
 - [x] **(Step 6a)** `--narrow-by-tech` defaults on; `scan --detector X` with no `--tags`/`--recon-file` loads a detector-category-scoped subset (`registry.DetectorTemplateTags`), not the full ~9.5k corpus; `--all-templates` restores the full load; with a `--recon-file` the scoped set is floor ∪ `TechStackTags`; a `misconfig` run still fires every `exposure`/missing-header/`default-login` template (no recall loss) — done 2026-09-06 (see Step 6 Done note), all three frontends, live-verified against nettix.com.pe (9,476 → 3,745)
-- [ ] **(Step 6b)** `engine.go`'s per-target template loop is parallelized under a bounded worker pool (still `--rate-limit`-throttled, prompt-injection templates still capped at concurrency 5); a full-corpus `scan` against a real target completes in minutes, not ~1 hour
-- [ ] **(Step 6c)** `planexec.RunPlan` loads/runs the template corpus at most once per host, not once per (host, builtin-capability-leaf) pair — verified against a multi-builtin-leaf plan tree
+- [x] **(Step 6b)** the per-target template loop is a bounded parallel fan-out (`--template-concurrency`, default 10) — still `--rate-limit`-throttled, prompt-injection still capped at 5 — done 2026-09-05 (see Step 6 Done note); the "full-corpus `scan` completes in minutes, not ~1 hour" live check is folded into Step 5's lab round trip
+- [x] **(Step 6c)** `planexec.RunPlan` loads/runs the template corpus at most once per host, not once per (host, builtin-capability-leaf) pair — done 2026-09-05 (see Step 6 Done note), unit-verified; a specific-template leaf still loads it for its own `id:` match
+- [ ] **(Step 6d)** `loadTemplates` skips non-template `.yml` files and emits one bucketed rejection summary by default (full per-file list behind `--verbose`/`--log-rejected`); by-design refusals log below `warn`
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason
 
