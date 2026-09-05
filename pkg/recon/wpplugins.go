@@ -16,6 +16,21 @@ import (
 // "wordfence" all confirmed tagged by this literal slug).
 var wpPluginPathPattern = regexp.MustCompile(`/wp-content/(?:plugins|themes)/([a-zA-Z0-9._-]+)/`)
 
+// wpVersionShapePattern guards against LT-21 (docs/follow-up.md, 2026-09-04):
+// a "?ver=" value isn't always a real version — WordPress's own
+// wp_enqueue_script/style convention lets a plugin pass any cache-busting
+// string, and WooCommerce Blocks' own asset bundler confirmed live to pass a
+// content hash there instead ("?ver=a02cc7ababe22e5abaaf"). Accepting that
+// verbatim produced a TechFact silently contradicting the correct,
+// httpx-sourced version fact for the same plugin on the same host. A
+// version-shaped value is plain dot-separated digits (WordPress.org's own
+// plugin version convention, "1", "2.5", "6.1.1.2" — no semver
+// pre-release/build suffixes observed on real plugin readme.txt "Stable
+// tag:" values); anything else is dropped, not guessed — an unversioned
+// fact (name == slug alone) is strictly better than a wrong one, per this
+// function's own doc comment below.
+var wpVersionShapePattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,3}$`)
+
 // wordPressPluginFacts scans endpoints — already-crawled URLs, no new
 // network round trip — for wp-content plugin/theme asset paths and returns
 // one TechFact per distinct (host, slug), versioned from that same URL's
@@ -61,7 +76,7 @@ func wordPressPluginFacts(endpoints []EndpointFact) []TechFact {
 			order = append(order, k)
 		}
 		if versions[k] == "" {
-			if ver := u.Query().Get("ver"); ver != "" {
+			if ver := u.Query().Get("ver"); ver != "" && wpVersionShapePattern.MatchString(ver) {
 				versions[k] = ver
 			}
 		}

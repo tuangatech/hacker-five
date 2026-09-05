@@ -3,8 +3,9 @@
 // (==, !=, <, >) against status_code/len(body), function calls
 // (contains/contains_any/contains_all/regex/to_lower/tolower/trim/md5/sha1/
 // base64_py/mmh3/compare_versions/base64_decode/concat), the status_code/body/header/content_type/response/request
-// built-in variables, combined with &&/||, unary "!" negation, and
-// parenthesized grouping. Anything
+// built-in variables, combined with &&/||, unary "!" negation, the "+"
+// operator (string concat when either operand is a string, numeric add
+// otherwise), and parenthesized grouping. Anything
 // outside this grammar is a parse/eval error, not a silent false/empty
 // result — see docs/10-implementation-plan-ph1b.md Step 2's "DSL
 // matcher/extractor scope" note for why this stays deliberately small
@@ -110,6 +111,7 @@ const (
 	tokLParen
 	tokRParen
 	tokComma
+	tokPlus
 	tokEOF
 )
 
@@ -135,6 +137,9 @@ func tokenize(expr string) ([]token, error) {
 			i++
 		case c == ',':
 			toks = append(toks, token{tokComma, ","})
+			i++
+		case c == '+':
+			toks = append(toks, token{tokPlus, "+"})
 			i++
 		case c == '&' && i+1 < len(r) && r[i+1] == '&':
 			toks = append(toks, token{tokAnd, "&&"})
@@ -322,22 +327,85 @@ func (p *parser) parsePrimary() (any, error) {
 	return p.parseComparison()
 }
 
-// parseComparison handles a bare operand, or operand OP operand.
+// parseComparison handles a bare additive expression, or additive OP
+// additive — "+" binds tighter than a comparison (see parseAdditive), so
+// "a + b == c" parses as "(a + b) == c", matching real Nuclei/common
+// expression-language precedence.
 func (p *parser) parseComparison() (any, error) {
-	left, err := p.parseOperand()
+	left, err := p.parseAdditive()
 	if err != nil {
 		return nil, err
 	}
 	switch p.peek().kind {
 	case tokEq, tokNeq, tokLt, tokLe, tokGt, tokGe:
 		opTok := p.next()
-		right, err := p.parseOperand()
+		right, err := p.parseAdditive()
 		if err != nil {
 			return nil, err
 		}
 		return compare(opTok, left, right)
 	default:
 		return left, nil
+	}
+}
+
+// parseAdditive handles a + b + c ..., left-associative — the "+" operator
+// (docs/follow-up.md LT-22, 2026-09-04): real corpus measurement found this
+// entirely unimplemented and the single largest rejection bucket (59/320,
+// ~18%, e.g. concatenating a rendered payload into a comparison target).
+// Deliberately just "+", not the full "-"/"*"/"/" arithmetic set LT-22 also
+// named — no real sampled template needs those, and this DSL stays a small,
+// grown-on-demand grammar (see this file's own package doc comment).
+func (p *parser) parseAdditive() (any, error) {
+	left, err := p.parseOperand()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().kind == tokPlus {
+		p.next()
+		right, err := p.parseOperand()
+		if err != nil {
+			return nil, err
+		}
+		left, err = addOrConcat(left, right)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return left, nil
+}
+
+// addOrConcat implements "+": numeric addition when both operands are int,
+// string concatenation (stringifying an int operand the same way concat()
+// already does) when either operand is a string — matching common JS/Go-like
+// DSL semantics and real corpus usage (both sides are the same type in every
+// sampled template; the mixed case is handled the same way concat() already
+// does for consistency, not because a real template needs it).
+func addOrConcat(a, b any) (any, error) {
+	if ai, ok := a.(int); ok {
+		if bi, ok := b.(int); ok {
+			return ai + bi, nil
+		}
+	}
+	as, aOK := stringifyOperand(a)
+	bs, bOK := stringifyOperand(b)
+	if aOK && bOK {
+		return as + bs, nil
+	}
+	return nil, fmt.Errorf("+ operator: unsupported operand types %T and %T", a, b)
+}
+
+// stringifyOperand renders v as a string for "+" concatenation — string
+// as-is, int via strconv.Itoa (same conversion concat() already applies),
+// anything else (bool) unsupported.
+func stringifyOperand(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case int:
+		return strconv.Itoa(t), true
+	default:
+		return "", false
 	}
 }
 
@@ -372,7 +440,7 @@ func (p *parser) parseCall(name string) (any, error) {
 	var args []any
 	if p.peek().kind != tokRParen {
 		for {
-			arg, err := p.parseOperand()
+			arg, err := p.parseAdditive()
 			if err != nil {
 				return nil, err
 			}

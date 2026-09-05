@@ -78,6 +78,41 @@ func TestWordPressPluginFacts_NonPluginPath_Ignored(t *testing.T) {
 	}
 }
 
+// TestWordPressPluginFacts_ContentHashVerParam_ProducesUnversionedFact is
+// LT-21's (docs/follow-up.md) regression guard: a real WooCommerce Blocks
+// asset's "?ver=" is a build-content hash, not a version, and used to be
+// accepted verbatim — silently contradicting the correct, httpx-sourced
+// version fact for the same plugin.
+func TestWordPressPluginFacts_ContentHashVerParam_ProducesUnversionedFact(t *testing.T) {
+	endpoints := []EndpointFact{
+		{URL: "https://example.com/wp-content/plugins/woocommerce/assets/client/blocks/woocommerce/product-collection.js?ver=a02cc7ababe22e5abaaf", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+	}
+
+	facts := wordPressPluginFacts(endpoints)
+
+	if len(facts) != 1 || facts[0].Name != "woocommerce" {
+		t.Fatalf("got %+v, want one unversioned %q fact (content-hash ver rejected)", facts, "woocommerce")
+	}
+}
+
+// TestWordPressPluginFacts_ContentHashThenRealVersion_KeepsRealVersion
+// confirms a later, genuinely version-shaped "?ver=" is still accepted even
+// when an earlier, non-version-shaped one was seen first for the same slug
+// — versions[k] == "" gating must treat a rejected value the same as none
+// seen yet, not as "already resolved."
+func TestWordPressPluginFacts_ContentHashThenRealVersion_KeepsRealVersion(t *testing.T) {
+	endpoints := []EndpointFact{
+		{URL: "https://example.com/wp-content/plugins/woocommerce/assets/client/blocks/product-collection.js?ver=a02cc7ababe22e5abaaf", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		{URL: "https://example.com/wp-content/plugins/woocommerce/woocommerce.php?ver=11.1.0", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+	}
+
+	facts := wordPressPluginFacts(endpoints)
+
+	if len(facts) != 1 || facts[0].Name != "woocommerce:11.1.0" {
+		t.Fatalf("got %+v, want %q", facts, "woocommerce:11.1.0")
+	}
+}
+
 func TestWordPressPluginFacts_ThemePath_AlsoExtracted(t *testing.T) {
 	endpoints := []EndpointFact{
 		{URL: "https://example.com/wp-content/themes/astra/style.css?ver=4.6.5", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},

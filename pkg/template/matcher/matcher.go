@@ -115,6 +115,20 @@ func Part(part string, r Response) string {
 		return b.String()
 	case "content_type":
 		return r.Headers.Get("Content-Type")
+	case "location":
+		// LT-22 (docs/follow-up.md, 2026-09-04): real corpus measurement
+		// found these 3 named header-part shortcuts entirely unimplemented
+		// (36/320 rejections, ~11% — the DSL bare-identifier form already
+		// worked via dsl.go's header fallback, LT-15; only the `part:`
+		// word/regex-matcher form was missing).
+		return r.Headers.Get("Location")
+	case "server":
+		return r.Headers.Get("Server")
+	case "set_cookie":
+		// A response can set more than one cookie — join every Set-Cookie
+		// header line, same one-per-line convention the "header" case above
+		// already uses for multi-value headers.
+		return strings.Join(r.Headers.Values("Set-Cookie"), "\n")
 	case "request":
 		// The raw outgoing request text (see Response.Request's doc
 		// comment) — LT-15, docs/follow-up.md. Deliberately never falls
@@ -285,8 +299,9 @@ func MatchingNames(matchers []Matcher, r Response) []string {
 // ValidPart reports whether part is one of the response slices this project
 // actually implements ("", "body", "header", "all", "content_type",
 // "response", "request" — "" defaults to "body", "request" is the raw
-// outgoing request text, see Response.Request — plus the three OAST/out-of-band
-// values "interactsh_protocol", "interactsh_request", "interactsh_response"
+// outgoing request text, see Response.Request — plus the named header
+// shortcuts "location"/"server"/"set_cookie" (LT-22, docs/follow-up.md) and
+// the three OAST/out-of-band values "interactsh_protocol", "interactsh_request", "interactsh_response"
 // used by blind-SSRF-style checks like upstream's linkerd-ssrf-detect.yaml,
 // now backed by real Interactsh-protocol infrastructure — see
 // nuclei.Executor's prepareOOB/awaitOOB). Found the hard way, before that
@@ -304,6 +319,7 @@ func MatchingNames(matchers []Matcher, r Response) []string {
 func ValidPart(part string) bool {
 	switch part {
 	case "", "body", "header", "all", "content_type", "response", "request",
+		"location", "server", "set_cookie",
 		"interactsh_protocol", "interactsh_request", "interactsh_response":
 		return true
 	default:

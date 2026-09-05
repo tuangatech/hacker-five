@@ -389,7 +389,10 @@ func TestMatchTemplateTags_CanonicalExcludeDropsFalseFriend(t *testing.T) {
 	index := []templatesync.Entry{
 		{ID: "CVE-2099-0001", Name: "Nginx - Real Thing", Tags: []string{"nginx", "cve"}, Severity: "high"},
 		{ID: "nginx-proxy-manager-default-login", Name: "Nginx Proxy Manager Default Login", Tags: []string{"nginx", "proxy-manager", "default-login"}, Severity: "high"},
-		{ID: "ingress-nginx-CVE-2023-5044", Name: "Ingress-Nginx Annotation Injection", Tags: []string{"nginx", "ingress-nginx", "cve"}, Severity: "critical"},
+		// Real corpus shape (LT-19, docs/follow-up.md, 2026-09-04): an
+		// Ingress-Nginx-Controller CVE template carries "ingress"/
+		// "kubernetes"/"k8s" tags, never a literal "ingress-nginx" tag.
+		{ID: "CVE-2025-1974", Name: "Ingress-Nginx Annotation Injection", Tags: []string{"nginx", "ingress", "kubernetes", "k8s", "cve"}, Severity: "critical"},
 	}
 	got := matchTemplateTags("Nginx", index)
 
@@ -541,15 +544,17 @@ func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {
 
 // TestTechStackTags_FalseFriendExclusionApplies confirms canonicalTechTags'
 // exclusions (already proven for matchTemplateTags itself) carry through:
-// an "Nginx" fact must not pull in the ingress-nginx-only tag.
+// an "Nginx" fact must not pull in an Ingress-Nginx-Controller CVE's tags.
 func TestTechStackTags_FalseFriendExclusionApplies(t *testing.T) {
 	index := []templatesync.Entry{
 		{ID: "CVE-2099-0001", Name: "Nginx - Real Thing", Tags: []string{"nginx", "cve"}, Severity: "high"},
-		{ID: "ingress-nginx-CVE-2023-5044", Name: "Ingress-Nginx Annotation Injection", Tags: []string{"nginx", "ingress-nginx", "cve"}, Severity: "critical"},
+		// Real corpus shape (LT-19, docs/follow-up.md, 2026-09-04) — see the
+		// matching matchTemplateTags fixture above.
+		{ID: "CVE-2025-1974", Name: "Ingress-Nginx Annotation Injection", Tags: []string{"nginx", "ingress", "kubernetes", "k8s", "cve"}, Severity: "critical"},
 	}
 	got := TechStackTags([]recon.TechFact{{Name: "Nginx", Host: "example.com"}}, index)
 
-	assert.ElementsMatch(t, []string{"nginx", "cve"}, got, "the ingress-nginx-only entry must never have contributed \"ingress-nginx\" to the allowlist")
+	assert.ElementsMatch(t, []string{"nginx", "cve"}, got, "the Ingress-Nginx-Controller entry must never have contributed its \"ingress\"/\"kubernetes\"/\"k8s\" tags to the allowlist")
 }
 
 // TestTechStackTags_DedupsRepeatedTechAcrossHosts confirms the same tech
@@ -705,6 +710,29 @@ func TestResolve_CartEndpoint_ProducesBusinessLogicLeaf(t *testing.T) {
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "businesslogic" })
 	require.NotNil(t, leaf, "a checkout-shaped endpoint must produce a businesslogic leaf")
 	assert.Contains(t, leaf.Rationale, "--allow-writes", "the leaf's own rationale must be honest that a human gate still applies")
+}
+
+// TestResolve_CartShapedStaticAsset_NoBusinessLogicLeaf is LT-20's
+// (docs/follow-up.md) regression guard: a purely cosmetic static asset
+// (real example: a WordPress theme's "cart-header-element-lazy.min.css")
+// can match businessLogicPathKeywords on its filename alone — must not
+// produce a businesslogic leaf, mirroring suggest.go's own established
+// IsStaticAssetPath guard for the same false-positive class.
+func TestResolve_CartShapedStaticAsset_NoBusinessLogicLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/wp-content/themes/blocksy/static/bundle/cart-header-element-lazy.min.css", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	// The endpoint produces no leaf at all once the static-asset guard drops
+	// it (not even an idor candidate — it's not {{id}}-shaped either), so no
+	// host node exists at all, same "no empty host node" behavior
+	// TestResolve_NonSignalEndpoint_NoExtraLeaf already establishes.
+	assert.Nil(t, tree.Find("host:example.test"), "a static-asset filename that merely contains \"cart\" must not produce a businesslogic leaf (or any other)")
 }
 
 func TestResolve_NonSignalEndpoint_NoExtraLeaf(t *testing.T) {

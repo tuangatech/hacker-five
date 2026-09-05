@@ -131,6 +131,12 @@ func TestNewPlanCmd_FlagDefaults(t *testing.T) {
 	llmAssist := cmd.Flags().Lookup("llm-assist")
 	require.NotNil(t, llmAssist)
 	assert.Equal(t, "false", llmAssist.DefValue, "P2-4: zero LLM calls must stay the default, matching plan's own no-agent-required proof")
+
+	// LT-11 (docs/follow-up.md): --verbose wires the already-existing
+	// recon.WithProgressCallback into stderr.
+	verbose := cmd.Flags().Lookup("verbose")
+	require.NotNil(t, verbose, "--verbose must be registered")
+	assert.Equal(t, "false", verbose.DefValue)
 }
 
 // TestNewPlanCmd_LLMAssist_NoTierConfigured_DegradesToEscalationWarning

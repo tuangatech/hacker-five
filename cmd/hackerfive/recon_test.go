@@ -180,4 +180,24 @@ func TestNewReconCmd_FlagDefaults(t *testing.T) {
 	// its own direct HTTP client always skips TLS verification now
 	// (recon.ClientConfig), matching katana/httpx's own hardcoded posture.
 	assert.Nil(t, cmd.Flags().Lookup("insecure"), "recon's --insecure flag should be gone, not just defaulted false")
+
+	// LT-11 (docs/follow-up.md): --verbose wires the already-existing
+	// recon.WithProgressCallback into stderr — off by default so scripted
+	// invocations see no output change.
+	verbose := cmd.Flags().Lookup("verbose")
+	require.NotNil(t, verbose, "--verbose must be registered")
+	assert.Equal(t, "false", verbose.DefValue)
+}
+
+// TestVerboseProgress_WritesWaveStatusToStderr locks in LT-11's fix directly:
+// the callback verboseProgress returns must write exactly the wave/status
+// pairs recon.WithProgressCallback fires, not silently drop them.
+func TestVerboseProgress_WritesWaveStatusToStderr(t *testing.T) {
+	var buf bytes.Buffer
+	fn := verboseProgress(&buf)
+
+	fn("wave0", "running")
+	fn("wave0", "done")
+
+	assert.Equal(t, "wave0: running\nwave0: done\n", buf.String())
 }

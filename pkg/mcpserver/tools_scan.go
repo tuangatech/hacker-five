@@ -2,12 +2,17 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
+	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
 // scanInput is the scan tool's schema. Scope is required (D3, doc15 Step
@@ -24,6 +29,7 @@ type scanInput struct {
 	OtherAuthToken   string            `json:"other_auth_token,omitempty" jsonschema:"second-account auth token, for idor's baseline comparison"`
 	AllowWrites      bool              `json:"allow_writes,omitempty" jsonschema:"required for detector=businesslogic's mutating checks; skipped with a warning otherwise"`
 	ExtraHeaders     map[string]string `json:"extra_headers,omitempty"`
+	TechStack        []recon.TechFact  `json:"tech_stack,omitempty" jsonschema:"optional — a prior recon tool call's result.tech_stack; when set and tags is empty, narrows the loaded template corpus to this tech stack's relevant tags (LT-16/LT-17, docs/follow-up.md) instead of running the full synced corpus"`
 }
 
 // scanOutput is the scan tool's result: every Finding the run produced,
@@ -68,11 +74,32 @@ func addScanTool(s *mcp.Server) {
 			ExtraHeaders:     in.ExtraHeaders,
 			Scope:            sc,
 		}
+
+		var out scanOutput
+		// LT-17 (docs/follow-up.md): CLI/MCP parity for LT-16's tech-stack
+		// template narrowing, previously Web-UI-only. registry.TechStackTags
+		// is transport-agnostic already — the scan tool has no recon step of
+		// its own, so a caller passes along a prior `recon` tool call's own
+		// TechStack rather than this tool re-deriving it. Never overrides an
+		// explicit Tags value; degrades to the full corpus (a logged note,
+		// not an error) whenever nothing usable is found — same "full corpus
+		// is the safe fallback" posture LT-16 established.
+		if len(in.Tags) == 0 && len(in.TechStack) > 0 {
+			if index, idxErr := templatesync.LoadIndex(defaultTemplateIndexPath); idxErr == nil {
+				if tags := registry.TechStackTags(in.TechStack, index); len(tags) > 0 {
+					cfg.Tags = tags
+					out.Logs = append(out.Logs, fmt.Sprintf("info: narrow-by-tech: narrowed to %d tech-relevant tag(s): %s", len(tags), strings.Join(tags, ", ")))
+				} else {
+					out.Logs = append(out.Logs, "info: narrow-by-tech: none of the detected tech stack ties to a template tag — running the full template corpus")
+				}
+			} else {
+				out.Logs = append(out.Logs, fmt.Sprintf("warn: narrow-by-tech: could not load template index (%v) — running the full template corpus", idxErr))
+			}
+		}
+
 		if err := cfg.Validate(); err != nil {
 			return nil, scanOutput{}, err
 		}
-
-		var out scanOutput
 		token := req.Params.GetProgressToken()
 		notify := func(message string) {
 			if token == nil {

@@ -35,6 +35,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 		allowNoScope bool
 		rateLimit    int
 		concurrency  int
+		verbose      bool
 	)
 
 	cmd := &cobra.Command{
@@ -67,6 +68,9 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 			if s != nil {
 				opts = append(opts, recon.WithScope(s))
 			}
+			if verbose {
+				opts = append(opts, recon.WithProgressCallback(verboseProgress(cmd.ErrOrStderr())))
+			}
 			r := recon.New(client, opts...)
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), reconRunTimeout)
@@ -98,10 +102,26 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&allowNoScope, "allow-no-scope", false, "proceed with no --scope boundary — every host recon discovers is treated as in-scope, including unrelated infrastructure (e.g. a shared CDN/vendor domain); lab/local use only, never a real engagement")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", recon.DefaultRateLimit, "requests/sec passed to each external recon binary's own native rate-limit flag, and used for this package's own direct HTTP calls")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 
 	cmd.AddCommand(newReconSetupCmd())
 
 	return cmd
+}
+
+// verboseProgress returns the callback --verbose passes to
+// recon.WithProgressCallback (already used by the Web UI's own progress bar)
+// — LT-11 (docs/follow-up.md, 2026-09-04): a real `hackerfive recon
+// --recon-depth full` run had a literal 0-byte stderr log for its whole 82s
+// wall-clock duration, no way to tell which wave was running or whether the
+// process had hung. The mechanism already existed; it was simply never
+// registered by any CLI command. Factored out as a plain func(wave, status
+// string) — not a recon.Option directly — so it's testable without needing
+// a real *recon.Recon.
+func verboseProgress(stderr io.Writer) func(wave, status string) {
+	return func(wave, status string) {
+		_, _ = fmt.Fprintf(stderr, "%s: %s\n", wave, status)
+	}
 }
 
 // newReconSetupCmd is `hackerfive recon setup` — installs the 6 recon

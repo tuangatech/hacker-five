@@ -127,6 +127,42 @@ func TestScanTool_HappyPath_MisconfigAgainstLocalTarget(t *testing.T) {
 	}
 }
 
+// TestScanTool_TechStackNarrowing_DegradesGracefullyWithoutIndex is LT-17's
+// (docs/follow-up.md) MCP-parity regression guard: passing tech_stack with
+// no template index reachable (the common test/CI case — nothing has run
+// 'hackerfive templates index' from this working directory) must degrade to
+// running the full corpus with a logged note, never a hard error — the same
+// "full corpus is the safe fallback" posture LT-16 established for the Web
+// UI's own checkbox.
+func TestScanTool_TechStackNarrowing_DegradesGracefullyWithoutIndex(t *testing.T) {
+	isolateFromInstalledReconBinaries(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	session, err := connect(ctx, New())
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":  []string{srv.URL},
+			"scope":    []string{"127.0.0.1"},
+			"detector": "misconfig",
+			"tech_stack": []map[string]any{
+				{"name": "WordPress", "host": "127.0.0.1", "source": "httpx-tech-detect", "confidence": "medium"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	if res.IsError {
+		t.Fatalf("expected a successful scan run even when narrow-by-tech can't load an index, got error result: %s", textContent(t, res))
+	}
+}
+
 // textContent extracts the first TextContent block's text from a
 // CallToolResult, failing the test if none is present.
 func textContent(t *testing.T, res *mcp.CallToolResult) string {

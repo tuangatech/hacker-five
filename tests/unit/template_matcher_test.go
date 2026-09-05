@@ -201,6 +201,30 @@ func TestMatcherValidate_AcceptsNewParts(t *testing.T) {
 	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "word", Part: "response", Words: []string{"x"}}))
 }
 
+// TestMatcherEvaluate_PartLocationServerSetCookie is LT-22's (docs/follow-up.md)
+// regression guard: these 3 named header-part shortcuts were entirely
+// unimplemented before this (36/320 real-corpus rejections, ~11%) — ValidPart
+// rejected them at load time and Part() had no case for them at all.
+func TestMatcherEvaluate_PartLocationServerSetCookie(t *testing.T) {
+	resp := matcher.Response{
+		Headers: http.Header{
+			"Location":   []string{"https://example.com/new"},
+			"Server":     []string{"nginx/1.18.0"},
+			"Set-Cookie": []string{"a=1; Path=/", "b=2; HttpOnly"},
+		},
+	}
+
+	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "word", Part: "location", Words: []string{"x"}}))
+	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "word", Part: "server", Words: []string{"x"}}))
+	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "word", Part: "set_cookie", Words: []string{"x"}}))
+
+	assert.True(t, matcher.Matcher{Type: "word", Part: "location", Words: []string{"/new"}}.Evaluate(resp))
+	assert.True(t, matcher.Matcher{Type: "word", Part: "server", Words: []string{"nginx"}}.Evaluate(resp))
+	assert.True(t, matcher.Matcher{Type: "word", Part: "set_cookie", Words: []string{"HttpOnly"}}.Evaluate(resp))
+	// Both Set-Cookie lines must be visible, not just the first.
+	assert.True(t, matcher.Matcher{Type: "word", Part: "set_cookie", Words: []string{"a=1"}}.Evaluate(resp))
+}
+
 func TestMatcherValidate(t *testing.T) {
 	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "status"}))
 	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "regex", Regex: []string{`ng-version="[0-9.]+"`}}))

@@ -218,7 +218,16 @@ type tagQuery struct {
 // Eventum, Weaver/Fanwei OA, Odoo) are tagged "mysql" despite not being
 // MySQL-server issues.
 var canonicalTechTags = map[string]tagQuery{
-	"nginx":       {include: []string{"nginx"}, exclude: []string{"proxy-manager", "ingress-nginx", "nginxwebui"}},
+	// LT-19 (docs/follow-up.md, 2026-09-04): "ingress-nginx"/"proxy-manager"
+	// were never real corpus tags — both no-ops, confirmed live: 4
+	// Kubernetes Ingress-Nginx-Controller CVEs (real tags include "ingress",
+	// "kubernetes", "k8s", none of them "ingress-nginx") outranked genuine
+	// Nginx templates against a plain Nginx web-server TechFact.
+	// nginx-proxy-manager's real tags are ["panel","nginx","proxy",
+	// "discovery"] — no "proxy-manager" tag either, so that exclusion moved
+	// to excludeIDSubstr (its ID does contain "proxy-manager"), mirroring
+	// the jquery entry's own established pattern below.
+	"nginx":       {include: []string{"nginx"}, exclude: []string{"ingress", "kubernetes", "k8s", "nginxwebui"}, excludeIDSubstr: []string{"proxy-manager"}},
 	"jquery":      {include: []string{"jquery"}, exclude: []string{"file-upload"}, excludeIDSubstr: []string{"jquery-file-upload"}},
 	"mysql":       {include: []string{"mysql"}, exclude: []string{"esafenet", "eventum", "weaver", "ecology", "fanwei", "odoo"}},
 	"wordpress":   {include: []string{"wordpress"}},
@@ -829,7 +838,18 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx))
 	}
 	for _, ep := range hostEndpoints {
-		if p := endpointURLPath(ep.URL); looksLikeCouponOrCartFlow(p) {
+		p := endpointURLPath(ep.URL)
+		// LT-20 (docs/follow-up.md, 2026-09-04): a static asset filename can
+		// still contain a businessLogicPathKeywords substring purely by
+		// coincidence — confirmed live: a WordPress theme's purely cosmetic
+		// "cart-header-element-lazy.min.css" bundle matched on "cart" alone
+		// and produced a wrong, noisy businesslogic leaf. Mirrors
+		// suggest.go's own established pattern (SuggestIDOREndpointCandidates
+		// already skips IsStaticAssetPath for the identical reason).
+		if recon.IsStaticAssetPath(p) {
+			continue
+		}
+		if looksLikeCouponOrCartFlow(p) {
 			leaves = append(leaves, newEndpointLeaf(host, "businesslogic", agenttask.ConfidenceLow,
 				fmt.Sprintf("recon observed a cart/checkout/coupon-shaped endpoint on this host (%s) — still requires --allow-writes and real coupon paths for a non-crAPI target", p), leafIdx))
 			break // one is enough to justify the leaf; not every matching endpoint

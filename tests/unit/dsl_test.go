@@ -325,3 +325,47 @@ func TestDSLEval_ExtractorNameAsIdentifier(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, true, val)
 }
+
+// TestDSLEval_PlusConcatStrings is LT-22's (docs/follow-up.md) regression
+// guard: "+" was entirely unimplemented before this, the single largest
+// real-corpus rejection bucket (59/320, ~18%).
+func TestDSLEval_PlusConcatStrings(t *testing.T) {
+	val, err := dsl.Eval(`"foo" + "bar" == "foobar"`, dsl.Context{})
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
+
+// TestDSLEval_PlusAddsInts confirms "+" stays numeric addition when both
+// operands are int, not string concatenation of their digits.
+func TestDSLEval_PlusAddsInts(t *testing.T) {
+	val, err := dsl.Eval(`1 + 2 == 3`, dsl.Context{})
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
+
+// TestDSLEval_PlusMixedStringAndIntConcatenates matches concat()'s own
+// existing int-stringification behavior, for consistency between the two
+// mechanisms.
+func TestDSLEval_PlusMixedStringAndIntConcatenates(t *testing.T) {
+	val, err := dsl.Eval(`"count:" + 5 == "count:5"`, dsl.Context{})
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
+
+// TestDSLEval_PlusBindsTighterThanComparison guards parseAdditive's
+// precedence: "a + b == c" must parse as "(a + b) == c", not error out on a
+// bare "b == c" sub-expression fed back into "+".
+func TestDSLEval_PlusBindsTighterThanComparison(t *testing.T) {
+	ctx := dsl.Context{Vars: map[string]string{"a": "foo", "b": "bar"}}
+	val, err := dsl.Eval(`a + b == "foobar"`, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
+
+// TestDSLEval_PlusInsideFunctionCall confirms function arguments (parseCall)
+// also parse through the new additive level, e.g. contains(a + b, ...).
+func TestDSLEval_PlusInsideFunctionCall(t *testing.T) {
+	val, err := dsl.Eval(`contains("foo" + "bar", "oob")`, dsl.Context{})
+	require.NoError(t, err)
+	assert.Equal(t, true, val)
+}
