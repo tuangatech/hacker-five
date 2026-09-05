@@ -23,7 +23,7 @@
 3. ⬜ **Hard safety blockers + scope-creep gate + cost-aware prioritization** (Weeks 44-45)
 4. 🟡 **Approval UI: make the plan preview actionable** (Week 46) — partially done 2026-09-04
 5. ⬜ **Session log + release** (Weeks 47-48) — `v0.6.0`
-6. ⬜ **Scan-execution efficiency: corpus scoping + concurrency + corpus-once-per-host** (added 2026-09-05 from [follow-up.md](follow-up.md) LT-18 and the 2026-09-06 nettix.com.pe review) — gates Step 5's `v0.6.0` release
+6. ✅ **Scan-execution efficiency: corpus scoping + concurrency + corpus-once-per-host** (added 2026-09-05 from [follow-up.md](follow-up.md) LT-18 and the 2026-09-06 nettix.com.pe review) — done 2026-09-05; gated Step 5's `v0.6.0` release
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-14.)
 
@@ -342,7 +342,7 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 
 ---
 
-## Step 6: Scan-Execution Efficiency — Corpus Scoping + Concurrency + Corpus-Once-Per-Host (added 2026-09-05) — 🟡 (a) done 2026-09-06, (b)+(c) done 2026-09-05; (d) not yet
+## Step 6: Scan-Execution Efficiency — Corpus Scoping + Concurrency + Corpus-Once-Per-Host (added 2026-09-05) — ✅ (a) done 2026-09-06, (b)+(c)+(d) done 2026-09-05
 
 ### Design
 
@@ -481,11 +481,18 @@ still always loads the corpus — it needs a full parse to resolve its one `id:`
 caller change; unit-verified (once per host, once per distinct host, template-ID leaf
 keeps its load).
 
-### Files — (d), anticipated
+### Done note — part (d), 2026-09-05
 
-(a), (b), (c) are done — see their Done notes above.
-
-- **(d)** `pkg/scanner/engine.go` — `loadTemplates` skips non-template files and emits a bucketed rejection summary; full per-file list behind `--verbose`/`--log-rejected`; by-design refusals below `warn`.
+`loadTemplates`' rejected-template output is no longer one `warn` line per file
+(~200 on a full-corpus scan, none actionable at scan time). By default it's a
+compact per-reason histogram: a by-design refusal (disallowed protocol block,
+`xpath`, a `flow:` construct, an unsupported matcher/extractor/DSL feature) logs
+at `info`; only a reason that can mean a corrupt or partial sync (malformed YAML,
+a file missing a required section) still logs `warn`. Tooling/data files that
+only share the `.yml` extension (`helpers/` wordlist tree, repo-root configs) are
+dropped from the count entirely. `--verbose` restores the full per-file list;
+`--log-rejected <file>` writes it to a file while keeping the summary on stderr.
+Live-checked against a synthetic mixed-rejection corpus; unit-verified.
 
 ### Verification
 Unit: `DetectorTemplateTags` returns the right floor per detector; a `misconfig` load with
@@ -510,7 +517,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 | 2 | An I4 `use_existing_tag` decision still can't dispatch via item 4's new template-ID path — `buildLeafPrompt` only ever shows the model *tags* (shared across many templates), never per-template IDs, so the decision rarely matches a real `Entry.ID`. Fully fixed for R8's own deterministic matches; not for I4's. | Needs its own design decision: run every template carrying the chosen tag? A second, narrower call to pick one ID? Change the catalog to show IDs instead of tags? |
 | 3 | **Pre-existing, unrelated test failure**: `TestEndToEnd_StartScan_ProducesRealFindings` (`pkg/webui`) fails — confirmed via a clean worktree of the last commit that it fails identically there too, so not caused by any change in this doc. | Investigate separately; not a regression to chase down as part of this phase's own work. |
 | 4 | Not yet live-verified: a real multi-leaf concurrency timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism); Step 3's B4 scope-creep trigger names the executor as its future caller, but that hook doesn't exist in `RunPlan` yet. | Timing check: do alongside Step 5's lab-target round trip. B4 hook: correctly Step 3's job, not a gap in Step 2 itself. |
-| 5 | **A scan spends its wall-clock on templates unrelated to the target** ([follow-up.md](follow-up.md) LT-18 + the 2026-09-06 nettix.com.pe review). | **Step 6**: (a) detector-category floor ∪ tech-fact extras, `--narrow-by-tech` default-on — ✅ 2026-09-06; (b) bounded intra-target template fan-out (`--template-concurrency`) — ✅ 2026-09-05, live-verified against aceautowreckers.com (4m40s default-scoped misconfig run); (c) corpus once per host in `RunPlan` — ✅ 2026-09-05; (d) rejected-template log hygiene — open, gates Step 5's `v0.6.0` release. |
+| 5 | **A scan spends its wall-clock on templates unrelated to the target** ([follow-up.md](follow-up.md) LT-18 + the 2026-09-06 nettix.com.pe review). | **Step 6, all done**: (a) detector-category floor ∪ tech-fact extras, `--narrow-by-tech` default-on — ✅ 2026-09-06; (b) bounded intra-target template fan-out (`--template-concurrency`) — ✅ 2026-09-05, live-verified against aceautowreckers.com (4m40s default-scoped misconfig run); (c) corpus once per host in `RunPlan` — ✅ 2026-09-05; (d) rejected-template log hygiene (compact per-reason histogram by default, full list behind `--verbose`/`--log-rejected`) — ✅ 2026-09-05. |
 | 6 | **Duplicate findings for one underlying fact** ([follow-up.md](follow-up.md) LT-6): a native `misconfig-missing-header-*` finding and the nuclei `http-missing-security-headers` template both fire on the same response — 5 findings for one fact. `reporter.Dedup` is exact-`Finding.ID`-only by deliberate design (see its doc comment: cross-format semantic dedup "deliberately not attempted"). | Needs a real design decision, not a quick fix — a naive topic-level key risks over-suppressing genuinely distinct findings (the nuclei finding is one aggregate row covering *many* headers; the native ones are one-per-header — an N:1 relationship, not "same key twice"). Options: split the nuclei aggregate into per-header sub-facts before dedup; or a `(target, finding-class)` key with `finding-class` derived only for the known missing-header overlap; or accept the duplication as "two detectors agreeing" and only collapse in the report view. Do during Step 5's release-hardening pass, or defer to Phase 7 Step 3's Exporter work — not before the design is settled. |
 | 7 | **SSE `/catchup` doesn't replay `#logs`/`#findings`** ([follow-up.md](follow-up.md) LT-5), only the idempotent progress/recon fragments — a late-connecting or reconnecting client permanently loses everything before connect. `CatchupData`'s doc comment records this as a *deliberate* narrow scope (blind replay would duplicate already-streamed append-list rows). | Needs a monotonic sequence/cursor on `Job`'s log/finding accumulation so catchup can replay only entries after the client's last-seen marker (and a client-side change to report it). Scheduled as a bullet on **Phase 7 Step 3** (Observability Upgrade) — that step reworks the SSE streams anyway. |
 
@@ -537,7 +544,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 - [x] **(Step 6a)** `--narrow-by-tech` defaults on; `scan --detector X` with no `--tags`/`--recon-file` loads a detector-category-scoped subset (`registry.DetectorTemplateTags`), not the full ~9.5k corpus; `--all-templates` restores the full load; with a `--recon-file` the scoped set is floor ∪ `TechStackTags`; a `misconfig` run still fires every `exposure`/missing-header/`default-login` template (no recall loss) — done 2026-09-06 (see Step 6 Done note), all three frontends, live-verified against nettix.com.pe (9,476 → 3,745)
 - [x] **(Step 6b)** the per-target template loop is a bounded parallel fan-out (`--template-concurrency`, default 10) — still `--rate-limit`-throttled, prompt-injection still capped at 5 — done 2026-09-05 (see Step 6 Done note); live-verified against aceautowreckers.com — default-scoped `--detector misconfig` completed in 4m40s (vs the ~53 min LT-18 measured), conc 1→10 on a 328-template subset: 39s→23s
 - [x] **(Step 6c)** `planexec.RunPlan` loads/runs the template corpus at most once per host, not once per (host, builtin-capability-leaf) pair — done 2026-09-05 (see Step 6 Done note), unit-verified; a specific-template leaf still loads it for its own `id:` match
-- [ ] **(Step 6d)** `loadTemplates` skips non-template `.yml` files and emits one bucketed rejection summary by default (full per-file list behind `--verbose`/`--log-rejected`); by-design refusals log below `warn`
+- [x] **(Step 6d)** `loadTemplates` skips non-template `.yml` files and emits one bucketed rejection summary by default (full per-file list behind `--verbose`/`--log-rejected`); by-design refusals log below `warn` — done 2026-09-05 (see Step 6 Done note), unit-verified + eyeballed against a synthetic mixed-rejection corpus
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason
 
