@@ -150,6 +150,19 @@ type Config struct {
 	// package default.
 	RaceConcurrency int
 
+	// TemplateConcurrency (from --template-concurrency) bounds how many loaded
+	// templates fire in parallel against a *single* target — the inner fan-out
+	// doc15 Step 6b added on top of the cross-target Concurrency pool. 0 selects
+	// defaultTemplateConcurrency (engine.go). The shared httpclient rate limiter
+	// (ratelimit.New(RateLimit)) still caps aggregate req/s across every
+	// template worker and every target job, so this only removes the
+	// per-request round-trip dead time of a strictly sequential loop — it can't
+	// push the scan past --rate-limit. Automatically capped to
+	// promptInjectionSafeConcurrency when any loaded template is
+	// prompt-injection-tagged (such a request can trigger a real, metered LLM
+	// call on the target's backend).
+	TemplateConcurrency int
+
 	// IDORPreview (from --idor-preview) fires one extra preflight GET against
 	// the resolved --endpoint before idor's real ID-enumeration loop begins,
 	// logging its status/body-length — closes the "a wrong EndpointTemplate

@@ -44,7 +44,26 @@ const (
 	// imposes real cost/load in a way nothing else here does.
 	promptInjectionTag             = "prompt-injection"
 	promptInjectionSafeConcurrency = 5
+
+	// defaultTemplateConcurrency is the per-target template fan-out (doc15
+	// Step 6b) used when Config.TemplateConcurrency is unset. Sized to hide
+	// per-request round-trip latency behind the shared rate limiter without a
+	// large goroutine footprint once multiplied by the cross-target pool size
+	// — the rate limiter (ratelimit.New(cfg.RateLimit)), not this number, is
+	// the real throughput cap.
+	defaultTemplateConcurrency = 10
 )
+
+// templateConcurrency resolves Config.TemplateConcurrency to its effective
+// value, applying the default when unset. The prompt-injection cap is applied
+// separately in Run (it needs the loaded template set to know whether any
+// prompt-injection template is present).
+func templateConcurrency(cfg Config) int {
+	if cfg.TemplateConcurrency > 0 {
+		return cfg.TemplateConcurrency
+	}
+	return defaultTemplateConcurrency
+}
 
 // Engine orchestrates a single scan run across every configured target.
 type Engine struct {
@@ -112,11 +131,17 @@ func New(cfg Config) *Engine {
 	// whole scan, not just once per target job (a real gap a live 100-target
 	// benchmark found — see docs/10-implementation-plan-ph1b.md's Definition
 	// of Done).
+	// MaxIdleConnsPerHost covers both fan-out axes: up to cfg.Concurrency
+	// targets in flight across the cross-target pool, and (doc15 Step 6b) up to
+	// templateConcurrency(cfg) templates in flight against any one of them —
+	// summed so a single-target full-corpus scan's per-host connection reuse
+	// isn't starved into per-request TCP/TLS churn that would add back the
+	// round-trip dead time Step 6b removes.
 	client := httpclient.New(httpclient.Config{
 		Timeout:             cfg.Timeout,
 		MaxRedirects:        maxRedirects,
 		InsecureSkipVerify:  cfg.Insecure,
-		MaxIdleConnsPerHost: cfg.Concurrency,
+		MaxIdleConnsPerHost: cfg.Concurrency + templateConcurrency(cfg),
 		ProxyURL:            cfg.ProxyURL,
 	}, httpclient.WithRateLimit(ratelimit.New(cfg.RateLimit)), httpclient.WithRetry(retryMaxAttempts, retryBackoff))
 
@@ -155,6 +180,16 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 	defer nucleiExec.Close()
 	nativeExec := native.New(e.client, e.idorOptions()...).WithHeaders(e.cfg.ExtraHeaders)
 
+	// tmplConc is the per-target template fan-out (doc15 Step 6b). A
+	// prompt-injection template forces the safe cap regardless of the
+	// configured/default value — see promptInjectionSafeConcurrency.
+	tmplConc := templateConcurrency(e.cfg)
+	if tmplConc > promptInjectionSafeConcurrency && anyTemplateHasTag(nucleiTemplates, nativeTemplates, promptInjectionTag) {
+		e.warnf("info", "per-target template concurrency capped at %d (from %d): a prompt-injection template is loaded — its request can trigger a real, metered LLM call on the target's backend",
+			promptInjectionSafeConcurrency, tmplConc)
+		tmplConc = promptInjectionSafeConcurrency
+	}
+
 	var (
 		mu       sync.Mutex
 		findings []detectors.Finding
@@ -192,39 +227,11 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 			// Templates are additive on top of the built-in detector, not an
 			// alternative to it (see docs/10-implementation-plan-ph1b.md
 			// Step 1's rationale) — every loaded template runs against every
-			// target, in addition to whichever --detector was selected
-			// above. Sequential per target, not fanned into further pool
-			// jobs: matches the default (small, curated) --templates set;
-			// scanning the full opt-in synced corpus against many targets
-			// will be slower, a pre-existing characteristic, not a new one.
-			for _, tmpl := range nucleiTemplates {
-				fs, err := nucleiExec.Run(ctx, target, tmpl)
-				if err != nil {
-					if ctx.Err() != nil {
-						break // the scan itself is stopping — trying/logging the rest is just noise
-					}
-					e.warnf("warn", "template %s against %s: %v", tmpl.ID, target, err)
-					continue // one bad template shouldn't abort the whole target's scan
-				}
-				for _, f := range fs {
-					e.emitFinding(f)
-				}
-				results = append(results, fs...)
-			}
-			for _, tmpl := range nativeTemplates {
-				fs, err := nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
-				if err != nil {
-					if ctx.Err() != nil {
-						break
-					}
-					e.warnf("warn", "template %s against %s: %v", tmpl.ID, target, err)
-					continue
-				}
-				for _, f := range fs {
-					e.emitFinding(f)
-				}
-				results = append(results, fs...)
-			}
+			// target, in addition to whichever --detector was selected above.
+			// Fired with bounded intra-target concurrency (doc15 Step 6b); the
+			// shared rate limiter still caps aggregate req/s, so this only
+			// removes a sequential loop's per-request round-trip dead time.
+			results = append(results, e.runTemplates(ctx, target, nucleiTemplates, nativeTemplates, nucleiExec, nativeExec, tmplConc)...)
 
 			mu.Lock()
 			findings = append(findings, results...)
@@ -240,6 +247,94 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 		return findings, fmt.Errorf("scan completed with %d error(s), first: %w", len(errs), errs[0])
 	}
 	return findings, nil
+}
+
+// runTemplates fires every loaded template (both formats) against one target
+// with up to conc running concurrently — the doc15 Step 6b inner fan-out on
+// top of Run's cross-target worker pool. It returns every finding produced and
+// also passes each to emitFinding as its batch lands, keeping the old
+// sequential loop's per-batch callback granularity.
+//
+// The shared httpclient rate limiter still caps aggregate req/s across every
+// worker here and every other in-flight target job, so conc only removes the
+// per-request round-trip dead time of a sequential loop — it can't push the
+// scan past --rate-limit. Finding order in the returned slice is completion
+// order, not template-file order; nothing downstream relies on it
+// (reporter.Dedup keys on Finding.ID, the report sorts by severity).
+//
+// ctx cancellation stops dispatch of any not-yet-started template (acquire
+// selects on ctx.Done()); a template already in flight runs to its own
+// ctx-aware completion. A single template's execution error is warn-logged and
+// skipped, exactly as the pre-6b loop did — unless ctx is already done, where
+// it's silent (the scan itself is stopping, logging the rest is just noise).
+func (e *Engine) runTemplates(
+	ctx context.Context,
+	target string,
+	nucleiTemplates []*nuclei.Template,
+	nativeTemplates []*native.Template,
+	nucleiExec *nuclei.Executor,
+	nativeExec *native.Executor,
+	conc int,
+) []detectors.Finding {
+	if conc < 1 {
+		conc = 1
+	}
+	var (
+		mu       sync.Mutex
+		findings []detectors.Finding
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, conc)
+	)
+
+	// acquire takes a concurrency slot, or reports false if ctx ends first so
+	// the caller stops dispatching. Slots are released in fire's defer.
+	acquire := func() bool {
+		select {
+		case sem <- struct{}{}:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	fire := func(id string, run func() ([]detectors.Finding, error)) {
+		defer wg.Done()
+		defer func() { <-sem }()
+		fs, err := run()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			e.warnf("warn", "template %s against %s: %v", id, target, err)
+			return
+		}
+		mu.Lock()
+		findings = append(findings, fs...)
+		mu.Unlock()
+		for _, f := range fs {
+			e.emitFinding(f)
+		}
+	}
+
+	for _, tmpl := range nucleiTemplates {
+		if !acquire() {
+			break
+		}
+		tmpl := tmpl
+		wg.Add(1)
+		go fire(tmpl.ID, func() ([]detectors.Finding, error) { return nucleiExec.Run(ctx, target, tmpl) })
+	}
+	for _, tmpl := range nativeTemplates {
+		if !acquire() {
+			break
+		}
+		tmpl := tmpl
+		wg.Add(1)
+		go fire(tmpl.ID, func() ([]detectors.Finding, error) {
+			return nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
+		})
+	}
+	wg.Wait()
+	return findings
 }
 
 // loadScope returns e.cfg.Scope if the caller already supplied a pre-parsed

@@ -113,6 +113,17 @@ func TestNewScanCmd_TemplateScopeFlagsRegistered(t *testing.T) {
 	assert.Equal(t, "templates/index.json", indexFlag.DefValue)
 }
 
+// TestNewScanCmd_TemplateConcurrencyFlagRegistered covers doc15 Step 6b's
+// per-target template fan-out knob: --template-concurrency, default 0 (the
+// engine's built-in default applies).
+func TestNewScanCmd_TemplateConcurrencyFlagRegistered(t *testing.T) {
+	cmd := newScanCmd(&rootFlags{})
+
+	flag := cmd.Flags().Lookup("template-concurrency")
+	require.NotNil(t, flag, "--template-concurrency must be registered")
+	assert.Equal(t, "0", flag.DefValue, "0 means the engine's built-in default (doc15 Step 6b)")
+}
+
 // TestUnionTags confirms the floor ∪ extras composition scan's RunE folds
 // into scanner.Config.DerivedTags: order-stable, de-duplicated, lower-cased,
 // blanks dropped.

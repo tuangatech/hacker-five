@@ -656,18 +656,17 @@ http:
 	assert.NotContains(t, joined, "broken-request", "a malformed rendered URL is a per-entry rendering failure now, not a logged template execution warning")
 }
 
-// TestEngineRun_TemplateLoop_StopsOnContextDone confirms the per-target
-// template loop breaks (rather than continuing to try, and warn-logging,
-// every remaining template) once the scan's own context is done — doc15
-// Step 2's 2026-09-03 addendum item 1's cancellation carve-out. Detector is
-// left empty (ValidateOptions.SkipDetectorRequired) so runDetector's "" case
-// returns immediately with no network call, isolating the behavior under
-// test to the template loop itself rather than racing a detector request
-// against the context timeout too. The first template's target never
-// responds, so by the time its request would otherwise complete, ctx's own
-// short deadline has already elapsed — the second template must then never
-// be attempted at all.
-func TestEngineRun_TemplateLoop_StopsOnContextDone(t *testing.T) {
+// TestEngineRun_TemplateLoop_StopsDispatchOnContextDone confirms the
+// per-target template fan-out (doc15 Step 6b) stops dispatching not-yet-started
+// templates once the scan's own context is done — the concurrent successor to
+// the pre-6b "breaks the sequential loop" carve-out (doc15 Step 2's 2026-09-03
+// addendum item 1). Detector is left empty (ValidateOptions.SkipDetectorRequired)
+// so runDetector's "" case returns immediately with no network call, isolating
+// the behavior under test. With TemplateConcurrency 3, exactly the first 3
+// templates take a slot before the 100ms ctx deadline; the 4th's acquire loses
+// to ctx.Done() and dispatch stops — so a late template must never be attempted
+// or logged, even though 9 more remain.
+func TestEngineRun_TemplateLoop_StopsDispatchOnContextDone(t *testing.T) {
 	var hits int
 	var hitsMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -680,9 +679,9 @@ func TestEngineRun_TemplateLoop_StopsOnContextDone(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	dir := t.TempDir()
-	for i, id := range []string{"first-slow", "second-never-reached"} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("t%d.yaml", i)), []byte(fmt.Sprintf(`
-id: %s
+	for i := 0; i < 12; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("t%02d.yaml", i)), []byte(fmt.Sprintf(`
+id: t%02d
 info:
   name: t
   severity: info
@@ -693,15 +692,16 @@ http:
     matchers:
       - type: status
         status: [200]
-`, id)), 0o644))
+`, i)), 0o644))
 	}
 
 	cfg := scanner.Config{
-		Targets:       []string{server.URL},
-		TemplatePaths: []string{dir},
-		Concurrency:   5,
-		RateLimit:     50,
-		Timeout:       5 * time.Second, // the http client's own timeout — must outlast ctx's deadline below
+		Targets:             []string{server.URL},
+		TemplatePaths:       []string{dir},
+		Concurrency:         5,
+		TemplateConcurrency: 3,
+		RateLimit:           50,
+		Timeout:             5 * time.Second, // the http client's own timeout — must outlast ctx's deadline below
 	}
 	require.NoError(t, cfg.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true}))
 
@@ -719,11 +719,112 @@ http:
 	hitsMu.Lock()
 	gotHits := hits
 	hitsMu.Unlock()
-	assert.Equal(t, 1, gotHits, "the second template must never be attempted once ctx is done")
+	assert.LessOrEqual(t, gotHits, 3, "no more than TemplateConcurrency templates may be dispatched before ctx-done stops the rest")
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.NotContains(t, strings.Join(msgs, "\n"), "second-never-reached", "must not log anything for a template it never attempted")
+	assert.NotContains(t, strings.Join(msgs, "\n"), "t11", "must not log anything for a template it never dispatched")
+}
+
+// TestEngineRun_TemplateLoop_RunsConcurrently locks in doc15 Step 6b's core
+// behavior: the per-target template loop is a bounded parallel fan-out, not a
+// sequential loop. Ten templates each hit a server that sleeps ~200ms; run
+// sequentially that's ~2s, but at TemplateConcurrency 10 (all in one wave) it
+// finishes in well under half that. RateLimit is set high so the shared
+// token-bucket limiter's burst covers all ten requests without pacing them.
+func TestEngineRun_TemplateLoop_RunsConcurrently(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	const n = 10
+	for i := 0; i < n; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("t%02d.yaml", i)), []byte(fmt.Sprintf(`
+id: t%02d
+info:
+  name: t
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: status
+        status: [200]
+`, i)), 0o644))
+	}
+
+	cfg := scanner.Config{
+		Targets:             []string{server.URL},
+		TemplatePaths:       []string{dir},
+		Concurrency:         5,
+		TemplateConcurrency: n,
+		RateLimit:           1000,
+		Timeout:             5 * time.Second,
+	}
+	require.NoError(t, cfg.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true}))
+
+	start := time.Now()
+	findings, err := scanner.New(cfg).Run(context.Background())
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+
+	assert.Len(t, findings, n, "every template must still fire and match")
+	assert.Less(t, elapsed, time.Second, "10 × ~200ms templates must run concurrently (< 1s), not sequentially (~2s); got %s", elapsed)
+}
+
+// TestEngineRun_TemplateLoop_PromptInjectionCapsConcurrency confirms the
+// prompt-injection safety cap (promptInjectionSafeConcurrency = 5) is applied
+// to the per-target fan-out regardless of a higher configured/default value —
+// doc15 Step 6b keeps Phase 4's guardrail intact now that the loop is parallel.
+// Observed via the info log the cap emits.
+func TestEngineRun_TemplateLoop_PromptInjectionCapsConcurrency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pi.yaml"), []byte(`
+id: pi-check
+info:
+  name: Prompt injection check
+  severity: info
+  tags: prompt-injection
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: status
+        status: [200]
+`), 0o644))
+
+	cfg := scanner.Config{
+		Targets:             []string{server.URL},
+		TemplatePaths:       []string{dir},
+		Concurrency:         5,
+		TemplateConcurrency: 25,
+		RateLimit:           50,
+		Timeout:             5 * time.Second,
+		Detector:            "misconfig",
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, strings.Join(msgs, "\n"), "template concurrency capped at 5",
+		"a loaded prompt-injection template must cap the per-target template fan-out to the safe default")
 }
 
 // TestEngineRun_PromptInjectionGuardrail_WarnsWhenConcurrencyTooHigh confirms
@@ -777,6 +878,9 @@ http:
 // TestEngineRun_PromptInjectionGuardrail_SilentAtOrBelowSafeDefault is the
 // negative counterpart: no warning fires at --concurrency 5 (the safe
 // default itself) even with a prompt-injection-tagged template loaded.
+// TemplateConcurrency is pinned to the safe value too, so the doc15 Step 6b
+// per-target fan-out cap (a separate, legitimate info line) doesn't fire here
+// either — this test isolates the --concurrency loadTemplates warn.
 func TestEngineRun_PromptInjectionGuardrail_SilentAtOrBelowSafeDefault(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -800,12 +904,13 @@ http:
 `), 0o644))
 
 	cfg := scanner.Config{
-		Targets:       []string{server.URL},
-		TemplatePaths: []string{dir},
-		Concurrency:   5,
-		RateLimit:     50,
-		Timeout:       5 * time.Second,
-		Detector:      "misconfig",
+		Targets:             []string{server.URL},
+		TemplatePaths:       []string{dir},
+		Concurrency:         5,
+		TemplateConcurrency: 5,
+		RateLimit:           50,
+		Timeout:             5 * time.Second,
+		Detector:            "misconfig",
 	}
 	require.NoError(t, cfg.Validate())
 
