@@ -124,6 +124,20 @@ func TestNewScanCmd_TemplateConcurrencyFlagRegistered(t *testing.T) {
 	assert.Equal(t, "0", flag.DefValue, "0 means the engine's built-in default (doc15 Step 6b)")
 }
 
+// TestNewScanCmd_RejectedTemplateFlagsRegistered covers doc15 Step 6d's
+// rejected-template log-hygiene knobs.
+func TestNewScanCmd_RejectedTemplateFlagsRegistered(t *testing.T) {
+	cmd := newScanCmd(&rootFlags{})
+
+	verbose := cmd.Flags().Lookup("verbose")
+	require.NotNil(t, verbose, "--verbose must be registered")
+	assert.Equal(t, "false", verbose.DefValue)
+
+	logRejected := cmd.Flags().Lookup("log-rejected")
+	require.NotNil(t, logRejected, "--log-rejected must be registered")
+	assert.Equal(t, "", logRejected.DefValue)
+}
+
 // TestUnionTags confirms the floor ∪ extras composition scan's RunE folds
 // into scanner.Config.DerivedTags: order-stable, de-duplicated, lower-cased,
 // blanks dropped.

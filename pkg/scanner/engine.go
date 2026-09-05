@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -404,9 +406,20 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		// applied there for the Web UI's template count.
 		rejected = append(rejected, rejectedByBothFormats(nErrs, vErrs)...)
 	}
+	// Drop tooling/data files that share the .yml/.yaml extension with real
+	// templates but were never meant to be one (doc15 Step 6d) — they land in
+	// the synced corpus dir via sparse-checkout (helpers/) or as an upstream
+	// repo-root config, and always fail both loaders with "template has no id".
+	// Not counted as rejected templates and never itemized.
+	kept := rejected[:0:0]
 	for _, rt := range rejected {
-		e.warnf("warn", "rejected template %s: not valid in either format (nuclei: %v; native: %v)", rt.Path, rt.NucleiErr, rt.NativeErr)
+		if isNonTemplateFile(rt.Path) {
+			continue
+		}
+		kept = append(kept, rt)
 	}
+	rejected = kept
+	e.reportRejected(rejected)
 
 	loadedNuclei, loadedNative := len(nucleiTemplates), len(nativeTemplates)
 	// Effective tag scoping (doc15 Step 6a): an explicit --tags (cfg.Tags) is
@@ -470,6 +483,141 @@ func rejectedByBothFormats(nErrs []nuclei.LoadError, vErrs []native.LoadError) [
 		}
 	}
 	return rejected
+}
+
+// isNonTemplateFile reports whether path is a repo/tooling/data file that
+// shares a .yml/.yaml extension with real templates but is not one — it
+// reaches the corpus dir through pkg/templatesync.SupportDirs' sparse-checkout
+// of upstream's helpers/ wordlist tree, or as an upstream repo-root config,
+// and always fails both loaders with "template has no id". loadTemplates drops
+// these from the rejection accounting entirely rather than counting/logging
+// them as broken templates (doc15 Step 6d).
+func isNonTemplateFile(path string) bool {
+	switch filepath.Base(path) {
+	case ".pre-commit-config.yml", ".pre-commit-config.yaml":
+		return true
+	}
+	slashed := filepath.ToSlash(path)
+	return strings.Contains(slashed, "/helpers/") || strings.HasPrefix(slashed, "helpers/")
+}
+
+// reportRejected emits loadTemplates' rejected-template output. By default
+// (doc15 Step 6d) that's a compact per-reason histogram — one line per bucket,
+// at "info" for a deliberate, known restriction (a disallowed protocol block,
+// xpath, a flow: construct, an unsupported matcher/extractor/DSL feature) and
+// "warn" only for a bucket that can signal a corrupt or partial sync (malformed
+// YAML, a file missing a required section). The full per-file list (~200 lines
+// on a full-corpus scan, none actionable at scan time, identical run-to-run) is
+// emitted only when cfg.Verbose is set, or written to cfg.LogRejectedPath if
+// that is set instead.
+func (e *Engine) reportRejected(rejected []rejectedTemplate) {
+	if len(rejected) == 0 {
+		return
+	}
+
+	switch {
+	case e.cfg.LogRejectedPath != "":
+		e.writeRejectedFile(rejected)
+	case e.cfg.Verbose:
+		for _, rt := range rejected {
+			e.warnf("warn", "rejected template %s: not valid in either format (nuclei: %v; native: %v)", rt.Path, rt.NucleiErr, rt.NativeErr)
+		}
+	}
+
+	type bucket struct {
+		count    int
+		byDesign bool
+	}
+	buckets := map[string]*bucket{}
+	var order []string
+	for _, rt := range rejected {
+		name, byDesign := rejectionBucket(rt)
+		b := buckets[name]
+		if b == nil {
+			b = &bucket{byDesign: byDesign}
+			buckets[name] = b
+			order = append(order, name)
+		}
+		b.count++
+	}
+	sort.SliceStable(order, func(i, j int) bool { return buckets[order[i]].count > buckets[order[j]].count })
+
+	hint := ""
+	if e.cfg.LogRejectedPath == "" && !e.cfg.Verbose {
+		hint = " (--verbose or --log-rejected <file> for the per-file list)"
+	}
+	e.warnf("info", "%d template(s) rejected by both formats, by reason%s:", len(rejected), hint)
+	for _, name := range order {
+		b := buckets[name]
+		level := "warn"
+		if b.byDesign {
+			level = "info"
+		}
+		e.warnf(level, "  %4d  %s", b.count, name)
+	}
+}
+
+// writeRejectedFile writes the full per-file rejected-template detail to
+// cfg.LogRejectedPath (one tab-separated line per file) instead of stderr —
+// keeps the compact histogram visible while making the full list available
+// without drowning a normal run's output.
+func (e *Engine) writeRejectedFile(rejected []rejectedTemplate) {
+	f, err := os.Create(e.cfg.LogRejectedPath)
+	if err != nil {
+		e.warnf("warn", "could not write --log-rejected file %s: %v", e.cfg.LogRejectedPath, err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	for _, rt := range rejected {
+		_, _ = fmt.Fprintf(f, "%s\tnuclei: %v\tnative: %v\n", rt.Path, rt.NucleiErr, rt.NativeErr)
+	}
+	e.warnf("info", "wrote %d rejected-template detail line(s) to %s", len(rejected), e.cfg.LogRejectedPath)
+}
+
+// rejectionBucket classifies a both-formats rejection into one of a small set
+// of normalized reason buckets for reportRejected's histogram. It keys off the
+// nuclei-format error: the synced corpus is almost entirely nuclei-format, so
+// that half carries the real reason while the native half is nearly always
+// just "written in the other format." byDesign marks a deliberate, documented
+// restriction (logged below "warn") as opposed to a reason that can indicate a
+// corrupt or partial sync.
+func rejectionBucket(rt rejectedTemplate) (name string, byDesign bool) {
+	msg := ""
+	if rt.NucleiErr != nil {
+		msg = rt.NucleiErr.Error()
+	}
+	switch {
+	case strings.Contains(msg, "disallowed block"):
+		blk := "?"
+		if i := strings.Index(msg, `"`); i >= 0 {
+			if j := strings.Index(msg[i+1:], `"`); j >= 0 {
+				blk = msg[i+1 : i+1+j]
+			}
+		}
+		return "disallowed protocol block (" + blk + ":)", true
+	case strings.Contains(msg, "internal: true outside a flow:"):
+		return "internal: matcher outside flow:", true
+	case strings.Contains(msg, "absolute-URI request line"):
+		return "absolute-URI raw request line", true
+	case strings.Contains(msg, "flow:"):
+		return "flow: construct not supported", true
+	case strings.Contains(msg, "xpath"):
+		return "xpath matcher/extractor not supported", true
+	case strings.Contains(msg, "parsing yaml"):
+		return "malformed YAML", false
+	case strings.Contains(msg, "template has no id"),
+		strings.Contains(msg, "template has no http: requests"),
+		strings.Contains(msg, "no path"):
+		return "not a template / missing required section", false
+	case strings.Contains(msg, ".matchers["):
+		return "unsupported matcher syntax/DSL", true
+	case strings.Contains(msg, ".extractors["):
+		return "unsupported extractor syntax/DSL", true
+	case strings.Contains(msg, "payload"):
+		return "unsupported payloads: construct", true
+	default:
+		return "other", false
+	}
 }
 
 // anyTemplateHasTag reports whether any loaded template (either format)

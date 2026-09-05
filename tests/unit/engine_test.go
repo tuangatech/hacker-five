@@ -535,38 +535,35 @@ func TestEngineRun_LogCallback_FiresForDetectorError(t *testing.T) {
 	assert.Contains(t, strings.Join(msgs, "\n"), "running idor detector against", "must log which detector/target failed")
 }
 
-// TestEngineRun_LogCallback_ItemizesRejectedTemplate confirms loadTemplates
-// names the rejected path and both formats' reasons, not just the aggregate
-// count already covered elsewhere — doc15 Step 2's 2026-09-03 addendum item
-// 1. A template with no id: fails both loaders' validate() the same way
-// ("template has no id"), so it's genuinely rejected by both, not just
-// written in the other format.
-func TestEngineRun_LogCallback_ItemizesRejectedTemplate(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(server.Close)
-
-	dir := t.TempDir()
-	badPath := filepath.Join(dir, "no-id.yaml")
-	require.NoError(t, os.WriteFile(badPath, []byte(`
+// writeRejectFixtures drops three files rejected by both template formats into
+// dir — one per reportRejected bucket class: a by-design disallowed-block
+// refusal, malformed YAML, and a file with no id: — and returns their paths.
+func writeRejectFixtures(t *testing.T, dir string) (codePath, yamlPath, noIDPath string) {
+	t.Helper()
+	codePath = filepath.Join(dir, "uses-code-block.yaml")
+	require.NoError(t, os.WriteFile(codePath, []byte(`
+id: uses-code-block
+info:
+  name: uses code
+  severity: info
+code:
+  - engine: [sh]
+`), 0o644))
+	yamlPath = filepath.Join(dir, "broken.yaml")
+	require.NoError(t, os.WriteFile(yamlPath, []byte("not: [valid yaml at all\n"), 0o644))
+	noIDPath = filepath.Join(dir, "no-id.yaml")
+	require.NoError(t, os.WriteFile(noIDPath, []byte(`
 info:
   name: missing id
   severity: info
 `), 0o644))
+	return codePath, yamlPath, noIDPath
+}
 
-	cfg := scanner.Config{
-		Targets:       []string{server.URL},
-		TemplatePaths: []string{dir},
-		Concurrency:   5,
-		RateLimit:     50,
-		Timeout:       5 * time.Second,
-		Detector:      "misconfig",
-	}
+func runEngineCollectingLogs(t *testing.T, cfg scanner.Config) (levels, msgs []string) {
+	t.Helper()
 	require.NoError(t, cfg.Validate())
-
 	var mu sync.Mutex
-	var levels, msgs []string
 	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
 		mu.Lock()
 		levels = append(levels, level)
@@ -574,13 +571,150 @@ info:
 		mu.Unlock()
 	}).Run(context.Background())
 	require.NoError(t, err)
+	return levels, msgs
+}
 
+// TestEngineRun_RejectedTemplates_CompactSummaryByDefault covers doc15 Step 6d:
+// loadTemplates collapses the per-file "rejected template …" spam into one
+// per-reason histogram — a by-design refusal (disallowed protocol block) logs
+// below "warn"; a reason that can mean a corrupt/partial sync (malformed YAML,
+// no id:) still logs "warn". No individual file path is named by default.
+func TestEngineRun_RejectedTemplates_CompactSummaryByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	codePath, yamlPath, noIDPath := writeRejectFixtures(t, dir)
+
+	levels, msgs := runEngineCollectingLogs(t, scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	})
 	joined := strings.Join(msgs, "\n")
-	assert.Contains(t, joined, "rejected template", "must itemize, not just count, a rejected template")
-	assert.Contains(t, joined, badPath, "the itemized line must name the rejected file's path")
-	assert.Contains(t, joined, "template has no id", "the itemized line must carry the loader's actual reason")
-	assert.Contains(t, joined, "1 rejected", "the aggregate summary line must still report the count")
-	assert.Contains(t, levels, "warn", "the itemized rejection must log at \"warn\" level")
+
+	assert.Contains(t, joined, "3 template(s) rejected by both formats, by reason", "must print the bucketed summary header")
+	assert.Contains(t, joined, "disallowed protocol block (code:)", "the by-design bucket must be named")
+	assert.Contains(t, joined, "malformed YAML", "the malformed-YAML bucket must be named")
+	assert.NotContains(t, joined, codePath, "no individual file path in the default compact output")
+	assert.NotContains(t, joined, yamlPath, "no individual file path in the default compact output")
+	assert.NotContains(t, joined, noIDPath, "no individual file path in the default compact output")
+	assert.NotContains(t, joined, "rejected template "+codePath, "the pre-6d per-file line must be gone by default")
+
+	// The disallowed-block bucket is by-design → logs "info"; the malformed-YAML
+	// bucket can mean a corrupt sync → still logs "warn".
+	levelOf := func(substr string) string {
+		for i, m := range msgs {
+			if strings.Contains(m, substr) {
+				return levels[i]
+			}
+		}
+		return ""
+	}
+	assert.Equal(t, "info", levelOf("disallowed protocol block (code:)"), "a by-design refusal must log below warn")
+	assert.Equal(t, "warn", levelOf("malformed YAML"), "malformed YAML still logs at warn")
+}
+
+// TestEngineRun_RejectedTemplates_VerboseListsEachFile confirms --verbose
+// (Config.Verbose) restores the full per-file list on top of the summary.
+func TestEngineRun_RejectedTemplates_VerboseListsEachFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	codePath, _, noIDPath := writeRejectFixtures(t, dir)
+
+	_, msgs := runEngineCollectingLogs(t, scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+		Verbose:       true,
+	})
+	joined := strings.Join(msgs, "\n")
+
+	assert.Contains(t, joined, "rejected template "+codePath, "--verbose must name each rejected file")
+	assert.Contains(t, joined, "rejected template "+noIDPath, "--verbose must name each rejected file")
+	assert.Contains(t, joined, "template has no id", "--verbose keeps the loader's own reason text")
+	assert.Contains(t, joined, "3 template(s) rejected by both formats", "the summary still prints alongside the verbose list")
+	assert.NotContains(t, joined, "for the per-file list", "the hint is suppressed once --verbose is on")
+}
+
+// TestEngineRun_RejectedTemplates_LogRejectedWritesFile confirms --log-rejected
+// diverts the per-file detail to a file while keeping the summary on stderr.
+func TestEngineRun_RejectedTemplates_LogRejectedWritesFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	codePath, _, _ := writeRejectFixtures(t, dir)
+	outPath := filepath.Join(t.TempDir(), "rejected.txt")
+
+	_, msgs := runEngineCollectingLogs(t, scanner.Config{
+		Targets:         []string{server.URL},
+		TemplatePaths:   []string{dir},
+		Concurrency:     5,
+		RateLimit:       50,
+		Timeout:         5 * time.Second,
+		Detector:        "misconfig",
+		LogRejectedPath: outPath,
+	})
+	joined := strings.Join(msgs, "\n")
+
+	assert.Contains(t, joined, "3 template(s) rejected by both formats", "the compact summary still goes to the log stream")
+	assert.Contains(t, joined, "wrote 3 rejected-template detail line(s) to "+outPath)
+	assert.NotContains(t, joined, "rejected template "+codePath, "per-file detail goes to the file, not the log stream")
+
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	body := string(data)
+	assert.Contains(t, body, codePath, "the file carries every rejected path")
+	assert.Contains(t, body, "disallowed block", "the file carries the nuclei loader's reason")
+	assert.Equal(t, 3, strings.Count(body, "\n"), "one detail line per rejected file")
+}
+
+// TestEngineRun_RejectedTemplates_SkipsNonTemplateFiles confirms doc15 Step 6d
+// drops tooling/data files that only share the .yml extension (helpers/ tree,
+// repo-root configs) from the rejection accounting entirely.
+func TestEngineRun_RejectedTemplates_SkipsNonTemplateFiles(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	helpersDir := filepath.Join(dir, "helpers", "wordlists")
+	require.NoError(t, os.MkdirAll(helpersDir, 0o755))
+	helperPath := filepath.Join(helpersDir, "payloads.yml")
+	require.NoError(t, os.WriteFile(helperPath, []byte("- payload-one\n- payload-two\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".pre-commit-config.yaml"), []byte("repos: []\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte("not: [valid yaml at all\n"), 0o644))
+
+	_, msgs := runEngineCollectingLogs(t, scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+		Detector:      "misconfig",
+	})
+	joined := strings.Join(msgs, "\n")
+
+	assert.Contains(t, joined, "loaded 0 nuclei-compatible, 0 native templates (1 rejected, 0 filtered by tag)",
+		"only broken.yaml counts; the helpers/ file and .pre-commit-config are not templates")
+	assert.NotContains(t, joined, helperPath, "a helpers/ data file is never itemized as a rejected template")
+	assert.NotContains(t, joined, ".pre-commit-config", "a repo-root config is never itemized as a rejected template")
 }
 
 // TestEngineRun_MalformedTemplateURL_SkippedSilentlyWithoutLosingSiblings

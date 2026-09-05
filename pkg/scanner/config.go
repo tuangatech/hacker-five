@@ -163,6 +163,20 @@ type Config struct {
 	// call on the target's backend).
 	TemplateConcurrency int
 
+	// Verbose (from --verbose) turns on the engine's detailed diagnostic
+	// output. Today its only effect is loadTemplates' rejected-template
+	// reporting (doc15 Step 6d): off, the ~200 files the synced corpus rejects
+	// by both formats collapse to a compact per-reason histogram; on, every
+	// rejected file is logged individually with both loaders' reasons, exactly
+	// as the pre-6d loop did. LogRejectedPath is the file-output alternative.
+	Verbose bool
+
+	// LogRejectedPath (from --log-rejected) writes loadTemplates' full
+	// per-file rejected-template list (path + both formats' reasons) to this
+	// file instead of stderr, keeping the compact histogram on stderr. ""
+	// disables it. Takes precedence over Verbose for the per-file detail.
+	LogRejectedPath string
+
 	// IDORPreview (from --idor-preview) fires one extra preflight GET against
 	// the resolved --endpoint before idor's real ID-enumeration loop begins,
 	// logging its status/body-length — closes the "a wrong EndpointTemplate
