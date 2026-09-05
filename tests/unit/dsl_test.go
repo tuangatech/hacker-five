@@ -369,3 +369,60 @@ func TestDSLEval_PlusInsideFunctionCall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, true, val)
 }
+
+// TestDSLEval_NewStringHelpers is LT-22's (docs/follow-up.md) batch of
+// stdlib-only string helpers, previously all "unsupported function"
+// rejections. Signatures confirmed against ProjectDiscovery's own
+// helper-functions reference.
+func TestDSLEval_NewStringHelpers(t *testing.T) {
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{`to_upper("aBc")`, "ABC"},
+		{`toupper("aBc")`, "ABC"},
+		{`trim_space("  x  ")`, "x"},
+		{`replace("a-b-c", "-", "_")`, "a_b_c"},
+		{`replace_regex("a1b2c3", "[0-9]", "")`, "abc"},
+		{`hex_encode("AB")`, "4142"},
+		{`hex_decode("4142")`, "AB"},
+		{`url_encode("a b&c")`, "a+b%26c"},
+		{`url_decode("a+b%26c")`, "a b&c"},
+		{`json_minify("{ \"a\" : 1 }")`, `{"a":1}`},
+		{`starts_with("hello", "he")`, true},
+		{`starts_with("hello", "xx", "he")`, true},
+		{`starts_with("hello", "xx")`, false},
+		{`ends_with("hello", "lo")`, true},
+		{`ends_with("hello", "xx")`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.expr, func(t *testing.T) {
+			got, err := dsl.Eval(c.expr, dsl.Context{})
+			require.NoError(t, err)
+			assert.Equal(t, c.want, got)
+		})
+	}
+}
+
+// TestDSLEval_StringIntCoercion is LT-22's regression guard for the 9
+// "cannot compare string and int" rejections: real Nuclei coerces across
+// string/int rather than erroring.
+func TestDSLEval_StringIntCoercion(t *testing.T) {
+	// numeric string on one side, int on the other -> numeric compare
+	got, err := dsl.Eval(`status_code == "200"`, dsl.Context{StatusCode: 200})
+	require.NoError(t, err)
+	assert.Equal(t, true, got)
+
+	got, err = dsl.Eval(`status_code != "404"`, dsl.Context{StatusCode: 200})
+	require.NoError(t, err)
+	assert.Equal(t, true, got)
+
+	got, err = dsl.Eval(`"500" == status_code`, dsl.Context{StatusCode: 200})
+	require.NoError(t, err)
+	assert.Equal(t, false, got)
+
+	// non-numeric string vs int -> textual compare, still no hard error
+	got, err = dsl.Eval(`status_code == "unknown"`, dsl.Context{StatusCode: 200})
+	require.NoError(t, err)
+	assert.Equal(t, false, got)
+}

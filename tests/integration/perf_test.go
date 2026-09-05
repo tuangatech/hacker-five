@@ -34,14 +34,17 @@ import (
 // verbose-error + 5 default-creds checks, see pkg/detectors/misconfig/rules.go),
 // not real-world network variance across distinct hosts.
 //
-// Worth knowing going in: at the CLI's own defaults (--rate-limit 50,
-// --concurrency 25) and misconfig's ~50 requests/target, 100 targets is
-// ~5,000 requests total. The rate limiter allows a burst of 50 requests free,
-// then paces the rest at 50/sec — so the theoretical floor here is roughly
-// (5000-50)/50 ≈ 99s, regardless of target count or infrastructure. This
-// metric is really testing the rate-limiter/detector-request-volume
-// interaction, not raw engine throughput — worth knowing if the result lands
-// close to the 2-minute boundary rather than comfortably under it.
+// Worth knowing going in: this test pins --rate-limit 50 explicitly (NOT the
+// CLI default anymore — that was lowered to 10 on 2026-09-05, see
+// follow-up.md's Security & Scope Hardening section). 50 is kept here so the
+// rate limiter isn't the sole bottleneck and this stays a measure of engine
+// overhead, not default-config wall-clock. At 50 req/sec and misconfig's ~50
+// requests/target, 100 targets is ~5,000 requests total; the limiter allows a
+// burst of 50 free then paces the rest at 50/sec, so the theoretical floor is
+// roughly (5000-50)/50 ≈ 99s regardless of infrastructure. This metric is
+// really testing the rate-limiter/detector-request-volume interaction, not raw
+// engine throughput — worth knowing if the result lands close to the 2-minute
+// boundary rather than comfortably under it.
 func TestEngineRun_HundredTargetsPerformance(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -56,7 +59,7 @@ func TestEngineRun_HundredTargetsPerformance(t *testing.T) {
 	cfg := scanner.Config{
 		Targets:     targets,
 		Concurrency: 25, // matches cmd/hackerfive/scan.go's --concurrency default
-		RateLimit:   50, // matches --rate-limit default
+		RateLimit:   50, // pinned explicitly — no longer the CLI default (now 10); see this test's own doc comment
 		Timeout:     5 * time.Second,
 		Detector:    "misconfig",
 	}

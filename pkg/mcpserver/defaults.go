@@ -8,7 +8,7 @@ import "time"
 // argument, so these are the values used when a caller doesn't need to
 // override them.
 const (
-	defaultRateLimit   = 50
+	defaultRateLimit   = 10 // lowered 50 -> 10 on 2026-09-05, mirroring cmd/hackerfive/scan.go (follow-up.md Security & Scope Hardening)
 	defaultConcurrency = 25
 	defaultTimeout     = 30 * time.Second
 )

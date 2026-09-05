@@ -81,6 +81,20 @@ func (p *Poller) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Idle-skip (follow-up.md's Security & Scope Hardening note on
+			// interactsh_ traffic footprint): with no caller currently in
+			// Wait, a Poll would just discard whatever it fetched — so don't
+			// send it. This bounds sustained traffic to a configured OOB
+			// server to the windows where an interactsh_ template is actually
+			// mid-probe, instead of every 2s for the whole scan's duration.
+			// A callback that lands in an idle gap is dropped, same
+			// best-effort correlation dispatch already accepts.
+			p.mu.Lock()
+			idle := len(p.waiters) == 0
+			p.mu.Unlock()
+			if idle {
+				continue
+			}
 			interactions, err := p.client.Poll(ctx)
 			if err != nil {
 				continue // transient — next tick tries again

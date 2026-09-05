@@ -182,7 +182,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringArrayVar(&templatesPaths, "templates", []string{templatesync.DefaultBundledDir}, "template directory (repeatable); left at its default, the synced directory from 'hackerfive templates sync' is auto-appended if present")
 	cmd.Flags().StringVar(&tags, "tags", "", "comma-separated tags — only load templates carrying at least one (default: no filtering)")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "worker pool size")
-	cmd.Flags().IntVar(&rateLimit, "rate-limit", 50, "requests/sec across the whole scan")
+	cmd.Flags().IntVar(&rateLimit, "rate-limit", 10, "requests/sec across the whole scan (conservative default — raise it explicitly for a lab benchmark; most bounty/VDP programs' own limits are lower still)")
 	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", or "businesslogic"`)
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().BoolVar(&idorPreview, "idor-preview", false, "fire one extra preflight GET against the resolved --endpoint before enumeration begins, logging its status/body-length — off by default so scripted invocations see no behavior change")

@@ -21,8 +21,9 @@
 1. ✅ **MCP server** (Weeks 41-42) — done 2026-09-02
 2. ✅ **Approval gate + PlanTree executor + spend ceiling** (Week 43 — see this step's note on week pressure, added 2026-08-31) — done 2026-09-02
 3. ⬜ **Hard safety blockers + scope-creep gate + cost-aware prioritization** (Weeks 44-45)
-4. ⬜ **Approval UI: make the plan preview actionable** (Week 46)
+4. 🟡 **Approval UI: make the plan preview actionable** (Week 46) — partially done 2026-09-04
 5. ⬜ **Session log + release** (Weeks 47-48) — `v0.6.0`
+6. ⬜ **Scan-execution concurrency + corpus-once-per-host** (added 2026-09-05 from [follow-up.md](follow-up.md) LT-18) — gates Step 5's `v0.6.0` release
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-14.)
 
@@ -338,6 +339,58 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 
 ---
 
+## Step 6: Scan-Execution Concurrency + Corpus-Once-Per-Host (added 2026-09-05) — ⬜ not yet implemented
+
+### Design
+
+From [follow-up.md](follow-up.md) LT-18 (Impact: high), live-measured against
+`andertone.com`: a single builtin-detector plan leaf was still running after 53+ minutes
+of wall-clock on ~16s of CPU — the full-corpus scan path is both **serial** and
+**redundant**, and Phase 6's own executor (Step 2/Step 4) is what triggers the
+redundancy. Two independent root causes, fixed cheapest-first:
+
+- **(a) No intra-target concurrency.** `pkg/scanner/engine.go`'s per-target `Run()` loop
+  fires every loaded `nucleiTemplate`/`nativeTemplate` strictly sequentially against one
+  target. Fix: parallelize that loop with a bounded worker pool — the existing global
+  rate limiter still throttles real request volume, so this is safe without violating
+  `--rate-limit`, and it's the same pattern already used for cross-target dispatch. This
+  alone turns a latency-bound full-corpus pass from ~1 hour into minutes.
+
+- **(b) `planexec.RunPlan` re-runs the whole corpus once per builtin-capability leaf,
+  not once per host.** `runLeaf` (`pkg/planexec/executor.go`) clones `baseCfg` — with
+  un-narrowed `TemplatePaths` — into a fresh `scanner.Engine.Run()` for every
+  `idor`/`misconfig`/`authbypass`/`ssrf`/`businesslogic` leaf, even though a
+  builtin-capability leaf needs none of the corpus loaded for its own native check. On
+  the real `andertone.com` plan tree that's the same ~9,363-template corpus reloaded and
+  rerun 6 separate times in one plan-execution pass. `pkg/webui/handlers_launch.go`'s own
+  doc comment explains why `execCfg` deliberately skips the "first leaf keeps
+  `TemplatePaths`, later ones get nil" optimization — that reasoning holds for
+  *template-ID* leaves (they genuinely need the full corpus to find their one match) but
+  not for builtin-capability leaves. Fix (bigger of the two): `RunPlan` runs the
+  template corpus at most once per host, not once per (host, builtin-leaf) pair — e.g.
+  attach `TemplatePaths` to exactly one leaf per host (the template-ID leaves that need
+  it, or a synthetic corpus-wide leaf) and pass `nil` to the rest, or memoize the
+  "run every loaded template against this target" pass across leaves sharing a target.
+
+Sequenced after Step 4 (the executor and the Web UI dispatch path both exist to change)
+and **before Step 5's `v0.6.0` tag** — a release whose headline feature is
+approve-then-execute plans shouldn't ship with plan execution taking hours.
+
+### Files (anticipated, confirm at implementation time)
+- `pkg/scanner/engine.go` — bounded-worker-pool parallelism inside the per-target template loop; the existing `engine.go:196-199` "pre-existing characteristic" comment updated to reflect the fix.
+- `pkg/planexec/executor.go` — `runLeaf`/`RunPlan` attach the corpus to at most one leaf per host; builtin-capability leaves run with `TemplatePaths: nil`.
+- `pkg/webui/handlers_launch.go` — its `execCfg` doc comment updated; confirm the direct multi-checkbox flow's own "first-wins-nil" optimization still holds.
+- `tests/unit/engine_test.go` — a timing/ordering assertion that a multi-template run against one target is genuinely parallel (elapsed ≈ slowest template, not sum).
+- `pkg/planexec/executor_test.go` — a multi-builtin-leaf plan tree loads the corpus once, not once per leaf (assert via a load-count hook or template-load log line).
+
+### Verification
+Unit: the per-target loop is parallel (timing assertion), and `RunPlan` on a
+multi-builtin-leaf tree loads the corpus once per host. Live: re-run the LT-18
+measurement — a full-corpus `scan` against `andertone.com` completes in minutes, and a
+real plan with several builtin leaves per host doesn't multiply that by the leaf count.
+
+---
+
 ## Open Issues & Known Gaps
 
 *(Consolidated here so they don't get lost in prose above — check this section before starting new work, and update it in place rather than re-burying a finding in a step's narrative.)*
@@ -348,6 +401,9 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 | 2 | An I4 `use_existing_tag` decision still can't dispatch via item 4's new template-ID path — `buildLeafPrompt` only ever shows the model *tags* (shared across many templates), never per-template IDs, so the decision rarely matches a real `Entry.ID`. Fully fixed for R8's own deterministic matches; not for I4's. | Needs its own design decision: run every template carrying the chosen tag? A second, narrower call to pick one ID? Change the catalog to show IDs instead of tags? |
 | 3 | **Pre-existing, unrelated test failure**: `TestEndToEnd_StartScan_ProducesRealFindings` (`pkg/webui`) fails — confirmed via a clean worktree of the last commit that it fails identically there too, so not caused by any change in this doc. | Investigate separately; not a regression to chase down as part of this phase's own work. |
 | 4 | Not yet live-verified: a real multi-leaf concurrency timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism); Step 3's B4 scope-creep trigger names the executor as its future caller, but that hook doesn't exist in `RunPlan` yet. | Timing check: do alongside Step 5's lab-target round trip. B4 hook: correctly Step 3's job, not a gap in Step 2 itself. |
+| 5 | **`RunPlan` re-runs the whole template corpus once per builtin-capability leaf, and `engine.go`'s per-target template loop is serial** ([follow-up.md](follow-up.md) LT-18) — a real plan with several builtin leaves per host takes hours, not minutes. | Now scheduled as **Step 6** above, gating Step 5's `v0.6.0` release. |
+| 6 | **Duplicate findings for one underlying fact** ([follow-up.md](follow-up.md) LT-6): a native `misconfig-missing-header-*` finding and the nuclei `http-missing-security-headers` template both fire on the same response — 5 findings for one fact. `reporter.Dedup` is exact-`Finding.ID`-only by deliberate design (see its doc comment: cross-format semantic dedup "deliberately not attempted"). | Needs a real design decision, not a quick fix — a naive topic-level key risks over-suppressing genuinely distinct findings (the nuclei finding is one aggregate row covering *many* headers; the native ones are one-per-header — an N:1 relationship, not "same key twice"). Options: split the nuclei aggregate into per-header sub-facts before dedup; or a `(target, finding-class)` key with `finding-class` derived only for the known missing-header overlap; or accept the duplication as "two detectors agreeing" and only collapse in the report view. Do during Step 5's release-hardening pass, or defer to Phase 7 Step 3's Exporter work — not before the design is settled. |
+| 7 | **SSE `/catchup` doesn't replay `#logs`/`#findings`** ([follow-up.md](follow-up.md) LT-5), only the idempotent progress/recon fragments — a late-connecting or reconnecting client permanently loses everything before connect. `CatchupData`'s doc comment records this as a *deliberate* narrow scope (blind replay would duplicate already-streamed append-list rows). | Needs a monotonic sequence/cursor on `Job`'s log/finding accumulation so catchup can replay only entries after the client's last-seen marker (and a client-side change to report it). Scheduled as a bullet on **Phase 7 Step 3** (Observability Upgrade) — that step reworks the SSE streams anyway. |
 
 ## Definition of Done (Phase 6, Weeks 41-48)
 
@@ -368,6 +424,8 @@ The full round trip (recon → plan proposal → human approval via elicitation 
 - [x] The Web UI's Plan-preview page supports Approve/Reject/Edit (per-leaf inclusion, not per-field), a budget gauge, and an always-reachable kill switch that actually stops a running job — and that same kill switch is confirmed on `/scans/{id}` for plain New Scan and Guided Scan-successor (unified Launch) runs too, not only the plan-execution flow — done 2026-09-04 (Step 4's Done note); not yet live-verified against a real browser/lab target, and the cross-process "same elicitation as an MCP client" interop is explicitly out of scope (see that note)
 - [ ] A structured, persisted agent session log exists and is queryable per job, even without a live Web UI view yet
 - [ ] A full recon → plan → approve → scan → export round trip is live-verified end-to-end against at least one lab target, plus a separate run against WebGoat and/or bWAPP confirming an all-`misconfig` plan resolves every leaf deterministically with zero I4 fallback calls
+- [ ] **(Step 6)** `engine.go`'s per-target template loop is parallelized under a bounded worker pool (still `--rate-limit`-throttled); a full-corpus `scan` against a real target completes in minutes, not ~1 hour
+- [ ] **(Step 6)** `planexec.RunPlan` loads/runs the template corpus at most once per host, not once per (host, builtin-capability-leaf) pair — verified against a multi-builtin-leaf plan tree
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason
 

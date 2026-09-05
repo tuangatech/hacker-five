@@ -302,6 +302,26 @@ func TestResolve_NonActionableTech_MixedWithReal_OnlyRealSurvives(t *testing.T) 
 	assert.Equal(t, "misconfig", hostNode.Children[0].Detector)
 }
 
+// TestResolve_GoogleAnalytics_ProducesNoLeaf is LT-10's (docs/follow-up.md)
+// regression guard: a client-side analytics tag names no scannable server
+// surface — left in, it matched 3 keyword-collision "analytics"-tagged
+// templates. Now on the nonActionableTech denylist.
+func TestResolve_GoogleAnalytics_ProducesNoLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "Google Analytics", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"},
+		},
+	}
+	index := []templatesync.Entry{
+		{ID: "piwik-unauthenticated-access", Tags: []string{"analytics", "piwik"}, Severity: "high"},
+	}
+
+	tree, _ := Resolve(result, index)
+
+	assert.Nil(t, tree.Find("host:example.test"), "a Google Analytics fact must produce no leaf and no host node")
+}
+
 // TestResolve_DuplicateCapabilityLeaves_Deduped guards P0-4: four distinct
 // TechFacts that all map to the misconfig capability must collapse to one
 // misconfig leaf, and the first fact in recon order supplies its rationale.
@@ -710,6 +730,47 @@ func TestResolve_CartEndpoint_ProducesBusinessLogicLeaf(t *testing.T) {
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "businesslogic" })
 	require.NotNil(t, leaf, "a checkout-shaped endpoint must produce a businesslogic leaf")
 	assert.Contains(t, leaf.Rationale, "--allow-writes", "the leaf's own rationale must be honest that a human gate still applies")
+}
+
+// TestResolve_HostnameProductHint_ProducesLeaves is LT-9's (docs/follow-up.md)
+// regression guard: a host whose first DNS label names a known product
+// (guacamole01 -> guacamole) gets that product's template-tag leaves even
+// with no fingerprint on the host at all.
+func TestResolve_HostnameProductHint_ProducesLeaves(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://guacamole01.example.com",
+		Endpoints: []recon.EndpointFact{
+			// an endpoint so the host node exists; it carries no idor/ssrf/etc. signal itself
+			{URL: "http://guacamole01.example.com/", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+	}
+	index := []templatesync.Entry{
+		{ID: "apache-guacamole-default-login", Tags: []string{"guacamole", "default-login"}, Severity: "high"},
+		{ID: "unrelated-wordpress-thing", Tags: []string{"wordpress"}, Severity: "info"},
+	}
+
+	tree, _ := Resolve(result, index)
+
+	leaf := findLeaf(t, tree, "guacamole01.example.com", func(n *agenttask.PlanNode) bool {
+		return n.Detector == "apache-guacamole-default-login"
+	})
+	require.NotNil(t, leaf, "a guacamole-named host must dispatch guacamole-tagged templates")
+	assert.Equal(t, agenttask.ConfidenceLow, leaf.Confidence, "a hostname is weaker evidence than a live fingerprint")
+}
+
+// TestResolve_UnhintedHostname_NoHintLeaves confirms the hint map is an exact
+// first-label token match, not a loose substring — an arbitrary host name
+// must not trip it.
+func TestResolve_UnhintedHostname_NoHintLeaves(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://myjira-notes.example.com",
+		Endpoints: []recon.EndpointFact{{URL: "http://myjira-notes.example.com/", Method: "GET", StatusCode: 200, Source: "wave3-crawl"}},
+	}
+	index := []templatesync.Entry{{ID: "jira-unauth", Tags: []string{"jira"}, Severity: "high"}}
+
+	tree, _ := Resolve(result, index)
+
+	assert.Nil(t, tree.Find("host:myjira-notes.example.com"), "'myjira-notes' must not match the 'jira' hint (exact first-label token only)")
 }
 
 // TestResolve_CartShapedStaticAsset_NoBusinessLogicLeaf is LT-20's

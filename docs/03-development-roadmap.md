@@ -443,9 +443,48 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 ---
 
+### Phase 8: Detection Coverage Expansion (Weeks 57-64) — v0.8.0
+
+**Goal:** Widen *what HackerFive can detect*, against the agent pipeline Phases 5-7
+built and hardened (both of which explicitly scoped detector expansion out). Schedules
+[follow-up.md](follow-up.md)'s already-approved "Detection Coverage" table and its LT-7 /
+LT-8 / LT-23 live-testing findings. Full design in
+[17-implementation-plan-ph8.md](17-implementation-plan-ph8.md). Read/enumerate-only
+throughout — banner-grab and passive inspection, never command execution.
+
+#### Weeks 57-58: TCP protocol support + network-service exposure detector — ⬜ not started
+- [ ] `tcp:` templates load and run (bounded connect/probe/banner-match); `code:`-carrying `tcp:` still rejected
+- [ ] `netservice` detector: anonymous-FTP / unauth-DB / open-Elasticsearch, read-only, `--scope`-gated; `resolvePortFacts` dispatches it (closes LT-23's structural gap)
+
+#### Week 59: TLS/SSL passive checks — ⬜ not started
+- [ ] `tls` detector: expired/weak/mismatched certs, sub-1.2 protocols, weak ciphers, via stdlib `crypto/tls`, no new dependency
+
+#### Weeks 60-61: JS static analysis — ⬜ not started
+- [ ] Served-JS endpoint extraction folded into `ReconResult.Endpoints` (`Source: "js-static"`), widening the idor/ssrf candidate surface
+- [ ] High-signal hardcoded-secret detection as `misconfig` findings, decoy-set false-positive rate measured
+
+#### Week 62: OOB blind-RCE verification — ⬜ not started
+- [ ] Callback-only RCE proof via `pkg/oob`, never an attacker-meaningful command; no real public OOB server in code/tests
+
+#### Week 63: Version gating + richer crawl — ⬜ not started
+- [ ] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b)
+- [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8)
+
+#### Week 64: Remaining template-format gaps + release — ⬜ not started
+- [ ] `xpath` matcher/extractor (dependency footprint verified first) or explicitly descoped; `flow:` cross-block `_N` indexing or explicitly descoped
+- [ ] New-detector yield + any new false-positive mode measured against all lab targets, tracked against the <5% target
+- [ ] Release **v0.8.0**
+
+**Phase 8 Success Metrics:**
+- [ ] TCP/TLS/JS-static/OOB-RCE detectors all live-verified against lab targets, read-only confirmed
+- [ ] LT-7 closed: real multi-version Nginx hosts get different template lists
+- [ ] Detection Coverage table's "Add" rows moved to "✅ shipped" with measured yield, still within the <5% false-positive target
+
+---
+
 ## Versioning note
 
-`v0.1.0` → `v0.2.0` → `v0.3.0` → `v0.4.0` → `v0.5.0` → `v0.6.0` → `v0.7.0` track feature phases (1 through 7) in order. **`v1.0.0` is deliberately not tied to a phase or a week** — it marks real-world trust, not feature completeness, and is gated on actually using the tool against real, authorized targets and finding real issues with it, not on shipping a checklist of detectors. See [Milestone 8](#milestone-8-v100--real-world-validation-no-fixed-week) below. This mirrors doc05's "Tool Maturity" prerequisites (which already gate HackerOne program eligibility on validated false-positive rate and documentation, not a version number) and is consistent with how mature scanners in this space (e.g. Nuclei) treat 1.0 as a stability/trust signal rather than a feature-count milestone.
+`v0.1.0` → `v0.2.0` → `v0.3.0` → `v0.4.0` → `v0.5.0` → `v0.6.0` → `v0.7.0` → `v0.8.0` track feature phases (1 through 8) in order. **`v1.0.0` is deliberately not tied to a phase or a week** — it marks real-world trust, not feature completeness, and is gated on actually using the tool against real, authorized targets and finding real issues with it, not on shipping a checklist of detectors. See [Milestone 8](#milestone-8-v100--real-world-validation-no-fixed-week) below. This mirrors doc05's "Tool Maturity" prerequisites (which already gate HackerOne program eligibility on validated false-positive rate and documentation, not a version number) and is consistent with how mature scanners in this space (e.g. Nuclei) treat 1.0 as a stability/trust signal rather than a feature-count milestone.
 
 ## Timeline & Milestones
 
@@ -463,6 +502,7 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 | 5 | 33-40 | 8 wks | Recon & orchestration foundations (`pkg/recon`, `Finding` schema freeze, `PlanTree` data model, deterministic decision engine + capability registry, read-only recon/plan-preview UI) | v0.5.0 |
 | 6 | 41-48 | 8 wks | MCP server & approval gate (elicitation-based approval seeded from recon, `tools.search`/`templates.search`, tiered LLM fallback, hard safety blockers, actionable approval UI) | v0.6.0 |
 | 7 | 49-56 | 8 wks | Agent hardening, ecosystem & trust (AllowWrites attestation, live Agent tab, OWASP Agentic Top 10 mapping, eval maturity) | v0.7.0 |
+| 8 | 57-64 | 8 wks | Detection coverage expansion (TCP + network-service detector, TLS/SSL passive checks, JS static analysis, OOB blind-RCE verification, affected-version gating, richer crawl) | v0.8.0 |
 | — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 |
 
 **Parallel tracks** (start weeks are approximate targets, not hard dependencies):
@@ -552,6 +592,7 @@ Community growth (contributors, stars, template submissions, bounty income) is a
 - [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — file-by-file build plan for Phase 5 (Weeks 33-40, recon & orchestration foundations)
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — file-by-file build plan for Phase 6 (Weeks 41-48, MCP server & approval gate)
 - [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — file-by-file build plan for Phase 7 (Weeks 49-56, agent hardening/ecosystem/trust)
+- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — file-by-file build plan for Phase 8 (Weeks 57-64, detection coverage expansion)
 - [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog Phases 6-7 schedule
 - [91-research-recon-phase.md](91-research-recon-phase.md) — the recon research Phase 5 schedules
 - [22-authorized-targets.md](22-authorized-targets.md) — the vetted real-target registry Milestone 8's real-world validation draws from

@@ -77,7 +77,7 @@ export HACKERFIVE_AUTH_TOKEN="..."   # only if the in-scope paths require it
   -o findings.json
 ```
 
-- **`--rate-limit`/`--concurrency` are deliberately set well below the CLI's defaults (50 req/s / 25 workers).** `follow-up.md`'s Security & Scope Hardening section flags that default as reasonable for a local lab benchmark but too aggressive for most bounty/VDP programs' actual rate limits — and there's no `Retry-After`-aware backoff in the CLI yet (also open there). Staying inside the program's stated limits is on you, manually, not something the tool currently enforces.
+- **`--rate-limit`/`--concurrency` may still need lowering below the CLI's defaults (10 req/s / 25 workers).** The `--rate-limit` default was lowered 50 → 10 on 2026-09-05, but many bounty/VDP programs' own limits are lower still — and there's no `Retry-After`-aware backoff in the CLI yet (open in `follow-up.md`). Staying inside the program's stated limits is on you, manually, not something the tool currently enforces.
 - **Treat every finding here as a lead, not a report.** Doc05 §4.1 already requires manual verification (`curl`/Burp re-check, confirm exploitability, document reproduction) before anything gets written up — that step matters more against a real target than it did against crAPI/DVWA/Juice Shop, where the "0% candidate FP rate" (doc10 Step 4) was measured against known, fully-understood bugs. A real target has none of that ground truth to check against.
 - **Don't run `--detector idor` here without a plan for the accounts it needs** — see step 2 above.
 

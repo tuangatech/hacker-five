@@ -79,14 +79,18 @@ Unit tests: a `scan` call carrying `AllowWrites=true` without a valid elicitatio
 
 **C2 — extend the audit trail doc12 already specifies for the Web UI's authorization checkbox** to also capture agent-specific facts: which MCP session initiated a job, what scope/plan was approved and when, and the elicitation grant references B2 introduced.
 
+**C5 — idempotent `#logs`/`#findings` catchup replay ([follow-up.md](follow-up.md) LT-5).** Today `GET /scans/{id}/catchup` re-syncs only the idempotent, last-value-wins fragments (progress badge, Recon Results) — `#logs`/`#findings` are deliberately excluded because they render as an append list (`hx-swap`), so a blind replay would duplicate rows already delivered live (see `CatchupData`'s doc comment). A late-connecting or reconnecting client therefore permanently loses every log line and finding from before its SSE connection opened. Since this step is already reworking the SSE streams for the Agent tab, add a monotonic sequence number to `Job`'s log/finding accumulation and have the browser report its last-seen sequence on the catchup call (a query param or data attribute) so catchup replays only what the client actually missed — no duplication, no permanent loss.
+
 **C3 — evidence-linked claims.** No agent-drafted report text (via `findings.export` or any future report-drafting surface) without a citation to a specific `Finding.ID` and its evidence — enforced at the exporter level (a draft referencing an ID that doesn't exist in the job's finding set is rejected), not just a style guideline for prompts.
 
 ### Files (anticipated, confirm at implementation time)
-- `pkg/webui/handlers_scan.go` — new `agent-event` SSE stream on `/scans/{id}/events`.
-- `pkg/webui/templates/scan_status.html` — Agent tab markup.
+- `pkg/webui/handlers_scan.go` — new `agent-event` SSE stream on `/scans/{id}/events`; C5's sequence-aware catchup replay of `#logs`/`#findings`.
+- `pkg/webui/jobs.go` — C5's monotonic sequence counter on log/finding accumulation.
+- `pkg/webui/templates/scan_status.html` — Agent tab markup; C5's last-seen-sequence reporting on the catchup fetch.
+- `pkg/webui/types.go` — `CatchupData` gains the replayed `#logs`/`#findings` fragments; its doc comment updated from "deliberately excluded" to "sequence-gated".
 - `pkg/webui/auditlog.go` (or extend the existing authorization-checkbox log site) — C2's extra fields.
 - `pkg/reporter/` — C3's citation-enforcement check on export.
-- `tests/unit/agent_tab_test.go`, `tests/unit/audit_trail_agent_test.go`, `tests/unit/evidence_citation_test.go`.
+- `tests/unit/agent_tab_test.go`, `tests/unit/audit_trail_agent_test.go`, `tests/unit/evidence_citation_test.go`, `tests/unit/catchup_replay_test.go`.
 
 ### Verification
 Live-verified against a real browser: a running agent session's tool calls and reasoning appear in the Agent tab in real time, matching the persisted session log exactly. Unit test confirms an export referencing a nonexistent `Finding.ID` is rejected.
@@ -167,10 +171,16 @@ Unit test confirming `templates/proposed/` is never picked up by the default `--
 
 **G1 (maturity) — the real benchmark run.** Phase 5 Step 1 built the harness stub and ran it with zero agent involvement to get a baseline. This step runs the same fixed challenge set against the lab targets *with* a real MCP-client-driven agent session (recon → plan → approve → scan → triage), tracking agent-driven false-positive/false-negative rate **separately from** the underlying detectors' own already-measured rate (Phase 2's 1.4%, doc11) — an agent could in principle introduce its own error mode (bad target/template selection, premature triage dismissal) even with zero change to detector accuracy itself. Full cost accounting per run (dollar cost, tool-call count, wall-clock time), modeled on MAPTA/Cyber-AutoAgent's published discipline, not a bespoke scoring rubric.
 
-Full integration testing across the whole Phase 5-7 stack, then release.
+Full integration testing across the whole Phase 5-7 stack, then release. **Includes
+checking in the auth-bypass integration tests** ([follow-up.md](follow-up.md)'s
+"Testing & Verification Gaps"): `authbypass_crapi_test.go`/`authbypass_vapi_test.go`
+are live-verified ad hoc against real targets but not yet reproducible Go tests — this
+integration pass is where they land as checked-in tests against the compose-stack lab
+targets, alongside the `--scope` live-verification the same section calls for.
 
 ### Files (anticipated, confirm at implementation time)
 - `tests/eval/agent_run.go` (or extend Phase 5's harness) — real MCP-client-driven run against the fixed challenge set.
+- `tests/integration/authbypass_crapi_test.go` / `authbypass_vapi_test.go` — the ad-hoc checks, made reproducible against the compose-stack targets.
 - `docs/90-research-hackerbot.md` — G1's row updated with real measured numbers, not left as a backlog item.
 
 ### Verification
@@ -184,6 +194,7 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [ ] HackerOne submission's permanent human-in-the-loop invariant is documented in `docs/05-hackerone-and-legal.md`
 - [ ] A scope-creep scenario triggers fresh elicitation rather than silent expansion, live-verified
 - [ ] The Web UI's Agent tab streams every MCP tool call and its reasoning live, matching the persisted session log exactly
+- [ ] SSE `/catchup` replays `#logs`/`#findings` a late/reconnecting client missed, sequence-gated so nothing duplicates (C5 / [follow-up.md](follow-up.md) LT-5)
 - [ ] `findings.export` (and any future report-drafting surface) rejects a draft citing a nonexistent `Finding.ID`
 - [ ] Aggregate per-target concurrency across concurrent `scan` calls in one session is throttled to a stated ceiling
 - [ ] All ten OWASP Agentic Top 10 risks (D4) are checked against real shipped code (file/line cited) and recorded as mitigated or accepted residual risk with a stated reason

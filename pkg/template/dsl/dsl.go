@@ -1,8 +1,10 @@
 // Package dsl implements a hand-rolled evaluator for the small subset of
 // Nuclei's DSL expression language this project supports: comparisons
 // (==, !=, <, >) against status_code/len(body), function calls
-// (contains/contains_any/contains_all/regex/to_lower/tolower/trim/md5/sha1/
-// base64_py/mmh3/compare_versions/base64_decode/concat), the status_code/body/header/content_type/response/request
+// (contains/contains_any/contains_all/regex/to_lower/tolower/to_upper/toupper/
+// trim/trim_space/replace/replace_regex/starts_with/ends_with/hex_encode/
+// hex_decode/url_encode/url_decode/json_minify/md5/sha1/base64_py/mmh3/
+// compare_versions/base64_decode/concat), the status_code/body/header/content_type/response/request
 // built-in variables, combined with &&/||, unary "!" negation, the "+"
 // operator (string concat when either operand is a string, numeric add
 // otherwise), and parenthesized grouping. Anything
@@ -15,12 +17,16 @@
 package dsl
 
 import (
+	"bytes"
 	"crypto/md5"  //nolint:gosec // fingerprint matching against known template hashes, not a security use of MD5
 	"crypto/sha1" //nolint:gosec // same as above
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/bits"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -562,6 +568,97 @@ func callFunc(name string, args []any) (any, error) {
 			return nil, err
 		}
 		return strings.ToLower(s), nil
+	// --- LT-22 (docs/follow-up.md): a batch of stdlib-only string helpers real
+	// corpus templates use, previously all "unsupported function" rejections.
+	// Signatures confirmed against ProjectDiscovery's own helper-functions
+	// reference, not memory. substr/to_string/date_time/generate_jwt are
+	// deliberately still deferred (substr's end-vs-length semantics need
+	// verifying; the latter two need strftime parsing / JWT signing) — see
+	// Phase 8 Step 7.
+	case "to_upper", "toupper":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return strings.ToUpper(s), nil
+	case "trim_space":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return strings.TrimSpace(s), nil
+	case "replace":
+		if len(args) != 3 {
+			return nil, fmt.Errorf("replace() takes exactly 3 arguments, got %d", len(args))
+		}
+		s, ok1 := args[0].(string)
+		old, ok2 := args[1].(string)
+		repl, ok3 := args[2].(string)
+		if !ok1 || !ok2 || !ok3 {
+			return nil, fmt.Errorf("replace() arguments must be strings")
+		}
+		return strings.ReplaceAll(s, old, repl), nil
+	case "replace_regex":
+		if len(args) != 3 {
+			return nil, fmt.Errorf("replace_regex() takes exactly 3 arguments, got %d", len(args))
+		}
+		s, ok1 := args[0].(string)
+		pattern, ok2 := args[1].(string)
+		repl, ok3 := args[2].(string)
+		if !ok1 || !ok2 || !ok3 {
+			return nil, fmt.Errorf("replace_regex() arguments must be strings")
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("replace_regex() invalid pattern %q: %w", pattern, err)
+		}
+		return re.ReplaceAllString(s, repl), nil
+	case "hex_encode":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return hex.EncodeToString([]byte(s)), nil
+	case "hex_decode":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := hex.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("hex_decode(): %w", err)
+		}
+		return string(decoded), nil
+	case "url_encode":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return url.QueryEscape(s), nil
+	case "url_decode":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := url.QueryUnescape(s)
+		if err != nil {
+			return nil, fmt.Errorf("url_decode(): %w", err)
+		}
+		return decoded, nil
+	case "json_minify":
+		s, err := oneStringArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(s)); err != nil {
+			return nil, fmt.Errorf("json_minify(): %w", err)
+		}
+		return buf.String(), nil
+	case "starts_with", "startswith":
+		return affixMatch(name, args, strings.HasPrefix)
+	case "ends_with", "endswith":
+		return affixMatch(name, args, strings.HasSuffix)
 	case "trim":
 		if len(args) != 2 {
 			return nil, fmt.Errorf("trim() takes exactly 2 arguments, got %d", len(args))
@@ -629,6 +726,29 @@ func callFunc(name string, args []any) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported function %q", name)
 	}
+}
+
+// affixMatch implements starts_with/ends_with: args[0] is the subject, the
+// rest are prefixes/suffixes to test (real Nuclei's signature is variadic —
+// true if ANY matches).
+func affixMatch(fn string, args []any, test func(s, affix string) bool) (bool, error) {
+	if len(args) < 2 {
+		return false, fmt.Errorf("%s() takes at least 2 arguments, got %d", fn, len(args))
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return false, fmt.Errorf("%s() arguments must be strings", fn)
+	}
+	for _, a := range args[1:] {
+		affix, ok := a.(string)
+		if !ok {
+			return false, fmt.Errorf("%s() arguments must be strings", fn)
+		}
+		if test(s, affix) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // oneStringArg validates that fn was called with exactly one string argument
@@ -887,6 +1007,28 @@ func compare(op token, a, b any) (bool, error) {
 			return false, fmt.Errorf("operator %q not supported between strings", op.text)
 		}
 	}
+
+	// LT-22 (docs/follow-up.md): real Nuclei's expression engine coerces
+	// across string/int rather than erroring — 9 real corpus rejections were
+	// "cannot compare string and int". A mixed int-vs-string comparison
+	// where the string parses cleanly as an integer is compared numerically
+	// (so `status_code == "200"` works); otherwise both sides are compared
+	// as strings (so `version != "1"` degrades to a textual compare rather
+	// than a hard failure). Only int/string mixing is coerced — bool stays a
+	// genuine mismatch.
+	if aIsInt && bIsStr {
+		if n, err := strconv.Atoi(strings.TrimSpace(bs)); err == nil {
+			return compare(op, ai, n)
+		}
+		return compare(op, strconv.Itoa(ai), bs)
+	}
+	if aIsStr && bIsInt {
+		if n, err := strconv.Atoi(strings.TrimSpace(as)); err == nil {
+			return compare(op, n, bi)
+		}
+		return compare(op, as, strconv.Itoa(bi))
+	}
+
 	return false, fmt.Errorf("type mismatch: cannot compare %T and %T", a, b)
 }
 

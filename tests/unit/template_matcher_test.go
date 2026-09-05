@@ -232,5 +232,21 @@ func TestMatcherValidate(t *testing.T) {
 
 	require.Error(t, matcher.Validate(matcher.Matcher{Type: "regex", Regex: []string{`(unclosed`}}), "malformed regex is rejected")
 	require.Error(t, matcher.Validate(matcher.Matcher{Type: "dsl", DSL: []string{`status_code === 200`}}), "malformed dsl is rejected")
-	require.Error(t, matcher.Validate(matcher.Matcher{Type: "binary"}), "unsupported type is rejected")
+	require.Error(t, matcher.Validate(matcher.Matcher{Type: "totally-made-up"}), "unsupported type is rejected")
+}
+
+// TestMatcherEvaluate_Binary is LT-22's (docs/follow-up.md) regression guard:
+// the `binary` matcher type (7 real corpus templates) was previously an
+// "unsupported type" rejection. Hex-encoded byte sequences are a raw-bytes
+// substring test against the selected part.
+func TestMatcherEvaluate_Binary(t *testing.T) {
+	resp := matcher.Response{Body: []byte("PK\x03\x04rest-of-a-zip")} // 504b0304 = a ZIP local-file-header magic
+
+	require.NoError(t, matcher.Validate(matcher.Matcher{Type: "binary", Binary: []string{"504b0304"}}))
+	require.Error(t, matcher.Validate(matcher.Matcher{Type: "binary", Binary: []string{"zzzz"}}), "malformed hex is rejected at load time")
+
+	assert.True(t, matcher.Matcher{Type: "binary", Binary: []string{"504b0304"}}.Evaluate(resp), "the ZIP magic bytes are present")
+	assert.False(t, matcher.Matcher{Type: "binary", Binary: []string{"deadbeef"}}.Evaluate(resp), "absent bytes must not match")
+	assert.True(t, matcher.Matcher{Type: "binary", Binary: []string{"deadbeef", "504b0304"}}.Evaluate(resp), "default OR condition: any entry matching is a match")
+	assert.False(t, matcher.Matcher{Type: "binary", Binary: []string{"deadbeef", "504b0304"}, Condition: "and"}.Evaluate(resp), "condition=and requires every entry")
 }

@@ -21,7 +21,11 @@ import (
 // existing rate-limit/concurrency defaults" — same configured numbers,
 // enforced by each tool's own limiting flag rather than our own transport.
 const (
-	DefaultRateLimit   = 50
+	// DefaultRateLimit lowered 50 -> 10 on 2026-09-05 (follow-up.md's
+	// Security & Scope Hardening section): 50 req/sec is a reasonable lab-
+	// benchmark rate but too aggressive as a default for a real bounty/VDP
+	// program's own limits. Raise it explicitly per engagement.
+	DefaultRateLimit   = 10
 	DefaultConcurrency = 25
 )
 

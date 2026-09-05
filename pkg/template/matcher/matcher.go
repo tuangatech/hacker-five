@@ -5,6 +5,8 @@
 package matcher
 
 import (
+	"bytes"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -56,11 +58,12 @@ type Response struct {
 
 // Matcher checks one condition against a Response. Type selects which
 // fields are relevant: "status" (Status), "word"/"regex" (Words/Regex, plus
-// Part), "size" (Size), or "dsl" (DSL, evaluated via pkg/template/dsl). No
-// "binary": not used by any template sampled across the curated
-// exposed-panels/misconfiguration/technologies categories — add later if
-// that changes, same "add when needed" discipline as this project's
-// regexp2/json-iterator carve-outs.
+// Part), "size" (Size), "binary" (Binary — hex-encoded byte sequences
+// matched against the raw selected part), or "dsl" (DSL, evaluated via
+// pkg/template/dsl). "binary" was added 2026-09-05 once a real corpus load
+// measured 7 templates using it (docs/follow-up.md LT-22) — crossing the
+// "add when needed" threshold this comment previously cited for leaving it
+// out.
 type Matcher struct {
 	Type      string   `yaml:"type"`
 	Name      string   `yaml:"name,omitempty"` // optional label for this specific check, e.g. "strict-transport-security" — surfaced in Finding evidence via MatchingNames so a matchers-condition: or template's Finding says which sub-check actually fired, not just "something matched"
@@ -68,6 +71,7 @@ type Matcher struct {
 	Words     []string `yaml:"words,omitempty"`
 	Regex     []string `yaml:"regex,omitempty"`
 	Size      []int    `yaml:"size,omitempty"`
+	Binary    []string `yaml:"binary,omitempty"` // hex-encoded byte sequences; a match is a raw-bytes substring test against Part(m.Part, r)
 	DSL       []string `yaml:"dsl,omitempty"`
 	Part      string   `yaml:"part,omitempty"`      // "body" | "header" | "all" | "content_type" | "response"; default "body"
 	Condition string   `yaml:"condition,omitempty"` // "and" | "or", within this matcher's own Words/Regex/DSL list; default "or"
@@ -216,6 +220,15 @@ func (m Matcher) evaluate(r Response) bool {
 			}
 		}
 		return false
+	case "binary":
+		subject := []byte(Part(m.Part, r))
+		return m.evaluateList(m.Binary, func(h string) bool {
+			raw, err := hex.DecodeString(strings.TrimSpace(h))
+			if err != nil {
+				return false // malformed hex is caught at load time by Validate; defensive here
+			}
+			return bytes.Contains(subject, raw)
+		})
 	case "dsl":
 		return m.evaluateList(m.DSL, func(expr string) bool {
 			val, err := dsl.Eval(expr, dsl.Context{StatusCode: r.StatusCode, Body: string(r.Body), Header: Part("header", r), ContentType: r.Headers.Get("Content-Type"), Headers: r.Headers, Request: r.Request, Vars: r.ExtraVars, IntVars: r.ExtraInts})
@@ -406,6 +419,13 @@ func ValidateWithContext(m Matcher, ctx dsl.Context) error {
 	}
 	switch m.Type {
 	case "status", "word", "size":
+		return nil
+	case "binary":
+		for _, h := range m.Binary {
+			if _, err := hex.DecodeString(strings.TrimSpace(h)); err != nil {
+				return fmt.Errorf("matcher: invalid hex in binary matcher %q: %w", h, err)
+			}
+		}
 		return nil
 	case "regex":
 		for _, p := range m.Regex {

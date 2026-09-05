@@ -161,6 +161,49 @@ var interestingPorts = map[int]string{
 	27017: "mongodb",
 }
 
+// hostnameProductHints maps a first-DNS-label token (lowercased, trailing
+// digits stripped — so "guacamole01" -> "guacamole") to a tech name whose
+// registry capabilities / template tags are worth dispatching even when no
+// TechFact fingerprinted that product on the host. LT-9 (docs/follow-up.md,
+// 2026-09-04): a real target's `guacamole01.*` host literally names Apache
+// Guacamole and the synced corpus carries `apache-guacamole`/
+// `guacamole-default-login` templates, but nothing tried them — recon never
+// got a fingerprint (the host was behind an internal cert, see LT-4) and no
+// other signal reached the decision engine.
+//
+// Deliberately keyed on an exact first-label token match, not a substring:
+// "guacamole01.corp" hits, "myjira-notes.corp" does not. Every entry is a
+// product with unambiguous naming and real product-specific templates in the
+// corpus; a hint leaf is ConfidenceLow (a hostname is weaker evidence than a
+// live fingerprint) and dedups against any real TechFact-driven leaf for the
+// same (host, capability) via pendingDedupKey.
+var hostnameProductHints = map[string]string{
+	"guacamole":  "guacamole",
+	"jenkins":    "jenkins",
+	"gitlab":     "gitlab",
+	"grafana":    "grafana",
+	"kibana":     "kibana",
+	"jira":       "jira",
+	"confluence": "confluence",
+	"phpmyadmin": "phpmyadmin",
+	"sonarqube":  "sonarqube",
+	"portainer":  "portainer",
+	"prometheus": "prometheus",
+}
+
+// hostnameProductHint returns the tech name hostnameProductHints associates
+// with host's first DNS label (trailing digits stripped), or "" if none.
+func hostnameProductHint(host string) string {
+	label := host
+	if i := strings.IndexByte(label, '.'); i >= 0 {
+		label = label[:i]
+	}
+	label = strings.ToLower(strings.TrimSpace(label))
+	label = strings.TrimRight(label, "0123456789")
+	label = strings.TrimRight(label, "-_")
+	return hostnameProductHints[label]
+}
+
 // nonActionableTech is a small denylist of TechFact names that should
 // produce no PlanTree leaf at all — not even a visible unresolved one.
 // Each entry is either a transport/protocol fact ("HTTP/2", "HTTP/3"), a
@@ -189,6 +232,13 @@ var nonActionableTech = map[string]bool{
 	"hostinger cdn":          true,
 	"google cloud":           true,
 	"google cloud cdn":       true,
+	// LT-10 (docs/follow-up.md, 2026-09-04): a client-side analytics tag
+	// (Google Analytics / GA / gtag.js) names no scannable server surface of
+	// its own — left in, it matched 3 keyword-collision templates
+	// (piwik-unauthenticated-access / sonicwall-analytics-panel /
+	// versa-analytics-server) purely on the shared "analytics" tag word.
+	"google analytics":  true,
+	"google tag manager": true,
 }
 
 // tagQuery pins a tech name to the template tag(s) that actually mean
@@ -708,6 +758,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 			addLeaf(leaf, pendingDedupKey(leaf.Target, leaf.Detector))
 		}
 		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf, leafContexts)
+		resolveHostnameHints(host, templateIndex, &leafIdx, addLeaf)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
 		}
@@ -966,6 +1017,45 @@ func resolvePortFacts(host string, ports []recon.PortFact, leafIdx *int, addLeaf
 		*leafIdx++
 		leafContexts[leaf.ID] = LeafContext{Port: &p}
 		addLeaf(leaf, unresolvedDedupKey(host, fmt.Sprintf("port-%d", p.Port)))
+	}
+}
+
+// resolveHostnameHints emits LT-9's hostname-driven leaves (docs/follow-up.md):
+// when host's first DNS label names a known product (hostnameProductHint) and
+// nothing else on this host already dispatched that product's checks, run the
+// same registry-capability + template-tag matching a real TechFact would,
+// at ConfidenceLow. Routes through addLeaf so a real fingerprint-driven leaf
+// for the same (host, capability) always wins the dedup (pendingDedupKey).
+func resolveHostnameHints(host string, templateIndex []templatesync.Entry, leafIdx *int, addLeaf func(*agenttask.PlanNode, string)) {
+	techName := hostnameProductHint(host)
+	if techName == "" {
+		return
+	}
+	rationale := fmt.Sprintf("hostname %q names %q — no fingerprint on this host, dispatching product checks on the name alone", host, techName)
+
+	for _, capName := range matchTechRules(techName) {
+		leaf := &agenttask.PlanNode{
+			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+			Target:     host,
+			Detector:   capName,
+			Rationale:  rationale,
+			Status:     agenttask.StatusPending,
+			Confidence: agenttask.ConfidenceLow,
+		}
+		*leafIdx++
+		addLeaf(leaf, pendingDedupKey(host, capName))
+	}
+	for _, entry := range matchTemplateTags(techName, templateIndex) {
+		leaf := &agenttask.PlanNode{
+			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+			Target:     host,
+			Detector:   entry.ID,
+			Rationale:  rationale,
+			Status:     agenttask.StatusPending,
+			Confidence: agenttask.ConfidenceLow,
+		}
+		*leafIdx++
+		addLeaf(leaf, pendingDedupKey(host, entry.ID))
 	}
 }
 
