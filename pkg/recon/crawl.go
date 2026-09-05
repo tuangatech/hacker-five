@@ -214,7 +214,17 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		}
 		resp, err := r.client.Do(req)
 		if err != nil {
+			// LT-4 (docs/follow-up.md): before this, a host that failed every
+			// wave3 request did so 100% silently — hostErrors.ShouldSkip
+			// tripping was never logged anywhere, so a real recon run could
+			// lose Wave 3 entirely for a broken host with no visible trace.
+			// Detect the trip transition (not-yet-skipped -> skipped) here so
+			// exactly one warning fires per host, not one per remaining path.
+			wasOK := !r.hostErrors.ShouldSkip(host)
 			r.hostErrors.RecordError(host)
+			if wasOK && r.hostErrors.ShouldSkip(host) {
+				agg.addWarning("wave3: %s: repeated request errors (last: %v) — no further common-path/auth-boundary probes will run against this host", host, err)
+			}
 			continue
 		}
 		r.hostErrors.RecordSuccess(host)
@@ -232,6 +242,13 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 // tagAuthBoundary fetches seed's homepage once and tags an EndpointFact if
 // it looks like a login/auth boundary — doesn't attempt to break anything.
 func (r *Recon) tagAuthBoundary(ctx context.Context, agg *aggregator, seed string) {
+	// A host probeCommonPaths already gave up on (LT-4) is exceedingly
+	// unlikely to answer this single request either — skip it rather than
+	// spend one more probe (and one more silent failure) on a host already
+	// known to be broken.
+	if r.hostErrors.ShouldSkip(hostOnly(seed)) {
+		return
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, seed, nil)
 	if err != nil {
 		return

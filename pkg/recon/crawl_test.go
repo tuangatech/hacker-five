@@ -4,10 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 )
 
 func TestRunWave3_SwaggerJSONExposed_SetsAPISpec(t *testing.T) {
@@ -166,4 +169,51 @@ func TestRunKatana_EscapedJSArtifacts_Dropped(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "a genuine katana-crawl endpoint alongside the artifact must still be kept")
+}
+
+// --- LT-4 (docs/follow-up.md): hostErrors trip is now warned, not silent ---
+
+// TestProbeCommonPaths_HostTripsCircuitBreaker_WarnsOnce guards the fix: a
+// host whose every wave3 request fails must produce exactly one warning
+// (naming the host), not zero (the old silent behavior) and not one per
+// remaining commonPaths entry.
+func TestProbeCommonPaths_HostTripsCircuitBreaker_WarnsOnce(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close() // every request against srv.URL now fails with connection refused
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	matches := 0
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "no further common-path/auth-boundary probes will run against this host") {
+			matches++
+		}
+	}
+	assert.Equal(t, 1, matches, "exactly one warning expected once the host trips hostErrors, not zero and not one per remaining path")
+}
+
+// TestTagAuthBoundary_HostAlreadyTripped_SkipsRequest guards the new guard
+// clause directly: a host already past the error threshold must not get a
+// fresh auth-boundary probe, even when the server would actually answer
+// (proving the skip is the guard firing, not the server being unreachable).
+func TestTagAuthBoundary_HostAlreadyTripped_SkipsRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<input type="password">`)) // would tag as an auth boundary if reached
+	}))
+	defer srv.Close()
+
+	r := New(newTestClient())
+	host := hostOnly(srv.URL)
+	for i := 0; i < hosterrors.DefaultThreshold; i++ {
+		r.hostErrors.RecordError(host)
+	}
+	require.True(t, r.hostErrors.ShouldSkip(host))
+
+	agg := &aggregator{target: srv.URL}
+	r.tagAuthBoundary(context.Background(), agg, srv.URL)
+
+	assert.Empty(t, agg.finalize().Endpoints, "a host already past the error threshold must not get a fresh auth-boundary probe")
 }

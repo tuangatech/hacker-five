@@ -287,3 +287,18 @@ func TestRun_ExplicitTargetOutOfScope_SkipsEntirely(t *testing.T) {
 	assert.Empty(t, result.Hosts)
 	assert.Empty(t, result.Endpoints)
 }
+
+// TestClientConfig_ForcesInsecureSkipVerify guards LT-4 (docs/follow-up.md):
+// every recon.New call site must build its Config through ClientConfig so
+// recon's own direct HTTP requests match katana/httpx's own hardcoded
+// skip-verify posture, regardless of what the caller passed in.
+func TestClientConfig_ForcesInsecureSkipVerify(t *testing.T) {
+	out := ClientConfig(httpclient.Config{Timeout: 5 * time.Second, InsecureSkipVerify: false})
+	assert.True(t, out.InsecureSkipVerify, "ClientConfig must force InsecureSkipVerify true even when the input explicitly set it false")
+	assert.Equal(t, 5*time.Second, out.Timeout, "every other field must pass through unchanged")
+}
+
+func TestClientConfig_CallerSetTrue_StaysTrue(t *testing.T) {
+	out := ClientConfig(httpclient.Config{InsecureSkipVerify: true})
+	assert.True(t, out.InsecureSkipVerify)
+}

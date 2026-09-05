@@ -87,6 +87,28 @@ func WithProgressCallback(fn func(wave, status string)) Option {
 	}
 }
 
+// ClientConfig returns cfg with InsecureSkipVerify forced to true — recon's
+// own direct HTTP requests (Wave 0's security.txt fetch, Wave 3's
+// probeCommonPaths/tagAuthBoundary) should default to the same TLS posture
+// every external binary already in this pipeline stage hardcodes
+// unconditionally: katana (pkg/engine/common/http.go) and httpx
+// (common/httpx/httpx.go) both set InsecureSkipVerify: true with no flag to
+// turn it off (confirmed against their own source, 2026-09-04). Without
+// this, a host fronted by a self-signed/internal-CA cert made every direct
+// probe fail with a TLS handshake error while katana crawled the same host
+// fine moments earlier — silently, since nothing logged the failure either
+// (LT-4, docs/follow-up.md). Every recon.New call site should build its
+// Config through this function rather than setting InsecureSkipVerify
+// itself; a caller-set value on cfg is deliberately overridden, not merely
+// defaulted, so a stale `false` copy-pasted from a scan-oriented Config
+// can't quietly reintroduce the mismatch. This has no effect on scan's own
+// detector requests — the *httpclient.Client passed to New is a separate
+// instance at every call site, never shared with scanner.Engine's.
+func ClientConfig(cfg httpclient.Config) httpclient.Config {
+	cfg.InsecureSkipVerify = true
+	return cfg
+}
+
 // New builds a Recon. client is used for this package's own direct HTTP
 // calls (Wave 0's security.txt fetch, Wave 3's probeCommonPaths) — the same
 // rate-limited, circuit-broken client every detector already uses.

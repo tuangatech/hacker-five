@@ -35,7 +35,6 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 		allowNoScope bool
 		rateLimit    int
 		concurrency  int
-		insecure     bool
 	)
 
 	cmd := &cobra.Command{
@@ -57,13 +56,12 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 				return err
 			}
 
-			client := httpclient.New(httpclient.Config{
+			client := httpclient.New(recon.ClientConfig(httpclient.Config{
 				Timeout:             root.timeout,
 				MaxRedirects:        5,
-				InsecureSkipVerify:  insecure,
 				MaxIdleConnsPerHost: concurrency,
 				ProxyURL:            root.proxy,
-			}, httpclient.WithRateLimit(ratelimit.New(rateLimit)))
+			}), httpclient.WithRateLimit(ratelimit.New(rateLimit)))
 
 			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
 			if s != nil {
@@ -100,7 +98,6 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&allowNoScope, "allow-no-scope", false, "proceed with no --scope boundary — every host recon discovers is treated as in-scope, including unrelated infrastructure (e.g. a shared CDN/vendor domain); lab/local use only, never a real engagement")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", recon.DefaultRateLimit, "requests/sec passed to each external recon binary's own native rate-limit flag, and used for this package's own direct HTTP calls")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
-	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification for this package's own direct HTTP calls — lab targets only, never the default")
 
 	cmd.AddCommand(newReconSetupCmd())
 

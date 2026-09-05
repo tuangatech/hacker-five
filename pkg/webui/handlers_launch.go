@@ -644,12 +644,16 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 		s = parsed
 	}
 
-	client := httpclient.New(httpclient.Config{
+	// recon.ClientConfig forces InsecureSkipVerify true for this client
+	// regardless of form.Insecure (LT-4, docs/follow-up.md) — that checkbox's
+	// real job is scan-detector evidence-quality safety and still gates each
+	// detector's own scanner.Config below; recon's own client is a separate
+	// instance, never shared with a detector's.
+	client := httpclient.New(recon.ClientConfig(httpclient.Config{
 		Timeout:             defaultTimeout,
 		MaxRedirects:        5,
-		InsecureSkipVerify:  form.Insecure,
 		MaxIdleConnsPerHost: form.Concurrency,
-	}, httpclient.WithRateLimit(ratelimit.New(form.RateLimit)))
+	}), httpclient.WithRateLimit(ratelimit.New(form.RateLimit)))
 
 	opts := []recon.Option{
 		recon.WithRateLimit(form.RateLimit),

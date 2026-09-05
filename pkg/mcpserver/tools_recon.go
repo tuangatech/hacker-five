@@ -43,11 +43,15 @@ func addReconTool(s *mcp.Server) {
 			return nil, reconOutput{}, fmt.Errorf(`depth must be "passive", "active", or "full", got %q`, in.Depth)
 		}
 
-		client := httpclient.New(httpclient.Config{
+		// recon.ClientConfig forces InsecureSkipVerify true (LT-4,
+		// docs/follow-up.md) — matches katana/httpx's own hardcoded TLS
+		// posture; this client is never shared with scan's own detector
+		// requests.
+		client := httpclient.New(recon.ClientConfig(httpclient.Config{
 			Timeout:             defaultTimeout,
 			MaxRedirects:        5,
 			MaxIdleConnsPerHost: defaultConcurrency,
-		}, httpclient.WithRateLimit(ratelimit.New(defaultRateLimit)))
+		}), httpclient.WithRateLimit(ratelimit.New(defaultRateLimit)))
 
 		token := req.Params.GetProgressToken()
 		r := recon.New(client,

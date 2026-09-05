@@ -116,11 +116,14 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 
 	index, _ := templatesync.LoadIndex(defaultTemplateIndexPath) // nil index degrades to skipping template-tag matching, not a hard failure
 
-	client := httpclient.New(httpclient.Config{
+	// recon.ClientConfig forces InsecureSkipVerify true (LT-4, docs/follow-up.md)
+	// — matches katana/httpx's own hardcoded TLS posture; this client is
+	// never shared with scan's own detector requests.
+	client := httpclient.New(recon.ClientConfig(httpclient.Config{
 		Timeout:             defaultTimeout,
 		MaxRedirects:        5,
 		MaxIdleConnsPerHost: defaultConcurrency,
-	}, httpclient.WithRateLimit(ratelimit.New(defaultRateLimit)))
+	}), httpclient.WithRateLimit(ratelimit.New(defaultRateLimit)))
 
 	r := recon.New(client, recon.WithScope(sc), recon.WithRateLimit(defaultRateLimit), recon.WithConcurrency(defaultConcurrency))
 	result, err := r.Run(ctx, in.Target, depth)

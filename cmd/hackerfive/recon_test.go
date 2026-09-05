@@ -176,7 +176,8 @@ func TestNewReconCmd_FlagDefaults(t *testing.T) {
 	rateLimit := cmd.Flags().Lookup("rate-limit")
 	require.NotNil(t, rateLimit)
 
-	insecure := cmd.Flags().Lookup("insecure")
-	require.NotNil(t, insecure)
-	assert.Equal(t, "false", insecure.DefValue)
+	// LT-4 (docs/follow-up.md): recon no longer exposes --insecure at all —
+	// its own direct HTTP client always skips TLS verification now
+	// (recon.ClientConfig), matching katana/httpx's own hardcoded posture.
+	assert.Nil(t, cmd.Flags().Lookup("insecure"), "recon's --insecure flag should be gone, not just defaulted false")
 }
