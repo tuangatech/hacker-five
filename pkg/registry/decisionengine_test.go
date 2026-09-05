@@ -546,6 +546,23 @@ func TestMatchTemplateTags_CapReturnsBestNotFileOrder(t *testing.T) {
 // TestTechStackTags_UnionsRelevantEntryTags confirms the basic shape: the
 // tags of every entry matchTemplateTags ranks as relevant to a detected
 // tech are unioned into one deduped, sorted allowlist.
+// TestDetectorTemplateTags covers the doc15 Step 6a category floor: a
+// stable, non-empty tag set per built-in detector, nil for an unknown name
+// or businesslogic (native-only), and a copy the caller can't mutate.
+func TestDetectorTemplateTags(t *testing.T) {
+	assert.Equal(t, []string{"misconfig", "exposure", "config", "default-login", "panel"}, DetectorTemplateTags("misconfig"))
+	assert.Equal(t, []string{"auth-bypass", "default-login", "panel", "exposure"}, DetectorTemplateTags("authbypass"))
+	assert.Equal(t, []string{"ssrf", "redirect", "oob"}, DetectorTemplateTags("ssrf"))
+	assert.NotEmpty(t, DetectorTemplateTags("idor"))
+
+	assert.Nil(t, DetectorTemplateTags("businesslogic"), "businesslogic is native-only — no corpus floor")
+	assert.Nil(t, DetectorTemplateTags("nonsense"), "unknown detector name → nil (caller falls back to the full corpus)")
+
+	got := DetectorTemplateTags("misconfig")
+	got[0] = "mutated"
+	assert.Equal(t, "misconfig", DetectorTemplateTags("misconfig")[0], "must return a fresh copy, not the shared backing slice")
+}
+
 func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {
 	index := []templatesync.Entry{
 		{ID: "wordpress-panel", Name: "WordPress Login Panel", Tags: []string{"wordpress", "panel"}, Severity: "info"},

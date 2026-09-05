@@ -29,7 +29,8 @@ type scanInput struct {
 	OtherAuthToken   string            `json:"other_auth_token,omitempty" jsonschema:"second-account auth token, for idor's baseline comparison"`
 	AllowWrites      bool              `json:"allow_writes,omitempty" jsonschema:"required for detector=businesslogic's mutating checks; skipped with a warning otherwise"`
 	ExtraHeaders     map[string]string `json:"extra_headers,omitempty"`
-	TechStack        []recon.TechFact  `json:"tech_stack,omitempty" jsonschema:"optional — a prior recon tool call's result.tech_stack; when set and tags is empty, narrows the loaded template corpus to this tech stack's relevant tags (LT-16/LT-17, docs/follow-up.md) instead of running the full synced corpus"`
+	TechStack        []recon.TechFact  `json:"tech_stack,omitempty" jsonschema:"optional — a prior recon tool call's result.tech_stack; adds this stack's product-specific template tags on top of the detector-category floor (LT-16/LT-17, doc15 Step 6a)"`
+	AllTemplates     bool              `json:"all_templates,omitempty" jsonschema:"load the full ~9.5k synced corpus, bypassing the default per-detector template scoping (doc15 Step 6a); no effect when tags is set"`
 }
 
 // scanOutput is the scan tool's result: every Finding the run produced,
@@ -76,24 +77,31 @@ func addScanTool(s *mcp.Server) {
 		}
 
 		var out scanOutput
-		// LT-17 (docs/follow-up.md): CLI/MCP parity for LT-16's tech-stack
-		// template narrowing, previously Web-UI-only. registry.TechStackTags
-		// is transport-agnostic already — the scan tool has no recon step of
-		// its own, so a caller passes along a prior `recon` tool call's own
-		// TechStack rather than this tool re-deriving it. Never overrides an
-		// explicit Tags value; degrades to the full corpus (a logged note,
-		// not an error) whenever nothing usable is found — same "full corpus
-		// is the safe fallback" posture LT-16 established.
-		if len(in.Tags) == 0 && len(in.TechStack) > 0 {
-			if index, idxErr := templatesync.LoadIndex(defaultTemplateIndexPath); idxErr == nil {
-				if tags := registry.TechStackTags(in.TechStack, index); len(tags) > 0 {
-					cfg.Tags = tags
-					out.Logs = append(out.Logs, fmt.Sprintf("info: narrow-by-tech: narrowed to %d tech-relevant tag(s): %s", len(tags), strings.Join(tags, ", ")))
+		// doc15 Step 6a: template scoping is on by default. An explicit Tags
+		// wins untouched; all_templates forces the full synced corpus;
+		// otherwise the scan is scoped to its detector's category floor
+		// (registry.DetectorTemplateTags) plus — when a prior recon tool
+		// call's tech_stack is passed along — that stack's product-specific
+		// tags (registry.TechStackTags). Degrades to floor-only, then to the
+		// full corpus, with a logged note rather than an error.
+		if len(in.Tags) == 0 && !in.AllTemplates {
+			floor := registry.DetectorTemplateTags(in.Detector)
+			var extras []string
+			if len(in.TechStack) > 0 {
+				if index, idxErr := templatesync.LoadIndex(defaultTemplateIndexPath); idxErr == nil {
+					extras = registry.TechStackTags(in.TechStack, index)
 				} else {
-					out.Logs = append(out.Logs, "info: narrow-by-tech: none of the detected tech stack ties to a template tag — running the full template corpus")
+					out.Logs = append(out.Logs, fmt.Sprintf("warn: template scope: could not load template index (%v) — scoping by detector category only", idxErr))
 				}
-			} else {
-				out.Logs = append(out.Logs, fmt.Sprintf("warn: narrow-by-tech: could not load template index (%v) — running the full template corpus", idxErr))
+			}
+			cfg.DerivedTags = unionScanTags(floor, extras)
+			switch {
+			case len(cfg.DerivedTags) == 0:
+				out.Logs = append(out.Logs, fmt.Sprintf("info: template scope: %s has no category floor and no tech match — running the full corpus", in.Detector))
+			case len(extras) > 0:
+				out.Logs = append(out.Logs, fmt.Sprintf("info: template scope: %d tag(s) = %d %s-category floor + %d tech-matched: %s", len(cfg.DerivedTags), len(floor), in.Detector, len(extras), strings.Join(cfg.DerivedTags, ", ")))
+			default:
+				out.Logs = append(out.Logs, fmt.Sprintf("info: template scope: %d %s-category tag(s) (pass a recon tech_stack for tech-matched CVEs, or all_templates for everything): %s", len(cfg.DerivedTags), in.Detector, strings.Join(cfg.DerivedTags, ", ")))
 			}
 		}
 
@@ -134,4 +142,25 @@ func addScanTool(s *mcp.Server) {
 func defaultTemplateDirs() []string {
 	dirs, _ := defaultTemplateDirsWithLabels()
 	return dirs
+}
+
+// unionScanTags is the detector-category floor ∪ tech-matched extras
+// composition for the scan tool's doc15 Step 6a default template scoping —
+// order-stable, de-duplicated, lower-cased (mirrors cmd/hackerfive's
+// unionTags and pkg/webui's unionLaunchTags; each package keeps its own
+// copy rather than a shared util for one small helper).
+func unionScanTags(floor, extras []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, group := range [][]string{floor, extras} {
+		for _, t := range group {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if t == "" || seen[t] {
+				continue
+			}
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }

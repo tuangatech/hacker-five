@@ -22,7 +22,9 @@ var recognizedDetectors = map[string]bool{
 type Config struct {
 	Targets            []string
 	TemplatePaths      []string
-	Tags               []string // from --tags; a loaded template fires only if it carries at least one of these (OR match, mirrors upstream Nuclei's -tags). Empty = no filtering
+	Tags               []string // from an explicit --tags; a loaded template fires only if it carries at least one of these (OR match, mirrors upstream Nuclei's -tags). Non-empty = authoritative user scoping: DerivedTags is ignored. Empty = fall through to DerivedTags / AllTemplates below.
+	DerivedTags        []string // detector-category floor (registry.DetectorTemplateTags) ∪ any tech-matched tags (registry.TechStackTags), composed by a frontend (cmd/webui/mcp) before Validate — doc15 Step 6a. Used only when Tags is empty and AllTemplates is false; same OR-match semantics as Tags. Empty here + empty Tags + AllTemplates false = no filtering (e.g. --detector businesslogic, which has no floor).
+	AllTemplates       bool     // from --all-templates; when true the engine ignores DerivedTags and loads the full synced corpus. No effect when Tags is non-empty (already scoped). The escape hatch for the doc15 Step 6a default-on scoping.
 	TemplateID         string   // narrows loaded templates to an exact id: match, unlike Tags (which matches a template's tags: block, never its id:) — pkg/mcpserver's executor uses this for a single-template plan leaf (doc15 Step 2 addendum); "" = no ID filtering
 	Concurrency        int
 	RateLimit          int

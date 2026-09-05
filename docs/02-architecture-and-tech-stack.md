@@ -4,526 +4,260 @@
 
 ## Design Principles
 
-*(New section, 2026-08-30 — the hybrid direction the user set, made explicit rather than left implicit across doc90/doc14/doc15.)*
+The hybrid direction the project commits to, stated once here rather than left implicit across doc90/doc14/doc15.
 
-1. **Deterministic-first, LLM-as-fallback, never LLM-first.** Every dispatch decision (which detector/recon-tool/template applies to a fingerprinted target) goes through a static, versioned decision-engine registry (`pkg/registry` — [90-research-hackerbot.md](90-research-hackerbot.md) Decision 6, Group I) before anything touches an LLM. The registry pattern is the same shape HexStrike AI's own internal dispatch code uses (`TechnologyDetector`/`IntelligentDecisionEngine`, confirmed by reading its source) — built first-party in Go here, not pulled in as a dependency. An LLM is invoked only when the registry has no entry for what recon found; it is never a parallel path available whenever a model "judges" the deterministic answer insufficient.
-2. **LLM calls are stateless, per-`PlanTree`-leaf, tiered by model class — never a persistent agent.** doc90 Decision 5: a small local model handles cheap/frequent judgment calls; a frontier model via OpenRouter handles the rare, expensive case (principally authoring a new template). Each call is one schema-in/schema-out function from the deterministic orchestrator's point of view — no chat history, no long-lived "agent process" spawned and held open across a scan. This also bounds how much scan data ever leaves the local machine: only the rare frontier-tier call talks to a third party, the same reasoning behind keeping OOB self-hosted (doc13 Objective §1).
-3. **Reuse published designs from comparable open-source tools before inventing one.** HexStrike AI, Cyber-AutoAgent, and Strix were read directly (source code, not marketing) for fingerprinting, decision-table, and skill-content patterns — see doc90 Group I5 for the specific reuse-vs-reject call on each. Prior art gets adapted, not re-derived from a blank page, but every adopted pattern still goes through this project's own scrutiny (e.g. HexStrike's live-per-scan NVD query was rejected as fragile in favor of a periodically-refreshed local cache).
-4. **A capability, once it exists, is described once, in one registry entry — never re-explained per consumer.** The same entry that documents a detector/tool/template for a human reading doc01's capability list is the entry `tools.search`/`templates.search` (doc15) serves to an LLM — one source of truth, not a human-facing doc and a machine-facing catalog drifting independently.
+1. **Deterministic-first, LLM-as-fallback, never LLM-first.** Every dispatch decision (which detector/tool/template applies to a fingerprinted target) goes through a static, versioned registry (`pkg/registry`) before anything touches an LLM. An LLM is invoked *only* when the registry has no entry for what recon found — never as a parallel path a model can reach for whenever it "judges" the deterministic answer insufficient.
+2. **LLM calls are stateless, per-`PlanTree`-leaf, tiered by model class — never a persistent agent.** A small local model handles cheap/frequent judgment; a frontier model via OpenRouter handles the rare expensive case (principally drafting a new template). Each call is one schema-in/schema-out function — no chat history, no long-lived agent process. This also bounds what leaves the machine: only the rare frontier call talks to a third party.
+3. **Reuse published designs from comparable open-source tools before inventing one.** HexStrike AI, Cyber-AutoAgent, and Strix were read as source for fingerprinting, decision-table, and skill patterns (doc90 Group I). Prior art is adapted, not re-derived — but still goes through this project's own scrutiny.
+4. **A capability is described once, in one registry entry — never re-explained per consumer.** The same entry that documents a detector/tool/template for a human in doc01 is the entry `tools.search`/`templates.search` serves to an LLM.
 
 ## Technology Stack
 
-### Core Components
+### Language: Go 1.21+
 
-#### 1. **Language: Go (Golang)**
-- **Why?**
-  - Compiles to single static binary (no dependencies, easy distribution)
-  - Concurrent request handling via goroutines (150+ req/sec architectural capacity, demonstrated against local lab targets — not a recommended operating rate against a real program; see [05-hackerone-and-legal.md](05-hackerone-and-legal.md)'s "Rate Limits & Concurrency Against Real Targets" for the actual real-target guidance, 5-10 req/sec absent other constraints)
-  - Fast startup and low memory footprint
-  - Built-in HTTP/DNS/TCP clients
-  - Production-proven by Nuclei, Nmap, Docker, Kubernetes
+Single static binary, goroutine concurrency, fast startup, built-in HTTP/DNS/TCP clients. Architectural capacity is ~150 req/sec against lab targets; the real-target operating rate is 5-10 req/sec (see [05-hackerone-and-legal.md](05-hackerone-and-legal.md)). CLI via **Cobra**.
 
-- **Minimum Version:** Go 1.21+
+### Detection templates: YAML, two engines
 
-#### 2. **Detection Templates: YAML**
-- **Why, in plain English:** the scanner splits into two separate things — an engine (the Go code) and templates (YAML files). The engine is generic and only gets built once: it knows how to send a web request, read the response, and check it against a set of rules. It has no idea what "IDOR" or "exposed `.env` file" actually means. A template is what supplies that meaning — a short, readable recipe for one specific weakness on one kind of app: which URL to hit, what a "vulnerable" response looks like, what a "safe" response looks like. So the intuition is correct: build the tool once, then add a new template whenever we want to check for a new weakness or adapt to a new app — no rebuild, no new release, no code change.
+The scanner splits into a generic **engine** (Go, built once — knows how to send a request, read a response, check it against rules) and **templates** (YAML recipes that supply the meaning of one specific weakness). Adding a check is writing a YAML file, not new Go code. Two parallel template engines, both loaded and run additively for every target:
 
-  Why that split is worth the extra layer, rather than just hardcoding every check into the engine:
-  - **New checks ship fast.** Adding a check is writing a YAML file, not writing and testing new Go code — turnaround for "can we also check for X" drops from a code change + release cycle to editing a text file.
-  - **We don't have to invent detection knowledge from scratch.** The security community already maintains a large, actively updated library of these recipes (Nuclei's `nuclei-templates` project) covering thousands of known exposed panels, misconfigurations, and technology fingerprints. Because our engine speaks a compatible template format, we can pull in that existing, vetted work directly instead of re-researching and re-writing detection logic ourselves for everything that's already publicly known. Concretely, via `pkg/templatesync` and `hackerfive templates sync`/`list`: a `git`-based sparse-checkout of a maintainer-curated, deliberately **pinned commit** (never `HEAD`/latest — a compromised upstream commit landing between pins can't silently reach a scan) into a persistent per-user config directory (`os.UserConfigDir()`) that survives a binary upgrade with zero manual copying. `--templates` loads both this synced directory and the project-authored `templates/` bundled with each release, together — see [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md)'s "Template sync command" for the full design.
-  - **Non-engineers can contribute checks.** A template is a readable text file, not a pull request against the scanner's internals — a security researcher who knows *what* to check for doesn't need to know Go, or how the scanner is built, to add *how* to check for it.
-  - **One engine, many apps and many bug types.** The same underlying request/compare logic works for crAPI's IDOR bug, DVWA's exposed paths, or a future customer's app — what changes between them is only which template file is loaded, not the program itself.
+- **`pkg/template/nuclei`** — Nuclei-compatible YAML (matchers, extractors, request chaining, a hand-rolled DSL).
+- **`pkg/template/native`** — HackerFive's own richer format for cases with no Nuclei equivalent (e.g. `idor`-tagged two-account baseline comparison, `{{RangeInt(min|max)}}` enumeration).
 
-- **Template Structure Example:**
-  ```yaml
-  id: idor-user-profile
-  info:
-    name: IDOR in User Profile Endpoint
-    author: YourName
-    severity: high
-    description: Test if user IDs are sequentially enumerable
-  tags:
-    - idor
-    - api
+See [template-writing-guide.md](template-writing-guide.md) for the format and [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) for the sync design.
 
-  variables:                    # global scope — set once, available to every request below
-    base_path: /api/users
+**The synced corpus is bounded to what's on disk at decision time — never a live download.** `pkg/templatesync` (`hackerfive templates sync`) does a `git` sparse-checkout of a **pinned upstream commit** (never `HEAD`) for 7 curated categories (`http/` exposed-panels, misconfiguration, technologies, vulnerabilities, cves, exposures, default-logins — widened from 4 on 2026-09-03) plus `helpers/` wordlists, into a persistent per-user config dir that survives binary upgrades. `--templates` loads that directory *and* the small `go:embed`-ed example set together. Re-pinning or widening categories is a deliberate, human-reviewed action, not a runtime toggle — a fingerprint the corpus doesn't cover surfaces as a visible `unresolved` `PlanTree` leaf, never silent expansion. Latest measured load success after the Phase 6 template-engine work: **~9,363 of ~9,683 templates load (~96.6%)**; the remaining rejections are `xpath`, `flow:` cross-block indexing, and disallowed (`code:`/`javascript:`/`headless:`/`tcp:`) blocks — see [follow-up.md](follow-up.md)'s Template Engine backlog.
 
-  requests:
-    - method: POST              # request 1: log in, extract the token for request 2
-      path: /api/auth/login
-      body: '{"email":"{{Email}}","password":"{{Password}}"}'
-      extractors:
-        - type: json
-          name: auth_token      # becomes {{auth_token}} in later requests — request-chain scope
-          path: token           # JSON path into the response body
+`registry.Resolve`'s template-tag matching only ever searches `templates/index.json` (`hackerfive templates index`), itself only ever built from what's already synced.
 
-    - method: GET
-      path: "{{base_path}}/{{RangeInt(1|100)}}"
-      headers:
-        Authorization: Bearer {{auth_token}}
-      matchers:
-        - type: status
-          status: [200]
-        - type: word
-          words:
-            - "email"
-            - "name"
-      condition: auth_token != ""   # skip this request if the login request above didn't produce a token
-  ```
-  - **Extractors** pull a value out of one request's response (regex, JSON path, header) and bind it to a name; later requests in the same template reference it as `{{name}}`. This is what makes request chaining (login → use token) work — see `pkg/template` in [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md) for where this lands in the build order: the native YAML engine step in Phase 1b (see [03-development-roadmap.md](03-development-roadmap.md) for current week numbers), out of scope for Phase 1a's Weeks 1-4.
-  - **Variable scope:** `variables:` at the template's top level is global (visible to every request); anything bound by an `extractors:` entry is chain-scoped — visible only to requests *after* the one that produced it, not before, and not across separate template files.
-  - **Conditionals:** an optional `condition:` on a request is evaluated against already-bound variables before the request fires; a false condition skips that request entirely rather than sending it with an empty/broken value.
-  - **Correction (Phase 1b Step 3, implemented):** the `tags: [idor, api]` on this example doesn't mean what it looks like it means once the engine actually exists. An `idor`-tagged template routes through the existing `idor.Detector` (baseline two-account comparison, tokens supplied externally via `--auth-token`/`--other-auth-token`, `{{RangeInt(min|max)}}` marking the enumerated ID) — it does **not** run its own login request or custom matchers; those are rejected at load time on an `idor`-tagged template instead of silently ignored. The login-then-probe pattern shown above is real and works, but only for a template **without** the `idor` tag (see `templates/idor/example.yaml`, and [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 3 for the full reasoning) — `{{RangeInt(...)}}` enumeration specifically is `idor`-tagged-only machinery, not available to a generic template like this one.
+### HTTP client: Go stdlib + middleware
 
-  **In plain English, this template does the following:**
-  - Step 1: log in with the credentials supplied on the command line (`{{Email}}` / `{{Password}}`) and pull the auth token out of the login response.
-  - Step 2: pick a random ID between 1 and 100 (`RangeInt(1|100)`) and request that user's profile using the token from step 1 — i.e., "am I, as this logged-in user, able to view someone else's profile by guessing their ID?"
-  - It only counts as a finding if the response comes back `200 OK` **and** contains fields like `email`/`name` — a redirect to a login page or an empty body doesn't match, which is what keeps false positives low.
-  - The `condition` guard on request 2 means: if login failed and there's no token, skip the probe instead of sending a broken/unauthenticated request that could look like a false finding.
-  - Nothing here writes or deletes target data — it's a read-only probe, consistent with the project's scan-only rule.
+`net/http` wrapped with rate limiting, retry-with-backoff, proxy support (Burp/mitmproxy), header/UA control, and request/response logging. A **per-host error circuit-breaker** (`pkg/scanner/hosterrors`) skips a host after it crosses a consecutive-error threshold rather than hammering an unreachable target for the rest of a run.
 
-#### 3. **HTTP Client: Go Standard Library + Custom Middleware**
-- Use Go's `net/http` for base functionality
-- Add custom middleware for:
-  - Request rate limiting
-  - Automatic retry with backoff
-  - Proxy support (for routing through Burp, MitmProxy)
-  - Custom headers (User-Agent rotation, API keys)
-  - Request/response logging
-- **Host error cache:** track consecutive errors per host across a scan; once a host crosses an error threshold, skip further requests to it rather than continuing to hammer an unreachable or broken target for the rest of an ID-enumeration run
+### Concurrency: goroutines + bounded worker pool
 
-#### 4. **Concurrency Framework: Go Goroutines + Worker Pool**
-- Implement configurable worker pool (default: 25 concurrent requests)
-- Queue-based job distribution for targets and templates
-- Progress tracking and cancellation support
+Configurable pool (`pkg/scanner/workerpool`), a global rate limiter shared across the whole scan, progress tracking, graceful cancellation. Note the current limitation: the per-target template loop runs **serially**, and plan execution re-runs the corpus once per builtin-capability leaf — [follow-up.md](follow-up.md) LT-18, scheduled as [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Step 6.
 
-#### 5. **Result Storage & Reporting**
-- **Output Formats:**
-  - JSON (for programmatic use)
-  - Markdown (for GitHub issue templates)
-  - HTML (for stakeholder reports)
-  - HackerOne JSON schema (for platform integration)
-- **Exporter interface:** one `Exporter` interface (`Export(w io.Writer, findings []detectors.Finding) error`) with one implementation per format above, dispatched by `ExporterFor(format string)` — justified since multiple concrete formats are already planned (rule of three), not a speculative abstraction. No separate `Tracker`/issue-creation interface (GitHub, Jira, etc.) — HackerOne is the only external integration target (see [01-overview-and-strategy.md](01-overview-and-strategy.md)), and even that's report-drafting export, not live issue tracking.
+### Result storage & reporting
 
-- **Optional:** SQLite for local finding history
+One `Exporter` interface (`Export(w io.Writer, findings []detectors.Finding) error`), one implementation per format — JSON, Markdown, HTML (auto-escapes attacker payload text), and HackerOne-JSON (an offline `report_intent` *draft*). Dispatched by `ExporterFor(format)`. `reporter.Dedup` suppresses exact-`Finding.ID` duplicates only (cross-format semantic dedup is deliberately not attempted). Optional SQLite for local finding history.
 
-#### 6. **CLI Framework: Cobra (Go)**
-- Standard command structure
-- Flag parsing and validation
-- Help documentation auto-generation
+### Web UI: local-only embedded server (optional)
 
-#### 7. **Web UI: Local-Only Embedded Server (Optional)**
-- `hackerfive serve` runs a local, loopback-only-by-default web server (Go stdlib `net/http` + `html/template`, no separate frontend build/toolchain) over the same, unmodified Scanner Engine below — a second interface to the engine, not a second implementation of it. Never a substitute for the CLI: CI/scripted use and full-flag-control power users keep using `hackerfive scan` directly.
-- Interactivity via **htmx** (vendored, `go:embed`-ed alongside the CLI into the same cross-compiled binary — no separate install step, no hosted/cloud mode) rather than a hand-rolled JS layer or a full SPA framework: server-rendered HTML stays the source of truth, form submits/live updates swap DOM fragments instead of full page reloads.
-- Live findings/logs stream to the browser via Server-Sent Events, backed by `Engine`'s `WithFindingCallback`/`WithLogCallback` hooks (see Scanner Engine, below) — this is what "Callback-based streaming results," formerly listed under Future Considerations, actually became once something needed it.
-- CSRF via a hand-rolled double-submit cookie (no third-party framework, consistent with the Minimal Dependencies stance below); a non-loopback bind requires a one-time bootstrap token, exchanged on first use for an `HttpOnly` session cookie.
-- Full design in [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md).
-- **A third frontend for LLM agents — MCP server (`pkg/mcpserver/`), Phase 6 Steps 1-2 now built.** [90-research-hackerbot.md](90-research-hackerbot.md) researched how other LLM-driven pentesting tools structure themselves and resolved the open design questions (a single coordinator, no shell/exec-shaped tool, MCP `elicitation` for human approval, and — per the Design Principles above — a deterministic decision engine with a tiered LLM fallback, never an LLM-first design); [91-research-recon-phase.md](91-research-recon-phase.md) added the recon-phase design that feeds it. [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), and [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) schedule it as Phase 5-7 (recon/data-model/decision-engine foundations, then the MCP server plus the tiered LLM fallback and `tools.search`/`templates.search`, then hardening). Like the Web UI, it's a third frontend over this same unmodified Scanner Engine (an MCP server in `pkg/mcpserver/`, not a second implementation of it) — the diagram below is now mostly built, marked ✅/⬜ per step rather than treated as all-or-nothing.
+`hackerfive serve` — a loopback-first Go stdlib `net/http` + `html/template` server over the *same unmodified* Scanner Engine, interactivity via vendored **htmx** (`go:embed`-ed into the one binary), live findings/logs via **Server-Sent Events** backed by `Engine`'s `WithFindingCallback`/`WithLogCallback`. CSRF via a hand-rolled double-submit cookie; a non-loopback bind needs a bootstrap token. Never a substitute for the CLI.
 
-  **What "elicitation" and "approval" actually mean here, in plain terms:** the `plan` MCP tool proposes a `PlanTree` (a set of target+detector pairs, resolved deterministically where possible) and then asks the *connected MCP client* — Claude Desktop, Claude Code, or any other MCP host, not HackerFive itself — to show a human a yes/no prompt ("approve this plan for execution?") before any request goes out. That prompt-and-answer exchange is MCP's own `elicitation` primitive; the human's answer is the "approval/reject." **Real mechanism, corrected 2026-09-02 after live-testing (see [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Step 2's Done note):** a tool handler can't just call the client synchronously mid-request under the current MCP protocol version — it has to return an `input_required` result and get retried once the client answers (SEP-2322's "multi-round-trip" pattern); this is handled transparently by the SDK on both ends, not something HackerFive's own code drives directly. **"Client does not declare elicitation support"** refers to MCP's own capability negotiation: some MCP clients (e.g. non-interactive/scripted ones) never advertise that they can show a human a prompt at all. Fixed 2026-09-02 (same day, a real gap found on user review): `plan`/`findings.triage` now check this *before* attempting to elicit (`clientSupportsElicitation`, `pkg/mcpserver/scope.go`) and degrade to a clean "returned unexecuted" result instead of the whole call failing — see [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Step 2's addendum.
+One unified **Launch page** (`GET /`) superseded the earlier separate New Scan / Recon / Guided Scan pages: a target field, an always-on recon phase, and CSS-only detector tabs. Recon is a phase of the one `Job` type, not a separate job. Recon-fillable detector fields left blank (`idor`'s endpoint, `authbypass`'s paths) are deferred past submission-time validation (`Config.ValidateWithOptions`) and filled from the real `ReconResult` once recon finishes — a still-empty field skips that one detector with a visible log line, mirroring an `unresolved` `PlanTree` leaf. `GET /plan-preview` is the Web UI's own plan-approval surface (below).
 
-  **Planned end-to-end flow (diagrammed 2026-08-31, updated 2026-09-02 — ✅ = built and live-verified today, 🟡 = partially built, ⬜ = designed, not yet built):**
+### MCP server: a frontend for LLM agents
 
-  ```
-  1. Recon, escalating waves 0-3                                          ✅ pkg/recon (Phase 5 Step 3a)
-     (zero-touch → passive → active → bounded crawl)
-             │
-  2. Fingerprint (header/body/favicon/port signals)                       ✅ pkg/fingerprint (Step 3b, I2)
-             │
-  3. Decision engine: TechFact → registry match                          ✅ pkg/registry (Step 3b, I1/I3)
-             │  deterministic dispatch first (capability + template-tag
-             │  reuse against the already-synced+pinned corpus — never
-             │  a live/dynamic template download, see note below)
-             │
-             ├─ matched? ─────────────────────────────────────────────▶  pending leaf(ves)
-             │
-             └─ no match ──▶ tiered LLM fallback (Decision 5/6)          ✅ I4 (Phase 6 Step 2) — pkg/llmfallback
-                                   │
-                                   ├─ still no coverage? ──▶ visible     ✅ unresolved-leaf rendering
-                                   │   `unresolved` leaf (never dropped)    (Step 3b/4, live-verified)
-                                   │
-                                   └─ frontier tier authors a NEW
-                                      template ──▶ templates-proposed/  🟡 written + rejection-pipeline-
-                                      (untrusted until promoted)            checked; E2's own promotion UI is
-                                                                             still ⬜ (Phase 7) — see path note
-             │
-     [2+3 together are what BUILD the PlanTree — plan review happens
-      ON the tree they produce, never before it exists]
-             │
-  4. PlanTree — read-only preview                                        ✅ pkg/agenttask + Web UI (Step 2/4)
-             │
-  5. Human approves the plan (MCP `elicitation`)  ◀────────────────┐     ✅ B1 (Phase 6 Step 2) — see the
-             │                                                     │        plain-terms note above for what
-             │                                                     │        this actually does today
-  6. Scoped execution — approved leaves run, fanned out             │
-     across scanner.Engine's existing worker pool                  │      ✅ doc15 §2's Executor — two tiers
-     (parallel across independent leaves; a leaf whose detector    │         are really "R8-matched" vs.
-     was picked by the LLM fallback, not R8, stays more            │         "LLM-assigned" (not "currently
-     conservative — smaller blast radius on its first live run,    │         costing LLM calls" — execution
-     not an ongoing LLM-cost concern at this stage)                │         itself makes no further LLM call)
-             │                                                     │
-             ├─ new out-of-scope host/path discovered? ────────────┘      ⬜ B4 scope-creep loop — still not
-             │                                                              wired up; Step 3's job
-  7. Leaf Status/Confidence updated continuously during execution        ✅ H2's `ApplyLeafUpdate`, leaf-only —
-     (not a single late step)                                                `PlanTree` mutex added Step 2,
-             │                                                               confirmed race-free under `-race`
-             │
-  8. Result interpretation → human final review                          ⬜ not yet built
-             │
-  9. Report (JSON/MD/HTML/HackerOne draft)                               ✅ pkg/reporter Exporter (Phase 4)
-             │
-  10. HackerOne submission — separate, explicit `--yes` gate,            ✅ permanent invariant (CLAUDE.md/B3),
-      never bundled into "reporting" itself                                  not yet wired to an agent flow
-  ```
+`pkg/mcpserver` (`hackerfive mcp-serve`, Phase 6) is a third frontend over the same engine — `scan`, `recon`, `templates.list`/`sync`, `findings.export`, `findings.triage`, `tools.search`, `templates.search`, and `plan`. No shell/exec-shaped tool (a permanent boundary): the agent selects targets/templates, every `Finding` still comes from the deterministic matcher engine. Dependency: `github.com/modelcontextprotocol/go-sdk` (official). Human approval uses MCP's `elicitation` primitive via SEP-2322's multi-round-trip shape (a handler returns `InputRequests` and is retried once the client answers) — a synchronous mid-request `Elicit` is not available in the current protocol. A client that doesn't advertise elicitation support gets the plan back **unexecuted**, not a failure.
 
-  **Two boundaries worth stating explicitly, since they're easy to blur:**
-  - **"Reuse existing templates before creating new ones" (Decision 6) is bounded to whatever's already on disk at decision time — never a live download.** `pkg/templatesync` syncs 7 pinned categories (`http/exposed-panels`, `http/misconfiguration`, `http/technologies`, `http/vulnerabilities`, `http/cves`, `http/exposures`, `http/default-logins` — widened 2026-09-03 from the original 4, see below) from one fixed upstream commit into a persistent per-user directory, entirely decoupled from the release binary (only a small, hand-authored example set under `templates/` is `go:embed`-ed). The decision engine's template-tag matching only ever searches `templates/index.json` — itself only ever built from whatever `hackerfive templates sync` has *already* pulled down. Re-pinning or widening the synced categories is, by the sync code's own doc comment, *"a rare, deliberate, human-reviewed action... not a runtime toggle"* — so there is no safe middle ground where the decision engine or the LLM fallback expands template coverage on its own mid-scan; a fingerprint the synced corpus doesn't cover surfaces as a real, visible `unresolved` leaf instead. **A real gap found and fixed while drafting this diagram (2026-08-31):** this dev machine's synced directory held only a single leftover test fixture, not the real corpus — every earlier "live-verified template-tag match" claim in doc14 (Steps 3b/4) was true but exercised only the ~29 bundled example templates, not the intended corpus. Running `hackerfive templates sync` for real against the original 4 categories (1560+980+910+19 = 3469 templates pulled, 3194 indexed) and re-running `hackerfive plan` against crAPI raised the real template-tag-matched leaf count from 1 (`php-detect`) to 11 (nginx/php/phpldapadmin/etc. panel and technology templates) — the reuse-first mechanism works as designed, it just hadn't been exercised against the real corpus size until now. **2026-09-03 widening:** `cves/` (4,238 templates), `exposures/` (698, includes the leaked-credential detectors for AWS/GCP/Azure/GitHub/etc. — `http/exposures/tokens/`, `/configs/`, `/files/`), `default-logins/` (305), and the rest of `vulnerabilities/` beyond the already-synced `generic/` subset (942 more) were added — a top-level `cloud/` directory (cloud-account posture auditing, `code:`-block-based, requires cloud IAM credentials) was evaluated and rejected as out of scope for this project's threat model and disallowed-block list. Real, measured load-success against this project's own validator after a real `hackerfive templates sync` + `templates index` run against the full widened corpus: **7,716 of 9,682 templates loaded (79.7%)** — better than the 72.3% measured for `cves/` in isolation before committing to the widening. The bulk of the 1,966 rejections are OOB/interactsh-correlated matchers and cross-request DSL identifiers (`body_2`/`content_type_2` meaning "a separate `flow:` request block," not this project's `raw:`-scoped binding) this project doesn't support yet, not a surprise specific to any one new category.
-  - **Parallel leaf execution (step 6) — built 2026-09-02, doc15 §2's Executor (`pkg/mcpserver/executor.go`).** Leaves under different hosts have no declared dependency on each other (`registry.Resolve` builds them as flat siblings), and `scanner.Engine`'s worker pool already parallelizes multiple templates/detectors against a target today — running several approved leaves concurrently reuses that same primitive, dispatched per-leaf; doesn't conflict with Decision 1 (a single coordinator dispatching scoped, disposable tool calls concurrently is exactly Cyber-AutoAgent's validated pattern, not a peer-agent mesh). `pkg/agenttask.PlanTree`'s mutex (added the same day) makes `ApplyLeafUpdate` safe from the executor's parallel leaf goroutines, confirmed via a `go test -race` run exercising concurrent calls, not just a single-goroutine assertion. **Not yet live-verified**: a real multi-leaf timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism rather than accidental serialization) — deferred, honestly, rather than assumed from the unit tests alone.
-  - **`templates-proposed/`, not `templates/proposed/`.** A drafted template from the frontier tier lands in a directory named `templates-proposed/` at the repo root — a sibling of `templates/`, not a subdirectory of it. Real gap found wiring this up: `templates/` is walked *recursively* by every existing template loader (`scanner.Engine`, `templates.list`/`search`, `hackerfive templates`), so a subdirectory would have put an untrusted, LLM-drafted template directly into the live scan corpus the moment one was written — exactly what "never running against a live target without separate human promotion" is supposed to prevent. Fixed before any code exercised it.
+### Dependencies (minimal)
 
-**Recon → TechFact → PlanTree leaf: the exact sequence, worked example** *(added 2026-09-03 after a user review found the flow diagram above doesn't show enough mechanics to answer "does the LLM extract info from recon, and which tags does it actually see?"; updated the same day once that review's follow-up fixes landed — see doc15 Step 2's addendum. Grounded in the real code paths below, not aspirational.)*
-
-**1. Recon → TechFact extraction is 100% deterministic — zero LLM involvement.** Wave 2's `httpx -tech-detect` output and `pkg/fingerprint`'s header/body/favicon/port signature table both feed `ReconResult.TechStack`, a flat list of `TechFact{Name, Host, Source, Confidence}`. No LLM ever sees a raw HTTP response, page title, or header value — this is pure Go pattern-matching, same as any other recon wave.
-
-Sample TechFacts (illustrative, a mixed WordPress + custom-API target):
 ```
-TechFact{Name: "WordPress:6.4.2",    Host: "example.com",     Source: "httpx-tech-detect",  Confidence: "high"}
-TechFact{Name: "OpenResty:1.27.1.2", Host: "example.com",     Source: "httpx-tech-detect",  Confidence: "high"}
-TechFact{Name: "Craft CMS:4.5.2",    Host: "cms.example.com", Source: "fingerprint-favicon", Confidence: "low"}
-```
-(`Craft CMS` is deliberately not in `techRules` below — every real product name is, at any given time, either covered by a hand-authored rule or not; this one illustrates the "not" case, not a claim that CMS products in general go unmatched.)
-
-**2. `registry.Resolve` — deterministic dispatch, one TechFact at a time (`pkg/registry/decisionengine.go`):**
-```
-TechFact{Name: "WordPress:6.4.2", Host: "example.com", ...}
-        │
-        ├─▶ matchTechRules("wordpress")            — techRules exact-substring match → ["misconfig"]
-        └─▶ matchTemplateTags("wordpress", index)   — up to 5 templates tagged exactly "wordpress"
-        │
-        ▼
-PlanNode{Detector: "misconfig",       Status: Pending, Rationale: "tech fact ... matched registry capability \"misconfig\""}
-PlanNode{Detector: "<template-id-1>", Status: Pending, Rationale: "tech fact ... matches template tag on \"<template-id-1>\""}
-   (one leaf per match — capability matches and template-tag matches coexist as siblings)
-```
-If neither fires — e.g. `TechFact{Name: "Craft CMS:4.5.2", ...}` above, since nothing happens to be tagged exactly `craft cms` and it's not in `techRules`:
-```
-PlanNode{Target: "cms.example.com", Status: Unresolved, Rationale: "tech fact \"Craft CMS:4.5.2\" (source: fingerprint-favicon) matched no registry capability or template tag; observed on this host: GET /admin/login (200), GET /?p=admin/dashboard (401)"}
-```
-The `observed on this host: ...` suffix (up to 3 real, correlated `EndpointFact` entries — `correlatedEndpoints`/`describeEndpoints`, `pkg/registry/decisionengine.go`) is only appended when recon actually observed something on that host — added 2026-09-03 so the calls below have a real path/status to reason about instead of just a bare hostname. This unresolved leaf, and only this leaf, is what reaches I4.
-
-**3a. "Reuse an existing tag" — I4's first caller, `ResolveLeaf` (`pkg/llmfallback/leaf.go`):**
-```
-Unresolved PlanNode
-        │
-        ▼
-buildLeafPrompt(leaf, registry.Capabilities[~20], templateIndex)
-        │  catalog shown to the model:
-        │    • every registry capability name/description — all ~20, never truncated
-        │    • up to 300 UNIQUE template tags, two-tier (added 2026-09-03, rankRelevantTags):
-        │      first, up to 200 tags scored relevant to the tech name buildLeafPrompt
-        │      extracts from leaf.Rationale (exact match > substring > word overlap against
-        │      pkg/registry.NormalizeTechName's output) — "craft cms" ranks any "craft-cms"-
-        │      shaped tag first; then the remaining capacity is filled from a fixed-order
-        │      walk of the rest of the index, a broad deterministic base sample (misconfig,
-        │      exposed-panel, ...) as an escape hatch when nothing scores well. Replaces the
-        │      earlier fixed-order-only 200-tag cap, which showed the same arbitrary prefix
-        │      every call regardless of which TechFact triggered it — a real, measured cause
-        │      of avoidable needs_new_template decisions documented in doc15 Step 2.
-        ▼
-local-tier call ──▶ {"decision": "use_existing_tag", "tag": "grafana"}   — live-tested
-        │            2026-09-03 against the real corpus + a real OpenRouter model: this
-        │            exact outcome, a correct, non-hallucinated reuse decision
-        │            or {"decision": "needs_new_template", ...}  (→ 3b below)
-        │            or {"decision": "escalate", ...}
-        ▼
-applyLeafDecision (pkg/mcpserver/tools_plan.go)
-        │
-        ▼
-leaf.Detector = "grafana"   — no validation against the real catalog here; a
-leaf.Status   = Pending       hallucinated OR merely-a-tag name both fall through to
-                               RunPlan's own eligibility check below the same way
-        │
-        ▼  elicitation → human approves plan
-        ▼
-RunPlan (pkg/mcpserver/executor.go)
-        │
-        ├─ leaf.Detector ∈ {idor, misconfig, authbypass, ssrf, businesslogic}?
-        │     YES ──▶ dispatched with that built-in detector, runs for real
-        │             (the llmAssisted concurrency tier)
-        │
-        ├─ leaf.Detector matches a real templatesync.Entry.ID in the loaded index
-        │  (a specific template — R8's own template-tag matches hit this path,
-        │  since matchTemplateTags sets Detector: entry.ID, a real ID)
-        │     YES ──▶ dispatched as a templates-only run — Detector left empty,
-        │             TemplateID set to leaf.Detector (Config.TemplateID, an exact
-        │             id: match, narrower than Tags' OR-match against a tags:
-        │             block), runs for real. Added 2026-09-03 — previously *every*
-        │             specific-template leaf was informational-only, never executed
-        │             by this step regardless of whether R8 or I4 picked it.
-        │
-        └─ neither — a genuine hallucination, OR (the live-tested "grafana" case
-           above) a real but *shared* tag, since buildLeafPrompt only ever shows
-           the model tags, never per-template IDs — "grafana" matches no single
-           entry.ID (17 real templates carry it; none is id: "grafana"), so this
-           branch is where an I4 use_existing_tag decision still lands today,
-           even a correct one. Fixes R8's own matches fully; doesn't yet make an
-           I4 reuse decision executable — an open gap, doc15 Step 2's addendum.
-                 ──▶ SKIPPED — "not executed this step (unrecognized detector/
-                     template-ID ... requires separate human promotion or manual run)"
-                     — reported in `skipped`, never silently dropped, but not run either
+github.com/spf13/cobra                          CLI
+gopkg.in/yaml.v3                                YAML
+github.com/json-iterator/go                     fast JSON
+github.com/santhosh-tekuri/jsonschema/v5        finding + recon-result schema validation (zero transitive deps)
+github.com/modelcontextprotocol/go-sdk          MCP server (11 modules, 2 already pinned)
+(no new dep) pkg/llmfallback                    tiered LLM client — plain net/http, OpenAI-chat-compatible
+(no new dep) pkg/oob                            RSA-OAEP+AES-256-CTR Interactsh client
+(optional)   github.com/chromedp/chromedp       browser-based XSS validation
 ```
 
-**3b. "Create a new template" — I4's frontier-tier draft-authoring call (only reached from `needs_new_template` above):**
+Regex uses stdlib `regexp` (RE2) — arm64-native, no cgo, reproducible cross-compiled builds. Reach for `github.com/dlclark/regexp2` only for a specific matcher that needs PCRE-only features.
+
+**Dependency-footprint discipline (the "interactsh-client lesson," Phase 4):** importing `interactsh-client` pulled in ~134 unrelated go.mod lines (embedded DB, FTP server) from its server-mode code — discovered only by running `go get` and reading the `go.mod` diff, not by reading the package page. Repeat that check before committing to any new dependency; if the footprint is disproportionate, implement the needed protocol subset first-party (as `pkg/oob` does).
+
+**`pkg/llmfallback` config — environment variables only** (`cmd/hackerfive/dotenv.go` loads `.env` once at startup; a real exported var always wins). `env.example` documents every variable. The load tier points at an OpenAI-chat-compatible local runtime; the frontier tier is OpenRouter (new-template drafting only). **Two spend ceilings, both USD not token counts:** a per-call ceiling on `agenttask.PlanTree` (default `$0.10`) and a process-lifetime cumulative ceiling (default `$2.00`, `pkg/llmfallback/spend.go`). Crossing either stops further LLM calls for that pass (remaining leaves escalate to a human) but never discards already-resolved deterministic work. If neither tier is reachable, `llmfallback.New()` fails outright and every fallback call escalates to a human rather than silently doing nothing.
+
+### Development & testing
+
+| Area | Tooling |
+|---|---|
+| Test | Go `testing` + testify; `testing.F` fuzz targets for the HTTP client / response parsers |
+| Vulnerable targets | crAPI, vAPI, DVWA, Juice Shop, WebGoat, bWAPP (Docker Compose) |
+| Recon binaries | subfinder, tlsx, dnsx, naabu, httpx, katana — installed via `hackerfive recon setup` (`pkg/toolsync`), no Go toolchain needed |
+| Lint | golangci-lint | 
+| Build / release | `Makefile` (`build`/`test`/`lint`/`fuzz`/`integration`/`eval`); goreleaser cross-compiles Linux/macOS/Windows; the Web UI is `go:embed`-ed into that same binary |
+| CI | GitHub Actions |
+
+Errors are wrapped with `fmt.Errorf("...: %w", err)` and inspected with `errors.Is`/`errors.As` — no custom error package.
+
+## The Agent Pipeline
+
+The full flow, `recon → decision engine → approval → scan → triage`. **Steps 1-4 and 6-10 are built and live-verified; the LLM fallback and both approval surfaces are built; the hard safety blockers (D2/D3/B4) and the live session log are Phase 6 Step 3/5.**
+
 ```
-needs_new_template
-        │
-        ▼
-frontier-tier call, draftTemplateSystemPrompt (condensed rules sourced from
-docs/template-writing-guide.md's "Supported" section — see doc15 Step 2)
-        │
-        ▼
-{"draft_template": "<full YAML>"}
-        │
-        ▼
-writeProposedTemplate (pkg/mcpserver/tools_plan.go)
-        │
-        ├─ nuclei.LoadDirDetailed(templates-proposed/) — the SAME real validator every
-        │  synced/bundled template goes through (disallowed-block check, matcher/
-        │  extractor type + part validation, DSL type-checking, ...)
-        │
-        ├─ PASS ──▶ file stays in templates-proposed/; leaf.Rationale = "drafted
-        │           template written to ... — pending human promotion, not executed
-        │           by this plan run"
-        │
-        └─ FAIL ──▶ file deleted immediately; leaf.Rationale = "drafted template
-                     rejected: <real parser error>"; escalated to a human
+1. Recon — escalating waves 0-3                              ✅ pkg/recon
+   zero-touch → passive (subfinder/tlsx) → active
+   (dnsx/naabu/httpx +tech-detect) → bounded crawl (katana)
+   Output: ReconResult { Hosts, Endpoints, TechStack,
+   APISpec, OutOfScope, Warnings } — schema-frozen, each
+   fact carrying Source + Confidence. 100% deterministic;
+   no LLM ever sees a raw response.
+          │
+2. Fingerprint — header/body/favicon/port signature table   ✅ pkg/fingerprint
+   enriches TechStack on top of httpx's own -tech-detect
+          │
+3. Decision engine — registry.Resolve, per host, per fact   ✅ pkg/registry
+   TechFact / EndpointFact / PortFact / APISpecFact
+      ├─ techRules match          → capability leaf (misconfig/idor/…)
+      ├─ template-tag match       → specific-template leaf (id-scoped)
+      │   (ranked: primary-product tag > generic hit; canonical
+      │    tech→tag map; version/CVE-recency scoring; static-asset
+      │    and non-actionable-tech denylists)
+      └─ no match                 → tiered LLM fallback      ✅ pkg/llmfallback
+                                     local tier: use_existing_tag /
+                                       needs_new_template / escalate
+                                     frontier tier (only on needs_new):
+                                       drafts YAML → templates-proposed/
+                                       (validated, never executed —
+                                        human promotion required)
+                                   still nothing → visible `unresolved`
+                                   leaf, never dropped, never silently
+                                   escalated
+          │
+4. PlanTree — leaf-mutable-only, spend-ceiling-bearing      ✅ pkg/agenttask
+   (2+3 BUILD the tree; review happens on the tree, not before)
+          │
+5. Approval — human approves the plan                       ✅ MCP elicitation
+   either the MCP client's own dialog, OR HackerFive's         + Web UI Plan Preview
+   Web UI Plan Preview (Approve/Reject/per-leaf include,        (Phase 6 Step 4)
+   budget gauge, always-reachable kill switch)
+          │  scope hard-fail on agent-initiated calls           ✅ MCP (Step 1) + CLI plan/recon
+          │  D2 program-policy pre-flight (automated-scan ban)  ⬜ Phase 6 Step 3
+          │  B4 scope-creep re-elicitation on OutOfScope        ⬜ Phase 6 Step 3
+          │
+6. Scoped execution — approved leaves via pkg/planexec.RunPlan  ✅ pkg/planexec
+   the SAME dispatcher for MCP and Web UI. Two trust tiers:      (shared, extracted
+   R8-matched leaves at full concurrency; use_existing_tag-       from mcpserver)
+   resolved leaves at a lower cap. Leaf Status/Confidence
+   updated continuously (mutex-guarded ApplyLeafUpdate).
+          │
+7. Triage — findings.triage ranks an existing []Finding      ✅ I4's 3rd caller
+   never adds a finding, never changes Severity/Confidence
+          │
+8. Result interpretation → human final review               ⬜ Phase 7 (live Agent tab)
+          │
+9. Report — JSON / MD / HTML / HackerOne draft              ✅ pkg/reporter
+          │
+10. HackerOne submission — separate explicit `--yes` gate,   ✅ permanent invariant
+    never bundled into reporting, never agent-automated          (CLAUDE.md / doc90 B3)
 ```
-A drafted template is **never** executed by this step's executor regardless of whether it passed validation — promotion out of `templates-proposed/` into a real scan is a separate, deliberately manual step (Phase 7, doc90 E2). Like 3a, this call's prompt embeds the same enriched `leaf.Rationale` (same `prompt` variable, built once, reused for both calls in `leaf.go`) — a real observed path/status, when one was correlated, rather than a bare hostname.
 
-**For contrast, the recon-derived *field*-suggestion path (I4's second caller, `ResolveField`) has always worked this way — real recon data in, a pick among real candidates out, never raw extraction.** `pkg/recon/suggest.go`'s `SuggestIDOREndpointCandidates`/`SuggestAuthBypassPathsFromRecon`/`SuggestSSRFParamsFromRecon` deterministically derive candidates from `ReconResult.Endpoints` (an ID-shaped path/query segment → an `{{id}}`-templated candidate; a 401/403-status endpoint → a protected-path candidate; a query key matching a curated SSRF-param keyword list → a candidate). `ResolveField` is only ever called on `idor`'s and `authbypass`'s genuine zero-or-multiple-candidate misses, and it only picks among the candidates already handed to it — it never re-reads recon output itself. `ssrf` and `authbypass`'s login/logout paths never call an LLM at all; every candidate auto-fills, since there's no ambiguity to resolve.
+**Boundaries worth stating explicitly:**
 
-#### 8. **Dependencies (Minimal)**
-```
-- github.com/spf13/cobra (CLI)
-- gopkg.in/yaml.v3 (YAML parsing)
-- github.com/json-iterator/go (fast JSON parsing)
-- github.com/santhosh-tekuri/jsonschema/v5 (validates docs/schema/finding.schema.json and recon-result.schema.json — Phase 5; checked for real transitive footprint before adding, per this list's own discipline below: zero transitive dependencies, confirmed via a scratch-module `go get`)
-- github.com/modelcontextprotocol/go-sdk (`pkg/mcpserver`, MCP server — Phase 6 Step 1; official SDK, maintained with Google; checked for real transitive footprint before adding: 11 new modules, two already pinned in this project at identical versions — see [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Step 1's Done note for the full verification)
-- (No new dependency) `pkg/llmfallback` (Phase 6 Step 2's tiered LLM fallback client for a local model runtime + OpenRouter) is a plain `net/http`/`encoding/json` REST client — both APIs are OpenAI-chat-completions-compatible, confirmed zero new `go.mod` entries at implementation time, not just predicted — see [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) Step 2's Done note
-- (Optional) github.com/chromedp/chromedp (for browser-based XSS validation)
-```
-
-**`pkg/llmfallback` configuration — environment variables only, per CLAUDE.md's credential-handling rule.** `cmd/hackerfive/dotenv.go` (added 2026-09-02, no new dependency — a few lines of stdlib code) loads a `.env` file from the current working directory once at startup, for every subcommand (`scan`/`serve`/`mcp-serve`/...) on Windows and macOS/Linux alike; a real environment variable you've already exported always wins over `.env`. See `env.example` at the repo root for every variable with its default and a one-line explanation (named without the leading dot — a permission rule in the dev environment that produced this doc blocks writing `.env`-prefixed files directly; copy it to `.env` yourself). The full list:
-- `HACKERFIVE_LOCAL_MODEL_URL` — local model runtime's base URL, OpenAI-chat-completions-compatible (e.g. Ollama). Default `http://localhost:11434`.
-- `HACKERFIVE_LOCAL_MODEL_NAME` — the local model to request. Default `llama3.1` — a placeholder, not a verified recommendation; set explicitly to whatever model is actually pulled locally (`ollama list`).
-- `OPENROUTER_API_KEY` — OpenRouter API key. Absent means the frontier tier (new-template drafting only) is unavailable; the local tier still works on its own.
-- `HACKERFIVE_OPENROUTER_MODEL` — the OpenRouter model ID to request. Default `openrouter/auto` — also a placeholder per CLAUDE.md's "don't rely on your own knowledge of library/framework versions" discipline, which applies just as much to a model catalog that changes on its own schedule; pick a real, current model ID from OpenRouter's own catalog and set this explicitly.
-- `HACKERFIVE_OPENROUTER_PRICE_PER_1M_INPUT_USD` / `HACKERFIVE_OPENROUTER_PRICE_PER_1M_OUTPUT_USD` — override the per-1M-token USD prices used to compute a call's real cost against the spend ceilings below (defaults are placeholders, not current OpenRouter pricing — confirm the real rate for whatever model is actually configured). The local tier is always costed at $0 (self-hosted, no metered API).
-- `HACKERFIVE_SPEND_CEILING_USD` — default per-*call* spend ceiling (see below). Default `$0.10`.
-- `HACKERFIVE_SPEND_CEILING_TOTAL_USD` — process-lifetime cumulative spend ceiling (see below). Default `$2.00`.
-
-If neither the local tier is reachable nor `OPENROUTER_API_KEY` is set, `llmfallback.New()` fails outright and every I4 call for that `plan`/`findings.triage` invocation escalates to a human rather than silently doing nothing.
-
-**Spend ceiling is a dollar amount, not a token count, and — added 2026-09-02, real user feedback — there are two of them, not one.** A token budget means something different per model/tier (a frontier-model token costs orders of magnitude more than a local one), so USD is what actually bounds spend regardless of which tier answered a given call. Cost per call is computed from the real `usage.prompt_tokens`/`usage.completion_tokens` OpenRouter returns, multiplied by the two price-per-1M-token env vars above; local-tier calls always cost $0.
-- **Per-call ceiling** — `planInput.SpendCeilingUSD` (an argument to the `plan` tool call itself, falling back to `HACKERFIVE_SPEND_CEILING_USD`, default `$0.10`), tracked on `agenttask.PlanTree.SpendCeilingUSD`/`SpendSoFar()`. Scoped to one `plan`/`findings.triage` call's own resolution pass — once crossed, remaining unresolved leaves/fields for *that call* escalate to a human instead of issuing more LLM calls.
-- **Process-lifetime cumulative ceiling** — `llmfallback.GlobalSpendCeilingUSD()`/`GlobalSpendSoFar()` (`HACKERFIVE_SPEND_CEILING_TOTAL_USD`, default `$2.00`), checked in `Client.complete` before every frontier-tier call, independent of which `plan`/`findings.triage` call made it. This is the guard that actually matters once a server is expected to field many separate calls over its lifetime — the per-call ceiling alone doesn't bound that aggregate.
-
-Matcher/regex matching uses the standard library `regexp` (RE2) — it's arm64-native, avoids cgo, and keeps cross-compiled CI builds reproducible. (An earlier draft of this list named `github.com/valyala/fastregexp`, which does not exist as a published package — do not add it.) Only reach for a third-party engine such as `github.com/dlclark/regexp2` if a template genuinely needs PCRE-only features RE2 can't express (backreferences, lookahead).
-
-**Lesson (Phase 4, 2026-08-29):** the same "verify before trusting the package page" discipline applies beyond version numbers — `interactsh-client`'s own pkg.go.dev listing gave no indication that importing it pulls in ~134 new go.mod lines (an embedded database, host-introspection libraries, an embedded FTP server), all needed by the library's server-mode code paths, not the client use HackerFive actually needed. Discovered by actually running `go get` and reading the resulting `go.mod` diff, not by reading the package's doc page — that's the verification step to repeat before committing to any new dependency in a plan doc, not an isolated incident. [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md)'s R1b has the follow-up: the first-party fallback this forced is reused there rather than re-attempting the same dependency.
-
-The misconfig detector's templates are pulled from upstream `nuclei-templates`, whose own engine is Go's stdlib `regexp` — so every regex matcher that ships there is already RE2-safe by construction; no audit needed. The one place a PCRE-only pattern could actually show up is the HackerFive-native IDOR baseline-comparison format (no Nuclei equivalent, see template example above) — if a future IDOR regex matcher needs a backreference or lookahead, that's the trigger to add `regexp2` for that matcher only, not switch the whole engine.
-
-#### 9. **Development Tools**
-- **Testing:** Go's built-in `testing` package + testify for assertions; native `testing.F` fuzz targets for the HTTP client and response parsers (the scanner parses untrusted target responses, which is attack surface for the tool itself, not just the target)
-- **Build:** a `Makefile` wrapping `build`/`test`/`lint`/`fuzz`/`integration` targets, so the commands used throughout this doc set have one canonical entry point instead of being copy-pasted per doc
-- **Error handling:** wrap errors with context via stdlib `fmt.Errorf("...: %w", err)` and inspect with `errors.Is`/`errors.As` — no custom error-context package; that solves a debugging-at-scale problem this project doesn't have yet
-- **Linting:** golangci-lint
-- **Documentation:** MkDocs (similar to Nuclei docs)
-- **CI/CD:** GitHub Actions
-- **Docker:** Multi-stage build for production image
-- **Releases:** goreleaser for cross-compiled Linux/macOS/Windows binaries, backing the installation guide in the Phase 1b packaging step. The Web UI's templates/CSS/JS are `go:embed`-ed into that same cross-compiled binary (see Web UI, above) — "update the web UI" and "update the CLI" are the same release action, no separate frontend deploy.
-
-### Development & Testing Stack
-
-| Component | Tool | Purpose |
-|-----------|------|---------|
-| **Vulnerable Targets** | crAPI, vAPI, DVWA, Juice Shop, WebGoat, bWAPP | Safe testing environment |
-| **HTTP Interception** | Burp Suite Community, MitmProxy | Debug requests/responses |
-| **API Testing** | Postman, Insomnia | Template development |
-| **Fuzzing** | ffuf, OWASP ZAP | Discover endpoints |
-| **Recon** | subfinder, tlsx, dnsx, naabu, httpx, katana (real, shipped `pkg/recon` toolchain — installed via `hackerfive recon setup`, not a dev-only aid) | Asset discovery, live in every `--recon-depth active`/`full` run |
-| **Version Control** | GitHub | Code, templates, issues |
-| **Automation** | GitHub Actions | CI/CD, template validation |
+- **Template reuse (Decision 6) is bounded to whatever's synced+pinned on disk** — never a mid-scan download, and neither the decision engine nor the LLM fallback expands coverage on its own. A drafted template from the frontier tier lands in `templates-proposed/` — a *sibling* of `templates/`, never a subdirectory, because every loader walks `templates/` recursively; it is validated by the same load-time pipeline as any template and is **never executed** by the plan run that produced it. Promotion is a manual step.
+- **The decision engine reasons over the whole `ReconResult`, not just `TechStack`.** `resolveEndpointFacts`/`resolvePortFacts`/`resolveAPISpecFact` turn observed endpoints, open ports, and discovered API specs into leaves too (P1-1/P1-2, LT-3). A port with no loadable check (`tcp:` templates are structurally rejected today) still emits a visible `unresolved` leaf — the real network-service detector is [Phase 8](17-implementation-plan-ph8.md) Step 1.
+- **Recon-derived *field* suggestions** (`pkg/recon/suggest.go`) are deterministic candidate-derivation from `ReconResult.Endpoints`, shared by the Web UI Launch flow and the MCP `plan` tool. Only a genuine zero-/multiple-candidate miss reaches the LLM fallback's second caller — same "deterministic first, visible on a miss" shape as leaf resolution.
+- **Optional tech-stack template narrowing** (`registry.TechStackTags`, LT-16/17): derives a tag allowlist from a target's detected `TechStack`. Opt-in only — Web UI checkbox / CLI `--recon-file … --narrow-by-tech` / MCP `tech_stack` input — and only ever narrows an *empty* `--tags`, degrading to the full corpus (logged) when nothing actionable was detected.
 
 ## System Architecture
 
-### High-Level Overview
+### Module map
 
 ```
-┌───────────────────────────────┐   ┌──────────────────────────────────┐
-│         HackerFive CLI         │   │   HackerFive Web UI (optional)    │
-│  (hackerfive scan -t ...)      │   │  (hackerfive serve — htmx + SSE)  │
-└────────────────┬────────────────┘   └────────────────┬───────────────┘
-                 │                                      │
-                 └──────────────────┬───────────────────┘
-                                    │
-      ┌──────────────┼──────────────┐
-      │              │              │
-   ┌──▼──┐       ┌───▼────┐    ┌───▼─────┐
-   │Input│       │Recon   │    │Template │
-   │Parse│       │Phase   │    │Parser   │
-   └──┬──┘       └───┬────┘    └───┬─────┘
-      │              │              │
-      └──────────────┼──────────────┘
-                     │
-      ┌──────────────▼──────────────┐
-      │   Scanner Engine (Core)     │
-      │                             │
-      │  ┌─────────────────────┐   │
-      │  │ IDOR Detector       │   │
-      │  │ - ID enumeration    │   │
-      │  │ - Response compare  │   │
-      │  └─────────────────────┘   │
-      │                             │
-      │  ┌─────────────────────┐   │
-      │  │ Misconfiguration    │   │
-      │  │ - Path matching     │   │
-      │  │ - Header checks     │   │
-      │  └─────────────────────┘   │
-      │                             │
-      │  ┌─────────────────────┐   │
-      │  │ Auth Bypass         │   │
-      │  │ - JWT validation    │   │
-      │  │ - Rate limiting     │   │
-      │  └─────────────────────┘   │
-      │                             │
-      │  ┌─────────────────────┐   │
-      │  │ Template Runner     │   │
-      │  │ - Matcher engine    │   │
-      │  │ - Extractor engine  │   │
-      │  └─────────────────────┘   │
-      │                             │
-      │  ┌─────────────────────┐   │
-      │  │ Worker Pool         │   │
-      │  │ - Concurrency ctrl  │   │
-      │  │ - Rate limiting     │   │
-      │  └─────────────────────┘   │
-      └──────────────┬──────────────┘
-                     │
-      ┌──────────────┴──────────────┐
-      │                             │
-   ┌──▼──────┐            ┌────────▼──┐
-   │Finding  │            │Reporter   │
-   │Store    │            │(JSON/MD)  │
-   └─────────┘            └───────────┘
+┌───────────────────────┬───────────────────────┬────────────────────────┐
+│   CLI (hackerfive …)   │  Web UI (serve, htmx  │  MCP server (mcp-serve, │
+│                        │  + SSE, Plan Preview) │  elicitation approval)  │
+└───────────┬────────────┴───────────┬───────────┴────────────┬───────────┘
+            └────────────────────────┼────────────────────────┘
+                                     │  (three frontends, one engine — no scan logic duplicated)
+        ┌────────────────────────────┼────────────────────────────┐
+        │                            │                            │
+   pkg/recon                  pkg/fingerprint               pkg/templatesync
+   waves 0-3, ReconResult     signature table               pinned git sync + index.json
+        │                            │                            │
+        └──────────────┬─────────────┴────────────────────────────┘
+                       │
+                pkg/registry (decision engine)  ──▶  pkg/agenttask (PlanTree)
+                registry.Resolve, tech→tag map        leaf-only mutation, spend ceiling
+                       │                                     │
+                       │  (registry miss)                    │  (approved)
+                       ▼                                     ▼
+                pkg/llmfallback                        pkg/planexec (RunPlan)
+                local + frontier tiers,               shared dispatcher for MCP + Web UI
+                3 stateless callers                          │
+                                                             ▼
+                                         pkg/scanner/engine  ─runs─▶  pkg/detectors/*
+                                         scope, workerpool,           idor, misconfig,
+                                         httpclient, hosterrors       authbypass, ssrf,
+                                                             │        businesslogic
+                                                             ▼        (+ Phase 8: netservice, tls)
+                                         pkg/template/{nuclei,native}  +  pkg/oob (Interactsh)
+                                                             │
+                                                             ▼
+                                         pkg/reporter  ─▶  JSON / MD / HTML / HackerOne draft
 ```
 
-**This diagram predates Phase 4 (SSRF/Business Logic detectors) and Phase 5 (the recon waves, `pkg/fingerprint`, `pkg/registry`'s decision engine, `pkg/agenttask`'s `PlanTree`) — illustrative of the original shape, not a literal current picture.** Not redrawn here since the Code Walkthrough below and the Web UI section's "Planned end-to-end flow" diagram both already carry accurate, current detail on what those additions actually look like; a full redraw is real work worth its own pass rather than a quiet approximation folded into this one.
+### Detectors (one package each, `New(...)` + `Run(ctx, …) ([]Finding, error)`)
 
-### Key Modules
+- **IDOR** — swap the object ID, see what comes back. Runs as a two-account baseline comparison (Account A's token against Account B's resource) where possible, which is what keeps false positives low.
+- **Misconfiguration** — request a fixed list of known-bad paths/headers (`/.env`, `/.git`, missing CSP, wildcard CORS). Deterministic, lowest-FP, runs mostly on upstream nuclei templates. `rejected()` excludes 404/405 and 502/503/504 (a plain 500 is still real signal).
+- **Auth Bypass** — state-based checks: no-credentials call, JWT tampering (`alg:none`, stripped signature), cross-user token reuse, rate-limit-signal probe.
+- **SSRF** — scheme-based redirection probes (`file://`, `gopher://`) plus a blind out-of-band check via `pkg/oob`'s Interactsh client. `--oob-server` defaults to 2 public servers; `--no-oob` or a self-hosted server for a real third-party engagement.
+- **Business Logic** — the one detector with mutating checks (coupon self-mint/apply, apply race), gated behind `--allow-writes` — CLAUDE.md's sole permanent exception to read/enumerate-only; absent, those checks are skipped with a stderr warning.
+- **Planned ([Phase 8](17-implementation-plan-ph8.md)):** a `tcp:` protocol executor + `netservice` detector (anonymous-FTP / unauth-DB / open-Elasticsearch, read-only), a `tls` detector (expired/weak certs, sub-1.2 protocols), JS static analysis (secrets + endpoints in served JS, folded into `ReconResult.Endpoints`), and OOB blind-RCE verification.
 
-#### 1. **Input Parser**
-- Accepts targets: `-t http://example.com` or `-l targets.txt`
-- Supports templates: `-t IDOR_*.yaml` or `-t /path/to/templates`
-- Options: rate limit, concurrency, proxy, headers, authentication
+Detector-specific logic sits on top of the shared **Template Runner** (YAML parse → request via the worker pool → matcher/extractor engine) rather than each detector reimplementing HTTP handling.
 
-#### 2. **Recon Phase** (`pkg/recon` — built and live-verified, Phase 5) — escalating, scope-checked waves
-- **Wave 0** (zero-touch): `security.txt`/policy fetch via the existing `httpclient.Client`.
-- **Wave 1** (passive): `subfinder` (subdomain enum), `tlsx` (cert inspection) — the explicit target itself is checked against `--scope` *before* this wave fires, not after, so an out-of-scope target gets zero active probes anywhere downstream.
-- **Wave 2** (active, `--recon-depth active`+): `dnsx` (resolution), `naabu` (port scan), `httpx` (HTTP probe + `-tech-detect` + `-favicon -irr`, feeding `pkg/fingerprint`'s header/body/favicon/port signature matching — not just HTTP headers).
-- **Wave 3** (bounded crawl, `--recon-depth full`): `katana`, plus `probeCommonPaths` (`/swagger.json`, `/.well-known/openapi.json`, etc.) populating `ReconResult.APISpec` when one's exposed.
-- Real ProjectDiscovery binaries via fixed `exec.CommandContext` calls (not Nmap/Masscan) — same scoped-subprocess precedent as `pkg/templatesync`'s `git` call; installed via `hackerfive recon setup` (`pkg/toolsync`), no Go toolchain required. All rate-limit/concurrency numbers pass through to each binary's own native flag, since a separate OS process can't route through `pkg/scanner/httpclient`'s Go middleware.
-- Output is `ReconResult` (`docs/schema/recon-result.schema.json`, frozen/versioned): `Hosts`/`Endpoints`/`TechStack`/`APISpec`/`OutOfScope`/`Warnings`, each fact carrying a `Source`/`Confidence`. A missing recon binary degrades that wave to a logged warning, never a hard failure.
+### `Finding` and `PlanTree` — two agent-proof fields
 
-#### 3. **Scanner Engine**
-- **Detector Modules:** IDOR, Misconfiguration, Auth Bypass, etc.
-- **Template Runner:** Parses YAML, executes requests, applies matchers
-- **Matcher Engine:** Regex, word, status code, size, JSON extraction
-- **Extractor Engine:** Pull dynamic values from responses for chaining requests
-- **Streaming hooks:** optional `WithFindingCallback`/`WithLogCallback` on `Engine` — additive; the CLI's batch behavior (`Run` returning `([]Finding, error)` only once everything finishes) is unchanged when unset. The Web UI (below) is what actually consumes these, for live SSE updates mid-scan.
+`Finding.Severity` (closed 4-value enum) and `Finding.Confidence` (closed 2-value enum: evidence quality of the match) are both **detector-set, never agent-writable** — the frozen `docs/schema/finding.schema.json` says so in its field descriptions. The agent's own success-probability estimate for a candidate it hasn't run yet lives on the `PlanTree` *leaf* instead (`agenttask.Confidence`, Cyber-AutoAgent-banded), never on a `Finding`.
 
-**Detector solutions, in plain English:**
+## Code Walkthrough
 
-- **IDOR Detector — "swap the ID, see what comes back."** Log in as one account, note what a normal response looks like, then request the same endpoint with a different object ID (another user's order, document, profile). If the response looks like real, authorized data (200 status, expected fields present) rather than a rejection (401/403, empty body, redirect to login), that's an access-control failure. Where possible this runs as a **two-account baseline comparison** (Account A's token accessing Account B's resource) rather than single-account ID guessing, which is what keeps the false-positive rate low — see the IDOR template example above and [01-overview-and-strategy.md](01-overview-and-strategy.md#prioritization-rationale).
-- **Misconfiguration Detector — "check known-bad paths and settings."** No guessing or fuzzing: it requests a fixed list of paths/headers (`/.env`, `/.git`, missing `Content-Security-Policy`, wildcard CORS, etc.) and matches on status code + keyword/header presence. Because the checks are deterministic (a path either exposes `.env` or it doesn't), this is the lowest-effort, lowest-false-positive detector, and it runs almost entirely on templates pulled from the upstream `nuclei-templates` repo rather than custom Go code.
-- **Auth Bypass Detector — "does the API enforce what it claims to enforce?"** A family of state-based checks rather than one technique: call an endpoint with no credentials at all (should reject, does it?), tamper with a JWT (strip the signature, flip `alg` to `none`), reuse one user's token against another user's session, or hammer a login endpoint to see if rate limiting actually kicks in. These require sequencing multiple requests and comparing outcomes, which is why this detector is rated medium-high automation difficulty in the roadmap.
-- **SSRF Detector — "will the target fetch a URL I control?"** Probes any parameter that accepts a URL for scheme-based redirection (`file://`, `gopher://`) and a blind out-of-band check via an Interactsh-protocol callback (`pkg/oob`, extracted as its own package in Phase 5 so `pkg/recon`'s own OOB-verification path can reuse the same client). `--oob-server` (CLI) / the Web UI's OOB servers field defaults to 2 of ProjectDiscovery's public servers as of 2026-09-02 (a real, informed leak tradeoff — [discussions.md](discussions.md)); a self-hosted server or `--no-oob`/a cleared field are the ways to avoid that tradeoff, the latter appropriate for a real third-party engagement.
-- **Business Logic Detector — "does the app's own workflow rules hold up?"** The one detector with real mutating checks (coupon self-mint/apply, a concurrent-fire apply race), gated behind `--allow-writes` — CLAUDE.md's one explicit, permanent exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a stderr warning rather than silently run.
-- **Template Runner (shared by all detectors)** — the common execution engine: it reads the YAML request/matcher/extractor definitions, fires the HTTP requests through the worker pool, and hands each response to the matcher engine. Detector-specific logic (IDOR's two-account diffing, auth bypass's multi-step sequencing) sits on top of this shared runner rather than each detector reimplementing HTTP handling from scratch.
+A tour of the main files, for orienting in the codebase rather than these diagrams.
 
-#### 4. **Concurrency Manager**
-- Worker pool with configurable size
-- Request queue with priority support
-- Progress tracking and ETA calculation
-- Graceful shutdown and signal handling
+### Entry point & CLI (`cmd/hackerfive/`)
+- [`main.go`](../cmd/hackerfive/main.go) → Cobra root ([`root.go`](../cmd/hackerfive/root.go)); [`dotenv.go`](../cmd/hackerfive/dotenv.go) loads `.env` once for every subcommand.
+- [`scan.go`](../cmd/hackerfive/scan.go) — flags → `scanner.Config` → `scanner.Engine` → `reporter.Dedup`/`ExporterFor`. The clearest map of "what a scan does." `--recon-file … --narrow-by-tech` applies LT-16's tech-stack narrowing.
+- [`serve.go`](../cmd/hackerfive/serve.go) / [`mcpserve.go`](../cmd/hackerfive/mcpserve.go) — the Web UI and MCP frontends.
+- [`recon.go`](../cmd/hackerfive/recon.go) / [`plan.go`](../cmd/hackerfive/plan.go) — standalone recon, and recon → `registry.Resolve` → `PlanTree` as JSON (`plan --llm-assist` adds the fallback pass). `--verbose` streams wave progress to stderr.
+- [`templates.go`](../cmd/hackerfive/templates.go) — `sync|list|index`; `index` generates `templates/index.json`.
+- [`report.go`](../cmd/hackerfive/report.go) — `weaknesses|scopes|create|submit`; only `submit --yes` can make a report visible (permanent invariant).
 
-#### 5. **Result Aggregator**
-- Deduplicates findings
-- Severity scoring
-- CVSS calculation (if applicable)
-- Output formatting
+### Scan orchestration (`pkg/scanner/`)
+- [`engine.go`](../pkg/scanner/engine.go) — `Engine.Run`: load scope, load templates (nuclei + native), worker pool, per target run the built-in detector then every loaded template *additively*. `WithFindingCallback`/`WithLogCallback` are the SSE hooks the Web UI uses.
+- [`config.go`](../pkg/scanner/config.go) — `Config` + `Validate()` / `ValidateWithOptions()` (the latter lets the Web UI defer a recon-fillable field's requiredness check).
+- Supporting: `httpclient`, `ratelimit`, `workerpool`, `scope` (with `scope.New` for in-memory entries, used by MCP), `hosterrors`.
 
-## Code Walkthrough: Main Files & Flow
+### Detectors & templates
+- [`pkg/detectors/types.go`](../pkg/detectors/types.go) — the shared `Finding` struct.
+- `pkg/detectors/{idor,misconfig,authbypass,ssrf,businesslogic}/` — one package each.
+- `pkg/template/{nuclei,native}/` — the two engines; `native/` has `dsl/`, `extractor/`, `matcher/`.
+- `pkg/templatesync/` — `git` sync + `LoadIndex`/`WriteIndex` (`index.go`, consolidated once a third consumer needed it).
+- `pkg/oob/` — the Interactsh client and its shared `Poller` (one registration across the whole `Executor`, one background poll loop, a nonce→waiter map; idle-skips the network poll when nobody's waiting).
 
-A guided tour through the main files, for orienting in the actual codebase rather than this doc's diagrams.
+### Recon, fingerprint, decision engine
+- [`pkg/recon`](../pkg/recon) — `recon.go` (`Run`), `passive.go`/`active.go`/`crawl.go` (waves 1/2/3), `aggregate.go` (merge/dedup, `NormalizeHost`), `wpplugins.go` (WordPress plugin/theme slugs from crawl URLs), `suggest.go` (recon-derived field candidates), `types.go` (frozen schema shape). `recon.ClientConfig` forces `InsecureSkipVerify` for recon's own client (matching katana/httpx).
+- [`pkg/fingerprint`](../pkg/fingerprint) — ~20-entry signature table over header/body/favicon/port signals.
+- [`pkg/registry`](../pkg/registry) — `Capabilities` (`registry.go`, doc01's table in `tools.search` shape); `Resolve` (`decisionengine.go`) → `PlanTree` leaves + a `map[string]LeafContext` of originating facts. Ranked tag matching, `canonicalTechTags`, `nonActionableTech`, `hostnameProductHints`, `TechStackTags`.
+- [`pkg/agenttask`](../pkg/agenttask) — `PlanTree`/`PlanNode`, mutex-guarded, leaf-only `ApplyLeafUpdate` (shape-change rejected), spend ceiling.
 
-### 1. Entry point
-[`cmd/hackerfive/main.go`](../cmd/hackerfive/main.go) — sets up signal handling, hands off to Cobra's root command (`newRootCmd()` in [`root.go`](../cmd/hackerfive/root.go)).
+### Agent frontends
+- [`pkg/mcpserver`](../pkg/mcpserver) — `server.go` (tool registration), `scope.go` (`requireScope` D3 hard-fail, `clientSupportsElicitation`), `tools_*.go`, `planstate.go` (TTL-bounded cache bridging the two elicitation rounds), `executor.go` (thin — delegates to `pkg/planexec`).
+- [`pkg/planexec`](../pkg/planexec) — `RunPlan`/`runLeaf`/`missingRequiredField`, transport-agnostic (`ExecOptions{Notify, OnFinding, OnLog, Excluded, DetConcurrency, LLMConcurrency}`). The single dispatcher both `pkg/mcpserver` and `pkg/webui` call.
+- [`pkg/llmfallback`](../pkg/llmfallback) — `client.go` (tiered `net/http`), `leaf.go` (`ResolveLeaf` + `rankRelevantTemplates`), `field.go` (`ResolveField`), `triage.go`, `spend.go` (process-lifetime ceiling).
+- [`pkg/webui`](../pkg/webui) — `server.go` (routes), `jobs.go` (`Job` carries recon waves + `ReconResult` + `Cancel`), `handlers_launch.go` (the unified page + `fillReconFields`), `handlers_plan_exec.go` (`POST /plan-preview/execute` → `pkg/planexec`), `handlers_scan.go` (`/scans/{id}` + SSE + `/catchup`).
 
-### 2. CLI commands (`cmd/hackerfive/`)
-- [`scan.go`](../cmd/hackerfive/scan.go) — the `hackerfive scan` command. Parses flags into a `scanner.Config`, validates it, builds a `scanner.Engine`, runs it, and dedups + exports the result via `reporter.Dedup`/`reporter.ExporterFor` (`--format json|markdown|html|hackerone-json`). This is the clearest map of "what a scan does": targets → templates → detector → auth → scope → output.
-- [`serve.go`](../cmd/hackerfive/serve.go) — `hackerfive serve`, starts the embedded web UI (`webui.New(...).ListenAndServe(...)`).
-- [`templates.go`](../cmd/hackerfive/templates.go) — `hackerfive templates sync|list|index`, wraps `pkg/templatesync`; `index` (Phase 5, R9) generates `templates/index.json`, the decision engine's template-tag-reuse lookup.
-- [`recon.go`](../cmd/hackerfive/recon.go) — `hackerfive recon`, standalone entry point into `pkg/recon` (Phase 5); `recon setup` installs the 6 real recon binaries via `pkg/toolsync`, no Go toolchain needed.
-- [`plan.go`](../cmd/hackerfive/plan.go) — `hackerfive plan`, runs recon then `registry.Resolve` and prints the resulting `PlanTree` as JSON (Phase 5) — a CLI-only preview of the same decision-engine output the Web UI's Plan-preview page renders.
-- [`report.go`](../cmd/hackerfive/report.go) — `hackerfive report weaknesses|scopes|create|submit` (Phase 4), drafts a HackerOne `report_intent` from one scan finding via `pkg/hackerone`; `submit` is the one command that can make a report visible to a program, gated behind an explicit `--yes` (CLAUDE.md's permanent report-drafting-only invariant).
-
-### 3. Scan orchestration (`pkg/scanner/`)
-- [`engine.go`](../pkg/scanner/engine.go) — the core. `Engine.Run` loads scope (`scope.Parse`), loads templates (`nuclei.LoadDir`/`native.LoadDir`), spins up a `workerpool`, and per target: runs the selected built-in detector (`runDetector` → idor/misconfig/authbypass/ssrf/businesslogic) then runs every loaded template on top (templates are *additive*, not an alternative). `WithFindingCallback`/`WithLogCallback` are the hooks `pkg/webui` uses for live SSE streaming — the CLI path never sets them, so CLI behavior is unaffected.
-- [`config.go`](../pkg/scanner/config.go) — `Config` struct + `Validate()`/`ValidateWithOptions()` (the latter added Phase 5 Step 7, letting a caller defer a specific detector's requiredness check — used only by the Web UI's recon-fill path, CLI behavior via `Validate()` unchanged), the single source of truth for what a scan needs (e.g. `idor` requires `--endpoint` + an auth token via the CLI's own `Validate()`, though the Web UI can defer/skip both when recon can fill the gap; `authbypass` requires `--protected-paths`).
-- Supporting subpackages: `httpclient` (retry/rate-limit-wrapped HTTP client), `ratelimit`, `workerpool` (bounded concurrency), `scope` (target allow-list), `hosterrors` (circuit-breaker per host).
-
-### 4. Detectors (`pkg/detectors/`)
-- [`types.go`](../pkg/detectors/types.go) — the shared `Finding` struct every detector emits and the reporter/web UI consume.
-- `idor/`, `misconfig/`, `authbypass/`, `ssrf/`, `businesslogic/` — one package each, each exposing `New(...)` + `Run(ctx, ...) ([]Finding, error)`.
-
-### 5. Templates (`pkg/template/`)
-Two parallel engines, both loaded and run by the engine for every target:
-- `nuclei/` — parses/executes Nuclei-compatible YAML templates.
-- `native/` — HackerFive's own richer template format (used for e.g. tagged IDOR checks), with `dsl/`, `extractor/`, `matcher/` as its building blocks.
-- `templatesync/` — `git`-based sync of the community template corpus into a persistent OS config dir (survives binary upgrades — see [`sync.go`](../pkg/templatesync/sync.go)). `List` (extended Phase 5, R9) also flattens the bundled + synced corpus into `templates/index.json` for the decision engine's tag-reuse lookup.
-
-### 6. Output (`pkg/reporter/`)
-`Dedup` (exact-`Finding.ID` suppression) then `ExporterFor(format)` dispatches to one of four `Exporter` implementations — `jsonExporter` (wraps the original `WriteJSON`), `markdownExporter`, `htmlExporter` (`html/template`, auto-escapes evidence containing attacker payload text), and `hackerOneJSONExporter` (an offline, best-effort `report_intent` draft — placeholders for team/weakness/scope IDs, meant for manual review or as input to `hackerfive report create`). All Phase 4.
-
-### 7. Recon, Fingerprinting & the Decision Engine (Phase 5 — new since this doc's last full pass)
-- [`pkg/recon`](../pkg/recon) — the escalating-wave recon package described under "Recon Phase" above. [`recon.go`](../pkg/recon/recon.go) is the entry point (`Run`); `passive.go`/`active.go`/`crawl.go` are Waves 1/2/3; `aggregate.go` merges/dedups facts (tech-stack merge-not-append, API-spec first-hit-wins) into the final `ReconResult`; [`types.go`](../pkg/recon/types.go) is the frozen, schema-backed data shape; [`suggest.go`](../pkg/recon/suggest.go) is the recon-derived field-suggestion heuristics described under Web UI below.
-- [`pkg/fingerprint`](../pkg/fingerprint) — a static signature table (`detector.go`/`signatures.go`, ~20 hand-authored entries) matching header/body/favicon/port signals, enriching `ReconResult.TechStack` on top of httpx's own `-tech-detect` output rather than replacing it.
-- [`pkg/registry`](../pkg/registry) — `Capabilities` (`registry.go`) hand-transcribes doc01's capability table into a `tools.search`-ready shape; `Resolve` (`decisionengine.go`) turns a `ReconResult`'s tech facts into `PlanTree` leaves deterministically (capability match → template-tag match against `templates/index.json` → a visibly `unresolved` leaf, never silently dropped) — zero LLM involvement, per Design Principle 1 above.
-- [`pkg/agenttask`](../pkg/agenttask) — [`plantree.go`](../pkg/agenttask/plantree.go): `PlanTree`/`PlanNode`, mutable only at leaves via `ApplyLeafUpdate` (a shape-changing patch is rejected, not silently applied).
-- [`pkg/oob`](../pkg/oob) — the RSA-OAEP+AES-256-CTR Interactsh-protocol client, extracted from `pkg/detectors/ssrf` so `pkg/recon`'s own OOB-verification path can share it without duplicating the crypto.
-
-### 8. Web UI (`pkg/webui/`)
-[`server.go`](../pkg/webui/server.go) is the map of this package: `GET /` (the single unified Launch page — see below), `POST /scans`, `GET /scans`, `GET /scans/{id}[...]`, `GET /templates[...]`, `POST /templates/sync`, `POST /recon/setup`, `GET /plan-preview` — wrapped in CSRF + non-loopback-token middleware. It's a pure frontend — every handler ultimately calls the same `scanner.Engine`/`pkg/recon`/`pkg/registry`/`templatesync` that the CLI calls, no scan logic is duplicated. `jobs.go` (`JobStore`/`Job`) tracks async scan jobs, now also carrying wave-by-wave recon progress and the job's `ReconResult`; `handlers_launch.go`, `handlers_scan.go`, `handlers_plan.go`, `handlers_templates.go`, `handlers_toolsetup.go` are the per-page handlers.
-
-**The Launch page (`handlers_launch.go`, Phase 5 Step 6-7) superseded three earlier separate pages** (New Scan / Recon / Guided Scan, and the old dashboard) with one landing page: a target field and five CSS-only radio-driven detector tabs (misconfig/idor/authbypass/ssrf/businesslogic — all wired by Step 7, not just the original three). Recon runs unconditionally on every submission (no opt-out checkbox as of Step 6's later revision) as one phase of the same `Job`, before the checked detectors run. `fillReconFields` (Step 7) then resolves any recon-fillable field a checked detector left blank — `idor`'s `EndpointTemplate` via `recon.SuggestIDOREndpointCandidates` (auto-fills on exactly one candidate, lists every candidate and skips on more than one, never guesses), `authbypass`'s protected/login/logout paths via a 401/403-status and path-shape heuristic, `ssrf`'s `SSRFParams` via a curated query-param-keyword match (no ambiguity to resolve, since it's a list) — always deferring to a value the operator actually typed, and always rendering a genuine gap (`idor: skipped — no candidate; fill in manually`) rather than silently dropping it or guessing. `misconfig`/`idor`/`authbypass`/`ssrf` all now run with zero operator input beyond a target (`businesslogic` can't — both its checks are inherently "as a logged-in account" with no unauthenticated mode). `GET /plan-preview` is a separate, still-read-only page rendering the same `PlanTree` `registry.Resolve` builds — informational only today (Phase 6 Step 4 is where it becomes an approval surface).
-
-**Suggested reading order** to trace one scan end-to-end: [`scan.go`](../cmd/hackerfive/scan.go) → [`config.go`](../pkg/scanner/config.go) → [`engine.go`](../pkg/scanner/engine.go) → one detector (e.g. [`pkg/detectors/idor`](../pkg/detectors/idor)) → [`exporter.go`](../pkg/reporter/exporter.go). Then [`server.go`](../pkg/webui/server.go) → [`handlers_launch.go`](../pkg/webui/handlers_launch.go) to see how the web UI wraps recon + the decision engine + the same engine, asynchronously, into one job.
+**To trace one scan end-to-end:** [`scan.go`](../cmd/hackerfive/scan.go) → [`config.go`](../pkg/scanner/config.go) → [`engine.go`](../pkg/scanner/engine.go) → a detector → [`exporter.go`](../pkg/reporter/exporter.go). For the agent path: [`plan.go`](../cmd/hackerfive/plan.go) or `pkg/mcpserver/tools_plan.go` → `registry.Resolve` → `pkg/planexec/executor.go`.
 
 ## Future Considerations (Not Yet Scoped)
 
-Deferred because the trigger condition for needing them hasn't happened yet — revisit if the trigger occurs, not on a fixed date.
+Deferred until a trigger condition occurs, not on a fixed date.
 
-- **In-memory template cache:** only pays off when the same process re-parses the same templates across multiple scan jobs — true for a long-running service, not a single-shot CLI invocation. No action unless HackerFive grows a persistent service mode, which isn't currently planned.
-- **Template signing:** relevant once a community template repository actually accepts third-party submissions — no such milestone exists yet in [03-development-roadmap.md](03-development-roadmap.md). Premature while templates are either project-authored or pulled from the pinned upstream `nuclei-templates` commit.
-- **Auto-generated `SYNTAX-REFERENCE.md` (docgen):** the hand-written template-writing guide (Phase 1b packaging step) covers this need for now. Auto-generation from code solves a scale-of-external-contributors problem this project doesn't have yet.
+- **In-memory template cache** — only pays off for a long-running service re-parsing the same templates across jobs; no persistent service mode is planned.
+- **Template signing** — relevant once a community template repo accepts third-party submissions; no such milestone exists.
+- **Auto-generated syntax reference (docgen)** — the hand-written [template-writing-guide.md](template-writing-guide.md) covers this until there's a scale-of-contributors problem.
 
 ## See also
-- [01-overview-and-strategy.md](01-overview-and-strategy.md) — the detectors this architecture must support
-- [03-development-roadmap.md](03-development-roadmap.md) — build order for these modules
-- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — full Web UI and template-sync design behind the components summarized here
-- [90-research-hackerbot.md](90-research-hackerbot.md), [91-research-recon-phase.md](91-research-recon-phase.md) — the research behind the agent-integration design below
-- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — recon/fingerprint/decision-engine/`PlanTree` foundations **and** the Web UI's recon-derived field suggestions — done, not just planned; see "Recon, Fingerprinting & the Decision Engine" and the Launch page above
-- [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md), [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — the MCP server / approval-gate / hardening work (Phase 6-7, not yet built) that will extend this architecture once that work starts
+- [01-overview-and-strategy.md](01-overview-and-strategy.md) — the detectors this architecture supports (Capabilities at a Glance)
+- [03-development-roadmap.md](03-development-roadmap.md) — build order, Phases 1-8
+- [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — full Web UI and template-sync design
+- [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — recon / fingerprint / decision engine / `PlanTree` foundations (built)
+- [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) / [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — MCP server, approval gate, `pkg/planexec`, hardening
+- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — detector/protocol coverage expansion (TCP, TLS, JS static analysis, OOB-RCE, semver gating)
+- [90-research-hackerbot.md](90-research-hackerbot.md), [91-research-recon-phase.md](91-research-recon-phase.md) — the research behind the agent-integration design
+- [follow-up.md](follow-up.md) — the open backlog, including the decision-engine precision work and template-engine gaps referenced above

@@ -17,6 +17,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
@@ -1106,7 +1107,7 @@ func TestFillReconFields_Misconfig_PassesThroughUnmodified(t *testing.T) {
 
 // --- LT-16 (docs/follow-up.md): applyTechStackNarrowing / narrowConfigsByTechStack ---
 
-func TestApplyTechStackNarrowing_UncheckedIsNoOp(t *testing.T) {
+func TestApplyTechStackNarrowing_UncheckedLoadsFullCorpus(t *testing.T) {
 	job := newTestJob("job1")
 	job.SetReconResult(&recon.ReconResult{TechStack: []recon.TechFact{{Name: "WordPress", Host: "example.com"}}})
 	cfg := scanner.Config{Detector: "misconfig"}
@@ -1114,22 +1115,26 @@ func TestApplyTechStackNarrowing_UncheckedIsNoOp(t *testing.T) {
 	got := applyTechStackNarrowing(job, LaunchFormData{NarrowByTech: false}, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
-	assert.Equal(t, cfg, got[0], "unchecked must never touch cfgs, even with a usable recon result available")
-	assert.Empty(t, logMessages(job))
+	assert.Equal(t, cfg, got[0], "unchecked must never touch cfgs — the full-corpus escape hatch")
+	assert.True(t, containsSubstring(logMessages(job), "full synced corpus"), "logs: %v", logMessages(job))
 }
 
-func TestApplyTechStackNarrowing_NoReconResult_WarnsAndLeavesCfgsUnchanged(t *testing.T) {
+// TestApplyTechStackNarrowing_NoReconResult_FloorOnly: doc15 Step 6a — even
+// with no recon result the checked box still applies the detector-category
+// floor (DerivedTags), it's no longer all-or-nothing.
+func TestApplyTechStackNarrowing_NoReconResult_FloorOnly(t *testing.T) {
 	job := newTestJob("job1") // ReconResult stays nil — recon never completed
 	cfg := scanner.Config{Detector: "misconfig"}
 
 	got := applyTechStackNarrowing(job, LaunchFormData{NarrowByTech: true}, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
-	assert.Equal(t, cfg, got[0])
-	assert.True(t, containsSubstring(logMessages(job), "narrow-by-tech: recon did not complete"), "logs: %v", logMessages(job))
+	assert.Equal(t, registry.DetectorTemplateTags("misconfig"), got[0].DerivedTags)
+	assert.Empty(t, got[0].Tags, "explicit Tags stays untouched")
+	assert.True(t, containsSubstring(logMessages(job), "category tag(s)"), "logs: %v", logMessages(job))
 }
 
-func TestApplyTechStackNarrowing_EmptyTechStack_InfoLoggedCfgsUnchanged(t *testing.T) {
+func TestApplyTechStackNarrowing_EmptyTechStack_FloorOnly(t *testing.T) {
 	job := newTestJob("job1")
 	job.SetReconResult(&recon.ReconResult{})
 	cfg := scanner.Config{Detector: "misconfig"}
@@ -1137,31 +1142,14 @@ func TestApplyTechStackNarrowing_EmptyTechStack_InfoLoggedCfgsUnchanged(t *testi
 	got := applyTechStackNarrowing(job, LaunchFormData{NarrowByTech: true}, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
-	assert.Equal(t, cfg, got[0])
-	assert.True(t, containsSubstring(logMessages(job), "no actionable technology"), "logs: %v", logMessages(job))
+	assert.Equal(t, registry.DetectorTemplateTags("misconfig"), got[0].DerivedTags)
 }
 
-// TestApplyTechStackNarrowing_MissingTemplateIndex_DegradesToFullCorpus
-// mirrors TestPlanPreview_MissingTemplateIndex_DegradesToWarningBanner's own
-// note: no templates/index.json exists relative to the test binary's
-// working directory in CI, so this exercises the real degrade path.
-func TestApplyTechStackNarrowing_MissingTemplateIndex_DegradesToFullCorpus(t *testing.T) {
-	job := newTestJob("job1")
-	job.SetReconResult(&recon.ReconResult{TechStack: []recon.TechFact{{Name: "WordPress", Host: "example.com"}}})
-	cfg := scanner.Config{Detector: "misconfig"}
-
-	got := applyTechStackNarrowing(job, LaunchFormData{NarrowByTech: true}, []scanner.Config{cfg})
-
-	require.Len(t, got, 1)
-	assert.Equal(t, cfg, got[0])
-	assert.True(t, containsSubstring(logMessages(job), "narrow-by-tech:"), "logs: %v", logMessages(job))
-}
-
-// TestNarrowConfigsByTechStack_SetsTagsOnEmptyTagsCfg is
-// narrowConfigsByTechStack's direct test (see its own doc comment for why
-// it's factored out — real templates/index.json isn't available in a test
-// environment, so this passes a synthetic index straight in).
-func TestNarrowConfigsByTechStack_SetsTagsOnEmptyTagsCfg(t *testing.T) {
+// TestNarrowConfigsByTechStack_FloorPlusExtras is narrowConfigsByTechStack's
+// direct test: DerivedTags = the detector-category floor ∪ the tech-matched
+// tags from a synthetic index (real templates/index.json isn't available in
+// a test environment).
+func TestNarrowConfigsByTechStack_FloorPlusExtras(t *testing.T) {
 	job := newTestJob("job1")
 	index := []templatesync.Entry{{ID: "wordpress-panel", Tags: []string{"wordpress"}, Severity: "info"}}
 	techStack := []recon.TechFact{{Name: "WordPress", Host: "example.com"}}
@@ -1170,14 +1158,14 @@ func TestNarrowConfigsByTechStack_SetsTagsOnEmptyTagsCfg(t *testing.T) {
 	got := narrowConfigsByTechStack(job, techStack, index, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
-	assert.Equal(t, []string{"wordpress"}, got[0].Tags)
-	assert.True(t, containsSubstring(logMessages(job), "narrowing misconfig"), "logs: %v", logMessages(job))
+	assert.Equal(t, append(registry.DetectorTemplateTags("misconfig"), "wordpress"), got[0].DerivedTags)
+	assert.Empty(t, got[0].Tags)
+	assert.True(t, containsSubstring(logMessages(job), "tech-matched"), "logs: %v", logMessages(job))
 }
 
 // TestNarrowConfigsByTechStack_ExplicitTagsNeverOverridden confirms a cfg
-// that already carries its own explicit Tags (an operator's own --tags-
-// equivalent narrowing) is left untouched — the tech-derived set must never
-// widen or override an explicit choice.
+// that already carries its own explicit Tags is left completely untouched —
+// no floor, no extras, no DerivedTags.
 func TestNarrowConfigsByTechStack_ExplicitTagsNeverOverridden(t *testing.T) {
 	job := newTestJob("job1")
 	index := []templatesync.Entry{{ID: "wordpress-panel", Tags: []string{"wordpress"}, Severity: "info"}}
@@ -1187,13 +1175,14 @@ func TestNarrowConfigsByTechStack_ExplicitTagsNeverOverridden(t *testing.T) {
 	got := narrowConfigsByTechStack(job, techStack, index, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
-	assert.Equal(t, []string{"custom"}, got[0].Tags, "an already-explicit Tags value must never be overridden by the tech-derived set")
+	assert.Equal(t, []string{"custom"}, got[0].Tags)
+	assert.Empty(t, got[0].DerivedTags, "an explicit Tags value means no derived scoping at all")
 }
 
-// TestNarrowConfigsByTechStack_NoRelevantTags_FullCorpusFallback confirms a
-// detected tech stack with nothing in the index tying to it degrades to the
-// unmodified full-corpus cfgs, not an allowlist that matches nothing.
-func TestNarrowConfigsByTechStack_NoRelevantTags_FullCorpusFallback(t *testing.T) {
+// TestNarrowConfigsByTechStack_NoTechMatch_FloorOnly: a detected tech stack
+// with nothing in the index tying to it still gets the category floor, not
+// a full-corpus fallback.
+func TestNarrowConfigsByTechStack_NoTechMatch_FloorOnly(t *testing.T) {
 	job := newTestJob("job1")
 	index := []templatesync.Entry{{ID: "unrelated", Tags: []string{"acme"}, Severity: "info"}}
 	techStack := []recon.TechFact{{Name: "WordPress", Host: "example.com"}}
@@ -1202,8 +1191,21 @@ func TestNarrowConfigsByTechStack_NoRelevantTags_FullCorpusFallback(t *testing.T
 	got := narrowConfigsByTechStack(job, techStack, index, []scanner.Config{cfg})
 
 	require.Len(t, got, 1)
-	assert.Empty(t, got[0].Tags)
-	assert.True(t, containsSubstring(logMessages(job), "ties to a template tag"), "logs: %v", logMessages(job))
+	assert.Equal(t, registry.DetectorTemplateTags("misconfig"), got[0].DerivedTags)
+}
+
+// TestNarrowConfigsByTechStack_BusinessLogic_NoFloor_FullCorpus: a detector
+// with no category floor (businesslogic, native-only) and no tech match
+// falls through to the full corpus (empty DerivedTags).
+func TestNarrowConfigsByTechStack_BusinessLogic_NoFloor_FullCorpus(t *testing.T) {
+	job := newTestJob("job1")
+	cfg := scanner.Config{Detector: "businesslogic"}
+
+	got := narrowConfigsByTechStack(job, nil, nil, []scanner.Config{cfg})
+
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].DerivedTags)
+	assert.True(t, containsSubstring(logMessages(job), "full corpus"), "logs: %v", logMessages(job))
 }
 
 func TestNoTokenNote(t *testing.T) {

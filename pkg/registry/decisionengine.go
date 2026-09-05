@@ -237,7 +237,7 @@ var nonActionableTech = map[string]bool{
 	// its own — left in, it matched 3 keyword-collision templates
 	// (piwik-unauthenticated-access / sonicwall-analytics-panel /
 	// versa-analytics-server) purely on the shared "analytics" tag word.
-	"google analytics":  true,
+	"google analytics":   true,
 	"google tag manager": true,
 }
 
@@ -400,6 +400,46 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 	for i, c := range cands {
 		out[i] = c.entry
 	}
+	return out
+}
+
+// detectorTemplateTagFloor is the always-applied, tech-agnostic slice of
+// the synced corpus each built-in detector should run even when recon
+// produced no tech facts to narrow by (doc15 Step 6a). Keyed by the same
+// detector names scanner.Config.Detector accepts. These are the template
+// *categories* whose value doesn't depend on a fingerprint: a missing
+// security header, an exposed .env/.git, an open admin panel, a
+// default-login page — checks the detector is conceptually paired with.
+// Product-specific templates (a WordPress CVE, a Confluence RCE) are NOT
+// here; those come back in only when TechStackTags adds the product's own
+// tag from a real recon fact. Tag coverage was measured against the real
+// corpus before pinning each set (e.g. "misconfig" on 960 of 980
+// http/misconfiguration/ files, "panel" on 1,591, "default-login" on 323).
+// "businesslogic" has no floor — both its checks are native, corpus-driven
+// templates add nothing.
+var detectorTemplateTagFloor = map[string][]string{
+	"misconfig":     {"misconfig", "exposure", "config", "default-login", "panel"},
+	"authbypass":    {"auth-bypass", "default-login", "panel", "exposure"},
+	"ssrf":          {"ssrf", "redirect", "oob"},
+	"idor":          {"idor", "bola", "apidocs", "swagger", "graphql"},
+	"businesslogic": nil,
+}
+
+// DetectorTemplateTags returns the tech-agnostic category-tag floor for a
+// built-in detector — the templates scanner.Engine.loadTemplates should run
+// for that detector regardless of what recon fingerprinted (doc15 Step 6a).
+// Compose the result with TechStackTags (the product-specific "extras") for
+// the full scoped tag set: floor ∪ extras, an OR-match. Returns nil for an
+// unknown detector name or "businesslogic" (native-only) — the caller's
+// documented fallback for a nil/empty result is the full unnarrowed corpus,
+// never zero templates.
+func DetectorTemplateTags(detector string) []string {
+	floor := detectorTemplateTagFloor[detector]
+	if len(floor) == 0 {
+		return nil
+	}
+	out := make([]string, len(floor))
+	copy(out, floor)
 	return out
 }
 

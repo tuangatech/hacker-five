@@ -73,6 +73,10 @@ func (h *handlers) launchForm(w http.ResponseWriter, r *http.Request) {
 		RunIdor:       true,
 		RunAuthbypass: true,
 		RunSsrf:       true,
+		// doc15 Step 6a: template scoping (detector-category floor ∪ any
+		// recon tech match) is on by default — uncheck to load the full
+		// ~9.5k synced corpus.
+		NarrowByTech: true,
 		// Left blank by default (reverted 2026-09-04, user decision): a
 		// prior version defaulted this to the owned-sites scope file to
 		// avoid silently defaulting to "no scope at all" (recon treats
@@ -539,23 +543,26 @@ func mergeReconDerivedExecFields(job *Job, cfgs []scanner.Config) {
 // fallback" posture loadTemplateIndexOrWarn already uses for Plan Preview.
 func applyTechStackNarrowing(job *Job, form LaunchFormData, cfgs []scanner.Config) []scanner.Config {
 	if !form.NarrowByTech {
+		job.AppendLog("info", "template scope: 'narrow to detected tech stack' unchecked — loading the full synced corpus")
 		return cfgs
 	}
-	result := job.Snapshot().ReconResult
-	if result == nil {
-		job.AppendLog("warn", "narrow-by-tech: recon did not complete — running the full template corpus")
-		return cfgs
+	// doc15 Step 6a: even without a usable recon result or template index,
+	// each detector still gets its category-tag floor (registry.
+	// DetectorTemplateTags). Recon's tech stack, when present, only adds the
+	// product-specific "extras" on top — it's no longer all-or-nothing.
+	var techStack []recon.TechFact
+	if result := job.Snapshot().ReconResult; result != nil {
+		techStack = result.TechStack
 	}
-	if len(result.TechStack) == 0 {
-		job.AppendLog("info", "narrow-by-tech: recon found no actionable technology — running the full template corpus")
-		return cfgs
+	var index []templatesync.Entry
+	if len(techStack) > 0 {
+		if idx, warn := loadTemplateIndexOrWarn(); warn != "" {
+			job.AppendLog("warn", "template scope: "+warn+" — scoping by detector category only")
+		} else {
+			index = idx
+		}
 	}
-	index, warn := loadTemplateIndexOrWarn()
-	if warn != "" {
-		job.AppendLog("warn", "narrow-by-tech: "+warn+" — running the full template corpus")
-		return cfgs
-	}
-	return narrowConfigsByTechStack(job, result.TechStack, index, cfgs)
+	return narrowConfigsByTechStack(job, techStack, index, cfgs)
 }
 
 // narrowConfigsByTechStack is applyTechStackNarrowing's pure decision
@@ -567,25 +574,46 @@ func applyTechStackNarrowing(job *Job, form LaunchFormData, cfgs []scanner.Confi
 // own --tags-equivalent narrowing) is left untouched, never widened or
 // overridden by the tech-derived set.
 func narrowConfigsByTechStack(job *Job, techStack []recon.TechFact, index []templatesync.Entry, cfgs []scanner.Config) []scanner.Config {
-	tags := registry.TechStackTags(techStack, index)
-	if len(tags) == 0 {
-		job.AppendLog("info", "narrow-by-tech: none of the detected tech stack ties to a template tag — running the full template corpus")
-		return cfgs
-	}
+	extras := registry.TechStackTags(techStack, index)
 
 	narrowed := make([]scanner.Config, len(cfgs))
-	var narrowedDetectors []string
 	for i, cfg := range cfgs {
-		if len(cfg.Tags) == 0 {
-			cfg.Tags = tags
-			narrowedDetectors = append(narrowedDetectors, cfg.Detector)
+		if len(cfg.Tags) > 0 {
+			narrowed[i] = cfg // operator's own --tags-equivalent wins untouched
+			continue
+		}
+		floor := registry.DetectorTemplateTags(cfg.Detector)
+		cfg.DerivedTags = unionLaunchTags(floor, extras)
+		if len(cfg.DerivedTags) == 0 {
+			job.AppendLog("info", fmt.Sprintf("template scope: %s has no category floor and no tech match — full corpus (expected for businesslogic)", cfg.Detector))
+		} else if len(extras) > 0 {
+			job.AppendLog("info", fmt.Sprintf("template scope: %s → %d tag(s) = %d category floor + %d tech-matched: %s", cfg.Detector, len(cfg.DerivedTags), len(floor), len(extras), strings.Join(cfg.DerivedTags, ", ")))
+		} else {
+			job.AppendLog("info", fmt.Sprintf("template scope: %s → %d category tag(s) (no tech match to add): %s", cfg.Detector, len(cfg.DerivedTags), strings.Join(cfg.DerivedTags, ", ")))
 		}
 		narrowed[i] = cfg
 	}
-	if len(narrowedDetectors) > 0 {
-		job.AppendLog("info", fmt.Sprintf("narrow-by-tech: narrowing %s to %d tech-relevant tag(s): %s", strings.Join(narrowedDetectors, ", "), len(tags), strings.Join(tags, ", ")))
-	}
 	return narrowed
+}
+
+// unionLaunchTags is cmd/hackerfive/scan.go's unionTags, duplicated here
+// (pkg/webui can't import package main) — order-stable, de-duplicated,
+// lower-cased union of the detector floor and the tech-matched extras
+// (doc15 Step 6a).
+func unionLaunchTags(floor, extras []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, group := range [][]string{floor, extras} {
+		for _, t := range group {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if t == "" || seen[t] {
+				continue
+			}
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // noTokenNote returns an informational log line when cfg is about to run

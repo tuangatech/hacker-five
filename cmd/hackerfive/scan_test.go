@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,9 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
-	"github.com/tuangatech/hacker-five/pkg/recon"
-	"github.com/tuangatech/hacker-five/pkg/scanner"
-	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
 func TestResolveTargets_Empty(t *testing.T) {
@@ -95,15 +91,19 @@ func TestNewScanCmd_NoOOBFlagRegistered(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
-// TestNewScanCmd_NarrowByTechFlagsRegistered is LT-17's (docs/follow-up.md)
-// CLI-parity flags — registry.TechStackTags was already transport-agnostic;
-// this is just the missing plumbing scan itself needed.
-func TestNewScanCmd_NarrowByTechFlagsRegistered(t *testing.T) {
+// TestNewScanCmd_TemplateScopeFlagsRegistered covers doc15 Step 6a's
+// default-on template scoping flags: --narrow-by-tech now defaults true,
+// --all-templates is the escape hatch, and --recon-file feeds tech extras.
+func TestNewScanCmd_TemplateScopeFlagsRegistered(t *testing.T) {
 	cmd := newScanCmd(&rootFlags{})
 
 	narrowFlag := cmd.Flags().Lookup("narrow-by-tech")
 	require.NotNil(t, narrowFlag, "--narrow-by-tech must be registered")
-	assert.Equal(t, "false", narrowFlag.DefValue)
+	assert.Equal(t, "true", narrowFlag.DefValue, "template scoping is on by default (doc15 Step 6a)")
+
+	allFlag := cmd.Flags().Lookup("all-templates")
+	require.NotNil(t, allFlag, "--all-templates must be registered")
+	assert.Equal(t, "false", allFlag.DefValue)
 
 	reconFileFlag := cmd.Flags().Lookup("recon-file")
 	require.NotNil(t, reconFileFlag, "--recon-file must be registered")
@@ -113,57 +113,17 @@ func TestNewScanCmd_NarrowByTechFlagsRegistered(t *testing.T) {
 	assert.Equal(t, "templates/index.json", indexFlag.DefValue)
 }
 
-// TestNarrowScanConfigByTech_NarrowsWhenNoExplicitTags confirms the happy
-// path: an empty cfg.Tags gets narrowed to the tech stack's relevant tags.
-func TestNarrowScanConfigByTech_NarrowsWhenNoExplicitTags(t *testing.T) {
-	techStack := []recon.TechFact{{Name: "WordPress", Host: "example.com"}}
-	index := []templatesync.Entry{{ID: "wordpress-panel", Tags: []string{"wordpress"}, Severity: "info"}}
-	cfg := scanner.Config{}
-	var stderr bytes.Buffer
-
-	narrowScanConfigByTech(&stderr, techStack, index, &cfg)
-
-	assert.Equal(t, []string{"wordpress"}, cfg.Tags)
-}
-
-// TestNarrowScanConfigByTech_NeverOverridesExplicitTags confirms an
-// operator's own --tags value is left completely alone, never widened or
-// replaced — same posture pkg/webui's narrowConfigsByTechStack established.
-func TestNarrowScanConfigByTech_NeverOverridesExplicitTags(t *testing.T) {
-	techStack := []recon.TechFact{{Name: "WordPress", Host: "example.com"}}
-	index := []templatesync.Entry{{ID: "wordpress-panel", Tags: []string{"wordpress"}, Severity: "info"}}
-	cfg := scanner.Config{Tags: []string{"custom"}}
-	var stderr bytes.Buffer
-
-	narrowScanConfigByTech(&stderr, techStack, index, &cfg)
-
-	assert.Equal(t, []string{"custom"}, cfg.Tags)
-}
-
-// TestNarrowScanConfigByTech_DegradesToFullCorpusWhenNothingUsable covers
-// every "nothing to narrow with" case — each must warn to stderr and leave
-// cfg.Tags empty (the full-corpus fallback), never error.
-func TestNarrowScanConfigByTech_DegradesToFullCorpusWhenNothingUsable(t *testing.T) {
-	cases := []struct {
-		name      string
-		techStack []recon.TechFact
-		index     []templatesync.Entry
-	}{
-		{"no tech stack", nil, []templatesync.Entry{{ID: "x", Tags: []string{"wordpress"}}}},
-		{"no template index", []recon.TechFact{{Name: "WordPress", Host: "example.com"}}, nil},
-		{"tech stack ties to no tag", []recon.TechFact{{Name: "Unmapped Thing", Host: "example.com"}}, []templatesync.Entry{{ID: "x", Tags: []string{"wordpress"}}}},
-	}
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := scanner.Config{}
-			var stderr bytes.Buffer
-
-			narrowScanConfigByTech(&stderr, tt.techStack, tt.index, &cfg)
-
-			assert.Empty(t, cfg.Tags)
-			assert.NotEmpty(t, stderr.String(), "a degrade case must still explain itself to stderr")
-		})
-	}
+// TestUnionTags confirms the floor ∪ extras composition scan's RunE folds
+// into scanner.Config.DerivedTags: order-stable, de-duplicated, lower-cased,
+// blanks dropped.
+func TestUnionTags(t *testing.T) {
+	assert.Nil(t, unionTags(nil, nil))
+	assert.Equal(t, []string{"misconfig", "exposure"}, unionTags([]string{"misconfig", "exposure"}, nil))
+	assert.Equal(t,
+		[]string{"misconfig", "exposure", "wordpress", "litespeed"},
+		unionTags([]string{"misconfig", "exposure"}, []string{"WordPress", " misconfig ", "litespeed", ""}),
+		"extras are appended after the floor, de-duped case-insensitively, blanks dropped",
+	)
 }
 
 func TestExpandOOBServers(t *testing.T) {

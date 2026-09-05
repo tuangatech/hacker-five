@@ -314,15 +314,30 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	}
 
 	loadedNuclei, loadedNative := len(nucleiTemplates), len(nativeTemplates)
-	if len(e.cfg.Tags) > 0 {
-		nucleiTemplates = filterNucleiByTags(nucleiTemplates, e.cfg.Tags)
-		nativeTemplates = filterNativeByTags(nativeTemplates, e.cfg.Tags)
+	// Effective tag scoping (doc15 Step 6a): an explicit --tags (cfg.Tags) is
+	// authoritative and wins untouched; otherwise, unless --all-templates was
+	// passed, scope to the detector-category floor ∪ tech-matched tags a
+	// frontend composed into cfg.DerivedTags. Empty DerivedTags (e.g.
+	// --detector businesslogic, which has no floor) falls through to the full
+	// corpus, same as before this change.
+	scopeTags := e.cfg.Tags
+	scopeSource := "explicit --tags"
+	if len(scopeTags) == 0 && !e.cfg.AllTemplates {
+		scopeTags = e.cfg.DerivedTags
+		scopeSource = "detector/tech scoping"
+	}
+	if len(scopeTags) > 0 {
+		nucleiTemplates = filterNucleiByTags(nucleiTemplates, scopeTags)
+		nativeTemplates = filterNativeByTags(nativeTemplates, scopeTags)
 	}
 	if e.cfg.TemplateID != "" {
 		nucleiTemplates = filterNucleiByID(nucleiTemplates, e.cfg.TemplateID)
 		nativeTemplates = filterNativeByID(nativeTemplates, e.cfg.TemplateID)
 	}
 	filtered := (loadedNuclei - len(nucleiTemplates)) + (loadedNative - len(nativeTemplates))
+	if filtered > 0 && len(scopeTags) > 0 {
+		e.warnf("info", "scoped to %d template tag(s) via %s: %s", len(scopeTags), scopeSource, strings.Join(scopeTags, ", "))
+	}
 
 	if e.cfg.Concurrency > promptInjectionSafeConcurrency && anyTemplateHasTag(nucleiTemplates, nativeTemplates, promptInjectionTag) {
 		e.warnf("warn", "loaded template(s) tagged %q with --concurrency %d (safe default: %d) — unlike other templates, a prompt-injection request can trigger a real, metered LLM call on the target's backend; consider a lower --concurrency",

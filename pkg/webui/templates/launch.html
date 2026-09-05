@@ -58,7 +58,7 @@
 <label for="tags">Template tags (--tags, comma-separated, optional)</label>
 <input type="text" id="tags" name="tags" value="{{.Tags}}">
 
-<label class="inline"><input type="checkbox" name="narrow_by_tech" {{if .NarrowByTech}}checked{{end}}> Narrow templates to detected tech stack</label>
+<label class="inline"><input type="checkbox" name="narrow_by_tech" {{if .NarrowByTech}}checked{{end}}> Scope templates to detector categories + detected tech stack <span class="hint">(on by default — uncheck to load the full ~9.5k-template corpus)</span></label>
 <p class="hint">Runs recon first, then loads only templates tagged relevant to what it finds running on the target, instead of the full synced corpus — faster, but narrower detection coverage. Ignored above if template tags are already given. Falls back to the full corpus if recon finds nothing actionable or the template index isn't built ("hackerfive templates index"). Note: unchecked, <strong>every</strong> selected detector (misconfig included) additively runs the whole synced corpus alongside its own native checks — check this to scope that down.</p>
 
 <div class="auth-shared">
