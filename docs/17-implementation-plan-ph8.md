@@ -26,7 +26,7 @@ inspection, never literal command execution on a target.
 3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
 4. ⬜ **OOB blind-RCE verification** (Week 62)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
-6. ⬜ **Recon-depth & JS-rendered crawl** (Week 63) — closes LT-8
+6. ⬜ **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8
 7. ⬜ **Remaining template-format gaps needing a dependency or larger design** (Week 64) — `xpath`, `flow:` cross-block `_N`, `flow:` script constructs, `substr`/`date_time`/`generate_jwt` DSL
 8. ⬜ **Eval maturity + release** (Week 64) — `v0.8.0`
 
@@ -45,6 +45,12 @@ inspection, never literal command execution on a target.
   matcher/extractor shapes real corpus templates actually use, evaluated against a
   concrete dependency footprint per CLAUDE.md's dependency rule — not an open-ended
   XML feature.
+- **Large-wordlist directory/parameter brute-forcing as a default.** Step 6's content
+  discovery is a small curated list, opt-in, `--recon-depth full` only, and rides
+  httpx's existing rate limit. A `directory-list-2.3-medium`-scale sweep, or
+  ffuf-style parameter fuzzing as its own traffic-generating tool, stays a separate
+  opt-in-only item — it collides with the DoS/brute-force exclusion nearly every
+  program carries and with the tool's rate-limited, read-only premise.
 
 ## Dependencies used in this plan
 
@@ -261,17 +267,42 @@ different versions) and confirm they now get *different* template lists.
 
 ---
 
-## Step 6: Recon-Depth & JS-Rendered Crawl (Week 63) — ⬜ not yet implemented — closes LT-8
+## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — ⬜ not yet implemented — closes LT-8
 
 ### Design
 
 [follow-up.md](follow-up.md) LT-8: katana is hardcoded to `-depth 2`, no
 JS-rendering/headless mode, no flag for either — plausibly why the endpoint-driven
-idor/ssrf heuristics find nothing on real targets with a live login boundary.
+idor/ssrf heuristics find nothing on real targets with a live login boundary. All
+three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFacts`
+(P1-1) turns into idor/authbypass/ssrf/businesslogic candidates.
 
 - **Configurable crawl depth** — a `--recon-depth`-adjacent knob (or a dedicated
   `--crawl-depth`) threaded into `runKatana`'s `-depth`, defaulting to today's `2` so
   scripted runs are unchanged.
+- **Bounded content discovery** — active probing of a small curated wordlist of common
+  *unlinked* paths (admin panels, backup files, `/.git/`-style dir indexes, config
+  endpoints) against each Wave 3 live host, for the surface a link-following crawl by
+  definition can't reach. Distinct from `probeCommonPaths`' fixed 6-entry app-shape
+  list and from misconfig's exposed-path checks (bad *exposure*, not *discovery*).
+  Constrained so it stays inside the read/enumerate-only boundary and the
+  DoS/brute-force exclusion nearly every program carries
+  ([05-hackerone-and-legal.md](05-hackerone-and-legal.md) §2,
+  [21-scanning-real-targets.md](21-scanning-real-targets.md)):
+  - **Opt-in only**, behind an explicit flag (`--content-discovery`), and only at
+    `--recon-depth full`. Never in a default or scripted run.
+  - Runs through **`httpx`'s own `-path <file>` input** — httpx is already the Wave 2/3
+    shelled binary and already honors `-rl`/`-threads`, so request volume rides the
+    same per-tool rate limit every other recon binary uses. This is the specific
+    reconciliation-with-the-rate-limiter that [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md)
+    named as ffuf's blocker — sidestepped by not adding a second traffic-generating tool.
+  - **Curated default wordlist** (~4-5k entries, seclists `common.txt`-scale),
+    `go:embed`-ed with its provenance/licence documented. A larger list is available
+    only via an explicit `--content-discovery-wordlist <path>` override — the operator's
+    stated choice and risk, not a default.
+  - Still `--scope`-gated (only Wave 1's scope-filtered hosts). Hits fold into the Wave 3
+    endpoint set as `EndpointFact{Source: "wave3-content-discovery"}`, deduped like any
+    other source.
 - **Optional JS-rendered crawl** — katana's own headless mode (`-headless`/`-system-chrome`),
   behind an explicit opt-in flag, with a per-host timeout ceiling (the real cost LT-8
   names — headless across many hosts is slow). Off by default; when on, its output
@@ -279,19 +310,23 @@ idor/ssrf heuristics find nothing on real targets with a live login boundary.
   naturally with Step 3's JS static analysis — a rendered DOM surfaces
   dynamically-built endpoints a static bundle scan can't.
 
-No new dependency — katana already ships headless support; this is flag plumbing plus a
-timeout guard.
+No new dependency — katana already ships headless support and httpx already accepts a
+path list; this is flag plumbing, an embedded wordlist, and a timeout guard.
 
 ### Files (anticipated, confirm at implementation time)
-- `pkg/recon/crawl.go` — `runKatana` takes depth + a headless bool + per-host timeout.
-- `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs.
+- `pkg/recon/crawl.go` — `runKatana` takes depth + a headless bool + per-host timeout; a new `discoverContentPaths` shelling `httpx -path <wordlist>`, gated on the opt-in flag, folding hits into `agg` as `wave3-content-discovery` endpoints.
+- `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
+- `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs (crawl depth, headless, content-discovery on/off + wordlist override).
 - `cmd/hackerfive/{recon,plan}.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_recon.go` — surface the flags/fields.
-- `tests/unit/crawl_test.go` — depth threaded through to the katana arg list; headless flag gated correctly.
+- `tests/unit/crawl_test.go` — depth threaded through to the katana arg list; headless flag gated correctly; `httpx -path` present only when `--content-discovery` is set; a hit becomes a `wave3-content-discovery` `EndpointFact` and reaches `resolveEndpointFacts`.
 
 ### Verification
-Unit: the katana arg list reflects the configured depth/headless. Live: a
-depth-3 + headless run against a JS-heavy owned SPA yields materially more endpoints
-than the depth-2 static run, and the extra endpoints reach the plan tree.
+Unit: the katana arg list reflects the configured depth/headless; the httpx arg list
+carries `-path` only with the flag on. Live: a depth-3 + headless run against a
+JS-heavy owned SPA yields materially more endpoints than the depth-2 static run; a
+`--content-discovery` run against an owned target with a known unlinked path (e.g.
+`/admin`, a dir index) discovers it only with the flag on, and the extra endpoints —
+from both sources — reach the plan tree's idor/authbypass candidate lists.
 
 ---
 
@@ -380,7 +415,7 @@ stated reason.
 - [ ] OOB blind-RCE verification proves execution via a callback-only payload, never runs an attacker-meaningful command, and reuses `pkg/oob` unchanged; no real public OOB server in code or tests
 - [ ] `templates/index.json` carries optional `AffectedRange` data; `matchTemplateTags` drops an out-of-affected-range CVE template when the `TechFact` version is known, and real multi-version Nginx hosts get different template lists (LT-7 closed)
 - [ ] An unversioned WordPress plugin/theme slug gets a `readme.txt`/`style.css` version probe (P1-3 leftover closed)
-- [ ] Crawl depth is configurable (default unchanged) and an opt-in JS-rendered crawl merges into the Wave 3 endpoint set with a per-host timeout ceiling (LT-8 closed)
+- [ ] Crawl depth is configurable (default unchanged); an opt-in JS-rendered crawl merges into the Wave 3 endpoint set with a per-host timeout ceiling; an opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints (LT-8 closed)
 - [ ] `xpath` matcher/extractor support ships (dependency footprint verified first) or is explicitly descoped with a stated reason; `flow:` cross-block `_N` indexing ships or is explicitly descoped; `substr`/`date_time`/`generate_jwt` DSL functions ship; `flow:` `if`/`set`/`for` script constructs ship or are explicitly descoped
 - [ ] New-detector yield and any new false-positive mode measured against all lab targets, tracked against the <5% target, with full cost accounting
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean

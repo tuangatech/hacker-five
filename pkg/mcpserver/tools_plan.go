@@ -323,46 +323,79 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 // 0-or-multiple case; authbypass's 0-candidate ProtectedPaths case) is I4's
 // second caller. ssrf/authbypass's login/logout never have a miss case (see
 // pkg/recon/suggest.go) so they only ever auto-fill or stay empty.
+//
+// Every per-detector block is gated on the plan tree actually carrying a
+// leaf for that detector. Without this gate, a misconfig-only plan (the
+// common case — WebGoat/DVWA/most targets) still fired an I4 field-miss
+// call for `idor`/`authbypass` on every `plan` invocation, since a target
+// with no idor endpoints trivially hits the 0-candidate branch — a standing
+// paid LLM call the DoD says I4 must never be ("fires only on a confirmed
+// decision-engine miss — never as a standing parallel path"). A field
+// suggestion only ever fills a field on an already-emitted leaf, so no leaf
+// for the detector means nothing to fill.
 func resolveFieldSuggestions(ctx context.Context, result *recon.ReconResult, fb *llmfallback.Client, fbErr error, tree *agenttask.PlanTree, baseCfg *scanner.Config, escalations *[]string) []agenttask.FieldSuggestion {
 	var out []agenttask.FieldSuggestion
+	leafDetectors := planLeafDetectors(tree)
 
-	idorCandidates := recon.SuggestIDOREndpointCandidates(result)
-	if len(idorCandidates) == 1 {
-		baseCfg.EndpointTemplate = idorCandidates[0]
-		out = append(out, agenttask.FieldSuggestion{Detector: "idor", Field: "endpoint_template", SuggestedValue: idorCandidates[0], Rationale: "single recon-derived candidate, auto-filled"})
-	} else {
-		fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, "idor", "endpoint_template", idorCandidates, escalations)
-		if fs != nil {
-			out = append(out, *fs)
+	if leafDetectors["idor"] {
+		idorCandidates := recon.SuggestIDOREndpointCandidates(result)
+		if len(idorCandidates) == 1 {
+			baseCfg.EndpointTemplate = idorCandidates[0]
+			out = append(out, agenttask.FieldSuggestion{Detector: "idor", Field: "endpoint_template", SuggestedValue: idorCandidates[0], Rationale: "single recon-derived candidate, auto-filled"})
+		} else {
+			fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, "idor", "endpoint_template", idorCandidates, escalations)
+			if fs != nil {
+				out = append(out, *fs)
+			}
 		}
 	}
 
-	protected, login, logout := recon.SuggestAuthBypassPathsFromRecon(result)
-	if len(protected) == 1 {
-		baseCfg.ProtectedPaths = protected
-		out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "protected_paths", SuggestedValue: protected[0], Rationale: "single recon-derived candidate, auto-filled"})
-	} else if len(protected) == 0 {
-		if fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, "authbypass", "protected_paths", protected, escalations); fs != nil {
-			out = append(out, *fs)
+	if leafDetectors["authbypass"] {
+		protected, login, logout := recon.SuggestAuthBypassPathsFromRecon(result)
+		if len(protected) == 1 {
+			baseCfg.ProtectedPaths = protected
+			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "protected_paths", SuggestedValue: protected[0], Rationale: "single recon-derived candidate, auto-filled"})
+		} else if len(protected) == 0 {
+			if fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, "authbypass", "protected_paths", protected, escalations); fs != nil {
+				out = append(out, *fs)
+			}
+		} else {
+			baseCfg.ProtectedPaths = protected
+			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "protected_paths", Candidates: protected, Rationale: "multiple recon-derived candidates — all usable directly, no ambiguity to resolve"})
 		}
-	} else {
-		baseCfg.ProtectedPaths = protected
-		out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "protected_paths", Candidates: protected, Rationale: "multiple recon-derived candidates — all usable directly, no ambiguity to resolve"})
-	}
-	if len(login) > 0 {
-		baseCfg.LoginPaths = login
-		out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "login_paths", Candidates: login, Rationale: "recon-derived, auto-fillable"})
-	}
-	if len(logout) > 0 {
-		baseCfg.LogoutPaths = logout
-		out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "logout_paths", Candidates: logout, Rationale: "recon-derived, auto-fillable"})
+		if len(login) > 0 {
+			baseCfg.LoginPaths = login
+			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "login_paths", Candidates: login, Rationale: "recon-derived, auto-fillable"})
+		}
+		if len(logout) > 0 {
+			baseCfg.LogoutPaths = logout
+			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "logout_paths", Candidates: logout, Rationale: "recon-derived, auto-fillable"})
+		}
 	}
 
-	if ssrfParams := recon.SuggestSSRFParamsFromRecon(result); len(ssrfParams) > 0 {
-		baseCfg.SSRFParams = ssrfParams
-		out = append(out, agenttask.FieldSuggestion{Detector: "ssrf", Field: "ssrf_params", Candidates: ssrfParams, Rationale: "every recon-derived candidate is directly usable, no ambiguity to resolve"})
+	if leafDetectors["ssrf"] {
+		if ssrfParams := recon.SuggestSSRFParamsFromRecon(result); len(ssrfParams) > 0 {
+			baseCfg.SSRFParams = ssrfParams
+			out = append(out, agenttask.FieldSuggestion{Detector: "ssrf", Field: "ssrf_params", Candidates: ssrfParams, Rationale: "every recon-derived candidate is directly usable, no ambiguity to resolve"})
+		}
 	}
 
+	return out
+}
+
+// planLeafDetectors is the set of detector names the tree's leaves actually
+// carry — the gate for whether a field suggestion (and its possible I4
+// call) has any leaf to apply to.
+func planLeafDetectors(tree *agenttask.PlanTree) map[string]bool {
+	out := map[string]bool{}
+	if tree == nil {
+		return out
+	}
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if leaf.Detector != "" {
+			out[leaf.Detector] = true
+		}
+	}
 	return out
 }
 

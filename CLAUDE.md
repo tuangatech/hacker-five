@@ -21,7 +21,15 @@ wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go bu
 ```
 (`golangci-lint` needs the explicit `PATH` prepend — it's not on a non-interactive shell's PATH; see [docs/04-environment-and-testing.md](docs/04-environment-and-testing.md).)
 
-`~/projects/hacker-five` is the user's separate, native-Linux clone — used for what the `/mnt/c` mount can't do: `docker compose` for live crAPI/DVWA targets and running `./hackerfive scan` against them (see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md)). It has its own git history and needs its own `git pull`; edits here don't reach it automatically.
+### Live testing is available in WSL2 (updated 2026-09-05)
+
+The `/mnt/c` checkout, via `wsl.exe`, can now do the full live-testing loop itself — the earlier split ("use `~/projects/hacker-five` for anything live") no longer applies:
+
+- **Recon toolchain:** `subfinder`/`httpx`/`katana`/`naabu`/`dnsx`/`tlsx` are installed in `~/go/bin`. That dir isn't on a non-interactive shell's PATH, so prepend it the same way as `golangci-lint`: `PATH=$PATH:$HOME/go/bin`. If any are missing, install them — either `go build -o ~/hackerfive ./cmd/hackerfive && ~/hackerfive recon setup` (the `pkg/toolsync` installer — downloads + checksum-verifies real releases, no Go toolchain needed) or `GOBIN=$HOME/go/bin go install github.com/projectdiscovery/<tool>/v2/cmd/<tool>@latest`.
+- **Docker Desktop** with WSL2 integration exposes `docker` / `docker compose` (no hyphen) inside `wsl.exe -e bash`. Lab-target images for crAPI/DVWA/Juice Shop/vAPI are already pulled; WebGoat/bWAPP images pull on demand. Bring targets up per [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md) and scan them from this checkout — build a Linux binary in WSL (`go build -o hackerfive ./cmd/hackerfive`) and run it against `http://localhost:<published-port>`.
+- **Playwright + Chromium** are installed (`~/.cache/ms-playwright`, `npx` available) for browser-driven Web UI tests (`hackerfive serve` — Plan Preview approve/reject, kill switch).
+
+`~/projects/hacker-five` is the user's separate, native-Linux clone with its own git history; it exists but isn't required for live testing from here, and edits in `/mnt/c` don't reach it automatically.
 
 ## Detection philosophy
 

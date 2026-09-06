@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -219,6 +220,19 @@ func reconResultWithEndpoints(endpoints ...recon.EndpointFact) *recon.ReconResul
 	return &recon.ReconResult{Target: "https://example.com", Endpoints: endpoints}
 }
 
+// treeWithLeafDetectors builds a minimal PlanTree whose leaves carry the
+// given detector names — the precondition resolveFieldSuggestions now gates
+// on (a field suggestion only ever fills a field on an already-emitted
+// leaf, so with no leaf for a detector the whole block, I4 call included, is
+// skipped).
+func treeWithLeafDetectors(detectors ...string) *agenttask.PlanTree {
+	root := &agenttask.PlanNode{ID: "root"}
+	for i, d := range detectors {
+		root.Children = append(root.Children, &agenttask.PlanNode{ID: fmt.Sprintf("leaf-%d", i), Target: "https://example.com", Detector: d})
+	}
+	return &agenttask.PlanTree{Root: root}
+}
+
 // TestResolveFieldSuggestions_SingleCandidateEverything_AutoFillsNoEscalation
 // exercises resolveFieldSuggestions' every auto-fill branch (idor's single
 // candidate, authbypass's single protected/login/logout candidate, ssrf's
@@ -233,7 +247,7 @@ func TestResolveFieldSuggestions_SingleCandidateEverything_AutoFillsNoEscalation
 		recon.EndpointFact{URL: "https://example.com/logout"},
 		recon.EndpointFact{URL: "https://example.com/proxy?url=http://internal"},
 	)
-	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}
+	tree := treeWithLeafDetectors("idor", "authbypass", "ssrf")
 	baseCfg := scanner.Config{}
 	var escalations []string
 
@@ -258,7 +272,7 @@ func TestResolveFieldSuggestions_SingleCandidateEverything_AutoFillsNoEscalation
 // own contract), so this stays offline and fast.
 func TestResolveFieldSuggestions_NoCandidates_EscalatesToHuman(t *testing.T) {
 	result := reconResultWithEndpoints(recon.EndpointFact{URL: "https://example.com/about"})
-	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}
+	tree := treeWithLeafDetectors("idor", "authbypass")
 	baseCfg := scanner.Config{}
 	var escalations []string
 
@@ -282,7 +296,7 @@ func TestResolveFieldSuggestions_MultipleProtectedCandidates_AllUsableNoAmbiguit
 		recon.EndpointFact{URL: "https://example.com/admin", StatusCode: 403},
 		recon.EndpointFact{URL: "https://example.com/settings", StatusCode: 401},
 	)
-	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}
+	tree := treeWithLeafDetectors("authbypass")
 	baseCfg := scanner.Config{}
 	var escalations []string
 

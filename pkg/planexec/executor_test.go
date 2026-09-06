@@ -421,3 +421,60 @@ func TestRunPlan_OnOutOfScope_NotCalledWhenEveryLeafInScope(t *testing.T) {
 		t.Fatal("the in-scope leaf should have dispatched normally")
 	}
 }
+
+// slowServer returns an httptest server that sleeps delay before every
+// response (200) — the injected per-request latency the timing test below
+// measures parallelism against.
+func slowServer(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(delay)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// TestRunPlan_MultiLeafRunsInParallel is doc15 Open Issue #4 / the Step 2
+// DoD line "not yet live-confirmed with a real multi-leaf timing check
+// (elapsed time close to the slowest single leaf)". Four builtin-capability
+// leaves, each a one-request template against its own server that sleeps
+// 300ms per request, dispatched with DetConcurrency 4: wall-clock must stay
+// close to one leaf, not the 4x a serial dispatch would cost.
+func TestRunPlan_MultiLeafRunsInParallel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("timing test")
+	}
+	const (
+		delay  = 300 * time.Millisecond
+		nLeaf  = 4
+		tmplID = "slowprobe"
+	)
+	dir := writeOneTemplate(t, tmplID, http.StatusOK)
+	index := []templatesync.Entry{{ID: tmplID}}
+	baseCfg := scanner.Config{TemplatePaths: []string{dir}, Concurrency: 1, RateLimit: 50, Timeout: 5 * time.Second, OutputFormat: "json"}
+
+	run := func(n int) time.Duration {
+		children := make([]*agenttask.PlanNode, n)
+		for i := 0; i < n; i++ {
+			children[i] = &agenttask.PlanNode{ID: fmt.Sprintf("leaf-%d", i), Target: slowServer(t, delay).URL, Detector: tmplID}
+		}
+		tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: children}}
+		opts := ExecOptions{DetConcurrency: nLeaf, LLMConcurrency: nLeaf}
+		start := time.Now()
+		if _, _, skipped, err := RunPlan(context.Background(), tree, baseCfg, index, opts); err != nil || len(skipped) != 0 {
+			t.Fatalf("RunPlan(n=%d): err=%v skipped=%v", n, err, skipped)
+		}
+		return time.Since(start)
+	}
+
+	one := run(1)
+	many := run(nLeaf)
+	t.Logf("1 leaf: %s | %d leaves: %s | serial would be ~%s", one, nLeaf, many, time.Duration(nLeaf)*one)
+
+	// Genuine parallelism: nLeaf leaves finish in well under 2x a single
+	// leaf. A serial dispatch would be ~nLeaf x one (~4x here).
+	if many > 2*one {
+		t.Fatalf("multi-leaf wall-clock %s exceeds 2x the single-leaf time %s — leaves are not running in parallel", many, one)
+	}
+}
