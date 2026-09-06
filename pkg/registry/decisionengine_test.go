@@ -541,6 +541,81 @@ func TestMatchTemplateTags_CapReturnsBestNotFileOrder(t *testing.T) {
 	assert.Equal(t, "CVE-2025-0001", got[0].ID, "the best entry must survive the cap even though it was last in file order")
 }
 
+// --- LT-48 (docs/follow-up.md): relevance-score floor, not just a count cap ---
+
+// TestMatchTemplateTags_WeakSecondaryWordMatchBelowFloorDropped: a template
+// that shares only a non-primary word with the tech name, carries no
+// severity and is not a CVE, scores 50 — below minTemplateLeafScore. It must
+// not become a leaf; when it's the only candidate the whole fan-out is
+// dropped (the LT-30/LT-31 shape).
+func TestMatchTemplateTags_WeakSecondaryWordMatchBelowFloorDropped(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "generic-bar-check", Name: "Bar check", Tags: []string{"bar"}, Severity: ""},
+	}
+	got := matchTemplateTags("Foo Bar", index) // primary word "foo"; only "bar" matches this entry
+	assert.Empty(t, got, "a lone score-50 coincidental-word match must not become a leaf")
+}
+
+// TestMatchTemplateTags_WeakWordMatchWithHighSeverityKept: the same weak word
+// overlap, but the template is high severity (50 + 15 = 65 >= 60) — kept, so
+// the floor removes only the genuinely low-value tail.
+func TestMatchTemplateTags_WeakWordMatchWithHighSeverityKept(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "serious-bar-rce", Name: "Bar RCE", Tags: []string{"bar"}, Severity: "high"},
+	}
+	got := matchTemplateTags("Foo Bar", index)
+	require.Len(t, got, 1)
+	assert.Equal(t, "serious-bar-rce", got[0].ID)
+}
+
+// TestMatchTemplateTags_ScoreFloorTrimsTailKeepsStrong: a mix — one strong
+// primary-tag hit plus several weak below-floor entries — keeps only the
+// strong one.
+func TestMatchTemplateTags_ScoreFloorTrimsTailKeepsStrong(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "weak-1", Tags: []string{"bar"}, Severity: ""},
+		{ID: "weak-2", Tags: []string{"bar"}, Severity: "low"},
+		{ID: "strong", Tags: []string{"foo"}, Severity: "high"},
+		{ID: "weak-3", Tags: []string{"bar"}, Severity: ""},
+	}
+	got := matchTemplateTags("Foo Bar", index)
+	require.Len(t, got, 1)
+	assert.Equal(t, "strong", got[0].ID)
+}
+
+// --- LT-51 (docs/follow-up.md): status-weighted /api endpoint confidence ---
+
+func TestAPIRouteConfidence(t *testing.T) {
+	assert.Equal(t, agenttask.ConfidenceHigh, apiRouteConfidence([]recon.EndpointFact{
+		{URL: "https://h.test/api/customer/order-history", StatusCode: 400},
+	}), "a 400 on an /api path confirms the route exists")
+	assert.Equal(t, agenttask.ConfidenceHigh, apiRouteConfidence([]recon.EndpointFact{
+		{URL: "https://h.test/api/x", StatusCode: 401},
+	}))
+	assert.Equal(t, agenttask.ConfidenceMedium, apiRouteConfidence([]recon.EndpointFact{
+		{URL: "https://h.test/api/x", StatusCode: 404},
+	}), "a 404 does not confirm anything")
+	assert.Equal(t, agenttask.ConfidenceMedium, apiRouteConfidence([]recon.EndpointFact{
+		{URL: "https://h.test/products/1", StatusCode: 400},
+	}), "a non-/api path is not weighted")
+}
+
+// TestResolve_APIEndpoint400_IdorLeafAtHighConfidence: an ID-shaped /api
+// endpoint that returned 400 unauthenticated produces an idor leaf at
+// ConfidenceHigh, not the ConfidenceMedium a bare URL-shape match gets.
+func TestResolve_APIEndpoint400_IdorLeafAtHighConfidence(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/api/customer/report?report_id=482", Method: "GET", StatusCode: 400, Source: "wave3-crawl"},
+		},
+	}
+	tree, _ := Resolve(result, nil)
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "idor" })
+	require.NotNil(t, leaf)
+	assert.Equal(t, agenttask.ConfidenceHigh, leaf.Confidence, "LT-51: a live-confirmed /api route lifts the endpoint-driven leaf to High")
+}
+
 // --- LT-16 (docs/follow-up.md): TechStackTags ---
 
 // TestTechStackTags_UnionsRelevantEntryTags confirms the basic shape: the
