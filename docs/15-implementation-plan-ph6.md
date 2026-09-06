@@ -22,7 +22,7 @@
 2. ✅ **Approval gate + PlanTree executor + spend ceiling** (Week 43 — see this step's note on week pressure, added 2026-08-31) — done 2026-09-02
 3. ✅ **Hard safety blockers + scope-creep gate** (Weeks 44-45) — cost-aware prioritization (H4) moved to [Phase 7](16-implementation-plan-ph7.md) Step 4 during the 2026-09-05 planning pass (no per-leaf retry loop exists yet for the rule to gate)
 4. 🟡 **Approval UI: make the plan preview actionable** (Week 46) — partially done 2026-09-04
-5. ⬜ **Session log + release** (Weeks 47-48) — `v0.6.0`
+5. 🟡 **Session log + release** (Weeks 47-48) — `v0.6.0`; C1 session log + the automated round-trip test done 2026-09-05, live lab-target verification + the tag itself pending an environment with Docker + the recon toolchain
 6. ✅ **Scan-execution efficiency: corpus scoping + concurrency + corpus-once-per-host** (added 2026-09-05 from [follow-up.md](follow-up.md) LT-18 and the 2026-09-06 nettix.com.pe review) — done 2026-09-05; gated Step 5's `v0.6.0` release
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-14.)
@@ -392,7 +392,7 @@ Verification: `go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...
 
 ---
 
-## Step 5: Session Log + Release (Weeks 47-48) — ⬜ not yet implemented — `v0.6.0`
+## Step 5: Session Log + Release (Weeks 47-48) — 🟡 C1 + automated round trip done 2026-09-05; live verification + `v0.6.0` tag pending
 
 ### Design
 
@@ -412,6 +412,69 @@ Full integration testing across Steps 1-4 together (a real MCP client running a 
 
 ### Verification
 The full round trip (recon → plan proposal → human approval via elicitation or the Web UI → scan execution with live findings/logs → findings.export) works end-to-end against at least one lab target (crAPI or DVWA), live-verified, not just unit-tested piecewise. Also live-verified against WebGoat and/or bWAPP specifically for the all-deterministic, zero-fallback-calls case named above.
+
+### Done note — C1 session log + automated round trip, 2026-09-05
+
+**C1 — agent session log.** `pkg/agenttask.SessionLog` is an append-only,
+concurrency-safe record of every MCP action-tool call in one server session
+(one long-lived stdio connection = one session; `pkg/mcpserver` has no `Job`
+concept, so process-wide is the natural scope). Each entry: sequence number,
+tool name, the coordinator's stated `reason` (a new optional advisory field
+on `scan`/`recon`/`plan`/`findings.export`/`findings.triage` — recorded
+verbatim, never trusted or enforced), a **secret-stripped** parameter
+summary (no `auth_token`/`extra_headers`), timing, and the outcome. `plan`
+and `findings.triage` record both SEP-2322 rounds, so the approval shows as
+its own event. `HACKERFIVE_SESSION_LOG=<path>` additionally appends each
+entry as JSONL for external inspection; a new read-only `session.log` tool
+(filter by tool name, limit to the last N) makes it queryable in-session.
+Not the Web UI's live Agent tab — that stays Phase 7 Step 3.
+
+**Automated round trip** (`tests/integration/agent_e2e_test.go`, `-tags
+integration`). A real in-memory MCP client drives `mcpserver.New()`'s tool
+set through recon → plan (elicitation auto-accepted) → scan → findings.export
+→ session.log against a local httptest target, then asserts the session log
+holds every call in order with strictly-increasing sequence, a reason on
+each, and no errors. This environment has no recon toolchain, so `plan`'s own
+recon is thin and its executed tree small — the test verifies the round-trip
+*mechanism*, and takes `HACKERFIVE_E2E_TARGET` (plus
+`HACKERFIVE_E2E_EXPECT_NO_FALLBACK`) to run the same flow against a real lab
+target with the richer assertions.
+
+**Also fixed while here:** `TestClient_RetryAfter_HTTPDateForm` was a flaky
+timing assertion (`http.TimeFormat`'s one-second granularity truncated a
+`now+1s` header to as little as a millisecond) — the test server now sends
+`now+2s`.
+
+### Live verification runbook (pending — needs Docker + the recon toolchain)
+
+Run from the native-Linux clone (`~/projects/hacker-five`), not the `/mnt/c`
+checkout. Each item is a Step 5 / Open Issue #4 / Step 4 verification the
+Windows/WSL environment structurally can't do:
+
+1. **Round trip against crAPI (credentialed path).** Bring up crAPI
+   ([20-setup-testing-targets.md](20-setup-testing-targets.md)); point an MCP
+   client (or `hackerfive plan`) at it with `HACKERFIVE_SESSION_LOG` set;
+   drive recon → plan → approve → scan → `findings.export`. Confirm real
+   findings, a complete session log, and that `plan` proposed `idor`/
+   `authbypass` leaves a `misconfig`-only app can't produce. Then the same
+   against DVWA.
+2. **Zero-fallback case (WebGoat and/or bWAPP).** Same flow; confirm the plan
+   resolves every leaf deterministically with `spend_usd == 0` — no I4 call
+   on the common case. Run `agent_e2e_test.go` with `HACKERFIVE_E2E_TARGET`
+   pointed at it and `HACKERFIVE_E2E_EXPECT_NO_FALLBACK=1`.
+3. **Open Issue #4 — multi-leaf concurrency timing.** A plan with several
+   builtin leaves per host: confirm wall-clock ≈ the slowest single leaf, not
+   the sum (genuine parallelism in `planexec.RunPlan`).
+4. **Step 4 — browser approval + kill switch.** In `hackerfive serve`:
+   approving a Plan Preview unblocks execution; the kill switch on a running
+   `/scans/{id}` (New Scan, unified Launch, and plan-execution alike) stops
+   the job — no further findings/logs after the click.
+5. **aalberts.com I4 re-run** (Step 2's standing commitment; not a lab
+   target). With a local model configured, confirm `idor`/`authbypass`
+   field suggestions now surface on a genuine miss and are *not* auto-applied.
+
+On green: tag `v0.6.0`. If it can't be run before release, `v0.6.0` is held
+with that as the stated reason (per the DoD's "or explicitly held").
 
 ---
 
@@ -589,7 +652,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 | 1 | `ResolveLeaf`'s `use_existing_tag` judgment is unreliable with a small (4.3B) local model on a fuzzy-match case, and not perfectly consistent run-to-run at `temperature: 0` even with a capable frontier model. | Revisit before leaning on a single fallback decision for something higher-stakes — try a larger local model, prompt tuning, or majority-vote across >1 call. |
 | 2 | An I4 `use_existing_tag` decision still can't dispatch via item 4's new template-ID path — `buildLeafPrompt` only ever shows the model *tags* (shared across many templates), never per-template IDs, so the decision rarely matches a real `Entry.ID`. Fully fixed for R8's own deterministic matches; not for I4's. | Needs its own design decision: run every template carrying the chosen tag? A second, narrower call to pick one ID? Change the catalog to show IDs instead of tags? |
 | 3 | **Pre-existing, unrelated test failure**: `TestEndToEnd_StartScan_ProducesRealFindings` (`pkg/webui`) fails — confirmed via a clean worktree of the last commit that it fails identically there too, so not caused by any change in this doc. | Investigate separately; not a regression to chase down as part of this phase's own work. |
-| 4 | Not yet live-verified: a real multi-leaf concurrency timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism). ~~Step 3's B4 scope-creep trigger names the executor as its future caller, but that hook doesn't exist in `RunPlan` yet.~~ B4's `ExecOptions.OnOutOfScope` hook landed 2026-09-05 (Step 3). | Timing check: do alongside Step 5's lab-target round trip. |
+| 4 | Not yet live-verified: a real multi-leaf concurrency timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism). ~~Step 3's B4 scope-creep trigger names the executor as its future caller, but that hook doesn't exist in `RunPlan` yet.~~ B4's `ExecOptions.OnOutOfScope` hook landed 2026-09-05 (Step 3). | Item 3 of Step 5's "Live verification runbook" — still open, needs Docker + the recon toolchain. |
 | 5 | **A scan spends its wall-clock on templates unrelated to the target** ([follow-up.md](follow-up.md) LT-18 + the 2026-09-06 nettix.com.pe review). | **Step 6, all done**: (a) detector-category floor ∪ tech-fact extras, `--narrow-by-tech` default-on — ✅ 2026-09-06; (b) bounded intra-target template fan-out (`--template-concurrency`) — ✅ 2026-09-05, live-verified against aceautowreckers.com (4m40s default-scoped misconfig run); (c) corpus once per host in `RunPlan` — ✅ 2026-09-05; (d) rejected-template log hygiene (compact per-reason histogram by default, full list behind `--verbose`/`--log-rejected`) — ✅ 2026-09-05. |
 | 6 | **Duplicate findings for one underlying fact** ([follow-up.md](follow-up.md) LT-6): a native `misconfig-missing-header-*` finding and the nuclei `http-missing-security-headers` template both fire on the same response — 5 findings for one fact. `reporter.Dedup` is exact-`Finding.ID`-only by deliberate design (see its doc comment: cross-format semantic dedup "deliberately not attempted"). | Needs a real design decision, not a quick fix — a naive topic-level key risks over-suppressing genuinely distinct findings (the nuclei finding is one aggregate row covering *many* headers; the native ones are one-per-header — an N:1 relationship, not "same key twice"). Options: split the nuclei aggregate into per-header sub-facts before dedup; or a `(target, finding-class)` key with `finding-class` derived only for the known missing-header overlap; or accept the duplication as "two detectors agreeing" and only collapse in the report view. Do during Step 5's release-hardening pass, or defer to Phase 7 Step 3's Exporter work — not before the design is settled. |
 | 7 | **SSE `/catchup` doesn't replay `#logs`/`#findings`** ([follow-up.md](follow-up.md) LT-5), only the idempotent progress/recon fragments — a late-connecting or reconnecting client permanently loses everything before connect. `CatchupData`'s doc comment records this as a *deliberate* narrow scope (blind replay would duplicate already-streamed append-list rows). | Needs a monotonic sequence/cursor on `Job`'s log/finding accumulation so catchup can replay only entries after the client's last-seen marker (and a client-side change to report it). Scheduled as a bullet on **Phase 7 Step 3** (Observability Upgrade) — that step reworks the SSE streams anyway. |
@@ -612,14 +675,14 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 - [ ] ~~Cost/attempt-aware prioritization (H4)~~ — **moved to [Phase 7](16-implementation-plan-ph7.md) Step 4** (2026-09-05): the executor runs each leaf once, so there is no per-leaf retry loop for the rule to gate until Phase 7's coordinator loop exists
 - [x] The scan HTTP client honors a `429`/`503` `Retry-After` header (capped) rather than only fixed exponential backoff — done 2026-09-05 (Step 3): `WithRetry` parses both the delta-seconds and HTTP-date forms; the wait becomes `max(exponential, Retry-After)` with no negative jitter on the server value; a `Retry-After` beyond a 30s ceiling returns the response as the answer rather than stalling a worker
 - [x] The Web UI's Plan-preview page supports Approve/Reject/Edit (per-leaf inclusion, not per-field), a budget gauge, and an always-reachable kill switch that actually stops a running job — and that same kill switch is confirmed on `/scans/{id}` for plain New Scan and Guided Scan-successor (unified Launch) runs too, not only the plan-execution flow — done 2026-09-04 (Step 4's Done note); not yet live-verified against a real browser/lab target, and the cross-process "same elicitation as an MCP client" interop is explicitly out of scope (see that note)
-- [ ] A structured, persisted agent session log exists and is queryable per job, even without a live Web UI view yet
-- [ ] A full recon → plan → approve → scan → export round trip is live-verified end-to-end against at least one lab target, plus a separate run against WebGoat and/or bWAPP confirming an all-`misconfig` plan resolves every leaf deterministically with zero I4 fallback calls
+- [x] A structured, persisted agent session log exists and is queryable per job, even without a live Web UI view yet — done 2026-09-05 (Step 5's C1): `pkg/agenttask.SessionLog`, process-wide in `pkg/mcpserver`, every `scan`/`recon`/`plan`/`findings.export`/`findings.triage` call recorded with the caller's stated `reason` and a secret-stripped param summary; queryable via the new `session.log` tool, optionally persisted to `HACKERFIVE_SESSION_LOG` as JSONL
+- [ ] A full recon → plan → approve → scan → export round trip is live-verified end-to-end against at least one lab target, plus a separate run against WebGoat and/or bWAPP confirming an all-`misconfig` plan resolves every leaf deterministically with zero I4 fallback calls — **automated round-trip mechanism done 2026-09-05** (`tests/integration/agent_e2e_test.go`: in-memory MCP client, recon→plan→approve→scan→export→session.log against a local target); the live lab-target run is the Step 5 runbook, pending an environment with Docker + the recon toolchain
 - [x] **(Step 6a)** `--narrow-by-tech` defaults on; `scan --detector X` with no `--tags`/`--recon-file` loads a detector-category-scoped subset (`registry.DetectorTemplateTags`), not the full ~9.5k corpus; `--all-templates` restores the full load; with a `--recon-file` the scoped set is floor ∪ `TechStackTags`; a `misconfig` run still fires every `exposure`/missing-header/`default-login` template (no recall loss) — done 2026-09-06 (see Step 6 Done note), all three frontends, live-verified against nettix.com.pe (9,476 → 3,745)
 - [x] **(Step 6b)** the per-target template loop is a bounded parallel fan-out (`--template-concurrency`, default 10) — still `--rate-limit`-throttled, prompt-injection still capped at 5 — done 2026-09-05 (see Step 6 Done note); live-verified against aceautowreckers.com — default-scoped `--detector misconfig` completed in 4m40s (vs the ~53 min LT-18 measured), conc 1→10 on a 328-template subset: 39s→23s
 - [x] **(Step 6c)** `planexec.RunPlan` loads/runs the template corpus at most once per host, not once per (host, builtin-capability-leaf) pair — done 2026-09-05 (see Step 6 Done note), unit-verified; a specific-template leaf still loads it for its own `id:` match
 - [x] **(Step 6d)** `loadTemplates` skips non-template `.yml` files and emits one bucketed rejection summary by default (full per-file list behind `--verbose`/`--log-rejected`); by-design refusals log below `warn` — done 2026-09-05 (see Step 6 Done note), unit-verified + eyeballed against a synthetic mixed-rejection corpus
-- [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
-- [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason
+- [x] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean — confirmed 2026-09-05 (also `go test -tags integration ./tests/integration/...`)
+- [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason — **held** as of 2026-09-05, stated reason: Step 5's live verification runbook (crAPI/DVWA round trip, WebGoat/bWAPP zero-fallback, Open Issue #4 timing, Step 4 browser kill switch, aalberts.com I4 re-run) needs an environment with Docker + the recon toolchain, which the development checkout doesn't have; tag on green
 
 ## See also
 - [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon package, `Finding`-schema freeze, `PlanTree` foundations, and the decision engine/registry (R7-R9, Group I1-I3) this phase's `tools.search`/`templates.search`/tiered-fallback work builds directly on; Step 7 specifically is I4's second caller (recon-derived field-suggestion misses), per this doc's Objective/Step 2 addendum

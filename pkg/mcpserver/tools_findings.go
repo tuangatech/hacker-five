@@ -17,6 +17,7 @@ import (
 type findingsExportInput struct {
 	Findings []detectors.Finding `json:"findings"`
 	Format   string              `json:"format,omitempty" jsonschema:"one of json (default), markdown, html, hackerone-json"`
+	Reason   string              `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
 }
 
 type findingsExportOutput struct {
@@ -27,7 +28,10 @@ func addFindingsExportTool(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "findings.export",
 		Description: "Render a finding list to json, markdown, html, or hackerone-json via pkg/reporter's Exporter.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in findingsExportInput) (*mcp.CallToolResult, findingsExportOutput, error) {
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in findingsExportInput) (res *mcp.CallToolResult, out findingsExportOutput, err error) {
+		finish := sessionLog.Begin("findings.export", in.Reason, exportParamsSummary(in))
+		defer func() { finish(exportResultSummary(out), err) }()
+
 		exporter, err := reporter.ExporterFor(in.Format)
 		if err != nil {
 			return nil, findingsExportOutput{}, err

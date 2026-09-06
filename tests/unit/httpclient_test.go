@@ -137,7 +137,12 @@ func TestClient_RetryAfter_HTTPDateForm(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if atomic.AddInt32(&attempts, 1) == 1 {
-			w.Header().Set("Retry-After", time.Now().Add(1*time.Second).UTC().Format(http.TimeFormat))
+			// now+2s, not now+1s: http.TimeFormat has one-second granularity,
+			// so a now+1s value truncates to as little as ~1ms in the future
+			// by the time the client parses it — which made the >=500ms
+			// assertion below flaky (seen failing at ~90-490ms). now+2s keeps
+			// the honored wait safely near a full second after truncation.
+			w.Header().Set("Retry-After", time.Now().Add(2*time.Second).UTC().Format(http.TimeFormat))
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}

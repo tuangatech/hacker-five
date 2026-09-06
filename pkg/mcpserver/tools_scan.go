@@ -31,6 +31,7 @@ type scanInput struct {
 	ExtraHeaders     map[string]string `json:"extra_headers,omitempty"`
 	TechStack        []recon.TechFact  `json:"tech_stack,omitempty" jsonschema:"optional — a prior recon tool call's result.tech_stack; adds this stack's product-specific template tags on top of the detector-category floor (LT-16/LT-17, doc15 Step 6a)"`
 	AllTemplates     bool              `json:"all_templates,omitempty" jsonschema:"load the full ~9.5k synced corpus, bypassing the default per-detector template scoping (doc15 Step 6a); no effect when tags is set"`
+	Reason           string            `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
 }
 
 // scanOutput is the scan tool's result: every Finding the run produced,
@@ -47,13 +48,15 @@ func addScanTool(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "scan",
 		Description: "Run a HackerFive detector (plus the loaded template corpus) against one or more targets. Refuses to run without an explicit scope allow-list.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in scanInput) (*mcp.CallToolResult, scanOutput, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in scanInput) (res *mcp.CallToolResult, out scanOutput, err error) {
+		finish := sessionLog.Begin("scan", in.Reason, scanParamsSummary(in))
+		defer func() { finish(scanResultSummary(out), err) }()
+
 		sc, err := requireScope(in.Scope)
 		if err != nil {
 			return nil, scanOutput{}, err
 		}
 
-		var out scanOutput
 		// D2 program-policy pre-flight (doc15 Step 3): a hard refusal when the
 		// operator's HACKERFIVE_POLICY_FILE marks a target automated_scanning:
 		// disallowed; advisory warnings otherwise. No MCP override.

@@ -16,6 +16,7 @@ import (
 // other tool here.
 type findingsTriageInput struct {
 	Findings []detectors.Finding `json:"findings"`
+	Reason   string              `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
 }
 
 type findingsTriageOutput struct {
@@ -35,7 +36,20 @@ func addFindingsTriageTool(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "findings.triage",
 		Description: "Rank a finding list by what's worth investigating first, via the tiered LLM fallback (I4). Never adds a finding or changes severity/confidence — ranking only. Presented for human approval via elicitation before being returned as approved.",
-	}, handleFindingsTriage)
+	}, recordingFindingsTriage)
+}
+
+// recordingFindingsTriage wraps handleFindingsTriage with a session.log
+// entry (doc15 Step 5 C1), the same pattern recordingPlan uses.
+func recordingFindingsTriage(ctx context.Context, req *mcp.CallToolRequest, in findingsTriageInput) (res *mcp.CallToolResult, out findingsTriageOutput, err error) {
+	finish := sessionLog.Begin("findings.triage", in.Reason, triageParamsSummary(in))
+	res, out, err = handleFindingsTriage(ctx, req, in)
+	summary := triageResultSummary(out)
+	if res != nil && len(res.InputRequests) > 0 {
+		summary = "ranking proposed — awaiting elicitation approval"
+	}
+	finish(summary, err)
+	return res, out, err
 }
 
 func handleFindingsTriage(ctx context.Context, req *mcp.CallToolRequest, in findingsTriageInput) (*mcp.CallToolResult, findingsTriageOutput, error) {

@@ -37,6 +37,7 @@ type planInput struct {
 	AllowWrites     bool              `json:"allow_writes,omitempty" jsonschema:"required for any businesslogic leaf's mutating checks; skipped with a warning otherwise"`
 	ExtraHeaders    map[string]string `json:"extra_headers,omitempty"`
 	SpendCeilingUSD float64           `json:"spend_ceiling_usd,omitempty" jsonschema:"hard cap on cumulative LLM-fallback (I4) cost for resolving and approving this plan; default 1.00 if unset or <=0"`
+	Reason          string            `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
 }
 
 // planOutput. Approved is true only once a human has accepted via
@@ -69,7 +70,24 @@ func addPlanTool(s *mcp.Server) {
 		Name:         "plan",
 		Description:  "Run recon against a target, resolve it to a PlanTree via the deterministic decision engine (falling back to a tiered LLM for what it can't resolve), get human approval via elicitation, then execute the approved plan and return real findings. Refuses to run without an explicit scope allow-list.",
 		OutputSchema: planOutputSchema,
-	}, handlePlan)
+	}, recordingPlan)
+}
+
+// recordingPlan wraps handlePlan with a session.log entry (doc15 Step 5 C1).
+// Both SEP-2322 rounds are recorded: round 1 (the actual planning) and round
+// 2 (the elicitation retry, where execution happens) each get their own
+// entry, so the log shows the approval as a distinct event, not a gap.
+func recordingPlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (res *mcp.CallToolResult, out planOutput, err error) {
+	finish := sessionLog.Begin("plan", in.Reason, planParamsSummary(in))
+	res, out, err = handlePlan(ctx, req, in)
+	summary := planResultSummary(out)
+	if res != nil && len(res.InputRequests) > 0 {
+		// Round 1: the SDK suppresses Out when InputRequests is set, so out is
+		// zero here even though a tree was built — say so plainly.
+		summary = "plan proposed — awaiting elicitation approval"
+	}
+	finish(summary, err)
+	return res, out, err
 }
 
 // approveRequestSchema is the flat elicitation schema every gated tool in

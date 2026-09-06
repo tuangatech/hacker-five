@@ -18,6 +18,7 @@ type reconInput struct {
 	Target string   `json:"target" jsonschema:"target URL/domain to run recon against"`
 	Scope  []string `json:"scope" jsonschema:"required allow-list (domain, *.domain, or CIDR entries); the call is refused if empty"`
 	Depth  string   `json:"depth,omitempty" jsonschema:"one of passive, active, full (default: passive)"`
+	Reason string   `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
 }
 
 type reconOutput struct {
@@ -28,7 +29,10 @@ func addReconTool(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "recon",
 		Description: "Run HackerFive's recon phase against a target, escalating through fixed waves (subfinder/tlsx/dnsx/naabu/httpx/katana). Refuses to run without an explicit scope allow-list.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in reconInput) (*mcp.CallToolResult, reconOutput, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in reconInput) (res *mcp.CallToolResult, out reconOutput, err error) {
+		finish := sessionLog.Begin("recon", in.Reason, reconParamsSummary(in))
+		defer func() { finish(reconResultSummary(out), err) }()
+
 		sc, err := requireScope(in.Scope)
 		if err != nil {
 			return nil, reconOutput{}, err

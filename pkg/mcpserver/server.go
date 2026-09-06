@@ -22,10 +22,15 @@ const version = "0.6.0-dev"
 
 // New builds a fully-registered MCP server: scan, templates.list,
 // templates.sync, findings.export, findings.triage, recon, tools.search,
-// templates.search, and plan — the last now elicitation-gated and executing
+// templates.search, plan — the last now elicitation-gated and executing
 // on approval (Phase 6 Step 2, tools_plan.go), not just inspectable as it
-// was in Step 1.
+// was in Step 1 — and session.log, the read-only view over this session's
+// append-only agent-call log (Phase 6 Step 5's C1).
 func New() *mcp.Server {
+	// Reset (and, if HACKERFIVE_SESSION_LOG is set, re-open) this process's
+	// agent session log before registering tools — see sessionlog.go.
+	initSessionLog()
+
 	s := mcp.NewServer(&mcp.Implementation{Name: "hackerfive", Version: version}, nil)
 
 	addScanTool(s)
@@ -37,6 +42,7 @@ func New() *mcp.Server {
 	addToolsSearchTool(s)
 	addTemplatesSearchTool(s)
 	addPlanTool(s)
+	addSessionLogTool(s)
 
 	return s
 }
