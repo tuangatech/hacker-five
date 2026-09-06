@@ -22,7 +22,7 @@
 2. ✅ **Approval gate + PlanTree executor + spend ceiling** (Week 43 — see this step's note on week pressure, added 2026-08-31) — done 2026-09-02
 3. ✅ **Hard safety blockers + scope-creep gate** (Weeks 44-45) — cost-aware prioritization (H4) moved to [Phase 7](16-implementation-plan-ph7.md) Step 4 during the 2026-09-05 planning pass (no per-leaf retry loop exists yet for the rule to gate)
 4. ✅ **Approval UI: make the plan preview actionable** (Week 46) — Web UI approval surface complete + Playwright-verified 2026-09-05; cross-process MCP↔webui elicitation interop explicitly out of scope (Step 4 note)
-5. ✅ **Session log + release** (Weeks 47-48) — `v0.6.0`; C1 session log, automated round-trip test, and the full live verification runbook all done (DVWA/WebGoat round trips, multi-leaf timing, browser approval + kill switch, aalberts.com re-run, live LLM template draft). Every DoD line is `[x]` or a recorded design decision as of 2026-09-06; `v0.6.0` held only pending the tag decision
+5. ✅ **Session log + release** (Weeks 47-48) — `v0.6.0` **tagged 2026-09-06** (annotated tag on `main`). C1 session log, automated round-trip test, and the full live verification runbook all done (DVWA/WebGoat round trips, multi-leaf timing, browser approval + kill switch, aalberts.com re-run, live LLM template draft). Phase 6 complete.
 6. ✅ **Scan-execution efficiency: corpus scoping + concurrency + corpus-once-per-host** (added 2026-09-05 from [follow-up.md](follow-up.md) LT-18 and the 2026-09-06 nettix.com.pe review) — done 2026-09-05; gated Step 5's `v0.6.0` release
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-14.)
@@ -392,7 +392,7 @@ Verification: `go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...
 
 ---
 
-## Step 5: Session Log + Release (Weeks 47-48) — ✅ C1 + automated round trip + full live verification runbook done; every DoD line closed 2026-09-06; `v0.6.0` held only on the tag decision
+## Step 5: Session Log + Release (Weeks 47-48) — ✅ C1 + automated round trip + full live verification runbook done; `v0.6.0` tagged 2026-09-06; Phase 6 complete
 
 ### Design
 
@@ -724,7 +724,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 - [x] **(Step 6c)** `planexec.RunPlan` loads/runs the template corpus at most once per host, not once per (host, builtin-capability-leaf) pair — done 2026-09-05 (see Step 6 Done note), unit-verified; a specific-template leaf still loads it for its own `id:` match
 - [x] **(Step 6d)** `loadTemplates` skips non-template `.yml` files and emits one bucketed rejection summary by default (full per-file list behind `--verbose`/`--log-rejected`); by-design refusals log below `warn` — done 2026-09-05 (see Step 6 Done note), unit-verified + eyeballed against a synthetic mixed-rejection corpus
 - [x] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean — confirmed 2026-09-05 (also `go test -tags integration ./tests/integration/...`)
-- [ ] `v0.6.0` tagged and released, or explicitly held with a stated reason — **ready to tag** as of 2026-09-06: the live verification runbook ran green, and every other DoD line above is now `[x]` or a recorded design decision. Cleared 2026-09-06: the last open DoD line (live LLM template draft) is done; Open Issues #1 (removed — no local tier), #2 (was already fixed by P2-3), #3 (fixed by LT-28) closed; #6 (duplicate findings) moved to Phase 7 Step 3; crAPI credentialed round trip moved to Phase 7 Step 7. Bugs found and fixed across the runbook + follow-up passes: I4 standing parallel-path in `resolveFieldSuggestions` (LT-24), I4 read-timeout (LT-25), `--narrow-by-tech` not narrowing on a rich stack (LT-26, two landings). Held now only pending the tag decision itself.
+- [x] `v0.6.0` tagged and released — **tagged 2026-09-06** (annotated tag `v0.6.0` on `main`, fast-forwarded from `lt13-16-live-testing-fixes` @ `fb81837`, pushed to origin). Every DoD line above is `[x]` or a recorded design decision. Cleared 2026-09-06: the last open DoD line (live LLM template draft) done; Open Issues #1 (removed — no local tier), #2 (already fixed by P2-3), #3 (fixed by LT-28) closed; #6 (duplicate findings) moved to Phase 7 Step 3; crAPI credentialed round trip moved to Phase 7 Step 7. Bugs found and fixed across the runbook + follow-up passes: I4 standing parallel-path in `resolveFieldSuggestions` (LT-24), I4 read-timeout (LT-25), `--narrow-by-tech` not narrowing on a rich stack (LT-26, two landings).
 
 ## See also
 - [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon package, `Finding`-schema freeze, `PlanTree` foundations, and the decision engine/registry (R7-R9, Group I1-I3) this phase's `tools.search`/`templates.search`/tiered-fallback work builds directly on; Step 7 specifically is I4's second caller (recon-derived field-suggestion misses), per this doc's Objective/Step 2 addendum
