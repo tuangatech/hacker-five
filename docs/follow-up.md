@@ -139,7 +139,7 @@ First end-to-end pipeline run (`recon --recon-depth full` → `plan --recon-dept
 ### Disposition (2026-09-07) — bucketed after review
 
 **Demo batch** — land on a branch off `main` before the demo. Acceptance is not "unit tests green": a re-run `recon → plan` against the demo target must show the ~21-leaf tree collapse to the few real leaves, logged the same way this run was.
-- LT-30 (**folds in LT-30b** as its schema prerequisite — the canary check needs `EndpointFact.BodyLen`/`ContentType`; treat `BodyLen==0 && ContentType==""` as "unknown, don't filter"), LT-31, LT-32, LT-33, LT-34, LT-36 (auto-load the header from an engagement-dir file, not a flag the operator must remember), LT-37 (see cost-logging note in the item), LT-45, LT-46.
+- LT-30 (**folds in LT-30b** as its schema prerequisite — the canary check needs `EndpointFact.BodyLen`/`ContentType`; treat `BodyLen==0 && ContentType==""` as "unknown, don't filter"), LT-31, LT-32, LT-33, LT-34, LT-36 (auto-load the header from an engagement-dir file, not a flag the operator must remember), LT-37 (also: end-of-run `llm-assist: N calls, $X spent (ceiling $Y)` line, plus a `warn`-level line naming the model when a run exceeds a `$0.02` env-tunable threshold — catches an accidental switch to an expensive `HACKERFIVE_OPENROUTER_MODEL`), LT-45, LT-46.
 - R-c (drop the duplicate `/robots.txt` fetch) rides along in LT-39's file while it's open.
 
 **Post-demo quick batch** — next, still `follow-up.md`-tracked, no design work: LT-35, LT-38, LT-39 (incl. R-c), LT-42, LT-43(1) (gate the `panel` floor tag), LT-47, LT-48.
