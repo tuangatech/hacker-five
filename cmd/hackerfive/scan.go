@@ -154,6 +154,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 					if err := json.Unmarshal(data, &result); err != nil {
 						return fmt.Errorf("parsing --recon-file: %w", err)
 					}
+					// LT-43(1): with a recon result in hand, drop floor tags
+					// whose value depends on an observed surface that isn't
+					// there (misconfig's "panel" against a target with no
+					// admin/login endpoint) — the biggest single chunk of a
+					// misconfig scan's wall-clock on a thin SPA target.
+					floor = registry.DetectorTemplateTagsForRecon(detector, &result)
 					// A missing/unreadable index degrades to floor-only, the
 					// same "missing optional input, warn and continue" posture
 					// pkg/recon/plan's own template-index loading uses.

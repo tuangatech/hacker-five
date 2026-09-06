@@ -638,6 +638,31 @@ func TestDetectorTemplateTags(t *testing.T) {
 	assert.Equal(t, "misconfig", DetectorTemplateTags("misconfig")[0], "must return a fresh copy, not the shared backing slice")
 }
 
+// TestDetectorTemplateTagsForRecon covers LT-43(1): misconfig's "panel" floor
+// tag is gated on recon showing an admin/login/protected surface.
+func TestDetectorTemplateTagsForRecon(t *testing.T) {
+	noAdmin := &recon.ReconResult{Endpoints: []recon.EndpointFact{
+		{URL: "https://spa.test/", StatusCode: 200, Source: "httpx"},
+		{URL: "https://spa.test/static/js/main.js", StatusCode: 200, Source: "katana-crawl"},
+	}}
+	assert.Equal(t, []string{"misconfig", "exposure", "config", "default-login"},
+		DetectorTemplateTagsForRecon("misconfig", noAdmin), "no admin surface → drop panel")
+
+	for _, ep := range []recon.EndpointFact{
+		{URL: "https://app.test/admin/", StatusCode: 200, Source: "katana-crawl"},
+		{URL: "https://app.test/x", StatusCode: 401, Source: "katana-crawl"},
+		{URL: "https://app.test/", StatusCode: 200, Source: "wave3-auth-boundary-heuristic"},
+	} {
+		r := &recon.ReconResult{Endpoints: []recon.EndpointFact{ep}}
+		assert.Contains(t, DetectorTemplateTagsForRecon("misconfig", r), "panel",
+			"admin/login/401 surface (%s / %d / %s) → keep panel", ep.URL, ep.StatusCode, ep.Source)
+	}
+
+	// nil result and non-misconfig detectors are untouched.
+	assert.Equal(t, DetectorTemplateTags("misconfig"), DetectorTemplateTagsForRecon("misconfig", nil))
+	assert.Equal(t, DetectorTemplateTags("authbypass"), DetectorTemplateTagsForRecon("authbypass", noAdmin))
+}
+
 func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {
 	index := []templatesync.Entry{
 		{ID: "wordpress-panel", Name: "WordPress Login Panel", Tags: []string{"wordpress", "panel"}, Severity: "info"},

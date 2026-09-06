@@ -488,6 +488,54 @@ func DetectorTemplateTags(detector string) []string {
 	return out
 }
 
+// adminSurfaceHintPaths are lowercase URL substrings whose presence in a
+// recon EndpointFact means an admin/login/management surface is plausibly
+// reachable — the gate LT-43(1) (docs/follow-up.md) puts in front of
+// misconfig's "panel" category-floor tag.
+var adminSurfaceHintPaths = []string{
+	"admin", "login", "signin", "sign-in", "dashboard", "console",
+	"manage", "portal", "wp-admin", "/auth", "account",
+}
+
+// DetectorTemplateTagsForRecon is DetectorTemplateTags with the floor tags
+// that only pay off against a specific observed surface gated on that
+// surface actually appearing in result. Today the only such tag is
+// misconfig's "panel" — ~1,591 templates of admin-panel / console / device
+// login-page detection that are pure noise (and wall-clock) against a target
+// with no such surface, e.g. a public marketing SPA. It is kept only when
+// recon saw an auth-boundary endpoint, a 401/403, or an admin/login-shaped
+// path. result may be nil — then this behaves exactly like
+// DetectorTemplateTags (every tag kept), so a caller with no recon input is
+// unchanged. --all-templates still bypasses all narrowing.
+func DetectorTemplateTagsForRecon(detector string, result *recon.ReconResult) []string {
+	floor := DetectorTemplateTags(detector)
+	if detector != "misconfig" || result == nil || reconShowsAdminSurface(result) {
+		return floor
+	}
+	out := floor[:0]
+	for _, t := range floor {
+		if t != "panel" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func reconShowsAdminSurface(result *recon.ReconResult) bool {
+	for _, ep := range result.Endpoints {
+		if ep.Source == "wave3-auth-boundary-heuristic" || ep.StatusCode == 401 || ep.StatusCode == 403 {
+			return true
+		}
+		lower := strings.ToLower(ep.URL)
+		for _, hint := range adminSurfaceHintPaths {
+			if strings.Contains(lower, hint) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // genericCorpusWideTags are tags carried by such a broad, product-agnostic
 // slice of the corpus that letting one into a TechStackTags allowlist
 // defeats the narrowing — every edb/cve/disclosure-tagged template would
