@@ -232,6 +232,16 @@ var nonActionableTech = map[string]bool{
 	"hostinger cdn":          true,
 	"google cloud":           true,
 	"google cloud cdn":       true,
+	// LT-31 (docs/follow-up.md, 2026-09-06 Meesho sweep): a bare object-store
+	// / CDN brand names no scannable product surface of its own the way an
+	// installed application does — left in, "Google Cloud Storage" alone
+	// matched 8 NAS/storage-appliance template leaves (ibm-storage-default-
+	// login, seaweedfs-unauth, asustor-adm-panel, …) purely via its generic
+	// "storage" word. Deeper per-provider bucket-exposure fingerprinting is
+	// still Phase 8 Step 3.
+	"google cloud storage": true,
+	"amazon s3":            true,
+	"amazon cloudfront":    true,
 	// LT-10 (docs/follow-up.md, 2026-09-04): a client-side analytics tag
 	// (Google Analytics / GA / gtag.js) names no scannable server surface of
 	// its own — left in, it matched 3 keyword-collision templates
@@ -299,6 +309,7 @@ var genericTechWords = map[string]bool{
 	"cloud": true, "cdn": true, "proxy": true, "gateway": true, "api": true,
 	"app": true, "application": true, "core": true, "plugin": true, "theme": true,
 	"module": true, "extension": true, "addon": true, "block": true, "editor": true,
+	"storage": true, // LT-31: "storage" alone is not a product — see nonActionableTech's "google cloud storage" entry
 	"cache": true, "caching": true, "js": true, "ui": true, "cms": true,
 	"framework": true, "platform": true, "service": true, "manager": true,
 	"management": true, "console": true, "dashboard": true, "portal": true,
@@ -899,6 +910,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 		}
 		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf, leafContexts)
 		resolveHostnameHints(host, templateIndex, &leafIdx, addLeaf)
+		resolveLiveHostBaseline(host, result.Endpoints, &leafIdx, addLeaf)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
 		}
@@ -1197,6 +1209,49 @@ func resolveHostnameHints(host string, templateIndex []templatesync.Entry, leafI
 		*leafIdx++
 		addLeaf(leaf, pendingDedupKey(host, entry.ID))
 	}
+}
+
+// liveBaselineEndpointSources are the EndpointFact.Source values that mean
+// "recon issued its own HTTP request to this host and it answered" — as
+// opposed to katana-crawl (a link seen in a page, the host itself maybe
+// never directly probed) or a wave0 policy-file fact. Only a directly
+// confirmed live HTTP response justifies resolveLiveHostBaseline's leaf.
+var liveBaselineEndpointSources = map[string]bool{
+	"httpx":                         true,
+	"wave3-common-path-probe":       true,
+	"wave3-auth-boundary-heuristic": true,
+}
+
+// resolveLiveHostBaseline emits one ConfidenceLow misconfig leaf for a host
+// recon directly confirmed serving HTTP that produced no misconfig leaf any
+// other way (LT-32, docs/follow-up.md). misconfig's own registry entry
+// calls it "the broadest, lowest-risk, first detector to run against
+// something new" — yet a WAF/SPA/thin-fingerprint host (i.e. most of a
+// modern bug-bounty scope) whose only tech facts are all nonActionableTech
+// got zero baseline header/CORS/exposed-path dispatch. Routed through
+// addLeaf with pendingDedupKey so a real TechFact/APISpec/endpoint-driven
+// misconfig leaf already on this host always wins and this never doubles it.
+func resolveLiveHostBaseline(host string, endpoints []recon.EndpointFact, leafIdx *int, addLeaf func(*agenttask.PlanNode, string)) {
+	live := false
+	for _, ep := range endpointsForHost(host, endpoints) {
+		if ep.StatusCode >= 200 && ep.StatusCode < 400 && liveBaselineEndpointSources[ep.Source] {
+			live = true
+			break
+		}
+	}
+	if !live {
+		return
+	}
+	leaf := &agenttask.PlanNode{
+		ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+		Target:     host,
+		Detector:   "misconfig",
+		Rationale:  "recon confirmed a live HTTP response on this host but no tech/endpoint/spec signal produced a misconfig leaf — running misconfig's baseline header/CORS/exposed-path checks anyway (LT-32)",
+		Status:     agenttask.StatusPending,
+		Confidence: agenttask.ConfidenceLow,
+	}
+	*leafIdx++
+	addLeaf(leaf, pendingDedupKey(host, "misconfig"))
 }
 
 // resolveAPISpecFact dispatches result.APISpec — recorded at most once per

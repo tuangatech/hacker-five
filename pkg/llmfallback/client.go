@@ -271,6 +271,18 @@ func (c *Client) complete(ctx context.Context, t tier, system, user string) (tex
 	return cr.Choices[0].Message.Content, costUSD, nil
 }
 
+// ModelLabel names the model a call would actually use right now: the
+// OpenRouter model when the frontier tier is configured (that's the one
+// that costs money and the one an accidental HACKERFIVE_OPENROUTER_MODEL
+// switch would change), otherwise the local model name. For log lines only
+// — LT-37's spend-warning line.
+func (c *Client) ModelLabel() string {
+	if c.openRouterKey != "" {
+		return "openrouter:" + c.openRouterModel
+	}
+	return "local:" + c.localModel
+}
+
 // decodeJSONResponse parses text as JSON into v, tolerating a model
 // wrapping its answer in a markdown code fence despite being asked not to
 // — the single most common real-world deviation from "respond with JSON

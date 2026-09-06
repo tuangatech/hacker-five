@@ -855,6 +855,73 @@ func TestResolve_NonSignalEndpoint_NoExtraLeaf(t *testing.T) {
 	assert.Nil(t, tree.Find("host:example.test"), "an endpoint with no idor/authbypass/ssrf/businesslogic/endpointSignal signal must produce no host node at all")
 }
 
+// TestResolve_LiveHostNonActionableTechOnly_GetsBaselineMisconfigLeaf is
+// LT-32's (docs/follow-up.md) regression guard, mirroring www.valmo.in: a
+// host recon directly confirmed serving HTTP (an "httpx" EndpointFact)
+// whose only tech facts are all nonActionableTech must still get one
+// ConfidenceLow misconfig leaf so misconfig's baseline header/CORS/
+// exposed-path checks run against it.
+func TestResolve_LiveHostNonActionableTechOnly_GetsBaselineMisconfigLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://www.example.test",
+		TechStack: []recon.TechFact{
+			{Name: "Google Cloud", Host: "www.example.test", Source: "httpx-tech-detect", Confidence: "high"},
+			{Name: "HSTS", Host: "www.example.test", Source: "httpx-tech-detect", Confidence: "high"},
+		},
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://www.example.test/", Method: "GET", StatusCode: 200, Source: "httpx", Confidence: "high"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "www.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, leaf, "a live HTTP host with only non-actionable tech must still get a baseline misconfig leaf")
+	assert.Equal(t, agenttask.StatusPending, leaf.Status)
+	assert.Equal(t, agenttask.ConfidenceLow, leaf.Confidence, "a bare 'nothing else fired' baseline leaf is low-confidence")
+}
+
+// TestResolve_BaselineMisconfigLeaf_DedupsAgainstRealMisconfigLeaf confirms
+// LT-32's leaf never doubles a misconfig leaf another pass already produced
+// for the same host.
+func TestResolve_BaselineMisconfigLeaf_DedupsAgainstRealMisconfigLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "PHP", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"}},
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/", Method: "GET", StatusCode: 200, Source: "httpx", Confidence: "high"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	misconfigLeaves := 0
+	for _, l := range tree.Find("host:example.test").Children {
+		if l.Detector == "misconfig" {
+			misconfigLeaves++
+		}
+	}
+	assert.Equal(t, 1, misconfigLeaves, "the PHP-driven misconfig leaf and LT-32's baseline leaf must dedup to one")
+}
+
+// TestResolve_KatanaOnlyEndpoint_NoBaselineMisconfigLeaf confirms LT-32
+// keys off a *direct* live probe (httpx / wave3 common-path / auth-boundary)
+// — a katana-crawl link alone (the host maybe never directly hit) is not
+// enough, so the "endpoint with no signal ⇒ no host node" behavior other
+// tests rely on is unchanged for crawl-only facts.
+func TestResolve_KatanaOnlyEndpoint_NoBaselineMisconfigLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/about", Method: "GET", StatusCode: 200, Source: "katana-crawl", Confidence: "medium"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	assert.Nil(t, tree.Find("host:example.test"), "a katana-only endpoint with no vuln-shaped signal must still produce no host node")
+}
+
 func TestResolve_XmlrpcEndpoint_ProducesKnownTemplateLeaf(t *testing.T) {
 	result := &recon.ReconResult{
 		Target: "http://example.test",

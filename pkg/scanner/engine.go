@@ -174,7 +174,12 @@ func roundScanDuration(d time.Duration) time.Duration {
 func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err error) {
 	start := time.Now()
 	defer func() {
-		e.warnf("info", "scan finished in %s (%d target(s), %d finding(s))",
+		// "raw" because this is the engine's internal accumulator, before the
+		// caller's reporter.Dedup pass (which collapses e.g. the LT-6
+		// native+nuclei missing-header pair) — the exported report can carry
+		// fewer. Labeled rather than deduped here to keep pkg/scanner free of
+		// a pkg/reporter dependency (LT-46, docs/follow-up.md).
+		e.warnf("info", "scan finished in %s (%d target(s), %d raw finding(s), pre-dedup)",
 			roundScanDuration(time.Since(start)), len(e.cfg.Targets), len(findings))
 	}()
 

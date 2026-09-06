@@ -17,7 +17,8 @@ func TestRunWave3_SwaggerJSONExposed_SetsAPISpec(t *testing.T) {
 	_, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/swagger.json" {
-			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"openapi":"3.0.0","paths":{"/pets":{"get":{}}}}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -28,7 +29,7 @@ func TestRunWave3_SwaggerJSONExposed_SetsAPISpec(t *testing.T) {
 	result, err := r.Run(context.Background(), srv.URL, DepthFull)
 	require.NoError(t, err)
 
-	require.NotNil(t, result.APISpec, "expected APISpec to be set once /swagger.json returns 200")
+	require.NotNil(t, result.APISpec, "expected APISpec to be set once /swagger.json returns real JSON")
 	assert.Equal(t, "openapi", result.APISpec.Kind)
 	assert.Equal(t, srv.URL+"/swagger.json", result.APISpec.URL)
 
@@ -38,6 +39,8 @@ func TestRunWave3_SwaggerJSONExposed_SetsAPISpec(t *testing.T) {
 	for _, ep := range result.Endpoints {
 		if ep.URL == srv.URL+"/swagger.json" {
 			found = true
+			assert.Equal(t, "application/json", ep.ContentType, "LT-30b: probeCommonPaths must record the observed Content-Type")
+			assert.Positive(t, ep.BodyLen, "LT-30b: probeCommonPaths must record the observed body length")
 		}
 	}
 	assert.True(t, found, "swagger.json must still appear as a plain EndpointFact")
@@ -56,10 +59,48 @@ func TestRunWave3_NoSpecPathReachable_APISpecStaysNil(t *testing.T) {
 	assert.Nil(t, result.APISpec)
 }
 
-func TestRunWave3_MultipleSpecPathsExposed_FirstOneWins(t *testing.T) {
+// TestRunWave3_SpecPathServesHTMLShell_NoAPISpec is LT-30's core regression
+// guard: /swagger.json returns 200 but an HTML SPA shell (not JSON), and a
+// random canary path returns that same shell. The shell is distinct enough
+// from a bare 404 to still be a real endpoint, but it is NOT a machine-
+// readable spec — no APISpecFact.
+func TestRunWave3_SpecPathServesHTMLShell_NoAPISpec(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	const shell = `<!doctype html><html><head><title>App</title></head><body><div id="root"></div></body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(shell)) // every path, including the canary and /swagger.json
+	}))
+	defer srv.Close()
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	assert.Nil(t, result.APISpec, "an HTML shell at /swagger.json is not a reachable API spec")
+	for _, ep := range result.Endpoints {
+		assert.NotEqual(t, "wave3-common-path-probe", ep.Source,
+			"a uniform catch-all must suppress every common-path probe as a soft-404")
+	}
+	sawSuppressWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "uniform SPA/catch-all") {
+			sawSuppressWarning = true
+		}
+	}
+	assert.True(t, sawSuppressWarning, "a suppressed catch-all must leave one visible warning")
+}
+
+func TestRunWave3_MultipleRealSpecPathsExposed_FirstOneWins(t *testing.T) {
 	_, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK) // every commonPaths entry, including both spec paths
+		switch r.URL.Path {
+		case "/swagger.json", "/.well-known/openapi.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"openapi":"3.0.0"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer srv.Close()
 

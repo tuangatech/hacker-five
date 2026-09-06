@@ -170,6 +170,7 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 	httpxArgs := []string{
 		"-silent", "-json", "-status-code", "-title", "-web-server", "-tech-detect", "-follow-redirects",
 		"-favicon", "-irr", // R7: response headers/body + favicon hash, for pkg/fingerprint's signature matching
+		"-cl", "-ct", // LT-30b: content-length + content-type into the JSON, so an EndpointFact carries response shape a soft-404/catch-all check can use
 		"-rl", itoa(r.rateLimit), "-threads", itoa(r.concurrency),
 	}
 	httpxArgs = append(httpxArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every probe
@@ -193,14 +194,17 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 			continue
 		}
 		var rec struct {
-			URL        string            `json:"url"`
-			Host       string            `json:"host"`
-			HostIP     string            `json:"host_ip"`
-			StatusCode int               `json:"status_code"`
-			Tech       []string          `json:"tech"`
-			Header     map[string]string `json:"header"`
-			Body       string            `json:"body"`
-			Favicon    string            `json:"favicon"`
+			URL           string            `json:"url"`
+			Host          string            `json:"host"`
+			HostIP        string            `json:"host_ip"`
+			StatusCode    int               `json:"status_code"`
+			ContentLength int               `json:"content_length"`
+			ContentType   string            `json:"content_type"`
+			Title         string            `json:"title"`
+			Tech          []string          `json:"tech"`
+			Header        map[string]string `json:"header"`
+			Body          string            `json:"body"`
+			Favicon       string            `json:"favicon"`
 		}
 		if err := json.Unmarshal(line, &rec); err != nil || rec.URL == "" {
 			continue
@@ -217,7 +221,11 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 			body:     rec.Body,
 			favicon:  rec.Favicon,
 		})
-		agg.addEndpoint(EndpointFact{URL: rec.URL, Method: "GET", StatusCode: rec.StatusCode, Source: "httpx", Confidence: ConfidenceHigh})
+		agg.addEndpoint(EndpointFact{
+			URL: rec.URL, Method: "GET", StatusCode: rec.StatusCode,
+			BodyLen: rec.ContentLength, ContentType: rec.ContentType, Title: rec.Title,
+			Source: "httpx", Confidence: ConfidenceHigh,
+		})
 		for _, tech := range rec.Tech {
 			agg.addTech(TechFact{Name: tech, Host: host, Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
 		}
