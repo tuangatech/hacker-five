@@ -35,6 +35,30 @@ func TestNew_DomainsAndCIDRs(t *testing.T) {
 	}
 }
 
+func TestHasWildcard(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []string
+		want    bool
+	}{
+		{"exact hosts only", []string{"a.example.com", "b.example.com"}, false},
+		{"has a *. entry", []string{"a.example.com", "*.example.org"}, true},
+		{"has a CIDR entry", []string{"a.example.com", "10.0.0.0/8"}, true},
+		{"empty", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, err := New(c.entries)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := s.HasWildcard(); got != c.want {
+				t.Errorf("HasWildcard() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestNew_EmptyEntries_DeniesEverything(t *testing.T) {
 	s, err := New(nil)
 	if err != nil {

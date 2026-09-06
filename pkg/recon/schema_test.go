@@ -59,7 +59,10 @@ func TestReconResult_SchemaRoundTrip(t *testing.T) {
 	_, fake := recordingRun(t, responses)
 
 	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
-	scopeContent := targetHost + "\n" // sibling.example.com/evil.other.net/san.example.com deliberately excluded
+	// The "*." marker entry keeps Wave 1 subdomain enumeration on (LT-35 skips
+	// it for an exact-host-only scope); it matches none of the synthetic hosts,
+	// so sibling.example.com/evil.other.net/san.example.com stay out of scope.
+	scopeContent := targetHost + "\n*.enum-marker.test\n"
 	require.NoError(t, os.WriteFile(scopeFile, []byte(scopeContent), 0o644))
 	s, err := scope.Parse(scopeFile)
 	require.NoError(t, err)

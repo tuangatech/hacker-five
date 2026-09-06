@@ -24,6 +24,22 @@ func (e *errBinaryMissing) Error() string {
 	return fmt.Sprintf("%s: binary not found on PATH", e.name)
 }
 
+// errWaveTimeout marks a wave binary that was killed by its per-wave context
+// deadline (waveTimeout) rather than exiting on its own. defaultRun still
+// returns the stdout captured up to the kill alongside this error, so a
+// caller logs "results may be partial" and parses what it got instead of
+// silently treating a truncated run as "found nothing" (docs/follow-up.md
+// LT-38: runNaabu's top-100-port scan across every in-scope host routinely
+// hits the 60s cap past ~6 hosts, and the partial port list was used with no
+// visible trace it had been cut off).
+type errWaveTimeout struct {
+	name string
+}
+
+func (e *errWaveTimeout) Error() string {
+	return fmt.Sprintf("%s: hit the %s wave time cap — results may be partial", e.name, waveTimeout)
+}
+
 // runFunc executes name with args and returns its stdout. stdin, if
 // non-empty, is piped to the process — several ProjectDiscovery tools
 // accept a target list via "-l -" (read stdin) rather than one argument per
@@ -69,6 +85,14 @@ func defaultRun(ctx context.Context, stdin string, name string, args ...string) 
 	}
 	out, err := cmd.Output()
 	if err != nil {
+		// A per-wave deadline (waveTimeout) SIGKILLs the process; its stdout
+		// so far is still worth returning, but flagged as errWaveTimeout so a
+		// caller doesn't read a truncated run as an empty result set (LT-38).
+		// Checked before the ExitError branch — a killed process also surfaces
+		// as an *exec.ExitError.
+		if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return out, &errWaveTimeout{name: name}
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return out, nil
@@ -82,4 +106,11 @@ func defaultRun(ctx context.Context, stdin string, name string, args ...string) 
 func isBinaryMissing(err error) bool {
 	var missing *errBinaryMissing
 	return errors.As(err, &missing)
+}
+
+// isWaveTimeout reports whether err is (or wraps) errWaveTimeout — a wave
+// binary the per-wave deadline killed, whose partial stdout is still usable.
+func isWaveTimeout(err error) bool {
+	var timeout *errWaveTimeout
+	return errors.As(err, &timeout)
 }

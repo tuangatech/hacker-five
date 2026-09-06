@@ -13,11 +13,12 @@ import (
 // commonPaths are probed directly (via r.client, not katana) to map the
 // shape of the app — distinct from misconfig's exposed-path checks, which
 // look for bad *exposure* (docs/91-research-recon-phase.md §3, Wave 3).
-// /robots.txt is deliberately absent: Wave 0 already fetches it once (see
-// passive.go's fetchPolicySignals) and a second GET here only produced a
-// duplicate EndpointFact (docs/follow-up.md R-c).
+// /robots.txt and /sitemap.xml are deliberately absent: Wave 0 already
+// fetches both once (see passive.go — robots.txt for the policy signal,
+// sitemap.xml parsed for <loc> hints in LT-39) and a second GET here only
+// produced a duplicate EndpointFact (docs/follow-up.md R-c, LT-39).
 var commonPaths = []string{
-	"/api", "/graphql", "/swagger.json", "/.well-known/openapi.json", "/sitemap.xml",
+	"/api", "/graphql", "/swagger.json", "/.well-known/openapi.json",
 }
 
 // reconCanaryPath is a path guaranteed not to be a real resource on any
@@ -149,13 +150,19 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	}
 	katanaArgs = append(katanaArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every crawl request
 	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana", katanaArgs...)
-	if err != nil {
+	if err != nil && !isWaveTimeout(err) {
 		if isBinaryMissing(err) {
 			agg.addWarning("wave3: %v — crawl skipped", err)
 		} else {
 			agg.addWarning("wave3: katana: %v", err)
 		}
 		return
+	}
+	if isWaveTimeout(err) {
+		// katana has no depth/rate visibility and a silent internal cap; a
+		// wave-timeout kill means the crawl was still in progress. Whatever it
+		// streamed is parsed below, but it's a partial map (LT-38).
+		agg.addWarning("wave3: katana: %v (crawl did not run to completion)", err)
 	}
 
 	seedHosts := make(map[string]bool, len(seeds))
@@ -190,6 +197,17 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 				agg.addOutOfScope(host)
 			}
 			continue // not a confirmed endpoint — katana didn't actually fetch it
+		}
+		// LT-52 (docs/follow-up.md): katana's default "-fs rdn" scope keeps it
+		// on the seed's root domain, but a cross-host link it actually fetched
+		// (a CDN/asset host referenced by the page — e.g. images.meesho.com off
+		// superstoreapp.meesho.com) still lands here with no rec.Error. Keep it
+		// only when its host is a seed or explicitly in --scope; otherwise it's
+		// an out-of-scope host that happened to answer, recorded in OutOfScope
+		// like the rec.Error case above, never in Endpoints.
+		if !seedHosts[host] && r.scope != nil && !r.scope.Allowed("https://"+host) {
+			agg.addOutOfScope(host)
+			continue
 		}
 		if looksLikeEscapedJSArtifact(rec.Request.Endpoint) {
 			continue // see looksLikeEscapedJSArtifact's own doc comment
