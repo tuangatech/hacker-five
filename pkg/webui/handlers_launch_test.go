@@ -31,6 +31,13 @@ func newTestServerHandlers(t *testing.T) (*httptest.Server, *handlers) {
 	tmpHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpHome)
 	t.Setenv("HOME", tmpHome)
+	// PATH="" too, so recon.resolveBinaryPath misses on a dev machine that
+	// has ~/go/bin (real subfinder/httpx/katana/naabu) on PATH — without it
+	// the recon-exercising tests here shell out for real against the local
+	// httptest target and blow their Eventually windows (docs/follow-up.md
+	// LT-28). The pure-Go passive recon path still runs and still produces a
+	// ReconResult; it just skips the external-tool waves.
+	t.Setenv("PATH", "")
 
 	srv, err := New(Options{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)

@@ -39,6 +39,11 @@ func newTestServer(t *testing.T) *httptest.Server {
 	tmpHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpHome)
 	t.Setenv("HOME", tmpHome)
+	// Same reason PATH is cleared: recon.resolveBinaryPath must miss so a dev
+	// machine with ~/go/bin on PATH doesn't turn a local-httptest scan test
+	// into a real shell-out to subfinder/httpx/katana/naabu that overruns the
+	// test's poll window (docs/follow-up.md LT-28). Passive recon still runs.
+	t.Setenv("PATH", "")
 
 	srv, err := New(Options{Host: "127.0.0.1", Port: 0})
 	require.NoError(t, err)

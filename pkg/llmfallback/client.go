@@ -37,14 +37,17 @@ const (
 	// that changes on its own schedule.
 	defaultOpenRouterModel = "openrouter/auto"
 
-	// requestTimeout must cover the slowest real call this client makes:
-	// ResolveLeaf's draft-template authoring call generates a full YAML
-	// template plus (for reasoning-capable models) hidden reasoning tokens,
-	// and was observed live to exceed 60s and time out mid-response-body-
-	// read against a real OpenRouter model — classification/triage/field
-	// calls finish in a few seconds, so this ceiling is sized for the
-	// outlier, not the common case.
-	requestTimeout = 180 * time.Second
+	// requestTimeout must cover the slowest real call this client makes.
+	// Two calls dominate: ResolveLeaf's draft-template authoring call (a
+	// full YAML template plus, for reasoning-capable models, hidden
+	// reasoning tokens — observed live to exceed 60s), and PlanFromRecon's
+	// recon-wide proposal call (the whole summarized recon output in, a
+	// reasoning model's multi-leaf proposal list out — observed live against
+	// a real OpenRouter model to time out mid-response-body-read even at
+	// 180s, docs/follow-up.md LT-25). Classification/triage/field calls
+	// finish in a few seconds, so this single shared ceiling is sized for
+	// those two outliers, not the common case.
+	requestTimeout = 240 * time.Second
 )
 
 // ErrNoTierAvailable is returned when neither a local runtime nor

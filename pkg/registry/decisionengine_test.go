@@ -576,7 +576,7 @@ func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {
 
 	got := TechStackTags(techStack, index)
 
-	assert.ElementsMatch(t, []string{"wordpress", "panel", "nginx", "cve"}, got, "must union both relevant entries' tags, not just the first tech's")
+	assert.ElementsMatch(t, []string{"wordpress", "panel", "nginx"}, got, "must union both relevant entries' product tags, not just the first tech's — the corpus-wide \"cve\" meta tag is dropped (LT-26)")
 }
 
 // TestTechStackTags_FalseFriendExclusionApplies confirms canonicalTechTags'
@@ -591,7 +591,30 @@ func TestTechStackTags_FalseFriendExclusionApplies(t *testing.T) {
 	}
 	got := TechStackTags([]recon.TechFact{{Name: "Nginx", Host: "example.com"}}, index)
 
-	assert.ElementsMatch(t, []string{"nginx", "cve"}, got, "the Ingress-Nginx-Controller entry must never have contributed its \"ingress\"/\"kubernetes\"/\"k8s\" tags to the allowlist")
+	assert.ElementsMatch(t, []string{"nginx"}, got, "the Ingress-Nginx-Controller entry must never have contributed its \"ingress\"/\"kubernetes\"/\"k8s\" tags to the allowlist; the corpus-wide \"cve\" meta tag is dropped too (LT-26)")
+}
+
+// TestTechStackTags_DropsCorpusWideMetaTags is LT-26 (docs/follow-up.md): a
+// legitimately-matched entry still contributes only its product-identifying
+// tags — its provenance / issue-category / request-part tags (edb, cve,
+// cve2021, disclosure, exposure, tokens, header) are corpus-wide and would
+// collapse the narrowing if unioned in.
+func TestTechStackTags_DropsCorpusWideMetaTags(t *testing.T) {
+	index := []templatesync.Entry{
+		{
+			ID:       "CVE-2021-0001",
+			Name:     "Amazon S3 Bucket Takeover",
+			Tags:     []string{"amazon", "s3", "aws", "cve", "cve2021", "edb", "disclosure", "exposure", "tokens", "header"},
+			Severity: "high",
+		},
+	}
+	got := TechStackTags([]recon.TechFact{{Name: "Amazon S3", Host: "example.com"}}, index)
+
+	assert.ElementsMatch(t, []string{"amazon", "s3", "aws"}, got,
+		"only the product tags survive; every corpus-wide meta tag (edb/cve/cve2021/disclosure/exposure/tokens/header) is dropped")
+	for _, meta := range []string{"cve", "cve2021", "edb", "disclosure", "exposure", "tokens", "header"} {
+		assert.NotContains(t, got, meta)
+	}
 }
 
 // TestTechStackTags_DedupsRepeatedTechAcrossHosts confirms the same tech

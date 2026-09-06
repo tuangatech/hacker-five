@@ -443,6 +443,48 @@ func DetectorTemplateTags(detector string) []string {
 	return out
 }
 
+// genericCorpusWideTags are tags carried by such a broad, product-agnostic
+// slice of the corpus that unioning them into a TechStackTags allowlist
+// defeats the narrowing: one legitimate "Amazon S3" CVE match drags in
+// every edb/cve/disclosure-tagged template regardless of tech
+// (docs/follow-up.md LT-26 — aalberts.com narrowed to 18 tags including
+// edb/vuln/tokens/header/disclosure, and 8,446 of 9,476 templates still
+// loaded, ~11% cut). None of these names a product; they mark provenance
+// (where a template was sourced), issue category, or which part of the
+// exchange it inspects. Stripping them from the *tech-derived* half of the
+// allowlist is safe precisely because the per-detector category floor
+// (DetectorTemplateTags, unioned in by every caller) already guarantees
+// the generic .env / header / CORS / exposure / default-login families on
+// its own — this only stops a generic cloud/CDN fact from re-widening the
+// scope back to the whole corpus. A template that reached TechStackTags'
+// union loop already matched on a product tag or a non-generic word, so
+// its product identity is never what's being dropped here.
+var genericCorpusWideTags = map[string]bool{
+	// provenance
+	"edb": true, "packetstorm": true, "seclists": true, "hackerone": true, "pentesterlab": true,
+	// issue category
+	"cve": true, "cves": true, "vuln": true, "vulnerability": true,
+	"disclosure": true, "exposure": true, "exposures": true,
+	"misconfig": true, "misconfiguration": true, "generic": true,
+	// data-type / request-part
+	"tokens": true, "token": true, "secret": true, "secrets": true,
+	"header": true, "headers": true,
+	// transport
+	"network": true,
+}
+
+// isCVEYearTag reports whether t is a bare "cveNNNN" year-bucket tag —
+// nuclei tags a CVE template with both "cve" and e.g. "cve2021", and the
+// year bucket is just as corpus-wide as the bare "cve" tag.
+func isCVEYearTag(t string) bool {
+	const p = "cve"
+	if !strings.HasPrefix(t, p) {
+		return false
+	}
+	rest := t[len(p):]
+	return len(rest) == 4 && isAllDigits(rest)
+}
+
 // TechStackTags returns the union of Tags from every templateIndex entry
 // matchTemplateTags ranks as relevant to at least one fact in techStack —
 // the tag allowlist scanner.Engine.loadTemplates' Config.Tags narrowing
@@ -458,10 +500,14 @@ func DetectorTemplateTags(detector string) []string {
 // set per tech, not how many templates the resulting tags let back in —
 // once a tag like "wordpress" is in the returned set, every WordPress-
 // tagged template in the corpus matches it, not just the top few
-// matchTemplateTags picked for fact.Name specifically. Returns nil when
-// techStack or templateIndex is empty, or when nothing in techStack ties
-// to any template tag — scanner.Engine's documented fallback for either
-// case is running the full, unnarrowed corpus, never zero templates.
+// matchTemplateTags picked for fact.Name specifically. A matched entry's
+// corpus-wide meta tags (genericCorpusWideTags — edb/cve/disclosure/…) are
+// dropped from the union: they identify no product and would re-widen the
+// scope to most of the corpus off a single generic cloud/CDN fact (LT-26).
+// Returns nil when techStack or templateIndex is empty, or when nothing in
+// techStack ties to any product-identifying template tag — scanner.Engine's
+// documented fallback for either case is running the full, unnarrowed
+// corpus, never zero templates.
 func TechStackTags(techStack []recon.TechFact, templateIndex []templatesync.Entry) []string {
 	if len(techStack) == 0 || len(templateIndex) == 0 {
 		return nil
@@ -476,9 +522,11 @@ func TechStackTags(techStack []recon.TechFact, templateIndex []templatesync.Entr
 		seen[normalized] = true
 		for _, entry := range matchTemplateTags(fact.Name, templateIndex) {
 			for _, tag := range entry.Tags {
-				if t := strings.ToLower(strings.TrimSpace(tag)); t != "" {
-					tagSet[t] = true
+				t := strings.ToLower(strings.TrimSpace(tag))
+				if t == "" || genericCorpusWideTags[t] || isCVEYearTag(t) {
+					continue // corpus-wide meta tag — keeps narrowing from collapsing (LT-26)
 				}
+				tagSet[t] = true
 			}
 		}
 	}
