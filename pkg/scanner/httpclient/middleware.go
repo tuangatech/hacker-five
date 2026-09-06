@@ -4,10 +4,19 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
 )
+
+// retryAfterCeiling caps how long a server's Retry-After header can push a
+// retry back. A 429/503 asking for a longer cooldown than this is returned to
+// the caller as the answer rather than stalling a scan worker for minutes —
+// an unattended run should back off and fail cleanly, not grind (doc15 Step 3,
+// docs/follow-up.md).
+const retryAfterCeiling = 30 * time.Second
 
 // Middleware decorates a RoundTripper. Proxy support is not a middleware —
 // it's set directly on the underlying http.Transport.Proxy in New.
@@ -75,6 +84,12 @@ func WithRateLimit(limiter *ratelimit.Limiter) Middleware {
 // maxAttempts, with exponential backoff (capped at 2*backoff) plus up to
 // ±20% jitter to avoid a thundering-herd retry pattern.
 //
+// A 429/503 carrying a Retry-After header (delta-seconds or HTTP-date form)
+// overrides that computed delay: the wait becomes max(computed, Retry-After)
+// so a server's stated cooldown is never undershot — no negative jitter is
+// applied to it. A Retry-After beyond retryAfterCeiling is treated as "give
+// up": the response is returned as the answer instead of blocking a worker.
+//
 // A 401/403/404 (or any other non-retried 4xx) is a real answer, not a
 // transient failure — retrying it would corrupt IDOR baseline sampling, where
 // a flaky retry could turn a clean "denied" signature into a mixed one.
@@ -96,19 +111,55 @@ func WithRetry(maxAttempts int, backoff time.Duration) Middleware {
 				if !shouldRetry(resp, err) || attempt == maxAttempts {
 					return resp, err
 				}
+
+				delay := retryDelay(attempt, backoff)
 				if resp != nil {
+					if wait, ok := parseRetryAfter(resp, time.Now()); ok {
+						if wait > retryAfterCeiling {
+							// Longer than an unattended run should stall for —
+							// hand the 429/503 back as the answer.
+							return resp, err
+						}
+						if wait > delay {
+							delay = wait
+						}
+					}
 					_ = resp.Body.Close()
 				}
 
 				select {
 				case <-req.Context().Done():
 					return nil, req.Context().Err()
-				case <-time.After(retryDelay(attempt, backoff)):
+				case <-time.After(delay):
 				}
 			}
 			return resp, err
 		})
 	}
+}
+
+// parseRetryAfter reads an RFC 9110 Retry-After header off resp — either
+// delta-seconds ("120") or an HTTP-date — and returns how long to wait
+// relative to now. ok is false when the header is absent or unparseable (a
+// negative delta or a past date clamps to zero, still ok).
+func parseRetryAfter(resp *http.Response, now time.Time) (wait time.Duration, ok bool) {
+	v := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0, true
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d, true
+		}
+		return 0, true
+	}
+	return 0, false
 }
 
 func shouldRetry(resp *http.Response, err error) bool {

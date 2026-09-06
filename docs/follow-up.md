@@ -12,8 +12,8 @@ Resolved, kept for traceability:
 - ✅ **`--rate-limit` default lowered 50 → 10 req/sec (2026-09-05).** `cmd/hackerfive/scan.go` flag default, `pkg/recon.DefaultRateLimit`, `pkg/{webui,mcpserver}` mirrored constants; README + doc21 updated. `tests/integration/perf_test.go` keeps `RateLimit: 50` pinned (measures engine overhead, not default wall-clock).
 - ✅ **interactsh_ OOB traffic footprint — idle-skip added 2026-09-05.** `Poller.run` (`pkg/oob/poller.go`) skips the `Poll()` network call on a tick when no caller is in `Wait`, bounding sustained traffic to a configured OOB server to the windows a probe is genuinely mid-flight. The bigger deferred-bulk-correlation change (doc15 Step 2's logged OOB tradeoff) is still open.
 
-Scheduled:
-- `Retry-After`-aware backoff in the scan HTTP client (`pkg/scanner/httpclient`'s `WithRetry` uses fixed exponential backoff, ignoring a `429`/`503` `Retry-After` header — staying inside a program's stated limits is otherwise on the operator) → [Phase 6](15-implementation-plan-ph6.md) Step 3.
+Resolved:
+- ✅ **`Retry-After`-aware backoff in the scan HTTP client** — done 2026-09-05, [Phase 6](15-implementation-plan-ph6.md) Step 3. `WithRetry` now parses both `Retry-After` forms (delta-seconds, HTTP-date); the retry wait is `max(exponential, Retry-After)` with no negative jitter on the server value; a `Retry-After` beyond a 30s ceiling returns the `429`/`503` as the answer instead of stalling a worker.
 
 (Baseline-mode account provisioning guidance and a self-hosted `interactsh-server` moved to **[Parked](#parked--revisit-on-a-trigger-or-after-an-eval)** below — both engagement-triggered, not code work.)
 
