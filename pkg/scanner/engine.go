@@ -150,6 +150,22 @@ func New(cfg Config) *Engine {
 	return &Engine{cfg: cfg, client: client}
 }
 
+// roundScanDuration trims the scan-completion duration to a precision that
+// matches its magnitude: a real corpus scan runs for many minutes, where the
+// millisecond tail ("18m25.522s") is just noise, so anything past 10 minutes
+// rounds to the whole minute. Sub-minute scans (unit tests, tiny targets) keep
+// second — then 100ms — resolution so the line stays useful there too.
+func roundScanDuration(d time.Duration) time.Duration {
+	switch {
+	case d >= 10*time.Minute:
+		return d.Round(time.Minute)
+	case d >= time.Minute:
+		return d.Round(time.Second)
+	default:
+		return d.Round(100 * time.Millisecond)
+	}
+}
+
 // Run executes the scan and returns every finding across all targets.
 //
 // Unrecognized Detector values are already rejected by Config.Validate()
@@ -159,7 +175,7 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 	start := time.Now()
 	defer func() {
 		e.warnf("info", "scan finished in %s (%d target(s), %d finding(s))",
-			time.Since(start).Round(time.Millisecond), len(e.cfg.Targets), len(findings))
+			roundScanDuration(time.Since(start)), len(e.cfg.Targets), len(findings))
 	}()
 
 	threshold := e.cfg.HostErrorThreshold
