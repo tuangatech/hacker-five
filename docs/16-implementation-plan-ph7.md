@@ -105,13 +105,17 @@ Live-verified against a real browser: a running agent session's tool calls and r
 
 **D1 — per-detector concurrency ceilings.** Distinct from Phase 4's prompt-injection-specific concurrency guardrail (doc13 Step 1, a stderr warning) — this is a general ceiling the coordinator's `scan` tool calls respect per detector type, so an agent driving many parallel `scan` calls across a session can't collectively exceed a safe aggregate concurrency against one target even if each individual call's `--concurrency` looks reasonable in isolation.
 
+**H4 — cost/attempt-aware stop-and-escalate** (moved here from [Phase 6](15-implementation-plan-ph6.md) Step 3, 2026-09-05 — Phase 6's executor runs each leaf exactly once, so there was no per-leaf retry/grind loop for the rule to gate). By this phase a coordinator loop and the persisted session log (Step 3) exist to measure against. `agenttask.PlanNode` gains per-leaf `Attempts`/`SpendUSD` counters; the I4 resolution path (`pkg/llmfallback`) increments them per model call for a leaf (the one place per-leaf cost actually repeats — deterministic execution is single-shot); a new `StatusEscalated` + a `ShouldEscalate()` rule (MAPTA's finding: rising tool-call count, dollar cost, token count, and elapsed time on one leaf each *independently* correlate with **falling** odds of success — r ≈ −0.6, doc90 §2) surfaces "still grinding, no confidence gain" to the coordinator as a stop signal, not a reason to spend more on the same leaf. Pairs naturally with D1: both bound aggregate cost/effort a session can pour into one target or one leaf.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/webui/templates/scan_status.html` — C4's injection text box + `hx-post` wiring.
 - `pkg/mcpserver/tools_scan.go` (or a session-level tracker) — D1's aggregate concurrency accounting across concurrent `scan` calls in one session.
-- `tests/unit/concurrency_ceiling_test.go`.
+- `pkg/agenttask/plantree.go` — H4's per-leaf `Attempts`/`SpendUSD`, `StatusEscalated`, `ShouldEscalate()`, and the matching `PlanNodePatch` fields.
+- `pkg/llmfallback/` — increments the per-leaf counters and honors a per-leaf spend ceiling, stopping further resolution attempts on an escalated leaf.
+- `tests/unit/concurrency_ceiling_test.go`, `tests/unit/h4_escalation_test.go`.
 
 ### Verification
-Unit test: two concurrent `scan` tool calls in the same session against the same target are throttled to the aggregate ceiling, not each independently allowed full concurrency. C4 live-verified by hand: an injected note visibly changes the coordinator's next action in a real session.
+Unit test: two concurrent `scan` tool calls in the same session against the same target are throttled to the aggregate ceiling, not each independently allowed full concurrency. H4: a leaf that fails to resolve across the attempt/spend ceiling flips to `StatusEscalated` and the resolver stops calling a model for it. C4 live-verified by hand: an injected note visibly changes the coordinator's next action in a real session.
 
 ---
 
@@ -197,6 +201,7 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [ ] SSE `/catchup` replays `#logs`/`#findings` a late/reconnecting client missed, sequence-gated so nothing duplicates (C5 / [follow-up.md](follow-up.md) LT-5)
 - [ ] `findings.export` (and any future report-drafting surface) rejects a draft citing a nonexistent `Finding.ID`
 - [ ] Aggregate per-target concurrency across concurrent `scan` calls in one session is throttled to a stated ceiling
+- [ ] Cost/attempt-aware prioritization (H4, moved from Phase 6 Step 3): a `PlanTree` leaf that repeatedly fails to resolve (rising attempts/spend, no confidence gain) flips to `StatusEscalated` and the resolver stops spending on it, rather than allocating more budget
 - [ ] All ten OWASP Agentic Top 10 risks (D4) are checked against real shipped code (file/line cited) and recorded as mitigated or accepted residual risk with a stated reason
 - [ ] `templates/proposed/` exists, is confirmed never auto-loaded by the default `--templates` path, and requires explicit human promotion
 - [ ] Triage-assist annotations never mutate `Finding.Severity`/`Confidence`
