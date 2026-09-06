@@ -120,7 +120,7 @@ func TestSummarizePlan(t *testing.T) {
 		SpendCeilingUSD: 1.00,
 	}
 
-	msg := summarizePlan(tree, []agenttask.FieldSuggestion{{Detector: "idor", Field: "endpoint_template"}}, []string{"idor.endpoint_template: no candidates found"}, []string{"example.com: no entry in policy.yaml"})
+	msg := summarizePlan(tree, []agenttask.FieldSuggestion{{Detector: "idor", Field: "endpoint_template"}}, []string{"idor.endpoint_template: no candidates found"}, []string{"example.com: no entry in policy.yaml"}, []string{"cdn.vendor.example", "old.example.net"})
 
 	assert.Contains(t, msg, "http://example.com")
 	assert.Contains(t, msg, "2 leaves (1 still unresolved)")
@@ -128,14 +128,62 @@ func TestSummarizePlan(t *testing.T) {
 	assert.Contains(t, msg, "ceiling $1.00")
 	assert.Contains(t, msg, "Escalations: idor.endpoint_template: no candidates found")
 	assert.Contains(t, msg, "Pre-flight: example.com: no entry in policy.yaml")
+	assert.Contains(t, msg, "Out-of-scope hosts recon found (they will NOT be scanned): cdn.vendor.example, old.example.net")
+	assert.Contains(t, msg, "acknowledge_out_of_scope=true")
 	assert.Contains(t, msg, "Approve to execute")
 }
 
-func TestSummarizePlan_NoEscalations_OmitsEscalationsClause(t *testing.T) {
+func TestSummarizePlan_NoEscalations_OmitsOptionalClauses(t *testing.T) {
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Target: "http://example.com"}}
-	msg := summarizePlan(tree, nil, nil, nil)
+	msg := summarizePlan(tree, nil, nil, nil, nil)
 	assert.NotContains(t, msg, "Escalations:")
 	assert.NotContains(t, msg, "Pre-flight:")
+	assert.NotContains(t, msg, "Out-of-scope")
+}
+
+// TestIsPlanApproved_ScopeAck covers B4's extra gate: when the plan's recon
+// found out-of-scope hosts, approve=true alone is not enough — the human must
+// also set acknowledge_out_of_scope=true.
+func TestIsPlanApproved_ScopeAck(t *testing.T) {
+	approveOnly := &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}
+	both := &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_out_of_scope": true}}
+	declined := &mcp.ElicitResult{Action: "decline"}
+
+	assert.True(t, isPlanApproved(approveOnly, false), "no ack required -> approve alone is enough")
+	assert.False(t, isPlanApproved(approveOnly, true), "ack required but not given -> not approved")
+	assert.True(t, isPlanApproved(both, true), "ack required and given -> approved")
+	assert.False(t, isPlanApproved(declined, true))
+	assert.False(t, isPlanApproved(declined, false))
+}
+
+// TestHandlePlanApproval_OutOfScope_RequiresAck drives the round-2 handler
+// with a pendingPlan carrying out-of-scope hosts: approve without the ack
+// leaves the plan unexecuted with an explanatory note; approve WITH the ack
+// proceeds (and, with an empty tree, completes cleanly).
+func TestHandlePlanApproval_OutOfScope_RequiresAck(t *testing.T) {
+	newReq := func(id string) *mcp.CallToolRequest {
+		return &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{RequestState: id}}
+	}
+
+	id := storePendingPlan(&pendingPlan{
+		tree:       &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}},
+		outOfScope: []string{"cdn.vendor.example"},
+	})
+	_, out, err := handlePlanApproval(context.Background(), newReq(id),
+		&mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}})
+	require.NoError(t, err)
+	assert.False(t, out.Approved, "approve without the scope ack must not execute")
+	assert.Contains(t, out.Note, "acknowledge_out_of_scope")
+	assert.Equal(t, []string{"cdn.vendor.example"}, out.OutOfScope)
+
+	id = storePendingPlan(&pendingPlan{
+		tree:       &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}},
+		outOfScope: []string{"cdn.vendor.example"},
+	})
+	_, out, err = handlePlanApproval(context.Background(), newReq(id),
+		&mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_out_of_scope": true}})
+	require.NoError(t, err)
+	assert.True(t, out.Approved, "approve + ack must execute")
 }
 
 func TestBuildBaseExecConfig_ExplicitAuthTokenWins(t *testing.T) {

@@ -20,7 +20,7 @@
 
 1. ✅ **MCP server** (Weeks 41-42) — done 2026-09-02
 2. ✅ **Approval gate + PlanTree executor + spend ceiling** (Week 43 — see this step's note on week pressure, added 2026-08-31) — done 2026-09-02
-3. ⬜ **Hard safety blockers + scope-creep gate** (Weeks 44-45) — cost-aware prioritization (H4) moved to [Phase 7](16-implementation-plan-ph7.md) Step 4 during the 2026-09-05 planning pass (no per-leaf retry loop exists yet for the rule to gate)
+3. ✅ **Hard safety blockers + scope-creep gate** (Weeks 44-45) — cost-aware prioritization (H4) moved to [Phase 7](16-implementation-plan-ph7.md) Step 4 during the 2026-09-05 planning pass (no per-leaf retry loop exists yet for the rule to gate)
 4. 🟡 **Approval UI: make the plan preview actionable** (Week 46) — partially done 2026-09-04
 5. ⬜ **Session log + release** (Weeks 47-48) — `v0.6.0`
 6. ✅ **Scan-execution efficiency: corpus scoping + concurrency + corpus-once-per-host** (added 2026-09-05 from [follow-up.md](follow-up.md) LT-18 and the 2026-09-06 nettix.com.pe review) — done 2026-09-05; gated Step 5's `v0.6.0` release
@@ -256,7 +256,7 @@ Tests: `tests/unit/nuclei_loader_test.go` — `TestNucleiLoadDir_{MultiKeyPayloa
 
 ---
 
-## Step 3: Hard Safety Blockers + Scope-Creep Gate (Weeks 44-45) — ⬜ not yet implemented
+## Step 3: Hard Safety Blockers + Scope-Creep Gate (Weeks 44-45) — ✅ done 2026-09-05 (D2 + B4 + Retry-After; D3 was already shipped in Step 1/P2-6; H4 moved to Phase 7 Step 4)
 
 ### Design
 
@@ -313,6 +313,30 @@ against the compiled CLI: `disallowed` blocks, `--allow-policy-override`
 proceeds with an OVERRIDE line, unknown/allowed warn and proceed.
 
 **Retry-After shipped** — see the dedicated DoD line below.
+
+### Done note — B4, 2026-09-05
+
+**Acknowledgement item (the active part).** When the `plan` tool's recon pass
+populates `ReconResult.OutOfScope`, the elicitation adds a second required field,
+`acknowledge_out_of_scope`, alongside `approve` (one round trip, not a second) —
+`approveWithScopeAckSchema`. The summary message lists the hosts and states they
+will not be scanned. `isPlanApproved` gates execution on both fields; `approve`
+alone with an unmet ack returns unexecuted with an explanatory note.
+`planOutput.OutOfScope` surfaces the list either way. No out-of-scope host was
+ever scannable (`registry.Resolve` only builds in-scope leaves) — this makes the
+human see and confirm what recon turned up.
+
+**`ExecOptions.OnOutOfScope` executor hook (dormant plumbing).** `RunPlan` now,
+before any dispatch, checks every leaf target against `baseCfg.Scope`; if any
+fall outside it and the callback is set, it's called with the distinct hosts and
+a non-nil return halts the run with nothing dispatched. No leaf runs recon today,
+so it only fires on a plan that already carries an out-of-scope leaf (a
+hand-built tree, or an upstream bug) — the named trigger point a future mid-scan
+re-recon leaf will use. `pkg/mcpserver` wires it to halt the tool call with a
+re-plan message; `pkg/webui` to a `warn` job-log line + halt.
+
+Unit-verified (`isPlanApproved` scope-ack matrix, the approval round trip with
+and without the ack, the summary rendering, the `RunPlan` gate firing/silent).
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/preflight/preflight.go` (new) + `pkg/preflight/preflight_test.go` — `Check`, the `policy.yaml` loader, the security.txt/robots.txt warning derivation.
@@ -565,7 +589,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 | 1 | `ResolveLeaf`'s `use_existing_tag` judgment is unreliable with a small (4.3B) local model on a fuzzy-match case, and not perfectly consistent run-to-run at `temperature: 0` even with a capable frontier model. | Revisit before leaning on a single fallback decision for something higher-stakes — try a larger local model, prompt tuning, or majority-vote across >1 call. |
 | 2 | An I4 `use_existing_tag` decision still can't dispatch via item 4's new template-ID path — `buildLeafPrompt` only ever shows the model *tags* (shared across many templates), never per-template IDs, so the decision rarely matches a real `Entry.ID`. Fully fixed for R8's own deterministic matches; not for I4's. | Needs its own design decision: run every template carrying the chosen tag? A second, narrower call to pick one ID? Change the catalog to show IDs instead of tags? |
 | 3 | **Pre-existing, unrelated test failure**: `TestEndToEnd_StartScan_ProducesRealFindings` (`pkg/webui`) fails — confirmed via a clean worktree of the last commit that it fails identically there too, so not caused by any change in this doc. | Investigate separately; not a regression to chase down as part of this phase's own work. |
-| 4 | Not yet live-verified: a real multi-leaf concurrency timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism); Step 3's B4 scope-creep trigger names the executor as its future caller, but that hook doesn't exist in `RunPlan` yet. | Timing check: do alongside Step 5's lab-target round trip. B4 hook: correctly Step 3's job, not a gap in Step 2 itself. |
+| 4 | Not yet live-verified: a real multi-leaf concurrency timing check against a lab target (elapsed time close to the slowest single leaf, confirming genuine parallelism). ~~Step 3's B4 scope-creep trigger names the executor as its future caller, but that hook doesn't exist in `RunPlan` yet.~~ B4's `ExecOptions.OnOutOfScope` hook landed 2026-09-05 (Step 3). | Timing check: do alongside Step 5's lab-target round trip. |
 | 5 | **A scan spends its wall-clock on templates unrelated to the target** ([follow-up.md](follow-up.md) LT-18 + the 2026-09-06 nettix.com.pe review). | **Step 6, all done**: (a) detector-category floor ∪ tech-fact extras, `--narrow-by-tech` default-on — ✅ 2026-09-06; (b) bounded intra-target template fan-out (`--template-concurrency`) — ✅ 2026-09-05, live-verified against aceautowreckers.com (4m40s default-scoped misconfig run); (c) corpus once per host in `RunPlan` — ✅ 2026-09-05; (d) rejected-template log hygiene (compact per-reason histogram by default, full list behind `--verbose`/`--log-rejected`) — ✅ 2026-09-05. |
 | 6 | **Duplicate findings for one underlying fact** ([follow-up.md](follow-up.md) LT-6): a native `misconfig-missing-header-*` finding and the nuclei `http-missing-security-headers` template both fire on the same response — 5 findings for one fact. `reporter.Dedup` is exact-`Finding.ID`-only by deliberate design (see its doc comment: cross-format semantic dedup "deliberately not attempted"). | Needs a real design decision, not a quick fix — a naive topic-level key risks over-suppressing genuinely distinct findings (the nuclei finding is one aggregate row covering *many* headers; the native ones are one-per-header — an N:1 relationship, not "same key twice"). Options: split the nuclei aggregate into per-header sub-facts before dedup; or a `(target, finding-class)` key with `finding-class` derived only for the known missing-header overlap; or accept the duplication as "two detectors agreeing" and only collapse in the report view. Do during Step 5's release-hardening pass, or defer to Phase 7 Step 3's Exporter work — not before the design is settled. |
 | 7 | **SSE `/catchup` doesn't replay `#logs`/`#findings`** ([follow-up.md](follow-up.md) LT-5), only the idempotent progress/recon fragments — a late-connecting or reconnecting client permanently loses everything before connect. `CatchupData`'s doc comment records this as a *deliberate* narrow scope (blind replay would duplicate already-streamed append-list rows). | Needs a monotonic sequence/cursor on `Job`'s log/finding accumulation so catchup can replay only entries after the client's last-seen marker (and a client-side change to report it). Scheduled as a bullet on **Phase 7 Step 3** (Observability Upgrade) — that step reworks the SSE streams anyway. |
@@ -584,7 +608,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 - [x] `pkg/agenttask.PlanTree`/`PlanNode` are confirmed race-free under concurrent `ApplyLeafUpdate` calls (`go test -race`) — done 2026-09-02 (Step 2)
 - [x] A program-policy pre-flight check (D2) hard-blocks an agent-driven run against a target whose disclosure policy disallows automated scanners — done 2026-09-05 (Step 3): `pkg/preflight.Check` against an operator-maintained `policy.yaml`, wired into all six MCP+CLI entry points; hard-fails only on an explicit `automated_scanning: disallowed`, warns-and-proceeds otherwise; CLI `--allow-policy-override`, no MCP override; recon Wave 0 feeds advisory security.txt/robots.txt signals
 - [x] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command — done 2026-09-02 (Step 1's `requireScope`, all three MCP tools) + 2026-09-04 (P2-6: CLI `plan`/`recon` also hard-fail, `--allow-no-scope` opt-out; `scan` CLI stays warn-only by design)
-- [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and triggers a fresh `elicitation` round trip before it's touched, live-verified — Step 3's B4: acknowledgement item in the plan-approval elicitation + a dormant `ExecOptions.OnOutOfScope` executor hook for a future mid-scan re-recon leaf
+- [x] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and gates execution behind an explicit acknowledgement before anything runs — done 2026-09-05 (Step 3's B4): the `plan` elicitation gains a required `acknowledge_out_of_scope` field (same round trip) when recon found any, `isPlanApproved` gates on it; plus a dormant `ExecOptions.OnOutOfScope` executor hook (halts `RunPlan` if an approved tree carries an out-of-scope leaf) as the named trigger point for a future mid-scan re-recon leaf. Unit-verified; live end-to-end (recon actually surfacing an out-of-scope host) folded into Step 5's round trip.
 - [ ] ~~Cost/attempt-aware prioritization (H4)~~ — **moved to [Phase 7](16-implementation-plan-ph7.md) Step 4** (2026-09-05): the executor runs each leaf once, so there is no per-leaf retry loop for the rule to gate until Phase 7's coordinator loop exists
 - [x] The scan HTTP client honors a `429`/`503` `Retry-After` header (capped) rather than only fixed exponential backoff — done 2026-09-05 (Step 3): `WithRetry` parses both the delta-seconds and HTTP-date forms; the wait becomes `max(exponential, Retry-After)` with no negative jitter on the server value; a `Retry-After` beyond a 30s ceiling returns the response as the answer rather than stalling a worker
 - [x] The Web UI's Plan-preview page supports Approve/Reject/Edit (per-leaf inclusion, not per-field), a budget gauge, and an always-reachable kill switch that actually stops a running job — and that same kill switch is confirmed on `/scans/{id}` for plain New Scan and Guided Scan-successor (unified Launch) runs too, not only the plan-execution flow — done 2026-09-04 (Step 4's Done note); not yet live-verified against a real browser/lab target, and the cross-process "same elicitation as an MCP client" interop is explicitly out of scope (see that note)

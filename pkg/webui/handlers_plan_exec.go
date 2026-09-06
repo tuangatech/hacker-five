@@ -9,6 +9,7 @@ package webui
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
@@ -94,10 +95,19 @@ func (h *handlers) executePlan(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		_, _, skipped, err := planexec.RunPlan(job.Ctx(), tree, execCfg, index, planexec.ExecOptions{
-			Notify:         func(target, message string) { job.AppendLog("info", target+": "+message) },
-			OnFinding:      func(_ *agenttask.PlanNode, f detectors.Finding) { job.AppendFinding(f) },
-			OnLog:          func(_ *agenttask.PlanNode, level, msg string) { job.AppendLog(level, msg) },
-			Excluded:       excluded,
+			Notify:    func(target, message string) { job.AppendLog("info", target+": "+message) },
+			OnFinding: func(_ *agenttask.PlanNode, f detectors.Finding) { job.AppendFinding(f) },
+			OnLog:     func(_ *agenttask.PlanNode, level, msg string) { job.AppendLog(level, msg) },
+			Excluded:  excluded,
+			// B4 scope-creep gate (doc15 Step 3): dormant executor trigger point.
+			// No leaf runs recon today, so this only fires if the approved tree
+			// carries a leaf outside execCfg.Scope — halt the job with a clear
+			// log line rather than silently scanning it.
+			OnOutOfScope: func(hosts []string) error {
+				msg := "scope-creep gate (B4): plan target(s) outside approved scope: " + strings.Join(hosts, ", ") + " — execution halted"
+				job.AppendLog("warn", msg)
+				return fmt.Errorf("%s", msg)
+			},
 			DetConcurrency: defaultConcurrency,
 			LLMConcurrency: llmAssistedExecConcurrency,
 		})

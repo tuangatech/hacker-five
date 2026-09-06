@@ -72,6 +72,17 @@ type ExecOptions struct {
 	// outright, reported in the returned skipped slice like any other skip
 	// reason, never silently dropped. nil/empty means nothing is excluded.
 	Excluded map[string]bool
+	// OnOutOfScope is doc90's B4 scope-creep gate at the executor (doc15 Step
+	// 3). Before dispatching, RunPlan checks every leaf target against
+	// baseCfg.Scope; if any fall outside the scope the human approved and this
+	// callback is set, RunPlan calls it with the distinct out-of-scope hosts
+	// and — on a non-nil return — halts, dispatching nothing. It is the named
+	// trigger point for a future mid-scan re-recon leaf surfacing new
+	// out-of-scope hosts; today no leaf runs recon, so it only fires on a plan
+	// that already carries an out-of-scope leaf (a hand-built tree, or a bug
+	// upstream). nil (or a nil baseCfg.Scope) leaves the pre-B4 behaviour
+	// unchanged — the engine's own per-target scope skip still applies.
+	OnOutOfScope func(hosts []string) error
 	// DetConcurrency/LLMConcurrency size the two dispatch tiers (R8-matched
 	// vs. use_existing_tag/LLM-resolved, not "deterministic vs. currently-
 	// costing-LLM" — see doc15 Step 2's Done note for the corrected tier
@@ -107,6 +118,27 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 	}
 	if opts.LLMConcurrency <= 0 {
 		opts.LLMConcurrency = 1
+	}
+
+	// B4 scope-creep gate (doc15 Step 3): halt before any dispatch if an
+	// approved leaf targets a host outside baseCfg.Scope.
+	if opts.OnOutOfScope != nil && baseCfg.Scope != nil {
+		var oos []string
+		seen := map[string]bool{}
+		for _, leaf := range agenttask.Leaves(tree.Root) {
+			if baseCfg.Scope.Allowed(leaf.Target) {
+				continue
+			}
+			if h := targetHostKey(leaf.Target); !seen[h] {
+				seen[h] = true
+				oos = append(oos, h)
+			}
+		}
+		if len(oos) > 0 {
+			if err := opts.OnOutOfScope(oos); err != nil {
+				return nil, nil, nil, err
+			}
+		}
 	}
 
 	knownTemplateIDs := make(map[string]bool, len(templateIndex))

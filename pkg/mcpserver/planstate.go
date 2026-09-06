@@ -38,6 +38,7 @@ type pendingPlan struct {
 	baseCfg          scanner.Config
 	escalations      []string
 	preflightLogs    []string // D2 pre-flight advisory warnings, carried into the approval round's planOutput.Logs
+	outOfScope       []string // B4: hosts recon found outside the approved scope — non-empty requires acknowledge_out_of_scope before execution
 	createdAt        time.Time
 }
 

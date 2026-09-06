@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
+	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
@@ -340,5 +342,82 @@ func TestRunPlan_TemplateIDLeafKeepsCorpus(t *testing.T) {
 
 	if withCorpus, _ := countCorpusLoads(logs); withCorpus != 2 {
 		t.Fatalf("got %d corpus loads, want 2 (builtin bearer + template-ID leaf); logs=%v", withCorpus, logs)
+	}
+}
+
+// TestRunPlan_OnOutOfScope_HaltsBeforeDispatch covers doc15 Step 3's B4
+// scope-creep gate: if an approved plan carries a leaf whose target is
+// outside baseCfg.Scope, RunPlan invokes OnOutOfScope with the distinct
+// out-of-scope hosts and, on a non-nil return, dispatches nothing.
+func TestRunPlan_OnOutOfScope_HaltsBeforeDispatch(t *testing.T) {
+	var hit int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hit, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sc, err := scope.New([]string{"127.0.0.1"}) // the httptest server's host; evil.example is not covered
+	if err != nil {
+		t.Fatalf("scope.New: %v", err)
+	}
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "in-scope", Target: server.URL, Detector: "misconfig"},
+		{ID: "creep", Target: "https://evil.example/x", Detector: "misconfig"},
+	}}}
+	baseCfg := scanner.Config{Scope: sc, Concurrency: 1, RateLimit: 50, Timeout: 2 * time.Second, OutputFormat: "json"}
+
+	var gotHosts []string
+	opts := testOpts()
+	opts.OnOutOfScope = func(hosts []string) error {
+		gotHosts = hosts
+		return fmt.Errorf("halted: %s outside approved scope", strings.Join(hosts, ", "))
+	}
+
+	findings, _, _, err := RunPlan(context.Background(), tree, baseCfg, nil, opts)
+	if err == nil {
+		t.Fatal("expected RunPlan to return the OnOutOfScope error")
+	}
+	if len(gotHosts) != 1 || !strings.Contains(gotHosts[0], "evil.example") {
+		t.Fatalf("OnOutOfScope got %v, want just the evil.example host", gotHosts)
+	}
+	if len(findings) != 0 || atomic.LoadInt32(&hit) != 0 {
+		t.Fatalf("nothing must be dispatched once the gate fires: findings=%d serverHits=%d", len(findings), hit)
+	}
+	if tree.Find("in-scope").Status == agenttask.StatusDone {
+		t.Fatal("the in-scope leaf must not have run either — the whole plan is halted")
+	}
+}
+
+// TestRunPlan_OnOutOfScope_NotCalledWhenEveryLeafInScope confirms the gate is
+// silent for a clean plan (the normal case — registry.Resolve only builds
+// in-scope leaves).
+func TestRunPlan_OnOutOfScope_NotCalledWhenEveryLeafInScope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sc, err := scope.New([]string{"127.0.0.1"})
+	if err != nil {
+		t.Fatalf("scope.New: %v", err)
+	}
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "a", Target: server.URL, Detector: "misconfig"},
+	}}}
+	baseCfg := scanner.Config{Scope: sc, Concurrency: 1, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	called := false
+	opts := testOpts()
+	opts.OnOutOfScope = func([]string) error { called = true; return fmt.Errorf("should not fire") }
+
+	if _, _, _, err := RunPlan(context.Background(), tree, baseCfg, nil, opts); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if called {
+		t.Fatal("OnOutOfScope must not fire when every leaf is in scope")
+	}
+	if tree.Find("a").Status != agenttask.StatusDone {
+		t.Fatal("the in-scope leaf should have dispatched normally")
 	}
 }

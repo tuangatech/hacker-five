@@ -52,6 +52,11 @@ type planOutput struct {
 	Logs             []string                    `json:"logs,omitempty"`
 	SkippedLeaves    []string                    `json:"skipped_leaves,omitempty"`
 	SpendUSD         float64                     `json:"spend_usd,omitempty"`
+	// OutOfScope are hosts recon discovered outside the approved scope (B4,
+	// doc15 Step 3). They are never scanned; the plan tool surfaces them so a
+	// human sees what recon turned up, and requires an explicit
+	// acknowledge_out_of_scope before execution when non-empty.
+	OutOfScope []string `json:"out_of_scope,omitempty"`
 }
 
 // planOutputSchema — see Step 1's original comment (unchanged reason):
@@ -79,11 +84,42 @@ var approveRequestSchema = &jsonschema.Schema{
 	Required:   []string{"approve"},
 }
 
+// approveWithScopeAckSchema is approveRequestSchema plus B4's explicit
+// out-of-scope acknowledgement (doc15 Step 3): when the plan's own recon
+// discovered hosts outside the approved scope, the human must separately
+// acknowledge that they will NOT be scanned before execution proceeds — a
+// hallucinated "yes" to a single approve field shouldn't also silently wave
+// through a scope-creep observation.
+var approveWithScopeAckSchema = &jsonschema.Schema{
+	Type: "object",
+	Properties: map[string]*jsonschema.Schema{
+		"approve":                  {Type: "boolean", Description: "Approve for execution"},
+		"acknowledge_out_of_scope": {Type: "boolean", Description: "Confirm you have seen the out-of-scope hosts recon discovered; they will NOT be scanned"},
+	},
+	Required: []string{"approve", "acknowledge_out_of_scope"},
+}
+
 // isApproved reports whether resp — an entry from req.Params.InputResponses
-// — represents an accepted elicitation with approve=true.
+// — represents an accepted elicitation with approve=true. Used by
+// findings.triage (which has no scope-ack concern); the plan tool uses
+// isPlanApproved instead.
 func isApproved(resp mcp.InputResponse) bool {
 	er, ok := resp.(*mcp.ElicitResult)
 	return ok && er.Action == "accept" && er.Content["approve"] == true
+}
+
+// isPlanApproved is isApproved plus B4's gate: when requireScopeAck is true
+// (the plan's recon found out-of-scope hosts), acknowledge_out_of_scope must
+// also be true for the plan to execute.
+func isPlanApproved(resp mcp.InputResponse, requireScopeAck bool) bool {
+	if !isApproved(resp) {
+		return false
+	}
+	if !requireScopeAck {
+		return true
+	}
+	er := resp.(*mcp.ElicitResult) // isApproved already type-asserted
+	return er.Content["acknowledge_out_of_scope"] == true
 }
 
 // handlePlan implements the plan tool across SEP-2322's two-round-trip
@@ -171,22 +207,33 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 		preflightLogs = append(preflightLogs, "warn: preflight: "+w)
 	}
 
+	// B4 (doc15 Step 3): recon found hosts outside the approved scope. They are
+	// never scanned (registry.Resolve builds leaves only from in-scope hosts),
+	// but the human must see them and separately acknowledge before execution.
+	outOfScope := result.OutOfScope
+	requireScopeAck := len(outOfScope) > 0
+
 	if !clientSupportsElicitation(req.Session) {
 		return nil, planOutput{
 			Tree:             tree,
 			FieldSuggestions: fieldSuggestions,
 			SpendUSD:         tree.SpendSoFar(),
 			Logs:             preflightLogs,
+			OutOfScope:       outOfScope,
 			Note:             "client does not support elicitation — plan returned unexecuted; re-run via an elicitation-capable client to approve and execute",
 		}, nil
 	}
 
-	id := storePendingPlan(&pendingPlan{tree: tree, fieldSuggestions: fieldSuggestions, baseCfg: baseCfg, escalations: escalations, preflightLogs: preflightLogs})
+	id := storePendingPlan(&pendingPlan{tree: tree, fieldSuggestions: fieldSuggestions, baseCfg: baseCfg, escalations: escalations, preflightLogs: preflightLogs, outOfScope: outOfScope})
 
+	schema := approveRequestSchema
+	if requireScopeAck {
+		schema = approveWithScopeAckSchema
+	}
 	return &mcp.CallToolResult{
 		InputRequests: mcp.InputRequestMap{"approve": &mcp.ElicitParams{
-			Message:         summarizePlan(tree, fieldSuggestions, escalations, preflightWarnings),
-			RequestedSchema: approveRequestSchema,
+			Message:         summarizePlan(tree, fieldSuggestions, escalations, preflightWarnings, outOfScope),
+			RequestedSchema: schema,
 		}},
 		RequestState: id,
 	}, planOutput{}, nil
@@ -200,9 +247,14 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 		return nil, planOutput{}, fmt.Errorf("plan request state %q not found or expired (pending plans are cached for %s) — re-run plan from the start", req.Params.RequestState, pendingPlanTTL)
 	}
 
-	out := planOutput{Tree: pending.tree, FieldSuggestions: pending.fieldSuggestions, SpendUSD: pending.tree.SpendSoFar(), Logs: pending.preflightLogs}
-	if !isApproved(resp) {
-		out.Note = "plan not approved — returned unexecuted"
+	out := planOutput{Tree: pending.tree, FieldSuggestions: pending.fieldSuggestions, SpendUSD: pending.tree.SpendSoFar(), Logs: pending.preflightLogs, OutOfScope: pending.outOfScope}
+	requireScopeAck := len(pending.outOfScope) > 0
+	if !isPlanApproved(resp, requireScopeAck) {
+		if requireScopeAck && isApproved(resp) {
+			out.Note = "plan not executed — approve was given but the out-of-scope acknowledgement (acknowledge_out_of_scope) was not; re-run and confirm both"
+		} else {
+			out.Note = "plan not approved — returned unexecuted"
+		}
 		return nil, out, nil
 	}
 
@@ -226,6 +278,13 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 		Notify:         notify,
 		DetConcurrency: defaultConcurrency,
 		LLMConcurrency: llmAssistedExecConcurrency,
+		// B4 scope-creep gate (doc15 Step 3): the dormant executor trigger
+		// point for a future mid-scan re-recon leaf. No leaf runs recon today,
+		// so this only fires if the approved tree somehow carries a leaf
+		// outside the approved scope — halt and make the operator re-plan.
+		OnOutOfScope: func(hosts []string) error {
+			return fmt.Errorf("execution halted (B4 scope-creep gate): the approved plan contains leaf target(s) outside the approved scope: %s — re-run plan to review", strings.Join(hosts, ", "))
+		},
 	})
 	out.Approved = true
 	out.Findings = findings
@@ -302,7 +361,7 @@ func resolveOneFieldMiss(ctx context.Context, fb *llmfallback.Client, fbErr erro
 	return &agenttask.FieldSuggestion{Detector: detector, Field: field, SuggestedValue: decision.SuggestedValue, Rationale: decision.Rationale, Candidates: candidates}
 }
 
-func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations, preflightWarnings []string) string {
+func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations, preflightWarnings, outOfScope []string) string {
 	total, unresolved := 0, 0
 	for _, leaf := range agenttask.Leaves(tree.Root) {
 		total++
@@ -318,6 +377,9 @@ func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldS
 	}
 	if len(escalations) > 0 {
 		b.WriteString(" Escalations: " + strings.Join(escalations, "; "))
+	}
+	if len(outOfScope) > 0 {
+		fmt.Fprintf(&b, " Out-of-scope hosts recon found (they will NOT be scanned): %s — set acknowledge_out_of_scope=true to proceed.", strings.Join(outOfScope, ", "))
 	}
 	b.WriteString(" Approve to execute against the live target?")
 	return b.String()
