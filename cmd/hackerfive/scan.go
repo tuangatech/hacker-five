@@ -77,9 +77,23 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if err := runPreflight(targetList, policyFile, scopeFile, allowPolicyOverride, nil, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
-			extraHeaders, err := parseHeaders(headers)
+			flagHeaders, err := parseHeaders(headers)
 			if err != nil {
 				return fmt.Errorf("parsing --header: %w", err)
+			}
+			// LT-53 (docs/follow-up.md): recon/plan already auto-apply the
+			// scope-sibling policy.yaml's request_headers: (LT-36); scan didn't,
+			// so a program-mandated identifying header (X-Hackerone) had to be
+			// passed by hand on every scan. Merge it in here too — an explicit
+			// --header of the same name still wins (mergeHeaders is
+			// case-insensitive on the name).
+			policyHeaders, err := policyRequestHeaders(policyFile, scopeFile)
+			if err != nil {
+				return err
+			}
+			extraHeaders, fromPolicy := mergeHeaders(policyHeaders, flagHeaders)
+			for _, name := range fromPolicy {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "scan: applying policy-mandated request header %q to every template request (LT-53)\n", name)
 			}
 			expandedOOBServers := expandOOBServers(oobServers)
 			if noOOB {
