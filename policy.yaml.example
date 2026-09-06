@@ -1,0 +1,35 @@
+# policy.yaml — operator-maintained program-policy declarations for the D2
+# pre-flight check (docs/15-implementation-plan-ph6.md Step 3).
+#
+# Copy to .engagements/<name>/policy.yaml (sibling of that engagement's
+# scope.txt) or to .engagements/policy.yaml (covers every engagement). The
+# .engagements/ tree is gitignored — real declarations never get committed,
+# same as scope.txt and policy.md.
+#
+# The check hard-fails a scan/recon/plan run ONLY when a target matches an
+# entry with `automated_scanning: disallowed`. An absent file, or a target
+# with no matching entry, prints an advisory warning and proceeds — every
+# lab / owned-site / ad-hoc-authorized run legitimately has no declaration.
+#
+# Resolution order for the file itself:
+#   1. --policy-file <path>            (CLI)  /  $HACKERFIVE_POLICY_FILE  (mcp-serve)
+#   2. <dir of --scope file>/policy.yaml
+#   3. .engagements/policy.yaml
+#
+# `match` uses the exact same syntax as a scope.txt line: an exact domain, a
+# "*."-prefixed suffix (that domain + any subdomain), or a CIDR. First
+# matching entry in file order wins — list the most specific patterns first.
+
+targets:
+  - match: "*.aalberts.com"
+    automated_scanning: allowed
+    max_runs_per_day: 5           # informational only — HackerFive does not count runs; track this yourself
+    notes: "disclose.io VDP; automated scanning authorized, 5 runs/day cap (doc22, 2026-09-02)"
+
+  - match: "*.example-no-scanners.com"
+    automated_scanning: disallowed
+    notes: "program policy explicitly bans automated scanners — hard block"
+
+  - match: "staging.internal.example.net"
+    automated_scanning: unknown    # same as omitting the entry: warn, don't block
+    notes: "awaiting confirmation from the program"

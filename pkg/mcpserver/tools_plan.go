@@ -61,8 +61,8 @@ var planOutputSchema = json.RawMessage(`{"type":"object"}`)
 
 func addPlanTool(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "plan",
-		Description: "Run recon against a target, resolve it to a PlanTree via the deterministic decision engine (falling back to a tiered LLM for what it can't resolve), get human approval via elicitation, then execute the approved plan and return real findings. Refuses to run without an explicit scope allow-list.",
+		Name:         "plan",
+		Description:  "Run recon against a target, resolve it to a PlanTree via the deterministic decision engine (falling back to a tiered LLM for what it can't resolve), get human approval via elicitation, then execute the approved plan and return real findings. Refuses to run without an explicit scope allow-list.",
 		OutputSchema: planOutputSchema,
 	}, handlePlan)
 }
@@ -104,6 +104,14 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	if err != nil {
 		return nil, planOutput{}, err
 	}
+	// D2 program-policy pre-flight (doc15 Step 3): block before spending recon
+	// time on an operator-declared automated_scanning: disallowed target. No
+	// MCP override. The security.txt/robots.txt advisory signals are folded in
+	// after recon below.
+	preWarns, err := preflightBlock([]string{in.Target})
+	if err != nil {
+		return nil, planOutput{}, err
+	}
 
 	depth := recon.Depth(in.Depth)
 	switch depth {
@@ -130,6 +138,10 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	if err != nil {
 		return nil, planOutput{}, err
 	}
+	preflightWarnings := append(preWarns, reconSignalWarnings(result)...)
+	for _, w := range preflightWarnings {
+		result.Warnings = append(result.Warnings, "preflight: "+w)
+	}
 
 	tree, leafContexts := registry.Resolve(result, index)
 	ceiling := in.SpendCeilingUSD
@@ -154,20 +166,26 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	// with an unreviewed guess against a live target.
 	fieldSuggestions := resolveFieldSuggestions(ctx, result, fb, fbErr, tree, &baseCfg, &escalations)
 
+	var preflightLogs []string
+	for _, w := range preflightWarnings {
+		preflightLogs = append(preflightLogs, "warn: preflight: "+w)
+	}
+
 	if !clientSupportsElicitation(req.Session) {
 		return nil, planOutput{
 			Tree:             tree,
 			FieldSuggestions: fieldSuggestions,
 			SpendUSD:         tree.SpendSoFar(),
+			Logs:             preflightLogs,
 			Note:             "client does not support elicitation — plan returned unexecuted; re-run via an elicitation-capable client to approve and execute",
 		}, nil
 	}
 
-	id := storePendingPlan(&pendingPlan{tree: tree, fieldSuggestions: fieldSuggestions, baseCfg: baseCfg, escalations: escalations})
+	id := storePendingPlan(&pendingPlan{tree: tree, fieldSuggestions: fieldSuggestions, baseCfg: baseCfg, escalations: escalations, preflightLogs: preflightLogs})
 
 	return &mcp.CallToolResult{
 		InputRequests: mcp.InputRequestMap{"approve": &mcp.ElicitParams{
-			Message:         summarizePlan(tree, fieldSuggestions, escalations),
+			Message:         summarizePlan(tree, fieldSuggestions, escalations, preflightWarnings),
 			RequestedSchema: approveRequestSchema,
 		}},
 		RequestState: id,
@@ -182,7 +200,7 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 		return nil, planOutput{}, fmt.Errorf("plan request state %q not found or expired (pending plans are cached for %s) — re-run plan from the start", req.Params.RequestState, pendingPlanTTL)
 	}
 
-	out := planOutput{Tree: pending.tree, FieldSuggestions: pending.fieldSuggestions, SpendUSD: pending.tree.SpendSoFar()}
+	out := planOutput{Tree: pending.tree, FieldSuggestions: pending.fieldSuggestions, SpendUSD: pending.tree.SpendSoFar(), Logs: pending.preflightLogs}
 	if !isApproved(resp) {
 		out.Note = "plan not approved — returned unexecuted"
 		return nil, out, nil
@@ -211,7 +229,7 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 	})
 	out.Approved = true
 	out.Findings = findings
-	out.Logs = logs
+	out.Logs = append(pending.preflightLogs, logs...)
 	out.SkippedLeaves = skipped
 	out.SpendUSD = pending.tree.SpendSoFar()
 	if err != nil {
@@ -284,7 +302,7 @@ func resolveOneFieldMiss(ctx context.Context, fb *llmfallback.Client, fbErr erro
 	return &agenttask.FieldSuggestion{Detector: detector, Field: field, SuggestedValue: decision.SuggestedValue, Rationale: decision.Rationale, Candidates: candidates}
 }
 
-func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations []string) string {
+func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations, preflightWarnings []string) string {
 	total, unresolved := 0, 0
 	for _, leaf := range agenttask.Leaves(tree.Root) {
 		total++
@@ -295,6 +313,9 @@ func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldS
 	var b strings.Builder
 	fmt.Fprintf(&b, "Plan for %s: %d leaves (%d still unresolved), %d field suggestion(s), spend so far $%.4f (ceiling $%.2f).",
 		tree.Root.Target, total, unresolved, len(fieldSuggestions), tree.SpendSoFar(), tree.SpendCeilingUSD)
+	if len(preflightWarnings) > 0 {
+		b.WriteString(" Pre-flight: " + strings.Join(preflightWarnings, "; "))
+	}
 	if len(escalations) > 0 {
 		b.WriteString(" Escalations: " + strings.Join(escalations, "; "))
 	}

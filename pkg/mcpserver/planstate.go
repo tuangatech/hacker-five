@@ -37,6 +37,7 @@ type pendingPlan struct {
 	fieldSuggestions []agenttask.FieldSuggestion
 	baseCfg          scanner.Config
 	escalations      []string
+	preflightLogs    []string // D2 pre-flight advisory warnings, carried into the approval round's planOutput.Logs
 	createdAt        time.Time
 }
 

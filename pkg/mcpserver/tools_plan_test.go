@@ -120,20 +120,22 @@ func TestSummarizePlan(t *testing.T) {
 		SpendCeilingUSD: 1.00,
 	}
 
-	msg := summarizePlan(tree, []agenttask.FieldSuggestion{{Detector: "idor", Field: "endpoint_template"}}, []string{"idor.endpoint_template: no candidates found"})
+	msg := summarizePlan(tree, []agenttask.FieldSuggestion{{Detector: "idor", Field: "endpoint_template"}}, []string{"idor.endpoint_template: no candidates found"}, []string{"example.com: no entry in policy.yaml"})
 
 	assert.Contains(t, msg, "http://example.com")
 	assert.Contains(t, msg, "2 leaves (1 still unresolved)")
 	assert.Contains(t, msg, "1 field suggestion(s)")
 	assert.Contains(t, msg, "ceiling $1.00")
 	assert.Contains(t, msg, "Escalations: idor.endpoint_template: no candidates found")
+	assert.Contains(t, msg, "Pre-flight: example.com: no entry in policy.yaml")
 	assert.Contains(t, msg, "Approve to execute")
 }
 
 func TestSummarizePlan_NoEscalations_OmitsEscalationsClause(t *testing.T) {
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Target: "http://example.com"}}
-	msg := summarizePlan(tree, nil, nil)
+	msg := summarizePlan(tree, nil, nil, nil)
 	assert.NotContains(t, msg, "Escalations:")
+	assert.NotContains(t, msg, "Pre-flight:")
 }
 
 func TestBuildBaseExecConfig_ExplicitAuthTokenWins(t *testing.T) {

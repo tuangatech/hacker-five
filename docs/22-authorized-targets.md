@@ -6,6 +6,8 @@ A living list of real, authorized targets (found via disclose.io/HackerOne per [
 
 **Being listed here does not substitute for reading a target's full policy yourself before scanning** — see [doc05](05-hackerone-and-legal.md)'s "Read Program Scope" rule. Policies change; re-check `security.txt`'s `Expires` field before relying on an old entry.
 
+**Machine-readable companion (D2 pre-flight, [doc15](15-implementation-plan-ph6.md) Step 3):** the vetting recorded here in prose can be mirrored into a gitignored `policy.yaml` (`.engagements/<name>/policy.yaml`, or `.engagements/policy.yaml` for all engagements — see `policy.yaml.example` at the repo root). `hackerfive scan`/`recon`/`plan` (CLI and MCP) then hard-refuse a target with an `automated_scanning: disallowed` entry, and print an advisory warning for one that's `unknown` or absent. It only enforces an explicit "no" — it is not a substitute for this doc's judgement, just a guardrail against running against a target you've already determined bans scanners. A `disallowed`-marked target here (none currently) should get a `policy.yaml` entry.
+
 ## Active targets
 
 ### a2x.io

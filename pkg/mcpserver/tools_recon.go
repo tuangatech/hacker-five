@@ -33,6 +33,13 @@ func addReconTool(s *mcp.Server) {
 		if err != nil {
 			return nil, reconOutput{}, err
 		}
+		// D2 program-policy pre-flight (doc15 Step 3): hard refusal on an
+		// operator-declared automated_scanning: disallowed, advisory warnings
+		// otherwise. No MCP override.
+		preWarns, err := preflightBlock([]string{in.Target})
+		if err != nil {
+			return nil, reconOutput{}, err
+		}
 
 		depth := recon.Depth(in.Depth)
 		switch depth {
@@ -72,6 +79,9 @@ func addReconTool(s *mcp.Server) {
 		result, err := r.Run(ctx, in.Target, depth)
 		if err != nil {
 			return nil, reconOutput{}, err
+		}
+		for _, w := range append(preWarns, reconSignalWarnings(result)...) {
+			result.Warnings = append(result.Warnings, "preflight: "+w)
 		}
 		return nil, reconOutput{Result: result}, nil
 	})

@@ -281,6 +281,39 @@ Step 3 ships the two hard blockers that are actionable now, plus the small Retry
 
 **`Retry-After`-aware backoff (small, from [follow-up.md](follow-up.md)).** `pkg/scanner/httpclient`'s `WithRetry` uses fixed exponential backoff and ignores a `429`/`503` `Retry-After` header. Honor it: parse both the delta-seconds and HTTP-date forms; on a `Retry-After` response use `min(retryAfter, 30s)` as the delay instead of the exponential value, with no negative jitter (undershooting a server-stated cooldown is the hazard). If `Retry-After` exceeds the 30s ceiling, return the `429`/`503` as the answer rather than stalling a worker for minutes — an unattended run should back off and fail cleanly, not grind. Not agent-specific; it rides here because this is the step about respecting program constraints.
 
+### Done note — D2 + Retry-After, 2026-09-05
+
+**D2 shipped.** New `pkg/preflight` package: `Check` loads an operator-maintained
+`policy.yaml` (a `targets:` list keyed by scope-file-syntax `match` patterns,
+first match in file order wins), hard-fails a run only when a target matches an
+`automated_scanning: disallowed` entry, and warns-and-proceeds on everything else
+(`unknown`, no entry, no file). `allowed` + `max_runs_per_day` surfaces an
+advisory reminder (no run counter enforces it). Loopback/private/`*.local`
+targets are skipped entirely. A malformed policy file is a hard error (no silent
+degrade to no-enforcement); a missing one is not.
+
+Wired in after `requireScope`/`requireScopeOrOptOut` on all six entry points:
+MCP `scan`/`recon`/`plan` (policy file via `HACKERFIVE_POLICY_FILE`, no override)
+and CLI `scan`/`plan`/`recon` (`--policy-file`, default = the `--scope` file's
+sibling `policy.yaml` then `.engagements/policy.yaml`; `--allow-policy-override`
+downgrades a `disallowed` verdict to a loud warning for an operator with
+out-of-band authorization).
+
+Recon Wave 0 now keeps the fetched `security.txt` body (was discarded) and adds
+a one-GET `robots.txt` fetch; `ReconResult.Policy` (`PolicySignals`) carries
+both. `preflight.SignalWarnings` turns them into advisory-only warnings (a
+`Disallow: /` for `User-agent: *`, or a `security.txt` that links a `Policy:` or
+mentions restricting scanning) — never a block. Surfaced in the `plan` flow's
+elicitation summary and the CLI's stderr. `recon-result.schema.json` bumped to
+v1.2 (additive optional `policy`).
+
+`policy.yaml.example` at the repo root documents the shape. Unit-verified
+(`pkg/preflight`, the robots parser, an MCP `scan` refusal) and live-checked
+against the compiled CLI: `disallowed` blocks, `--allow-policy-override`
+proceeds with an OVERRIDE line, unknown/allowed warn and proceed.
+
+**Retry-After shipped** — see the dedicated DoD line below.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/preflight/preflight.go` (new) + `pkg/preflight/preflight_test.go` — `Check`, the `policy.yaml` loader, the security.txt/robots.txt warning derivation.
 - `.engagements/owned-sites/policy.yaml.example` (or a top-level sample) — the `policy.yaml` shape, documented like `env.example`.
@@ -549,7 +582,7 @@ leaf count. Confirm the floor doesn't cost recall: a `misconfig` run still fires
 - [ ] A per-job spend ceiling hard-fails a job when crossed — **implemented with a deliberately softer semantics than this literal wording**, recorded as a real design decision in Step 2's H5 note: exceeding the ceiling stops further I4 calls (remaining misses escalate) but does not fail the whole plan/execution, since already-resolved deterministic work shouldn't be discarded over an unrelated resolution-budget overrun
 - [x] The PlanTree executor dispatches approved leaves into real `pkg/scanner`/`pkg/recon` calls; two concurrency tiers exist and are unit-confirmed (R8-matched vs. `use_existing_tag`-resolved, not "deterministic vs. currently-costing-LLM" — see Step 2's Done note for the corrected tier semantics) — done 2026-09-02 (Step 2); **not yet live-confirmed** with a real multi-leaf timing check against a lab target (elapsed time close to the slowest single leaf)
 - [x] `pkg/agenttask.PlanTree`/`PlanNode` are confirmed race-free under concurrent `ApplyLeafUpdate` calls (`go test -race`) — done 2026-09-02 (Step 2)
-- [ ] A program-policy pre-flight check (D2) hard-blocks an agent-driven run against a target whose disclosure policy disallows automated scanners
+- [x] A program-policy pre-flight check (D2) hard-blocks an agent-driven run against a target whose disclosure policy disallows automated scanners — done 2026-09-05 (Step 3): `pkg/preflight.Check` against an operator-maintained `policy.yaml`, wired into all six MCP+CLI entry points; hard-fails only on an explicit `automated_scanning: disallowed`, warns-and-proceeds otherwise; CLI `--allow-policy-override`, no MCP override; recon Wave 0 feeds advisory security.txt/robots.txt signals
 - [x] A missing `--scope`-equivalent hard-fails an agent-initiated `scan`/`recon` tool call, distinct from the CLI's existing warn-only behavior for a human-typed command — done 2026-09-02 (Step 1's `requireScope`, all three MCP tools) + 2026-09-04 (P2-6: CLI `plan`/`recon` also hard-fail, `--allow-no-scope` opt-out; `scan` CLI stays warn-only by design)
 - [ ] A discovered out-of-scope host actually populates `ReconResult.OutOfScope` and triggers a fresh `elicitation` round trip before it's touched, live-verified — Step 3's B4: acknowledgement item in the plan-approval elicitation + a dormant `ExecOptions.OnOutOfScope` executor hook for a future mid-scan re-recon leaf
 - [ ] ~~Cost/attempt-aware prioritization (H4)~~ — **moved to [Phase 7](16-implementation-plan-ph7.md) Step 4** (2026-09-05): the executor runs each leaf once, so there is no per-leaf retry loop for the rule to gate until Phase 7's coordinator loop exists

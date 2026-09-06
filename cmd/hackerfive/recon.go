@@ -29,13 +29,15 @@ const reconRunTimeout = 10 * time.Minute
 
 func newReconCmd(root *rootFlags) *cobra.Command {
 	var (
-		target       string
-		depth        string
-		scopeFile    string
-		allowNoScope bool
-		rateLimit    int
-		concurrency  int
-		verbose      bool
+		target              string
+		depth               string
+		scopeFile           string
+		allowNoScope        bool
+		rateLimit           int
+		concurrency         int
+		verbose             bool
+		policyFile          string
+		allowPolicyOverride bool
 	)
 
 	cmd := &cobra.Command{
@@ -54,6 +56,9 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 
 			s, err := requireScopeOrOptOut(scopeFile, allowNoScope, cmd.ErrOrStderr())
 			if err != nil {
+				return err
+			}
+			if err := runPreflight([]string{target}, policyFile, scopeFile, allowPolicyOverride, nil, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 
@@ -103,6 +108,8 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", recon.DefaultRateLimit, "requests/sec passed to each external recon binary's own native rate-limit flag, and used for this package's own direct HTTP calls")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
+	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
+	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
 
 	cmd.AddCommand(newReconSetupCmd())
 

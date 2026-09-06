@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,6 +64,33 @@ func TestScanTool_MissingScope_RefusedBeforeAnyRequest(t *testing.T) {
 			t.Errorf("expected requireScope's own message, got %q", text)
 		}
 	})
+}
+
+// TestScanTool_PolicyDisallowed_RefusedBeforeAnyRequest covers D2 (doc15 Step
+// 3): HACKERFIVE_POLICY_FILE marking a target automated_scanning: disallowed
+// makes the scan tool refuse outright, before the engine ever runs. The
+// target is deliberately non-loopback — the pre-flight no-ops for lab hosts.
+func TestScanTool_PolicyDisallowed_RefusedBeforeAnyRequest(t *testing.T) {
+	policy := filepath.Join(t.TempDir(), "policy.yaml")
+	require.NoError(t, os.WriteFile(policy, []byte("targets:\n  - match: \"*.blocked.example\"\n    automated_scanning: disallowed\n"), 0o644))
+	t.Setenv("HACKERFIVE_POLICY_FILE", policy)
+
+	ctx := context.Background()
+	session, err := connect(ctx, New())
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":  []string{"https://api.blocked.example"},
+			"scope":    []string{"*.blocked.example"},
+			"detector": "misconfig",
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, res.IsError, "a policy-disallowed target must be refused")
+	require.Contains(t, textContent(t, res), "disallows automated scanning")
 }
 
 // TestScanTool_ValidationError_MissingEndpointForIDOR confirms

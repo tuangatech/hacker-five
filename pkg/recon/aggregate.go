@@ -22,6 +22,10 @@ type aggregator struct {
 	outOfScope  []string
 	warnings    []string
 	outOfScopeM map[string]bool
+
+	// policy signals from Wave 0 (pkg/preflight's D2 input) — see PolicySignals.
+	securityTxt       string
+	robotsDisallowAll bool
 }
 
 func (a *aggregator) addHost(h HostFact) {
@@ -144,6 +148,10 @@ func (a *aggregator) addWarning(format string, args ...any) {
 }
 
 func (a *aggregator) finalize() *ReconResult {
+	var policy *PolicySignals
+	if a.securityTxt != "" || a.robotsDisallowAll {
+		policy = &PolicySignals{SecurityTxt: a.securityTxt, RobotsDisallowAll: a.robotsDisallowAll}
+	}
 	return &ReconResult{
 		Target:      a.target,
 		Hosts:       a.hosts,
@@ -151,6 +159,7 @@ func (a *aggregator) finalize() *ReconResult {
 		TechStack:   a.techStack,
 		APISpec:     a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
 		OutOfScope:  a.outOfScope,
+		Policy:      policy,
 		Warnings:    a.warnings,
 		GeneratedAt: time.Now().UTC(),
 	}

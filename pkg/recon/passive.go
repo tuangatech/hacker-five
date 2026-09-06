@@ -6,42 +6,93 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 )
 
-// securityTxtPath is the well-known path Wave 0 fetches — zero-risk (one
-// GET), and doubles as future input to a program-policy pre-flight check
-// (docs/91-research-recon-phase.md §3, Wave 0) — no reason to fetch it
-// twice later.
-const securityTxtPath = "/.well-known/security.txt"
+// securityTxtPath/robotsTxtPath are the well-known paths Wave 0 fetches —
+// zero-risk (one GET each), and feed pkg/preflight's D2 program-policy
+// pre-flight check (docs/91-research-recon-phase.md §3, Wave 0; doc15 Step 3)
+// — no reason to fetch either twice later.
+const (
+	securityTxtPath = "/.well-known/security.txt"
+	robotsTxtPath   = "/robots.txt"
+	// maxPolicyBodyBytes caps how much of security.txt is retained — it's only
+	// ever substring-scanned for advisory warnings, never parsed.
+	maxPolicyBodyBytes = 16 << 10
+)
 
-// runWave0 is the zero-touch wave: fetch security.txt if present, via the
-// same rate-limited, circuit-broken httpclient.Client every detector uses
-// (this is our own direct HTTP call, unlike Wave 1-3's binary-shelled
-// steps, so it genuinely goes through that shared middleware).
+// runWave0 is the zero-touch wave: fetch security.txt and robots.txt if
+// present, via the same rate-limited, circuit-broken httpclient.Client every
+// detector uses (this is our own direct HTTP call, unlike Wave 1-3's
+// binary-shelled steps, so it genuinely goes through that shared middleware).
 func (r *Recon) runWave0(ctx context.Context, agg *aggregator, target string) {
-	reqURL := strings.TrimRight(target, "/") + securityTxtPath
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return
+	base := strings.TrimRight(target, "/")
+
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+securityTxtPath, nil); err == nil {
+		if resp, err := r.client.Do(req); err == nil {
+			func() {
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+					return
+				}
+				agg.addEndpoint(EndpointFact{
+					URL:        base + securityTxtPath,
+					Method:     http.MethodGet,
+					StatusCode: resp.StatusCode,
+					Source:     "wave0-security-txt",
+					Confidence: ConfidenceHigh,
+				})
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, maxPolicyBodyBytes))
+				agg.securityTxt = string(body)
+			}()
+		}
 	}
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return
+
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+robotsTxtPath, nil); err == nil {
+		if resp, err := r.client.Do(req); err == nil {
+			func() {
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+					return
+				}
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, maxPolicyBodyBytes))
+				agg.robotsDisallowAll = robotsDisallowsAll(string(body))
+			}()
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		agg.addEndpoint(EndpointFact{
-			URL:        reqURL,
-			Method:     http.MethodGet,
-			StatusCode: resp.StatusCode,
-			Source:     "wave0-security-txt",
-			Confidence: ConfidenceHigh,
-		})
+}
+
+// robotsDisallowsAll reports whether robots.txt tells every crawler to stay
+// out entirely — a "Disallow: /" (with no path after the slash) under a
+// "User-agent: *" group. A crawler convention, surfaced only as an advisory
+// warning by pkg/preflight, never a block.
+func robotsDisallowsAll(body string) bool {
+	inStar := false
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		val = strings.TrimSpace(val)
+		switch key {
+		case "user-agent":
+			inStar = val == "*"
+		case "disallow":
+			if inStar && val == "/" {
+				return true
+			}
+		}
 	}
+	return false
 }
 
 // runWave1 runs passive subdomain/TLS/WHOIS/ASN enumeration and returns

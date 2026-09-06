@@ -97,6 +97,17 @@ type APISpecFact struct {
 	URL  string `json:"url"`
 }
 
+// PolicySignals carries the raw, unparsed policy-relevant artifacts Wave 0
+// fetches (one GET each) — input to pkg/preflight's D2 pre-flight check
+// (doc15 Step 3). Never parsed for meaning here: security.txt has no standard
+// "no scanners" field and robots.txt is a crawler convention, so these only
+// ever produce a non-blocking warning. The hard block comes from the
+// operator's policy.yaml, not from anything in here.
+type PolicySignals struct {
+	SecurityTxt       string `json:"security_txt,omitempty"`        // body, truncated to a scan-only length
+	RobotsDisallowAll bool   `json:"robots_disallow_all,omitempty"` // robots.txt has "User-agent: *" + "Disallow: /"
+}
+
 // ReconResult is the frozen, versioned output of a Run — see
 // docs/schema/recon-result.schema.json. Never raw tool stdout in an agent's
 // context (docs/91-research-recon-phase.md §4).
@@ -107,6 +118,7 @@ type ReconResult struct {
 	TechStack   []TechFact     `json:"tech_stack,omitempty"`
 	APISpec     *APISpecFact   `json:"api_spec,omitempty"`
 	OutOfScope  []string       `json:"out_of_scope,omitempty"`
+	Policy      *PolicySignals `json:"policy,omitempty"`
 	Warnings    []string       `json:"warnings,omitempty"`
 	GeneratedAt time.Time      `json:"generated_at"`
 }

@@ -53,6 +53,18 @@ func addScanTool(s *mcp.Server) {
 			return nil, scanOutput{}, err
 		}
 
+		var out scanOutput
+		// D2 program-policy pre-flight (doc15 Step 3): a hard refusal when the
+		// operator's HACKERFIVE_POLICY_FILE marks a target automated_scanning:
+		// disallowed; advisory warnings otherwise. No MCP override.
+		preWarns, err := preflightBlock(in.Targets)
+		if err != nil {
+			return nil, scanOutput{}, err
+		}
+		for _, w := range preWarns {
+			out.Logs = append(out.Logs, "warn: preflight: "+w)
+		}
+
 		authToken := in.AuthToken
 		if authToken == "" {
 			authToken = os.Getenv("HACKERFIVE_AUTH_TOKEN")
@@ -76,7 +88,6 @@ func addScanTool(s *mcp.Server) {
 			Scope:            sc,
 		}
 
-		var out scanOutput
 		// doc15 Step 6a: template scoping is on by default. An explicit Tags
 		// wins untouched; all_templates forces the full synced corpus;
 		// otherwise the scan is scoped to its detector's category floor

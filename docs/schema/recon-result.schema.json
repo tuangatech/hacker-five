@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/tuangatech/hacker-five/schema/recon-result.schema.json",
-  "$comment": "v1.1 — frozen per docs/14-implementation-plan-ph5.md Step 3 (R2), same discipline as finding.schema.json (Step 2's A3): publish before an external MCP client depends on the shape. Mirrors pkg/recon.ReconResult exactly. confidence values here (\"high\"|\"medium\"|\"low\") mirror pkg/agenttask.Confidence's band convention, NOT Finding.confidence (a distinct, detector-set, two-value field) — docs/91-research-recon-phase.md already corrected this exact conflation once. v1.1 (Step 3b): TechFact.host added as required — R8's decision engine needs to know which host produced a tech signal to set a PlanTree leaf's Target; a real omission in v1, corrected before Phase 6's MCP server (the only planned external consumer) exists.",
+  "$comment": "v1.1 — frozen per docs/14-implementation-plan-ph5.md Step 3 (R2), same discipline as finding.schema.json (Step 2's A3): publish before an external MCP client depends on the shape. Mirrors pkg/recon.ReconResult exactly. confidence values here (\"high\"|\"medium\"|\"low\") mirror pkg/agenttask.Confidence's band convention, NOT Finding.confidence (a distinct, detector-set, two-value field) — docs/91-research-recon-phase.md already corrected this exact conflation once. v1.1 (Step 3b): TechFact.host added as required — R8's decision engine needs to know which host produced a tech signal to set a PlanTree leaf's Target; a real omission in v1, corrected before Phase 6's MCP server (the only planned external consumer) exists. v1.2 (Phase 6 Step 3, D2): optional `policy` object added — Wave 0's fetched security.txt/robots.txt signals, input to the pkg/preflight program-policy pre-flight check; a backward-compatible additive field, absent unless Wave 0 found something.",
   "title": "ReconResult",
   "type": "object",
   "additionalProperties": false,
@@ -20,6 +20,10 @@
       "items": { "type": "string" },
       "description": "Hosts discovered but excluded per --scope — feeds doc90's B4 scope-creep gate once Phase 6 wires it in."
     },
+    "policy": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/PolicySignals" }],
+      "description": "Raw, unparsed policy-relevant artifacts Wave 0 fetches (security.txt body, robots.txt disallow-all) — input to pkg/preflight's D2 pre-flight check (doc15 Step 3). Advisory only; never a block on its own."
+    },
     "warnings": {
       "type": "array",
       "items": { "type": "string" },
@@ -28,6 +32,14 @@
     "generated_at": { "type": "string", "format": "date-time" }
   },
   "$defs": {
+    "PolicySignals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "security_txt": { "type": "string", "description": "security.txt body, truncated to a scan-only length; substring-scanned for advisory warnings, never parsed." },
+        "robots_disallow_all": { "type": "boolean", "description": "robots.txt has 'User-agent: *' with 'Disallow: /'." }
+      }
+    },
     "PortFact": {
       "type": "object",
       "additionalProperties": false,

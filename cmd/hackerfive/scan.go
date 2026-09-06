@@ -25,33 +25,35 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		concurrency         int
 		templateConcurrency int
 		rateLimit           int
-		detector         string
-		endpointTemplate string
-		idorPreview      bool
-		authToken        string
-		otherAuthToken   string
-		authHeaderName   string
-		authHeaderFormat string
-		insecure         bool
-		scopeFile        string
-		protectedPaths   string
-		loginPaths       string
-		logoutPaths      string
-		headers          []string
-		ssrfParams       []string
-		oobServers       []string
-		noOOB            bool
-		allowWrites      bool
-		couponMintPath   string
-		couponApplyPath  string
-		raceConcurrency  int
-		format           string
-		reconFile        string
-		narrowByTech     bool
-		allTemplates     bool
-		templateIndex    string
-		verbose          bool
-		logRejected      string
+		detector            string
+		endpointTemplate    string
+		idorPreview         bool
+		authToken           string
+		otherAuthToken      string
+		authHeaderName      string
+		authHeaderFormat    string
+		insecure            bool
+		scopeFile           string
+		protectedPaths      string
+		loginPaths          string
+		logoutPaths         string
+		headers             []string
+		ssrfParams          []string
+		oobServers          []string
+		noOOB               bool
+		allowWrites         bool
+		couponMintPath      string
+		couponApplyPath     string
+		raceConcurrency     int
+		format              string
+		reconFile           string
+		narrowByTech        bool
+		allTemplates        bool
+		templateIndex       string
+		verbose             bool
+		logRejected         string
+		policyFile          string
+		allowPolicyOverride bool
 	)
 
 	cmd := &cobra.Command{
@@ -68,6 +70,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			targetList, err := resolveTargets(targets)
 			if err != nil {
 				return fmt.Errorf("resolving targets: %w", err)
+			}
+			// D2 program-policy pre-flight (doc15 Step 3): hard-fails only when
+			// the operator's policy.yaml marks a target automated_scanning:
+			// disallowed; otherwise prints advisory warnings and proceeds.
+			if err := runPreflight(targetList, policyFile, scopeFile, allowPolicyOverride, nil, cmd.ErrOrStderr()); err != nil {
+				return err
 			}
 			extraHeaders, err := parseHeaders(headers)
 			if err != nil {
@@ -94,37 +102,37 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			}
 
 			cfg := scanner.Config{
-				Targets:          targetList,
-				TemplatePaths:    templatesPaths,
-				Tags:             parseTags(tags),
+				Targets:             targetList,
+				TemplatePaths:       templatesPaths,
+				Tags:                parseTags(tags),
 				Concurrency:         concurrency,
 				TemplateConcurrency: templateConcurrency,
 				RateLimit:           rateLimit,
-				ProxyURL:         root.proxy,
-				Timeout:          root.timeout,
-				OutputFormat:     format,
-				OutputPath:       root.output,
-				Detector:         detector,
-				EndpointTemplate: endpointTemplate,
-				IDORPreview:      idorPreview,
-				Insecure:         insecure,
-				AuthToken:        authToken,
-				OtherAuthToken:   otherAuthToken,
-				AuthHeaderName:   authHeaderName,
-				AuthHeaderFormat: authHeaderFormat,
-				ScopeFile:        scopeFile,
-				ProtectedPaths:   parseTags(protectedPaths),
-				LoginPaths:       parseTags(loginPaths),
-				LogoutPaths:      parseTags(logoutPaths),
-				ExtraHeaders:     extraHeaders,
-				SSRFParams:       ssrfParams,
-				OOBServers:       expandedOOBServers,
-				AllowWrites:      allowWrites,
-				CouponMintPath:   couponMintPath,
-				CouponApplyPath:  couponApplyPath,
-				RaceConcurrency:  raceConcurrency,
-				Verbose:          verbose,
-				LogRejectedPath:  logRejected,
+				ProxyURL:            root.proxy,
+				Timeout:             root.timeout,
+				OutputFormat:        format,
+				OutputPath:          root.output,
+				Detector:            detector,
+				EndpointTemplate:    endpointTemplate,
+				IDORPreview:         idorPreview,
+				Insecure:            insecure,
+				AuthToken:           authToken,
+				OtherAuthToken:      otherAuthToken,
+				AuthHeaderName:      authHeaderName,
+				AuthHeaderFormat:    authHeaderFormat,
+				ScopeFile:           scopeFile,
+				ProtectedPaths:      parseTags(protectedPaths),
+				LoginPaths:          parseTags(loginPaths),
+				LogoutPaths:         parseTags(logoutPaths),
+				ExtraHeaders:        extraHeaders,
+				SSRFParams:          ssrfParams,
+				OOBServers:          expandedOOBServers,
+				AllowWrites:         allowWrites,
+				CouponMintPath:      couponMintPath,
+				CouponApplyPath:     couponApplyPath,
+				RaceConcurrency:     raceConcurrency,
+				Verbose:             verbose,
+				LogRejectedPath:     logRejected,
 			}
 			// doc15 Step 6a: template scoping is on by default. An explicit
 			// --tags wins untouched; --all-templates (or --narrow-by-tech=false)
@@ -221,6 +229,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&templateIndex, "template-index", "templates/index.json", "path to the index generated by 'hackerfive templates index', used to derive tech-matched tags from --recon-file")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "detailed engine diagnostics — currently: log every template the synced corpus rejects individually (path + both loaders' reasons) instead of the default compact per-reason summary (doc15 Step 6d)")
 	cmd.Flags().StringVar(&logRejected, "log-rejected", "", "write the full per-file rejected-template list to this path (keeps the compact summary on stderr); overrides --verbose for that detail (doc15 Step 6d)")
+	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
+	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
 
 	return cmd
 }
