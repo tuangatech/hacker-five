@@ -57,7 +57,14 @@ type TargetPolicy struct {
 // PolicySet is a parsed policy.yaml. A nil *PolicySet is valid and means "no
 // declarations" — Verdict then always returns VerdictUnknown.
 type PolicySet struct {
-	entries []policyEntry
+	entries    []policyEntry
+	reqHeaders []headerKV
+}
+
+// headerKV is one parsed `request_headers:` entry, split on the first colon.
+type headerKV struct {
+	name  string
+	value string
 }
 
 type policyEntry struct {
@@ -67,6 +74,12 @@ type policyEntry struct {
 
 type policyFile struct {
 	Targets []TargetPolicy `yaml:"targets"`
+	// RequestHeaders are static "Name: Value" strings HackerFive must send on
+	// every request it makes against an in-scope target — a bug-bounty program
+	// that mandates an identifying header (Meesho's `X-Hackerone: <user>`)
+	// declares it here so recon/scan/plan pick it up without a per-command
+	// flag to forget (LT-36). Applies to the whole file, not per-target.
+	RequestHeaders []string `yaml:"request_headers"`
 }
 
 // Load reads a policy.yaml from path. A missing file is not an error — it
@@ -95,7 +108,29 @@ func Load(path string) (*PolicySet, error) {
 		}
 		ps.entries = append(ps.entries, policyEntry{pol: tp, match: sc})
 	}
+	for i, raw := range f.RequestHeaders {
+		name, value, ok := strings.Cut(raw, ":")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("policy file %s: request_headers[%d] %q must be in \"Name: Value\" form", path, i, raw)
+		}
+		ps.reqHeaders = append(ps.reqHeaders, headerKV{name: name, value: strings.TrimSpace(value)})
+	}
 	return ps, nil
+}
+
+// RequestHeaders returns the static headers declared in the policy file's
+// `request_headers:` list as a name->value map (LT-36). Nil-safe: a nil
+// *PolicySet, or a file with no such list, returns nil.
+func (ps *PolicySet) RequestHeaders() map[string]string {
+	if ps == nil || len(ps.reqHeaders) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(ps.reqHeaders))
+	for _, h := range ps.reqHeaders {
+		m[h.name] = h.value
+	}
+	return m
 }
 
 // Verdict returns the automated-scanning verdict for target plus the matching

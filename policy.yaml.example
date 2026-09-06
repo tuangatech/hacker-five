@@ -20,6 +20,16 @@
 # "*."-prefixed suffix (that domain + any subdomain), or a CIDR. First
 # matching entry in file order wins — list the most specific patterns first.
 
+# request_headers: static "Name: Value" strings HackerFive must send on every
+# request it makes against a target in this engagement (LT-36). A program that
+# mandates an identifying header — e.g. HackerOne's "add X-HackerOne: <user>
+# to all your traffic" — declares it here so recon/plan pick it up with no
+# per-command flag to forget (scan already has --header). Applies file-wide,
+# not per-target. `recon --header "Name: Value"` still works and is merged on
+# top (the flag wins on a name clash).
+request_headers:
+  - "X-HackerOne: your-h1-username"
+
 targets:
   - match: "*.aalberts.com"
     automated_scanning: allowed

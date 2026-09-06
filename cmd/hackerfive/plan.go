@@ -61,6 +61,18 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				return err
 			}
 
+			// LT-36: a program that mandates an identifying request header
+			// (policy.yaml request_headers:) must have it on plan's recon
+			// traffic too, not just scan's.
+			policyHeaders, err := policyRequestHeaders(policyFile, scopeFile)
+			if err != nil {
+				return err
+			}
+			_, fromPolicy := mergeHeaders(policyHeaders, nil)
+			for _, name := range fromPolicy {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "plan: applying policy-mandated request header %q to recon probes (LT-36)\n", name)
+			}
+
 			// A missing template index degrades to skipping template-tag
 			// matching, not a hard failure — the same "missing optional
 			// input, warn and continue" posture pkg/recon already uses for
@@ -86,6 +98,9 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 			}
 			if verbose {
 				opts = append(opts, recon.WithProgressCallback(verboseProgress(cmd.ErrOrStderr())))
+			}
+			if len(policyHeaders) > 0 {
+				opts = append(opts, recon.WithHeaders(policyHeaders))
 			}
 			r := recon.New(client, opts...)
 

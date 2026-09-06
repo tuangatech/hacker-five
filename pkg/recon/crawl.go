@@ -66,8 +66,11 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) {
 	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
 	defer cancel()
-	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana",
-		"-silent", "-jsonl", "-jc", "-depth", "2", "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency))
+	katanaArgs := []string{
+		"-silent", "-jsonl", "-jc", "-depth", "2", "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency),
+	}
+	katanaArgs = append(katanaArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every crawl request
+	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana", katanaArgs...)
 	if err != nil {
 		if isBinaryMissing(err) {
 			agg.addWarning("wave3: %v — crawl skipped", err)
@@ -182,6 +185,7 @@ func (r *Recon) verifyAuthCandidates(ctx context.Context, agg *aggregator, candi
 		if err != nil {
 			continue
 		}
+		r.applyHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
 			r.hostErrors.RecordError(host)
@@ -212,6 +216,7 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		if err != nil {
 			continue
 		}
+		r.applyHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
 			// LT-4 (docs/follow-up.md): before this, a host that failed every
@@ -253,6 +258,7 @@ func (r *Recon) tagAuthBoundary(ctx context.Context, agg *aggregator, seed strin
 	if err != nil {
 		return
 	}
+	r.applyHeaders(req)
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return

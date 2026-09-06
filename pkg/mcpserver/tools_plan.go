@@ -166,6 +166,10 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	if err != nil {
 		return nil, planOutput{}, err
 	}
+	reqHeaders, err := policyRequestHeaders() // LT-36
+	if err != nil {
+		return nil, planOutput{}, err
+	}
 
 	depth := recon.Depth(in.Depth)
 	switch depth {
@@ -187,7 +191,7 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 		MaxIdleConnsPerHost: defaultConcurrency,
 	}), httpclient.WithRateLimit(ratelimit.New(defaultRateLimit)))
 
-	r := recon.New(client, recon.WithScope(sc), recon.WithRateLimit(defaultRateLimit), recon.WithConcurrency(defaultConcurrency))
+	r := recon.New(client, recon.WithScope(sc), recon.WithRateLimit(defaultRateLimit), recon.WithConcurrency(defaultConcurrency), recon.WithHeaders(reqHeaders))
 	result, err := r.Run(ctx, in.Target, depth)
 	if err != nil {
 		return nil, planOutput{}, err

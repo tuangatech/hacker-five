@@ -21,6 +21,23 @@ func preflightBlock(targets []string) (warnings []string, err error) {
 	return preflight.Check(targets, preflight.Options{PolicyPath: os.Getenv(policyFileEnv)})
 }
 
+// policyRequestHeaders returns the `request_headers:` list from the pinned
+// policy file (LT-36) so an MCP-driven recon/plan carries a program-mandated
+// identifying header (e.g. X-Hackerone) the same way the CLI and scan do. A
+// malformed file surfaces as an error to the caller — the same posture
+// preflightBlock takes; an unset env var or absent list yields (nil, nil).
+func policyRequestHeaders() (map[string]string, error) {
+	path := os.Getenv(policyFileEnv)
+	if path == "" {
+		return nil, nil
+	}
+	ps, err := preflight.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	return ps.RequestHeaders(), nil
+}
+
 // reconSignalWarnings derives the advisory security.txt/robots.txt pre-flight
 // warnings from a completed recon pass (the plan/recon tools have these only
 // after recon runs).

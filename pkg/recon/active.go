@@ -167,10 +167,13 @@ type hostWithIP struct {
 func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) ([]string, []hostWithIP) {
 	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
 	defer cancel()
-	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "httpx",
+	httpxArgs := []string{
 		"-silent", "-json", "-status-code", "-title", "-web-server", "-tech-detect", "-follow-redirects",
 		"-favicon", "-irr", // R7: response headers/body + favicon hash, for pkg/fingerprint's signature matching
-		"-rl", itoa(r.rateLimit), "-threads", itoa(r.concurrency))
+		"-rl", itoa(r.rateLimit), "-threads", itoa(r.concurrency),
+	}
+	httpxArgs = append(httpxArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every probe
+	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "httpx", httpxArgs...)
 	if err != nil {
 		if isBinaryMissing(err) {
 			agg.addWarning("wave2: %v — http probing skipped", err)

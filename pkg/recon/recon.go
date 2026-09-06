@@ -3,7 +3,9 @@ package recon
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,6 +40,7 @@ type Recon struct {
 	concurrency int
 	run         runFunc
 	progress    func(wave, status string)
+	headers     map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
 }
 
 // Option configures a Recon at construction time.
@@ -66,6 +69,30 @@ func WithConcurrency(n int) Option {
 	return func(r *Recon) {
 		if n > 0 {
 			r.concurrency = n
+		}
+	}
+}
+
+// WithHeaders registers static "Name: Value" request headers to attach to
+// every request recon makes against the target — its own direct HTTP calls
+// (Wave 0's security.txt/robots.txt, Wave 3's common-path/auth-boundary
+// probes) and, via each tool's own -H flag, the httpx and katana subprocess
+// crawls. The originating use is a bug-bounty program that mandates an
+// identifying header on every test request (Meesho's `X-Hackerone: <user>`,
+// .engagements/meesho/policy.md) — scan already threads one through
+// (cmd/hackerfive/scan.go's --header); recon, plan's recon pass, and the
+// standalone `recon` command did not, so that traffic went out unattributed
+// (LT-36, docs/follow-up.md). dnsx/naabu/subfinder/tlsx take no HTTP header
+// (DNS/port/passive-source work) and are unaffected. A nil or empty map is
+// a no-op — same zero-behaviour-when-unused shape as the other options.
+func WithHeaders(h map[string]string) Option {
+	return func(r *Recon) {
+		if len(h) == 0 {
+			return
+		}
+		r.headers = make(map[string]string, len(h))
+		for k, v := range h {
+			r.headers[k] = v
 		}
 	}
 }
@@ -218,6 +245,35 @@ func defaultScheme(target string) string {
 		return target
 	}
 	return "https://" + target
+}
+
+// applyHeaders sets every configured static header on req (LT-36). Called
+// at each of this package's own http.NewRequestWithContext sites; a nil
+// r.headers makes it a no-op.
+func (r *Recon) applyHeaders(req *http.Request) {
+	for k, v := range r.headers {
+		req.Header.Set(k, v)
+	}
+}
+
+// headerArgs renders the configured static headers as repeated "-H", "Name:
+// Value" argument pairs for httpx and katana, which both accept -H exactly
+// this way (verified against their -h output). Order is sorted so a run is
+// reproducible and tests are stable. Empty when no headers are configured.
+func (r *Recon) headerArgs() []string {
+	if len(r.headers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(r.headers))
+	for k := range r.headers {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	args := make([]string, 0, len(names)*2)
+	for _, k := range names {
+		args = append(args, "-H", k+": "+r.headers[k])
+	}
+	return args
 }
 
 // waveTimeout bounds each external-binary invocation so one hung wave

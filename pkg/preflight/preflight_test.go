@@ -136,6 +136,36 @@ func TestSignalWarnings(t *testing.T) {
 	assert.True(t, containsSubstr(w, "restricting automated scanning"))
 }
 
+// TestRequestHeaders_ParsedIntoMap: a `request_headers:` list is exposed as
+// a name->value map, colon-split and trimmed (LT-36).
+func TestRequestHeaders_ParsedIntoMap(t *testing.T) {
+	ps, err := Load(writePolicy(t, `
+request_headers:
+  - "X-Hackerone: tonytran"
+  - "X-Trace:   abc123  "
+targets:
+  - match: "example.com"
+    automated_scanning: allowed
+`))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"X-Hackerone": "tonytran", "X-Trace": "abc123"}, ps.RequestHeaders())
+}
+
+func TestRequestHeaders_AbsentOrNilSet_ReturnsNil(t *testing.T) {
+	ps, err := Load(writePolicy(t, samplePolicy))
+	require.NoError(t, err)
+	assert.Nil(t, ps.RequestHeaders())
+
+	var nilSet *PolicySet
+	assert.Nil(t, nilSet.RequestHeaders())
+}
+
+func TestRequestHeaders_MalformedEntry_IsAnError(t *testing.T) {
+	_, err := Load(writePolicy(t, "request_headers:\n  - \"no-colon-here\"\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `must be in "Name: Value" form`)
+}
+
 func containsSubstr(hay []string, needle string) bool {
 	for _, s := range hay {
 		if strings.Contains(s, needle) {
