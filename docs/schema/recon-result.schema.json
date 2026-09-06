@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/tuangatech/hacker-five/schema/recon-result.schema.json",
-  "$comment": "v1.1 — frozen per docs/14-implementation-plan-ph5.md Step 3 (R2), same discipline as finding.schema.json (Step 2's A3): publish before an external MCP client depends on the shape. Mirrors pkg/recon.ReconResult exactly. confidence values here (\"high\"|\"medium\"|\"low\") mirror pkg/agenttask.Confidence's band convention, NOT Finding.confidence (a distinct, detector-set, two-value field) — docs/91-research-recon-phase.md already corrected this exact conflation once. v1.1 (Step 3b): TechFact.host added as required — R8's decision engine needs to know which host produced a tech signal to set a PlanTree leaf's Target; a real omission in v1, corrected before Phase 6's MCP server (the only planned external consumer) exists. v1.2 (Phase 6 Step 3, D2): optional `policy` object added — Wave 0's fetched security.txt/robots.txt signals, input to the pkg/preflight program-policy pre-flight check; a backward-compatible additive field, absent unless Wave 0 found something.",
+  "$comment": "v1.1 — frozen per docs/14-implementation-plan-ph5.md Step 3 (R2), same discipline as finding.schema.json (Step 2's A3): publish before an external MCP client depends on the shape. Mirrors pkg/recon.ReconResult exactly. confidence values here (\"high\"|\"medium\"|\"low\") mirror pkg/agenttask.Confidence's band convention, NOT Finding.confidence (a distinct, detector-set, two-value field) — docs/91-research-recon-phase.md already corrected this exact conflation once. v1.1 (Step 3b): TechFact.host added as required — R8's decision engine needs to know which host produced a tech signal to set a PlanTree leaf's Target; a real omission in v1, corrected before Phase 6's MCP server (the only planned external consumer) exists. v1.2 (Phase 6 Step 3, D2): optional `policy` object added — Wave 0's fetched security.txt/robots.txt signals, input to the pkg/preflight program-policy pre-flight check; a backward-compatible additive field, absent unless Wave 0 found something. v1.3 (demo batch, LT-30b): EndpointFact gains optional `body_len`/`content_type`/`title` — response-shape signal probeCommonPaths/httpx measure, so a downstream soft-404/SPA-catch-all check can tell a real distinct resource from a shell served for every path; all additive, omitted when unmeasured.",
   "title": "ReconResult",
   "type": "object",
   "additionalProperties": false,
@@ -71,6 +71,9 @@
         "url": { "type": "string" },
         "method": { "type": "string" },
         "status_code": { "type": "integer" },
+        "body_len": { "type": "integer", "description": "Response body length in bytes, as measured by probeCommonPaths' own GET or httpx -cl. Omitted (0) when recon didn't measure it — v1.3, LT-30b." },
+        "content_type": { "type": "string", "description": "Response Content-Type (value only, charset param kept as-is), from probeCommonPaths or httpx -ct. Omitted when unmeasured — v1.3, LT-30b." },
+        "title": { "type": "string", "description": "HTML <title>, from httpx -title. Omitted when unmeasured — v1.3, LT-30b." },
         "source": { "type": "string", "description": "e.g. \"wave0-security-txt\", \"httpx\", \"katana-crawl\", \"wave3-common-path-probe\", \"wave3-auth-boundary-heuristic\"." },
         "confidence": { "$ref": "#/$defs/Confidence" }
       }

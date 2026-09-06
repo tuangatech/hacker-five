@@ -12,11 +12,14 @@ import (
 
 // PlanProposal is one llm-suggested leaf PlanFromRecon returns — merged
 // into (never replacing) registry.Resolve's own deterministic leaves by
-// MergeLLMProposals. Detector must be a real registry.Capability name or
-// templatesync.Entry.ID, the same dispatch contract ResolveLeaf's
-// use_existing_tag decision already has to satisfy (P2-3) —
-// MergeLLMProposals drops anything else rather than merging in a leaf that
-// can never dispatch.
+// MergeLLMProposals. Detector must be a real registry.Capability of
+// Kind == KindDetector, or a templatesync.Entry.ID — the same dispatch
+// contract ResolveLeaf's use_existing_tag decision already has to satisfy
+// (P2-3). MergeLLMProposals drops anything else rather than merging in a
+// leaf that can never dispatch — including a KindReconTool capability name
+// (katana/subfinder/tlsx/…): planexec.RunPlan only recognizes the 5 real
+// detectors, so a recon-tool "detector" is a non-executable leaf that still
+// cost frontier output to produce (LT-33, docs/follow-up.md).
 type PlanProposal struct {
 	Target    string `json:"target"`
 	Detector  string `json:"detector"`
@@ -121,7 +124,7 @@ func (c *Client) PlanFromRecon(ctx context.Context, result *recon.ReconResult, c
 	var p strings.Builder
 	p.WriteString(planFromReconSummary(result))
 	p.WriteString("\nAvailable capabilities:\n")
-	for _, cap := range capabilities {
+	for _, cap := range detectorCapabilities(capabilities) {
 		fmt.Fprintf(&p, "- %s: %s\n", cap.Name, cap.Description)
 	}
 
@@ -156,7 +159,7 @@ func MergeLLMProposals(tree *agenttask.PlanTree, proposals []PlanProposal, capab
 		return 0
 	}
 	validDetector := make(map[string]bool, len(capabilities))
-	for _, cap := range capabilities {
+	for _, cap := range detectorCapabilities(capabilities) {
 		validDetector[cap.Name] = true
 	}
 
@@ -190,6 +193,20 @@ func MergeLLMProposals(tree *agenttask.PlanTree, proposals []PlanProposal, capab
 		merged++
 	}
 	return merged
+}
+
+// detectorCapabilities returns only the Kind == KindDetector entries — the
+// ones planexec.RunPlan can actually dispatch. A KindReconTool capability
+// (katana/subfinder/…) is a valid catalog entry but never a runnable
+// "detector" for a PlanTree leaf (LT-33, docs/follow-up.md).
+func detectorCapabilities(capabilities []registry.Capability) []registry.Capability {
+	out := make([]registry.Capability, 0, len(capabilities))
+	for _, cap := range capabilities {
+		if cap.Kind == registry.KindDetector {
+			out = append(out, cap)
+		}
+	}
+	return out
 }
 
 func leafExists(hostNode *agenttask.PlanNode, target, detector string) bool {

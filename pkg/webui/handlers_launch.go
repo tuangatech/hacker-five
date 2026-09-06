@@ -696,6 +696,14 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	if s != nil {
 		opts = append(opts, recon.WithScope(s))
 	}
+	// LT-36: the launch form's "headers" textarea (e.g. a program-mandated
+	// X-Hackerone identifier) already flows to every detector's ExtraHeaders;
+	// thread it through recon's own probes and the httpx/katana crawls too, so
+	// recon isn't the one phase that omits it. A parse error here was already
+	// surfaced to the operator at form-submit time (parseHeaderLines, line ~216).
+	if reconHeaders, err := parseHeaderLines(form.Headers); err == nil && len(reconHeaders) > 0 {
+		opts = append(opts, recon.WithHeaders(reconHeaders))
+	}
 	rc := recon.New(client, opts...)
 
 	ctx, cancel := context.WithTimeout(job.Ctx(), reconRunTimeout)

@@ -13,8 +13,86 @@ import (
 // commonPaths are probed directly (via r.client, not katana) to map the
 // shape of the app — distinct from misconfig's exposed-path checks, which
 // look for bad *exposure* (docs/91-research-recon-phase.md §3, Wave 3).
+// /robots.txt is deliberately absent: Wave 0 already fetches it once (see
+// passive.go's fetchPolicySignals) and a second GET here only produced a
+// duplicate EndpointFact (docs/follow-up.md R-c).
 var commonPaths = []string{
-	"/api", "/graphql", "/swagger.json", "/.well-known/openapi.json", "/robots.txt", "/sitemap.xml",
+	"/api", "/graphql", "/swagger.json", "/.well-known/openapi.json", "/sitemap.xml",
+}
+
+// reconCanaryPath is a path guaranteed not to be a real resource on any
+// target — probeCommonPaths GETs it once per host so it can tell a genuine
+// distinct resource from the single generic page a SPA catch-all / soft-404
+// / WAF layer returns for *every* path (docs/follow-up.md LT-30: against
+// www.valmo.in, /swagger.json, /api, /graphql and a random path all
+// returned the identical 1526-byte React shell at HTTP 200, so the
+// unguarded ">= 200 && < 400" check fabricated a ConfidenceHigh openapi
+// APISpecFact and a fistful of endpoints). Alphanumeric only, matching
+// pkg/detectors/misconfig.baselineCanaryPath's own reasoning: a WAF/CDN
+// block page that echoes the requested path back HTML-entity-encodes
+// punctuation but leaves alphanumeric runs literal.
+const reconCanaryPath = "/hackerfivereconcanary8b2e14d0"
+
+// maxCanaryBodyRead bounds how much of a common-path / canary response body
+// probeCommonPaths measures for the length comparison — a real SPA shell is
+// a couple of KiB, and both sides are capped identically so an equal pair
+// still compares equal.
+const maxCanaryBodyRead = 1 << 20
+
+// canaryResponse is what reconCanaryPath returned for one host — the
+// yardstick sameAsCanary compares each real common-path probe against.
+type canaryResponse struct {
+	fetched     bool
+	status      int
+	bodyLen     int
+	contentType string // normalized: media type only, lower-cased
+}
+
+// sameAsCanary reports whether a probe's (status, bodyLen, contentType)
+// is indistinguishable from the host's canary response — i.e. the probe
+// almost certainly hit the same catch-all page, not a real resource. Body
+// length is compared with a small relative tolerance (a shell can embed the
+// requested path or a per-request nonce); status and normalized content
+// type must match exactly.
+func (c canaryResponse) sameAsCanary(status, bodyLen int, contentType string) bool {
+	if !c.fetched || status != c.status || contentType != c.contentType {
+		return false
+	}
+	tol := c.bodyLen / 10
+	if tol < 64 {
+		tol = 64
+	}
+	diff := bodyLen - c.bodyLen
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= tol
+}
+
+// normalizeContentType lower-cases a Content-Type header and drops its
+// parameters (";charset=utf-8", ";boundary=..."), leaving just the media
+// type for comparison.
+func normalizeContentType(v string) string {
+	if i := strings.IndexByte(v, ';'); i >= 0 {
+		v = v[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// isStructuredSpecContentType reports whether a normalized Content-Type
+// plausibly belongs to a real machine-readable API spec (JSON or YAML) —
+// the gate LT-30 adds before probeCommonPaths records an APISpecFact, so an
+// HTML shell served at /swagger.json no longer counts as "a spec is
+// publicly reachable."
+func isStructuredSpecContentType(ct string) bool {
+	switch ct {
+	case "application/json", "text/json",
+		"application/yaml", "text/yaml", "application/x-yaml", "text/x-yaml",
+		"application/openapi+json", "application/vnd.oai.openapi+json",
+		"application/openapi+yaml", "application/vnd.oai.openapi":
+		return true
+	}
+	return strings.HasSuffix(ct, "+json") || strings.HasSuffix(ct, "+yaml")
 }
 
 // specPaths is the subset of commonPaths whose presence is itself a
@@ -66,8 +144,11 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) {
 	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
 	defer cancel()
-	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana",
-		"-silent", "-jsonl", "-jc", "-depth", "2", "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency))
+	katanaArgs := []string{
+		"-silent", "-jsonl", "-jc", "-depth", "2", "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency),
+	}
+	katanaArgs = append(katanaArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every crawl request
+	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana", katanaArgs...)
 	if err != nil {
 		if isBinaryMissing(err) {
 			agg.addWarning("wave3: %v — crawl skipped", err)
@@ -182,6 +263,7 @@ func (r *Recon) verifyAuthCandidates(ctx context.Context, agg *aggregator, candi
 		if err != nil {
 			continue
 		}
+		r.applyHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
 			r.hostErrors.RecordError(host)
@@ -200,18 +282,30 @@ func (r *Recon) verifyAuthCandidates(ctx context.Context, agg *aggregator, candi
 // probeCommonPaths GETs commonPaths against seed via the same rate-limited,
 // circuit-broken httpclient.Client every detector uses — this is our own
 // direct HTTP traffic, unlike the binary-shelled waves above.
+//
+// LT-30 (docs/follow-up.md): before recording anything, it GETs one
+// guaranteed-nonexistent canary path so a 2xx/3xx that's byte-shaped
+// identical to that canary (a SPA catch-all, a soft-404, a WAF page served
+// for everything) is dropped as noise rather than fabricating an endpoint —
+// and an APISpecFact is recorded only when the spec path's Content-Type is
+// actually JSON/YAML, not just when it returned 200.
 func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed string) {
 	base := strings.TrimRight(seed, "/")
 	host := hostOnly(base)
 	if r.hostErrors.ShouldSkip(host) {
 		return
 	}
+
+	canary := r.fetchReconCanary(ctx, agg, base, host)
+
+	suppressed := 0
 	for _, path := range commonPaths {
 		reqURL := base + path
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
 			continue
 		}
+		r.applyHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
 			// LT-4 (docs/follow-up.md): before this, a host that failed every
@@ -228,14 +322,60 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 			continue
 		}
 		r.hostErrors.RecordSuccess(host)
-		_, _ = io.Copy(io.Discard, resp.Body)
+		n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
 		_ = resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-			agg.addEndpoint(EndpointFact{URL: reqURL, Method: http.MethodGet, StatusCode: resp.StatusCode, Source: "wave3-common-path-probe", Confidence: ConfidenceHigh})
-			if kind, ok := specPaths[path]; ok {
-				agg.addAPISpec(APISpecFact{Kind: kind, URL: reqURL})
-			}
+		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+			continue
 		}
+		bodyLen := int(n)
+		ctype := normalizeContentType(resp.Header.Get("Content-Type"))
+		if canary.sameAsCanary(resp.StatusCode, bodyLen, ctype) {
+			suppressed++
+			continue // indistinguishable from the catch-all — not a real resource
+		}
+		agg.addEndpoint(EndpointFact{
+			URL: reqURL, Method: http.MethodGet, StatusCode: resp.StatusCode,
+			BodyLen: bodyLen, ContentType: resp.Header.Get("Content-Type"),
+			Source: "wave3-common-path-probe", Confidence: ConfidenceHigh,
+		})
+		if kind, ok := specPaths[path]; ok && isStructuredSpecContentType(ctype) {
+			agg.addAPISpec(APISpecFact{Kind: kind, URL: reqURL})
+		}
+	}
+	if suppressed > 0 {
+		agg.addWarning("wave3: %s: %d common-path probe(s) returned a response indistinguishable from a random-path canary (uniform SPA/catch-all) — not recorded as endpoints (LT-30)", host, suppressed)
+	}
+}
+
+// fetchReconCanary GETs reconCanaryPath against base once, giving
+// probeCommonPaths' sameAsCanary a yardstick. A request error just leaves
+// canaryResponse.fetched false — every real probe below then records
+// unsuppressed, exactly as before LT-30 existed — and is fed through the
+// same hostErrors circuit breaker as the real probes so a wholly-broken
+// host still trips it here.
+func (r *Recon) fetchReconCanary(ctx context.Context, agg *aggregator, base, host string) canaryResponse {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+reconCanaryPath, nil)
+	if err != nil {
+		return canaryResponse{}
+	}
+	r.applyHeaders(req)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		wasOK := !r.hostErrors.ShouldSkip(host)
+		r.hostErrors.RecordError(host)
+		if wasOK && r.hostErrors.ShouldSkip(host) {
+			agg.addWarning("wave3: %s: repeated request errors (last: %v) — no further common-path/auth-boundary probes will run against this host", host, err)
+		}
+		return canaryResponse{}
+	}
+	r.hostErrors.RecordSuccess(host)
+	n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+	_ = resp.Body.Close()
+	return canaryResponse{
+		fetched:     true,
+		status:      resp.StatusCode,
+		bodyLen:     int(n),
+		contentType: normalizeContentType(resp.Header.Get("Content-Type")),
 	}
 }
 
@@ -253,6 +393,7 @@ func (r *Recon) tagAuthBoundary(ctx context.Context, agg *aggregator, seed strin
 	if err != nil {
 		return
 	}
+	r.applyHeaders(req)
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return

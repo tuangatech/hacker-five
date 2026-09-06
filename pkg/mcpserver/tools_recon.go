@@ -44,6 +44,10 @@ func addReconTool(s *mcp.Server) {
 		if err != nil {
 			return nil, reconOutput{}, err
 		}
+		reqHeaders, err := policyRequestHeaders() // LT-36
+		if err != nil {
+			return nil, reconOutput{}, err
+		}
 
 		depth := recon.Depth(in.Depth)
 		switch depth {
@@ -78,6 +82,7 @@ func addReconTool(s *mcp.Server) {
 					Message:       wave + ": " + status,
 				})
 			}),
+			recon.WithHeaders(reqHeaders),
 		)
 
 		result, err := r.Run(ctx, in.Target, depth)

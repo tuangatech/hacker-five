@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/preflight"
 	"github.com/tuangatech/hacker-five/pkg/recon"
@@ -47,6 +49,48 @@ func resolvePolicyPath(policyFile, scopeFile string) string {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// policyRequestHeaders loads the `request_headers:` list from the same
+// policy.yaml the D2 pre-flight check consults and returns it as a
+// name->value map (LT-36). A missing file or absent list yields (nil, nil).
+// A malformed file is a hard error — the same posture Load/Check take, since
+// a program-mandated identifying header silently not being sent is exactly
+// the failure this is meant to prevent.
+func policyRequestHeaders(policyFile, scopeFile string) (map[string]string, error) {
+	path := resolvePolicyPath(policyFile, scopeFile)
+	if path == "" {
+		return nil, nil
+	}
+	ps, err := preflight.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	return ps.RequestHeaders(), nil
+}
+
+// mergeHeaders overlays flag-supplied headers onto policy-supplied ones,
+// case-insensitively on the header name so a `--header "x-hackerone: me"`
+// still overrides a policy `X-Hackerone:` rather than sending both. Returns
+// the merged map plus the sorted names of policy headers that survived
+// (for an operator-visible "applying required header" log line).
+func mergeHeaders(policy, flag map[string]string) (merged map[string]string, fromPolicy []string) {
+	merged = make(map[string]string, len(policy)+len(flag))
+	canonical := make(map[string]string, len(policy)) // lower(name) -> stored name
+	for k, v := range policy {
+		merged[k] = v
+		canonical[strings.ToLower(k)] = k
+		fromPolicy = append(fromPolicy, k)
+	}
+	for k, v := range flag {
+		if existing, ok := canonical[strings.ToLower(k)]; ok {
+			merged[existing] = v // flag wins, keep the policy's spelling of the name
+			continue
+		}
+		merged[k] = v
+	}
+	sort.Strings(fromPolicy)
+	return merged, fromPolicy
 }
 
 // runPreflight runs D2's program-policy pre-flight for a CLI command: it

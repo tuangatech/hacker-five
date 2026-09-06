@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
@@ -34,6 +35,7 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 		verbose             bool
 		policyFile          string
 		allowPolicyOverride bool
+		reconFile           string
 	)
 
 	cmd := &cobra.Command{
@@ -61,6 +63,20 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				return err
 			}
 
+			// LT-36: a program that mandates an identifying request header
+			// (policy.yaml request_headers:) must have it on plan's recon
+			// traffic too, not just scan's.
+			policyHeaders, err := policyRequestHeaders(policyFile, scopeFile)
+			if err != nil {
+				return err
+			}
+			if reconFile == "" {
+				_, fromPolicy := mergeHeaders(policyHeaders, nil)
+				for _, name := range fromPolicy {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "plan: applying policy-mandated request header %q to recon probes (LT-36)\n", name)
+				}
+			}
+
 			// A missing template index degrades to skipping template-tag
 			// matching, not a hard failure — the same "missing optional
 			// input, warn and continue" posture pkg/recon already uses for
@@ -73,28 +89,51 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				warnIndexDrift(cmd.ErrOrStderr(), index)
 			}
 
-			client := httpclient.New(recon.ClientConfig(httpclient.Config{
-				Timeout:             root.timeout,
-				MaxRedirects:        5,
-				MaxIdleConnsPerHost: concurrency,
-				ProxyURL:            root.proxy,
-			}), httpclient.WithRateLimit(ratelimit.New(rateLimit)))
+			// LT-34 (docs/follow-up.md): reuse a prior `hackerfive recon
+			// --output <path>` result instead of re-running an identical
+			// wave0…wave3 (measured: recon 2m15s, then plan re-ran the same
+			// for another ~2m15s). --scope/preflight above still apply; the
+			// recon client is never built when a file is supplied.
+			var result *recon.ReconResult
+			if reconFile != "" {
+				data, err := os.ReadFile(reconFile)
+				if err != nil {
+					return fmt.Errorf("reading --recon-file: %w", err)
+				}
+				var rr recon.ReconResult
+				if err := json.Unmarshal(data, &rr); err != nil {
+					return fmt.Errorf("parsing --recon-file: %w", err)
+				}
+				result = &rr
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "plan: using recon result from %s (%d host(s), %d endpoint(s), %d tech fact(s)) — skipping the recon run\n",
+					reconFile, len(rr.Hosts), len(rr.Endpoints), len(rr.TechStack))
+			} else {
+				client := httpclient.New(recon.ClientConfig(httpclient.Config{
+					Timeout:             root.timeout,
+					MaxRedirects:        5,
+					MaxIdleConnsPerHost: concurrency,
+					ProxyURL:            root.proxy,
+				}), httpclient.WithRateLimit(ratelimit.New(rateLimit)))
 
-			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
-			if s != nil {
-				opts = append(opts, recon.WithScope(s))
-			}
-			if verbose {
-				opts = append(opts, recon.WithProgressCallback(verboseProgress(cmd.ErrOrStderr())))
-			}
-			r := recon.New(client, opts...)
+				opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
+				if s != nil {
+					opts = append(opts, recon.WithScope(s))
+				}
+				if verbose {
+					opts = append(opts, recon.WithProgressCallback(verboseProgress(cmd.ErrOrStderr())))
+				}
+				if len(policyHeaders) > 0 {
+					opts = append(opts, recon.WithHeaders(policyHeaders))
+				}
+				r := recon.New(client, opts...)
 
-			ctx, cancel := context.WithTimeout(cmd.Context(), reconRunTimeout)
-			defer cancel()
+				ctx, cancel := context.WithTimeout(cmd.Context(), reconRunTimeout)
+				defer cancel()
 
-			result, err := r.Run(ctx, target, d)
-			if err != nil {
-				return fmt.Errorf("running recon: %w", err)
+				result, err = r.Run(ctx, target, d)
+				if err != nil {
+					return fmt.Errorf("running recon: %w", err)
+				}
 			}
 			for _, w := range signalWarningsFromRecon(result) {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "preflight: "+w)
@@ -117,6 +156,19 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				fb, fbErr := llmfallback.New()
 				ceiling := llmfallback.PerCallDefaultSpendCeilingUSD()
 				tree.SpendCeilingUSD = ceiling
+
+				// LT-37 (docs/follow-up.md): the LLM phase used to run for
+				// minutes with a single line of output only at the very end
+				// and no $ visibility. Log what it's about to do, then the
+				// real spend against the ceiling when it's done.
+				unresolved := 0
+				for _, leaf := range agenttask.Leaves(tree.Root) {
+					if leaf.Status == agenttask.StatusUnresolved {
+						unresolved++
+					}
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: resolving %d unresolved leaf/leaves + one recon-wide proposal call (per-plan ceiling $%.2f)\n", unresolved, ceiling)
+
 				escalations := llmfallback.ResolveTreeLeaves(cmd.Context(), fb, fbErr, tree, registry.Capabilities, index, leafContexts)
 				for _, e := range escalations {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: %s\n", e)
@@ -142,6 +194,17 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: merged %d recon-wide proposal(s)\n", n)
 						}
 					}
+				}
+
+				// LT-37: end-of-phase spend summary + a warn line naming the
+				// model when this one plan ran past the (low, env-tunable)
+				// warn threshold — catches an accidental switch to an
+				// expensive HACKERFIVE_OPENROUTER_MODEL while still under the
+				// hard ceiling.
+				spent := tree.SpendSoFar()
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: spent $%.4f of $%.2f per-plan ceiling\n", spent, ceiling)
+				if warn := llmfallback.CostWarnThresholdUSD(); fb != nil && warn > 0 && spent > warn {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: WARNING: $%.4f exceeds the $%.2f warn threshold (model %s) — check HACKERFIVE_OPENROUTER_MODEL / HACKERFIVE_LLM_COST_WARN_USD\n", spent, warn, fb.ModelLabel())
 				}
 			}
 
@@ -169,6 +232,7 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&templateIndex, "template-index", "templates/index.json", "path to the index generated by 'hackerfive templates index' — missing file degrades to skipping template-tag matching, not a hard failure")
 	cmd.Flags().BoolVar(&llmAssist, "llm-assist", false, "resolve any StatusUnresolved leaf via the tiered LLM fallback (I4) before printing the tree — off by default (zero LLM calls is 'plan's own no-agent-required proof); requires OPENROUTER_API_KEY and/or a local runtime (see pkg/llmfallback)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave recon progress to stderr (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
+	cmd.Flags().StringVar(&reconFile, "recon-file", "", "path to a prior 'hackerfive recon --output <path>' JSON result — when given, plan resolves that instead of re-running recon (LT-34, docs/follow-up.md); --recon-depth is then ignored")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
 

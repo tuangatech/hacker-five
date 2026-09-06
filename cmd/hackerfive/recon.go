@@ -38,6 +38,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 		verbose             bool
 		policyFile          string
 		allowPolicyOverride bool
+		headers             []string
 	)
 
 	cmd := &cobra.Command{
@@ -62,6 +63,19 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 				return err
 			}
 
+			flagHeaders, err := parseHeaders(headers)
+			if err != nil {
+				return fmt.Errorf("parsing --header: %w", err)
+			}
+			policyHeaders, err := policyRequestHeaders(policyFile, scopeFile)
+			if err != nil {
+				return err
+			}
+			reqHeaders, fromPolicy := mergeHeaders(policyHeaders, flagHeaders)
+			for _, name := range fromPolicy {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "recon: applying policy-mandated request header %q to every probe (LT-36)\n", name)
+			}
+
 			client := httpclient.New(recon.ClientConfig(httpclient.Config{
 				Timeout:             root.timeout,
 				MaxRedirects:        5,
@@ -72,6 +86,9 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
 			if s != nil {
 				opts = append(opts, recon.WithScope(s))
+			}
+			if len(reqHeaders) > 0 {
+				opts = append(opts, recon.WithHeaders(reqHeaders))
 			}
 			if verbose {
 				opts = append(opts, recon.WithProgressCallback(verboseProgress(cmd.ErrOrStderr())))
@@ -110,6 +127,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
+	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every recon request — this package's own probes plus httpx/katana via their -H flag (repeatable); merged with any request_headers: from policy.yaml, which a program-mandated identifying header (e.g. X-Hackerone) should live in instead (LT-36)`)
 
 	cmd.AddCommand(newReconSetupCmd())
 

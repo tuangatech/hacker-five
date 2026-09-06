@@ -56,7 +56,7 @@ func buildMergeTestTree() *agenttask.PlanTree {
 
 func TestMergeLLMProposals_MergesValidProposal(t *testing.T) {
 	tree := buildMergeTestTree()
-	caps := []registry.Capability{{Name: "idor"}}
+	caps := []registry.Capability{{Name: "idor", Kind: registry.KindDetector}}
 
 	n := MergeLLMProposals(tree, []PlanProposal{{Target: "example.test", Detector: "idor", Rationale: "combined signal"}}, caps, nil)
 
@@ -71,7 +71,7 @@ func TestMergeLLMProposals_MergesValidProposal(t *testing.T) {
 
 func TestMergeLLMProposals_RejectsUnrecognizedTarget(t *testing.T) {
 	tree := buildMergeTestTree()
-	caps := []registry.Capability{{Name: "idor"}}
+	caps := []registry.Capability{{Name: "idor", Kind: registry.KindDetector}}
 
 	n := MergeLLMProposals(tree, []PlanProposal{{Target: "not-a-real-host.test", Detector: "idor", Rationale: "x"}}, caps, nil)
 
@@ -87,6 +87,23 @@ func TestMergeLLMProposals_RejectsUnknownDetector(t *testing.T) {
 	assert.Equal(t, 0, n, "a hallucinated detector name (not a real capability or template ID) must never be merged in")
 }
 
+// TestMergeLLMProposals_RejectsReconToolDetector is LT-33's (docs/follow-up.md)
+// regression guard: a KindReconTool capability name (katana/subfinder/tlsx)
+// is a real catalog entry but planexec.RunPlan can't dispatch it — merging
+// it in produces a non-executable leaf that already cost frontier output.
+func TestMergeLLMProposals_RejectsReconToolDetector(t *testing.T) {
+	tree := buildMergeTestTree()
+	caps := []registry.Capability{
+		{Name: "idor", Kind: registry.KindDetector},
+		{Name: "katana", Kind: registry.KindReconTool},
+	}
+
+	n := MergeLLMProposals(tree, []PlanProposal{{Target: "example.test", Detector: "katana", Rationale: "crawl deeper"}}, caps, nil)
+
+	assert.Equal(t, 0, n, "a recon-tool capability name must never be merged in as a leaf detector")
+	assert.Len(t, tree.Find("host:example.test").Children, 1)
+}
+
 func TestMergeLLMProposals_AcceptsKnownTemplateID(t *testing.T) {
 	tree := buildMergeTestTree()
 
@@ -97,7 +114,7 @@ func TestMergeLLMProposals_AcceptsKnownTemplateID(t *testing.T) {
 
 func TestMergeLLMProposals_DedupsAgainstExistingLeaf(t *testing.T) {
 	tree := buildMergeTestTree() // already has (example.test, misconfig)
-	caps := []registry.Capability{{Name: "misconfig"}}
+	caps := []registry.Capability{{Name: "misconfig", Kind: registry.KindDetector}}
 
 	n := MergeLLMProposals(tree, []PlanProposal{{Target: "example.test", Detector: "misconfig", Rationale: "x"}}, caps, nil)
 

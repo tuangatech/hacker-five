@@ -62,12 +62,23 @@ type HostFact struct {
 
 // EndpointFact is one URL recon observed to exist (crawled, probed, or
 // derived from a discovered host).
+//
+// BodyLen/ContentType/Title (LT-30b, docs/follow-up.md) carry just enough of
+// the response shape for a downstream soft-404 / catch-all check to tell a
+// real distinct resource from a SPA shell served for every path — populated
+// by probeCommonPaths' own direct GET and by httpx (-cl/-ct/-title). Both
+// BodyLen == 0 and ContentType == "" mean "recon didn't measure this"
+// (a katana-crawl fact, a wave0 fact), not "empty body / no type" — a
+// consumer must treat that as unknown and not filter on it.
 type EndpointFact struct {
-	URL        string `json:"url"`
-	Method     string `json:"method"`
-	StatusCode int    `json:"status_code,omitempty"`
-	Source     string `json:"source"`
-	Confidence string `json:"confidence"`
+	URL         string `json:"url"`
+	Method      string `json:"method"`
+	StatusCode  int    `json:"status_code,omitempty"`
+	BodyLen     int    `json:"body_len,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Source      string `json:"source"`
+	Confidence  string `json:"confidence"`
 }
 
 // TechFact is one technology/framework signal observed on the target.

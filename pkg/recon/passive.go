@@ -33,6 +33,7 @@ func (r *Recon) runWave0(ctx context.Context, agg *aggregator, target string) {
 	base := strings.TrimRight(target, "/")
 
 	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+securityTxtPath, nil); err == nil {
+		r.applyHeaders(req)
 		if resp, err := r.client.Do(req); err == nil {
 			func() {
 				defer func() { _ = resp.Body.Close() }()
@@ -53,6 +54,7 @@ func (r *Recon) runWave0(ctx context.Context, agg *aggregator, target string) {
 	}
 
 	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+robotsTxtPath, nil); err == nil {
+		r.applyHeaders(req)
 		if resp, err := r.client.Do(req); err == nil {
 			func() {
 				defer func() { _ = resp.Body.Close() }()

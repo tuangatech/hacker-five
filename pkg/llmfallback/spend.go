@@ -44,6 +44,24 @@ func PerCallDefaultSpendCeilingUSD() float64 {
 	return getenvFloat(envPerCallSpendCeiling, defaultPerCallSpendCeilingUSD)
 }
 
+// envCostWarn/defaultCostWarnUSD: the spend at which a single
+// plan-resolution pass is worth a stderr warning naming the model, even
+// though it's still under the per-call ceiling. LT-37 (docs/follow-up.md):
+// a typo'd or accidentally-expensive HACKERFIVE_OPENROUTER_MODEL can run a
+// plan into real money while staying below the $0.10 ceiling — a low,
+// env-tunable warn line ($0.02 default) surfaces it without blocking.
+const (
+	envCostWarn        = "HACKERFIVE_LLM_COST_WARN_USD"
+	defaultCostWarnUSD = 0.02
+)
+
+// CostWarnThresholdUSD returns the per-plan spend above which a caller
+// should emit a model-naming warning, read fresh from the environment each
+// call. <= 0 disables the warning.
+func CostWarnThresholdUSD() float64 {
+	return getenvFloat(envCostWarn, defaultCostWarnUSD)
+}
+
 var (
 	globalSpendMu  sync.Mutex
 	globalSpendUSD float64

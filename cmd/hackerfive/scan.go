@@ -167,7 +167,16 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				describeTemplateScope(cmd.ErrOrStderr(), detector, cfg.DerivedTags, len(floor), len(extras), reconFile != "")
 			}
 
-			if err := cfg.Validate(); err != nil {
+			// LT-45 (docs/follow-up.md): authbypass's highest-value case on a
+			// bounty target — "this endpoint should require auth and doesn't"
+			// — is by definition one you have no token for. The planexec/MCP
+			// path already runs it tokenless (ValidateOptions.SkipAuthToken
+			// Required); its token-gated checks self-skip when the token is
+			// empty, so the CLI matches that here instead of hard-failing.
+			// --protected-paths stays required — that's operator input, not a
+			// credential.
+			validateOpts := scanner.ValidateOptions{SkipAuthTokenRequired: detector == "authbypass"}
+			if err := cfg.ValidateWithOptions(validateOpts); err != nil {
 				return err
 			}
 
