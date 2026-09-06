@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
@@ -336,7 +337,67 @@ func (d *Detector) checkMissingHeaders(ctx context.Context, target, host, authTo
 			},
 		})
 	}
+
+	// LT-47 (docs/follow-up.md): a present-but-weak Strict-Transport-Security
+	// is a real misconfiguration the missing-header rule above can't catch (it
+	// only checks presence). "hsts" is on the decision engine's
+	// nonActionableTech denylist on the premise that the native check owns
+	// HSTS entirely — so grade max-age here rather than leaving it to a nuclei
+	// template that denylist would otherwise be the sole check for.
+	if hsts := resp.Header.Get("Strict-Transport-Security"); hsts != "" {
+		if maxAge, hasPreload, ok := parseHSTSMaxAge(hsts); ok && maxAge < weakHSTSMinMaxAge {
+			desc := fmt.Sprintf("Strict-Transport-Security max-age is %d seconds, below the recommended minimum of %d (1 year)", maxAge, weakHSTSMinMaxAge)
+			if hasPreload {
+				desc += "; the response also sends the preload directive, which the HSTS preload list rejects below max-age=31536000"
+			}
+			findings = append(findings, detectors.Finding{
+				ID:          "misconfig-weak-hsts-max-age",
+				Type:        "misconfig",
+				Severity:    "low",
+				Confidence:  "high",
+				Target:      target,
+				Description: desc,
+				Evidence: map[string]string{
+					"header":   "Strict-Transport-Security",
+					"observed": hsts,
+					"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+					"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+				},
+			})
+		}
+	}
 	return findings, nil
+}
+
+// weakHSTSMinMaxAge is the max-age (seconds) below which a present
+// Strict-Transport-Security header is graded weak — one year, the value the
+// HSTS preload list requires and the common hardening-guide floor.
+const weakHSTSMinMaxAge = 31536000
+
+// parseHSTSMaxAge pulls the max-age (seconds) and whether a preload directive
+// is present out of a Strict-Transport-Security header value. ok is false
+// when the header carries no parseable max-age token at all (a malformed
+// header is not graded here). A "max-age=0" (HSTS explicitly disabled)
+// parses fine and is caught by the < weakHSTSMinMaxAge comparison.
+func parseHSTSMaxAge(v string) (maxAge int, hasPreload bool, ok bool) {
+	for _, part := range strings.Split(v, ";") {
+		token := strings.ToLower(strings.TrimSpace(part))
+		switch {
+		case token == "preload":
+			hasPreload = true
+		case strings.HasPrefix(token, "max-age"):
+			eq := strings.IndexByte(token, '=')
+			if eq < 0 {
+				continue
+			}
+			n, err := strconv.Atoi(strings.TrimSpace(strings.Trim(strings.TrimSpace(token[eq+1:]), `"`)))
+			if err != nil {
+				continue
+			}
+			maxAge, ok = n, true
+		}
+	}
+	return maxAge, hasPreload, ok
 }
 
 func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {

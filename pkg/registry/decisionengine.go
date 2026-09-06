@@ -223,7 +223,8 @@ func hostnameProductHint(host string) string {
 // produce no PlanTree leaf at all — not even a visible unresolved one.
 // Each entry is either a transport/protocol fact ("HTTP/2", "HTTP/3"), a
 // security-posture fact the misconfig detector already checks directly
-// ("HSTS" — see checkMissingHeaders' Strict-Transport-Security rule), a
+// ("HSTS" — checkMissingHeaders now covers both a missing and a weak/short
+// max-age Strict-Transport-Security, LT-47), a
 // hosting/CDN brand that names no scannable product surface of its own
 // ("Hostinger", "Google Cloud"), or a sub-component fully covered by a
 // broader sibling fact ("WordPress Block Editor" — the plain "WordPress"
