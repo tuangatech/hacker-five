@@ -239,6 +239,11 @@ var nonActionableTech = map[string]bool{
 	// versa-analytics-server) purely on the shared "analytics" tag word.
 	"google analytics":   true,
 	"google tag manager": true,
+	// "Basic" is httpx/fingerprint reporting a WWW-Authenticate: Basic realm,
+	// not a product — left in, its normalized "basic" word matched a sizable
+	// generic "basic"-tagged template family and widened --narrow-by-tech
+	// (LT-26 follow-up, nettix.com.pe).
+	"basic": true,
 }
 
 // tagQuery pins a tech name to the template tag(s) that actually mean
@@ -444,21 +449,16 @@ func DetectorTemplateTags(detector string) []string {
 }
 
 // genericCorpusWideTags are tags carried by such a broad, product-agnostic
-// slice of the corpus that unioning them into a TechStackTags allowlist
-// defeats the narrowing: one legitimate "Amazon S3" CVE match drags in
-// every edb/cve/disclosure-tagged template regardless of tech
-// (docs/follow-up.md LT-26 — aalberts.com narrowed to 18 tags including
-// edb/vuln/tokens/header/disclosure, and 8,446 of 9,476 templates still
-// loaded, ~11% cut). None of these names a product; they mark provenance
-// (where a template was sourced), issue category, or which part of the
-// exchange it inspects. Stripping them from the *tech-derived* half of the
-// allowlist is safe precisely because the per-detector category floor
-// (DetectorTemplateTags, unioned in by every caller) already guarantees
-// the generic .env / header / CORS / exposure / default-login families on
-// its own — this only stops a generic cloud/CDN fact from re-widening the
-// scope back to the whole corpus. A template that reached TechStackTags'
-// union loop already matched on a product tag or a non-generic word, so
-// its product identity is never what's being dropped here.
+// slice of the corpus that letting one into a TechStackTags allowlist
+// defeats the narrowing — every edb/cve/disclosure-tagged template would
+// match regardless of tech (docs/follow-up.md LT-26). None names a product:
+// they mark provenance (where a template was sourced), issue category, or
+// which part of the exchange it inspects. techProductTags already restricts
+// its harvest to a fact's identifying tags, so this is a backstop for a
+// stray generic word out of nonGenericTechWords (a fact literally named
+// "Tokens Manager" etc.); dropping these is safe because the per-detector
+// category floor (DetectorTemplateTags, unioned in by every caller) already
+// guarantees the generic .env / header / CORS / exposure families.
 var genericCorpusWideTags = map[string]bool{
 	// provenance
 	"edb": true, "packetstorm": true, "seclists": true, "hackerone": true, "pentesterlab": true,
@@ -485,29 +485,87 @@ func isCVEYearTag(t string) bool {
 	return len(rest) == 4 && isAllDigits(rest)
 }
 
-// TechStackTags returns the union of Tags from every templateIndex entry
-// matchTemplateTags ranks as relevant to at least one fact in techStack —
-// the tag allowlist scanner.Engine.loadTemplates' Config.Tags narrowing
-// needs to run only templates plausibly relevant to a target's detected
-// tech stack, instead of the full synced corpus (LT-16, docs/follow-up.md:
-// a real aceautowreckers.com run loaded and ran all ~9,244 templates
-// against a target httpx fingerprinted as running only a handful of real
-// technologies). Deliberately reuses matchTemplateTags as-is rather than
-// re-implementing its scoring: canonicalTechTags' false-friend exclusions
-// (e.g. "Nginx" not pulling in unrelated ingress-nginx/proxy-manager CVEs,
-// docs/follow-up.md P0-2) apply identically here, and every fact's own
-// maxTemplateLeavesPerTech cap only limits how many entries seed the tag
-// set per tech, not how many templates the resulting tags let back in —
-// once a tag like "wordpress" is in the returned set, every WordPress-
-// tagged template in the corpus matches it, not just the top few
-// matchTemplateTags picked for fact.Name specifically. A matched entry's
-// corpus-wide meta tags (genericCorpusWideTags — edb/cve/disclosure/…) are
-// dropped from the union: they identify no product and would re-widen the
-// scope to most of the corpus off a single generic cloud/CDN fact (LT-26).
-// Returns nil when techStack or templateIndex is empty, or when nothing in
-// techStack ties to any product-identifying template tag — scanner.Engine's
-// documented fallback for either case is running the full, unnarrowed
-// corpus, never zero templates.
+// techIdentifyingTags is the set of tags/words that tie a template to
+// techName specifically — the canonical include set for a pinned name, or
+// the generic-word-filtered word set otherwise, plus the primary word and
+// (for a hyphenated slug) the compound tag. It mirrors exactly what
+// matchTemplateTags itself scores a candidate on, so intersecting a matched
+// entry's Tags with this set yields only the tag(s) that made it match.
+func techIdentifyingTags(techName string) map[string]bool {
+	normalized := NormalizeTechName(techName)
+	out := map[string]bool{}
+	if q, canonical := canonicalTechTags[normalized]; canonical {
+		for _, w := range q.include {
+			out[strings.ToLower(w)] = true
+		}
+	} else {
+		for w := range nonGenericTechWords(techName) {
+			out[w] = true
+		}
+	}
+	if p := primaryTechWord(normalized); p != "" {
+		out[p] = true
+	}
+	if strings.Contains(normalized, "-") {
+		out[normalized] = true // compound slug tag, e.g. "litespeed-cache"
+	}
+	return out
+}
+
+// techProductTags returns only the product-identifying tags of the
+// templates matchTemplateTags ranks as relevant to techName — the tag(s)
+// that actually tie a template to this tech, never the vuln-class /
+// behaviour / provenance tags (rce, sqli, xss, kev, wpscan, intrusive,
+// plugin, tech, edb, …) that ride along on the same entry. Feeding a
+// matched template's *whole* tag list into a narrowing allowlist was why
+// --narrow-by-tech barely narrowed on a real stack: nettix.com.pe
+// (WordPress + WooCommerce + phpMyAdmin + Nextcloud + …) still loaded
+// 9,049 of 9,451 templates because one WordPress-CVE entry contributed
+// "rce"/"kev"/"wpscan" and those match most of the corpus (docs/follow-up.md
+// LT-26). Restricting the harvest to techIdentifyingTags keeps only
+// "wordpress"/"wp" from that same entry.
+func techProductTags(techName string, index []templatesync.Entry) []string {
+	entries := matchTemplateTags(techName, index)
+	if len(entries) == 0 {
+		return nil
+	}
+	identifying := techIdentifyingTags(techName)
+	out := map[string]bool{}
+	for _, entry := range entries {
+		for _, tag := range entry.Tags {
+			t := strings.ToLower(strings.TrimSpace(tag))
+			if t == "" || !identifying[t] || genericCorpusWideTags[t] || isCVEYearTag(t) {
+				continue
+			}
+			out[t] = true
+		}
+	}
+	tags := make([]string, 0, len(out))
+	for t := range out {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+	return tags
+}
+
+// TechStackTags returns the tag allowlist scanner.Engine.loadTemplates'
+// Config.Tags narrowing needs to run only templates plausibly relevant to a
+// target's detected tech stack, instead of the full synced corpus (LT-16,
+// docs/follow-up.md: a real aceautowreckers.com run loaded and ran all
+// ~9,244 templates against a target fingerprinted as running only a handful
+// of real technologies). It is the union of techProductTags across every
+// actionable fact — the *product-identifying* tags of the templates
+// matchTemplateTags ranks relevant to each fact, not those templates' full
+// tag lists (LT-26: harvesting the whole list let "rce"/"kev"/"tech"/"cve"
+// back in and collapsed the narrowing on any rich stack). canonicalTechTags'
+// false-friend exclusions (e.g. "Nginx" not pulling in unrelated
+// ingress-nginx CVEs, P0-2) still apply — matchTemplateTags enforces them
+// when picking the entries. Note a product tag is still broad by design:
+// once "wordpress" is in the set every WordPress-tagged template matches it,
+// which is correct — the target runs WordPress. Returns nil when techStack
+// or templateIndex is empty, or when nothing in techStack ties to any
+// product tag — scanner.Engine's documented fallback for either case is
+// running the full, unnarrowed corpus, never zero templates.
 func TechStackTags(techStack []recon.TechFact, templateIndex []templatesync.Entry) []string {
 	if len(techStack) == 0 || len(templateIndex) == 0 {
 		return nil
@@ -520,14 +578,8 @@ func TechStackTags(techStack []recon.TechFact, templateIndex []templatesync.Entr
 			continue
 		}
 		seen[normalized] = true
-		for _, entry := range matchTemplateTags(fact.Name, templateIndex) {
-			for _, tag := range entry.Tags {
-				t := strings.ToLower(strings.TrimSpace(tag))
-				if t == "" || genericCorpusWideTags[t] || isCVEYearTag(t) {
-					continue // corpus-wide meta tag — keeps narrowing from collapsing (LT-26)
-				}
-				tagSet[t] = true
-			}
+		for _, t := range techProductTags(fact.Name, templateIndex) {
+			tagSet[t] = true
 		}
 	}
 	if len(tagSet) == 0 {

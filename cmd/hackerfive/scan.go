@@ -265,7 +265,7 @@ func describeTemplateScope(stderr io.Writer, detector string, tags []string, flo
 		return
 	}
 	if !hadReconFile {
-		_, _ = fmt.Fprintf(stderr, "template scope: %d %s-category tag(s), no --recon-file — pass one for tech-matched CVE coverage, or --all-templates for everything: %s\n", floorN, detector, strings.Join(tags, ", "))
+		_, _ = fmt.Fprintf(stderr, "template scope: %d %s-category tag(s), no --recon-file — pass one to also load templates for the target's detected products, or --all-templates for everything: %s\n", floorN, detector, strings.Join(tags, ", "))
 		return
 	}
 	_, _ = fmt.Fprintf(stderr, "template scope: %d tag(s) = %d %s-category floor + %d tech-matched from --recon-file: %s\n", len(tags), floorN, detector, extrasN, strings.Join(tags, ", "))

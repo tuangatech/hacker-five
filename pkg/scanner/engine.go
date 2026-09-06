@@ -155,7 +155,13 @@ func New(cfg Config) *Engine {
 // Unrecognized Detector values are already rejected by Config.Validate()
 // before Run is ever called, so runDetector's default branch below can
 // never actually be reached in practice — it exists only as a safety net.
-func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
+func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err error) {
+	start := time.Now()
+	defer func() {
+		e.warnf("info", "scan finished in %s (%d target(s), %d finding(s))",
+			time.Since(start).Round(time.Millisecond), len(e.cfg.Targets), len(findings))
+	}()
+
 	threshold := e.cfg.HostErrorThreshold
 	if threshold == 0 {
 		threshold = hosterrors.DefaultThreshold
@@ -192,10 +198,7 @@ func (e *Engine) Run(ctx context.Context) ([]detectors.Finding, error) {
 		tmplConc = promptInjectionSafeConcurrency
 	}
 
-	var (
-		mu       sync.Mutex
-		findings []detectors.Finding
-	)
+	var mu sync.Mutex
 
 	for _, target := range e.cfg.Targets {
 		target := target

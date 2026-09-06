@@ -576,7 +576,11 @@ func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {
 
 	got := TechStackTags(techStack, index)
 
-	assert.ElementsMatch(t, []string{"wordpress", "panel", "nginx"}, got, "must union both relevant entries' product tags, not just the first tech's — the corpus-wide \"cve\" meta tag is dropped (LT-26)")
+	// Only the product-identifying tag of each matched entry is harvested
+	// (LT-26): "wordpress" and "nginx", never the "panel" behaviour tag the
+	// WordPress-panel template also carries (that would re-widen the
+	// allowlist to every panel template) nor the corpus-wide "cve" tag.
+	assert.ElementsMatch(t, []string{"wordpress", "nginx"}, got, "must harvest each matched entry's product tag from both techs, and only that tag")
 }
 
 // TestTechStackTags_FalseFriendExclusionApplies confirms canonicalTechTags'
@@ -594,26 +598,28 @@ func TestTechStackTags_FalseFriendExclusionApplies(t *testing.T) {
 	assert.ElementsMatch(t, []string{"nginx"}, got, "the Ingress-Nginx-Controller entry must never have contributed its \"ingress\"/\"kubernetes\"/\"k8s\" tags to the allowlist; the corpus-wide \"cve\" meta tag is dropped too (LT-26)")
 }
 
-// TestTechStackTags_DropsCorpusWideMetaTags is LT-26 (docs/follow-up.md): a
-// legitimately-matched entry still contributes only its product-identifying
-// tags — its provenance / issue-category / request-part tags (edb, cve,
-// cve2021, disclosure, exposure, tokens, header) are corpus-wide and would
-// collapse the narrowing if unioned in.
-func TestTechStackTags_DropsCorpusWideMetaTags(t *testing.T) {
+// TestTechStackTags_DropsMetaAndBehaviourTags is LT-26 (docs/follow-up.md):
+// a legitimately-matched entry contributes only its product-identifying tag,
+// never the provenance / issue-category tags (edb, cve, cve2021, disclosure)
+// nor the vuln-class / behaviour tags (rce, panel) that ride along on the
+// same template — those match most of the corpus and collapse the
+// narrowing. This is what let nettix.com.pe still load 9,049 of 9,451
+// templates: one WordPress-CVE entry contributed "rce"/"kev"/"wpscan".
+func TestTechStackTags_DropsMetaAndBehaviourTags(t *testing.T) {
 	index := []templatesync.Entry{
 		{
 			ID:       "CVE-2021-0001",
-			Name:     "Amazon S3 Bucket Takeover",
-			Tags:     []string{"amazon", "s3", "aws", "cve", "cve2021", "edb", "disclosure", "exposure", "tokens", "header"},
+			Name:     "phpMyAdmin - Some CVE",
+			Tags:     []string{"phpmyadmin", "cve", "cve2021", "edb", "disclosure", "panel", "rce"},
 			Severity: "high",
 		},
 	}
-	got := TechStackTags([]recon.TechFact{{Name: "Amazon S3", Host: "example.com"}}, index)
+	got := TechStackTags([]recon.TechFact{{Name: "phpMyAdmin", Host: "example.com"}}, index)
 
-	assert.ElementsMatch(t, []string{"amazon", "s3", "aws"}, got,
-		"only the product tags survive; every corpus-wide meta tag (edb/cve/cve2021/disclosure/exposure/tokens/header) is dropped")
-	for _, meta := range []string{"cve", "cve2021", "edb", "disclosure", "exposure", "tokens", "header"} {
-		assert.NotContains(t, got, meta)
+	assert.Equal(t, []string{"phpmyadmin"}, got,
+		"only the product tag survives; the meta (cve/cve2021/edb/disclosure) and behaviour (panel/rce) tags on the same entry are all dropped")
+	for _, drop := range []string{"cve", "cve2021", "edb", "disclosure", "panel", "rce"} {
+		assert.NotContains(t, got, drop)
 	}
 }
 
