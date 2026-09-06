@@ -32,12 +32,12 @@ func (e *errBinaryMissing) Error() string {
 // LT-38: runNaabu's top-100-port scan across every in-scope host routinely
 // hits the 60s cap past ~6 hosts, and the partial port list was used with no
 // visible trace it had been cut off).
-type errWaveTimeout struct {
-	name string
-}
+type errWaveTimeout struct{}
 
-func (e *errWaveTimeout) Error() string {
-	return fmt.Sprintf("%s: hit the %s wave time cap — results may be partial", e.name, waveTimeout)
+// Error carries no tool name — every caller already prefixes the wave and
+// tool ("wave2: naabu: %v"), so naming it here only doubled it.
+func (errWaveTimeout) Error() string {
+	return fmt.Sprintf("hit the %s wave time cap — results may be partial", waveTimeout)
 }
 
 // runFunc executes name with args and returns its stdout. stdin, if
@@ -91,7 +91,7 @@ func defaultRun(ctx context.Context, stdin string, name string, args ...string) 
 		// Checked before the ExitError branch — a killed process also surfaces
 		// as an *exec.ExitError.
 		if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return out, &errWaveTimeout{name: name}
+			return out, &errWaveTimeout{}
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

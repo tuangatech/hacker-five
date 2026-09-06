@@ -299,7 +299,7 @@ func TestRunWave2_NaabuWaveTimeout_WarnsAndKeepsPartialPorts(t *testing.T) {
 		switch name {
 		case "naabu":
 			// one port streamed before the (simulated) 60s kill
-			return []byte(`{"ip":"` + host + `","port":8080,"protocol":"tcp"}`), &errWaveTimeout{name: "naabu"}
+			return []byte(`{"ip":"` + host + `","port":8080,"protocol":"tcp"}`), &errWaveTimeout{}
 		case "httpx":
 			return []byte(`{"url":"` + srv.URL + `","host":"` + host + `","host_ip":"` + host + `","status_code":200}`), nil
 		default:
@@ -327,7 +327,7 @@ func TestRunWave2_NaabuWaveTimeout_WarnsAndKeepsPartialPorts(t *testing.T) {
 }
 
 func TestIsWaveTimeout(t *testing.T) {
-	assert.True(t, isWaveTimeout(&errWaveTimeout{name: "katana"}))
+	assert.True(t, isWaveTimeout(&errWaveTimeout{}))
 	assert.False(t, isWaveTimeout(&errBinaryMissing{name: "katana"}))
 	assert.False(t, isWaveTimeout(nil))
 }
