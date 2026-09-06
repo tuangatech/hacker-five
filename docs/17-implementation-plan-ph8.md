@@ -309,12 +309,37 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
   merges into the same Wave 3 endpoint set, deduped like any other source. Pairs
   naturally with Step 3's JS static analysis — a rendered DOM surfaces
   dynamically-built endpoints a static bundle scan can't.
+- **Parse a reachable OpenAPI/GraphQL spec into endpoints + parameters**
+  ([follow-up.md](follow-up.md) LT-40). `recon.APISpecFact` is "presence only, never
+  parsed" (`pkg/recon/types.go`) — on a target where `/swagger.json` is *real* the
+  engine dispatches `swagger-api` detection but never enumerates the spec's own
+  paths/params, so idor/authbypass/ssrf leaves still have nothing to work with. When
+  `APISpecFact.Kind == openapi` and the body is genuine JSON/YAML (gated by LT-30's
+  canary/content-type check — a SPA catch-all must not reach here), walk `paths` and
+  `parameters` into `EndpointFact{Source: "api-spec"}`: an ID-shaped path/query param
+  becomes an idor candidate, a URL-shaped one an ssrf candidate, feeding
+  `resolveEndpointFacts` like any other observed endpoint. This is the richest
+  endpoint+parameter source recon can have and today it is discarded — highest single
+  "find more vulns" item in this step. **Pull forward into an earlier batch if a live
+  engagement target exposes a real spec.**
+- **Cross-correlate Wave 2 tech facts with Wave 3 endpoints for dispatch**
+  ([follow-up.md](follow-up.md) LT-50, report item "S-d"). `decisionengine.go`'s
+  `correlatedEndpoints` folds endpoints into an *unresolved* leaf's rationale prose
+  only — never to raise a match's Confidence or add a targeted leaf. When a product's
+  known endpoint signature (e.g. `Jira` + `/secure/Dashboard.jspa`, `GitLab` +
+  `/-/health`) is observed on the same host as its tech fact, `resolveTechFact` should
+  upgrade the leaf or emit a targeted one. Needs a small per-product
+  endpoint-signature table; shares the "turn recon signal into leaves" lineage of
+  Phase 6's P1 items.
 
 No new dependency — katana already ships headless support and httpx already accepts a
-path list; this is flag plumbing, an embedded wordlist, and a timeout guard.
+path list, and an OpenAPI/GraphQL document is JSON/YAML the stdlib already parses;
+this is flag plumbing, an embedded wordlist, a spec walker, and a timeout guard.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/recon/crawl.go` — `runKatana` takes depth + a headless bool + per-host timeout; a new `discoverContentPaths` shelling `httpx -path <wordlist>`, gated on the opt-in flag, folding hits into `agg` as `wave3-content-discovery` endpoints.
+- `pkg/recon/apispec.go` (new) — LT-40's OpenAPI/GraphQL document walker: `paths`/`parameters` → `EndpointFact{Source: "api-spec"}` with an ID-shaped/URL-shaped param classification; only invoked when LT-30's canary+content-type gate says the spec body is real.
+- `pkg/registry/decisionengine.go` — LT-50's tech×endpoint correlation in `resolveTechFact` (per-product endpoint-signature table, Confidence upgrade / targeted-leaf emission).
 - `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
 - `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs (crawl depth, headless, content-discovery on/off + wordlist override).
 - `cmd/hackerfive/{recon,plan}.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_recon.go` — surface the flags/fields.

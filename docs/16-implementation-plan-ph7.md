@@ -41,10 +41,14 @@
 
 **A5 — tool-list scoping.** Per OWASP's "least agency" principle: an MCP session shouldn't necessarily see every tool Phase 6's `pkg/mcpserver` registers, regardless of what it's doing. A read-only "triage this scan's findings" session and a "plan and (pending approval) run writes-capable business-logic checks" session are different agency levels and should get different tool lists from the server at session-init time, not the same list gated only by a runtime check inside each tool handler. Concretely: the MCP server gains a session-scope concept (e.g. `readonly` vs. `full`) set at connection time, and tool registration/listing filters against it — a `readonly` session never even sees `scan`'s write-capable parameters or `plan`'s approval flow for anything beyond read-only detectors.
 
+**A6 — CLI `hackerfive triage` + recon-field self-suggest ([follow-up.md](follow-up.md) LT-41).** `llmfallback.TriageFindings` and `ResolveField` are reachable only from `pkg/mcpserver` and `pkg/webui` today, so the CLI pipeline (`recon → plan → scan`) has no triage step and can't self-fill `--endpoint` / `--protected-paths` / `--ssrf-param` from recon-derived candidates — the "triage agent" stage of the documented pipeline is MCP-only, and `SuggestSSRFParamsFromRecon` is dead data on the CLI. Add a `hackerfive triage --findings <file>` subcommand (behind `--llm-assist`, the same opt-in posture `plan` already has) routing through `TriageFindings`, and wire a `resolveFieldSuggestions`-equivalent into `plan --llm-assist` / `scan --recon-file` so a recon-observed idor/ssrf/authbypass candidate becomes a real leaf field without an operator typing it. Reuses existing functions — no new `llmfallback` surface. This is the CLI entry point; Step 6's F1 owns the triage-annotation output format.
+
 ### Files (anticipated, confirm at implementation time)
 - `cmd/hackerfive/templates.go` — `--json` flag on the existing `templates list` subcommand.
 - `pkg/mcpserver/server.go` — session-scope concept, tool-list filtering at connection/listing time.
-- `tests/unit/templates_json_test.go`, `tests/unit/mcpserver_scoping_test.go`.
+- `cmd/hackerfive/triage.go` — new `triage` subcommand (A6).
+- `cmd/hackerfive/plan.go`, `cmd/hackerfive/scan.go` — A6's recon-field self-suggest behind `--llm-assist` / `--recon-file`.
+- `tests/unit/templates_json_test.go`, `tests/unit/mcpserver_scoping_test.go`, `tests/unit/triage_cli_test.go`.
 
 ### Verification
 Unit tests confirming a `readonly`-scoped session's tool list omits write-capable tool parameters/tools entirely (not just rejects them at call time). Live verification: connect two MCP client sessions with different declared scopes, confirm each sees a different tool list.
@@ -85,14 +89,20 @@ Unit tests: a `scan` call carrying `AllowWrites=true` without a valid elicitatio
 
 **C6 — collapse the missing-header finding N:1 duplication ([follow-up.md](follow-up.md) LT-6, doc15 Open Issue #6).** A native `misconfig-missing-header-*` finding (one per header) and the nuclei `http-missing-security-headers` template (one aggregate row over many headers) both fire on the same response — ~5 findings for one underlying fact. `reporter.Dedup` is exact-`Finding.ID`-only by deliberate design and a naive topic-level key over-suppresses genuinely distinct findings. This step already reworks the exporter for C3, so do it here: split the nuclei `http-missing-security-headers` aggregate into per-header sub-facts *before* `Dedup`, so the existing exact-ID key then collapses the native/nuclei overlap on its own — no new fuzzy key, no cross-format semantic dedup. Not a `v0.6.0` blocker (the duplication is "two detectors agreeing", visible but not wrong).
 
+**C7 — PlanTree structural upgrade + plausibility veto ([follow-up.md](follow-up.md) LT-44, LT-49).** Two coupled gaps the 2026-09-06 Meesho pipeline run made concrete. **(a)** `registry.Resolve` only ever builds `root → one host node → flat leaf list` — `pkg/agenttask/plantree.go` claims "PentestGPT's PTT shape" but there is no vuln-class grouping, no priority/ordering field, and no way for a completed leaf's findings to seed a still-pending sibling (the valmo tree was 21 undifferentiated siblings, 9 near-identical swagger checks). The Agent tab this step builds has little worth visualising until the tree has structure. Add intermediate per-vuln-class nodes, a priority field the executor honours, and a mechanism for an early leaf to contribute inputs to a later one. **(b)** `llmfallback` acts only on `StatusUnresolved` leaves (`resolve.go`'s `ResolveTreeLeaves`), never vetoing a leaf the deterministic engine was *confident* about — so a fabricated `APISpecFact` (SPA catch-all, LT-30) or a CDN-brand tech fact (LT-31) yields 8–9 `ConfidenceHigh`/`Pending` leaves that sail straight through I4. Add an optional plausibility pass — one classify call over the pending leaves plus their originating facts — that can demote or drop a leaf with a logged reason, wired into `plan --llm-assist` first, then the MCP/webui plan flow. This is the clearest case of the LLM doing something the per-fact rule table structurally cannot. The cheap non-LLM half (a relevance-score floor + a per-fact fan-out cap) is [follow-up.md](follow-up.md) LT-48, landing earlier in the backlog.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/webui/handlers_scan.go` — new `agent-event` SSE stream on `/scans/{id}/events`; C5's sequence-aware catchup replay of `#logs`/`#findings`.
+- `pkg/agenttask/plantree.go` — C7(a): vuln-class nodes, priority field, early-leaf-output → later-leaf-input seeding.
+- `pkg/registry/decisionengine.go` — C7(a): `Resolve` emits the grouped/prioritised shape (not a flat leaf list).
+- `pkg/llmfallback/plausibility.go` (new) — C7(b): the pending-leaf veto pass.
+- `pkg/planexec/executor.go` — C7(a): honour the priority field when dispatching.
 - `pkg/webui/jobs.go` — C5's monotonic sequence counter on log/finding accumulation.
 - `pkg/webui/templates/scan_status.html` — Agent tab markup; C5's last-seen-sequence reporting on the catchup fetch.
 - `pkg/webui/types.go` — `CatchupData` gains the replayed `#logs`/`#findings` fragments; its doc comment updated from "deliberately excluded" to "sequence-gated".
 - `pkg/webui/auditlog.go` (or extend the existing authorization-checkbox log site) — C2's extra fields.
 - `pkg/reporter/` — C3's citation-enforcement check on export; C6's pre-`Dedup` split of the nuclei missing-headers aggregate into per-header sub-facts.
-- `tests/unit/agent_tab_test.go`, `tests/unit/audit_trail_agent_test.go`, `tests/unit/evidence_citation_test.go`, `tests/unit/catchup_replay_test.go`, `tests/unit/missing_header_dedup_test.go`.
+- `tests/unit/agent_tab_test.go`, `tests/unit/audit_trail_agent_test.go`, `tests/unit/evidence_citation_test.go`, `tests/unit/catchup_replay_test.go`, `tests/unit/missing_header_dedup_test.go`, `tests/unit/plantree_structure_test.go`, `tests/unit/plausibility_gate_test.go`.
 
 ### Verification
 Live-verified against a real browser: a running agent session's tool calls and reasoning appear in the Agent tab in real time, matching the persisted session log exactly. Unit test confirms an export referencing a nonexistent `Finding.ID` is rejected. C6: a unit test on a real DVWA-shaped missing-headers response asserts one finding per absent header, no native/nuclei duplicate pair.
