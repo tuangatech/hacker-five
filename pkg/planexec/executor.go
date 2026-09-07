@@ -183,6 +183,13 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 			skipped = append(skipped, fmt.Sprintf("%s: skipped — plausibility veto: %s", leaf.ID, leaf.Rationale))
 			continue
 		}
+		if leaf.Status == agenttask.StatusEscalated {
+			// H4: LLM-fallback resolution ground through this leaf's
+			// attempt/spend budget without a confident answer. Visible in the
+			// tree with the reason in Rationale, never dispatched.
+			skipped = append(skipped, fmt.Sprintf("%s: skipped — escalated (resolve budget exhausted): %s", leaf.ID, leaf.Rationale))
+			continue
+		}
 		eligible := recognizedDetectors[leaf.Detector] || (leaf.Detector != "" && knownTemplateIDs[leaf.Detector])
 		if !eligible {
 			if leaf.Detector != "" {

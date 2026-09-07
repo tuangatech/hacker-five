@@ -58,17 +58,32 @@ const resolveConcurrency = 3
 // pkg/mcpserver's plan tool and pkg/webui's plan-preview page, so this
 // orchestration is described once.
 func ResolveTreeLeaves(ctx context.Context, fb *Client, fbErr error, tree *agenttask.PlanTree, capabilities []registry.Capability, templateIndex []templatesync.Entry, leafContexts map[string]registry.LeafContext) []string {
-	var unresolved []*agenttask.PlanNode
+	// H4 (doc16 Phase 7 Step 4): a leaf that already ground through its
+	// per-leaf attempt/spend budget on a prior resolution pass is flipped to
+	// StatusEscalated up front and never handed to a model again — MAPTA's
+	// "still grinding, no confidence gain" stop signal (doc90 §2).
+	var (
+		unresolved  []*agenttask.PlanNode
+		preEscalate []string
+	)
 	for _, leaf := range agenttask.Leaves(tree.Root) {
-		if leaf.Status == agenttask.StatusUnresolved {
-			unresolved = append(unresolved, leaf)
+		if leaf.Status != agenttask.StatusUnresolved {
+			continue
 		}
+		if leaf.ShouldEscalate() {
+			esc := agenttask.StatusEscalated
+			rationale := fmt.Sprintf("%sescalated without resolution — %d attempt(s), $%.4f spent on this leaf, no confidence gain (H4)", ResolvedRationalePrefix, leaf.Attempts, leaf.SpendUSD)
+			_ = tree.ApplyLeafUpdate(leaf.ID, agenttask.PlanNodePatch{Status: &esc, Rationale: &rationale})
+			preEscalate = append(preEscalate, fmt.Sprintf("%s: %s", leaf.ID, rationale))
+			continue
+		}
+		unresolved = append(unresolved, leaf)
 	}
 	if len(unresolved) == 0 {
-		return nil
+		return preEscalate
 	}
 	if fb == nil {
-		var escalations []string
+		escalations := append([]string(nil), preEscalate...)
 		for _, leaf := range unresolved {
 			escalations = append(escalations, fmt.Sprintf("%s: LLM fallback unavailable (%v)", leaf.ID, fbErr))
 		}
@@ -77,7 +92,7 @@ func ResolveTreeLeaves(ctx context.Context, fb *Client, fbErr error, tree *agent
 
 	var (
 		mu          sync.Mutex
-		escalations []string
+		escalations = append([]string(nil), preEscalate...)
 	)
 	addEscalation := func(format string, args ...any) {
 		mu.Lock()
@@ -98,11 +113,20 @@ func ResolveTreeLeaves(ctx context.Context, fb *Client, fbErr error, tree *agent
 			if tree.AddSpend(cost) {
 				addEscalation("%s: spend ceiling exceeded resolving this leaf", leaf.ID)
 			}
+			// H4: charge this attempt + its cost against the leaf's own
+			// counters; budgetExhausted means the leaf has now hit its
+			// per-leaf ceiling.
+			budgetExhausted, _ := tree.RecordLeafAttempt(leaf.ID, cost)
 			if err != nil {
 				addEscalation("%s: LLM fallback call failed: %v", leaf.ID, err)
+				if budgetExhausted {
+					esc := agenttask.StatusEscalated
+					rationale := fmt.Sprintf("%sescalated after a failed resolve attempt exhausted this leaf's budget (%d attempt(s), $%.4f) (H4)", ResolvedRationalePrefix, leaf.Attempts, leaf.SpendUSD)
+					_ = tree.ApplyLeafUpdate(leaf.ID, agenttask.PlanNodePatch{Status: &esc, Rationale: &rationale})
+				}
 				return nil
 			}
-			applyLeafDecision(tree, leaf, decision, addEscalation)
+			applyLeafDecision(tree, leaf, decision, budgetExhausted, addEscalation)
 			return nil
 		})
 	}
@@ -110,7 +134,14 @@ func ResolveTreeLeaves(ctx context.Context, fb *Client, fbErr error, tree *agent
 	return escalations
 }
 
-func applyLeafDecision(tree *agenttask.PlanTree, leaf *agenttask.PlanNode, decision LeafDecision, addEscalation func(format string, args ...any)) {
+// applyLeafDecision writes the model's decision onto the leaf. budgetExhausted
+// (H4) is the RecordLeafAttempt signal that this leaf has hit its per-leaf
+// attempt/spend ceiling: a *successful* resolution (use_existing_tag) still
+// wins regardless — the leaf resolved, cost is moot — but a decision that
+// leaves the leaf unresolved (a bare escalate, or a drafted-but-unpromoted
+// template) flips it to StatusEscalated instead of leaving it StatusUnresolved
+// for another grinding pass.
+func applyLeafDecision(tree *agenttask.PlanTree, leaf *agenttask.PlanNode, decision LeafDecision, budgetExhausted bool, addEscalation func(format string, args ...any)) {
 	switch {
 	case decision.UseExistingTag != "":
 		detector := decision.UseExistingTag
@@ -125,15 +156,27 @@ func applyLeafDecision(tree *agenttask.PlanTree, leaf *agenttask.PlanNode, decis
 		} else {
 			rationale = "drafted template written to " + path + " — pending human promotion, not executed by this plan run"
 		}
+		patch := agenttask.PlanNodePatch{Rationale: &rationale}
+		if budgetExhausted {
+			esc := agenttask.StatusEscalated
+			patch.Status = &esc
+			rationale += " (leaf budget exhausted — H4)"
+		}
 		addEscalation("%s: %s", leaf.ID, rationale)
-		_ = tree.ApplyLeafUpdate(leaf.ID, agenttask.PlanNodePatch{Rationale: &rationale})
+		_ = tree.ApplyLeafUpdate(leaf.ID, patch)
 	default:
 		reason := decision.EscalateToHuman
 		if reason == "" {
 			reason = "LLM fallback returned no usable decision"
 		}
+		patch := agenttask.PlanNodePatch{Rationale: &reason}
+		if budgetExhausted {
+			esc := agenttask.StatusEscalated
+			patch.Status = &esc
+			reason += fmt.Sprintf(" — and this leaf's resolve budget is now exhausted (%d attempt(s), $%.4f), no further model calls (H4)", leaf.Attempts, leaf.SpendUSD)
+		}
 		addEscalation("%s: %s", leaf.ID, reason)
-		_ = tree.ApplyLeafUpdate(leaf.ID, agenttask.PlanNodePatch{Rationale: &reason})
+		_ = tree.ApplyLeafUpdate(leaf.ID, patch)
 	}
 }
 

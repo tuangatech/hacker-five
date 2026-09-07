@@ -236,6 +236,17 @@ func runScan(ctx context.Context, req *mcp.CallToolRequest, in scanInput, writes
 	if err := cfg.Validate(); err != nil {
 		return nil, scanOutput{}, err
 	}
+
+	// D1 (doc16 Phase 7 Step 4): bound how much scan concurrency this
+	// session can aggregate against one host across parallel `scan` calls.
+	// Blocks here if the host is already at the per-host call ceiling.
+	tmplConc, releaseGate := sessionScanGate.enter(in.Targets)
+	defer releaseGate()
+	cfg.TemplateConcurrency = tmplConc
+	if tmplConc < aggregateTemplateConcurrencyPerHost {
+		out.Logs = append(out.Logs, fmt.Sprintf("info: D1 concurrency ceiling: this session has other scan calls in flight against the same host — capping this call's per-target template fan-out at %d", tmplConc))
+	}
+
 	token := req.Params.GetProgressToken()
 	notify := func(message string) {
 		if token == nil {

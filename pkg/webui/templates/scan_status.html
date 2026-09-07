@@ -46,6 +46,19 @@ function hfMaxSeq(id) {
      Append list, oldest-first, same shape as Logs. */}}
 <h2>Agent</h2>
 <div id="agent" sse-swap="agent-event" hx-swap="beforeend">{{.AgentRowsHTML}}</div>
+{{/* C4 (doc16 Phase 7 Step 4): live log injection — an operator note is
+     appended to the agent log as an `operator.note` entry and streamed
+     back over the same agent-event channel, so a coordinator loop reading
+     the log picks it up on its next turn. The form swaps nothing; the new
+     row arrives via SSE like every other agent entry. */}}
+<form id="agent-note-form" hx-post="/scans/{{.JobID}}/agent/note" hx-swap="none"
+      hx-on::after-request="if(event.detail.successful){this.reset();}"
+      style="margin-top:0.5rem">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<input type="text" name="note" placeholder="Send a note to the agent (e.g. &quot;skip the CVE sweep, dig into the /admin 401&quot;)…"
+       autocomplete="off" aria-label="Operator note to the agent" style="width:70%">
+<button type="submit">Send</button>
+</form>
 
 <div class="section-header">
 <h2>Logs</h2>
