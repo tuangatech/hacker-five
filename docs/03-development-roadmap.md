@@ -418,9 +418,10 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] Audit trail extended with agent-specific facts (session, approved plan, grant references)
 - [ ] Evidence-linked claims: a report draft citing a nonexistent `Finding.ID` is rejected
 
-#### Week 53: Live Log Injection + Concurrency Ceilings — ⬜ not started
+#### Week 53: Live Log Injection + Concurrency Ceilings + Redundant-Request Elimination — ⬜ not started
 - [ ] Live log injection on the Agent tab (stretch)
 - [ ] Aggregate per-target concurrency ceiling across concurrent `scan` calls in one session
+- [ ] Executor response cache + recon-404 `path:` skip (D5 / follow-up.md LT-54 + LT-55)
 
 #### Week 54: OWASP Agentic Top 10 Mapping — ⬜ not started
 - [ ] All ten ASI01-10 risks checked against real shipped code (file/line cited), each mitigated or accepted as residual risk with a stated reason

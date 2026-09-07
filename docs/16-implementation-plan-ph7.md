@@ -15,7 +15,7 @@
 1. 🟡 **Tool surface completion** (Week 49) — A4 ✅, A6 CLI-triage ✅ (recon-field self-suggest ⬜), A5 ⬜ (2026-09-06)
 2. 🟡 **Approval & compliance rounding** (Week 50) — B3 ✅, B2 ⬜, B4 ⬜ (2026-09-06)
 3. 🟡 **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ⬜ (2026-09-06)
-4. ⬜ **Live log injection + concurrency ceilings** (Week 53)
+4. ⬜ **Live log injection + concurrency ceilings + redundant-request elimination** (Week 53) — C4, D1, H4, D5
 5. ⬜ **OWASP Agentic Top 10 mapping** (Week 54)
 6. ⬜ **Template ecosystem & triage support** (Week 55)
 7. ⬜ **Eval maturity + release** (Week 56) — `v0.7.0`
@@ -117,7 +117,7 @@ Live-verified against a real browser: a running agent session's tool calls and r
 
 ---
 
-## Step 4: Live Log Injection + Concurrency Ceilings (Week 53) — ⬜ not yet implemented
+## Step 4: Live Log Injection + Concurrency Ceilings + Redundant-Request Elimination (Week 53) — ⬜ not yet implemented
 
 ### Design
 
@@ -127,15 +127,20 @@ Live-verified against a real browser: a running agent session's tool calls and r
 
 **H4 — cost/attempt-aware stop-and-escalate** (moved here from [Phase 6](15-implementation-plan-ph6.md) Step 3, 2026-09-05 — Phase 6's executor runs each leaf exactly once, so there was no per-leaf retry/grind loop for the rule to gate). By this phase a coordinator loop and the persisted session log (Step 3) exist to measure against. `agenttask.PlanNode` gains per-leaf `Attempts`/`SpendUSD` counters; the I4 resolution path (`pkg/llmfallback`) increments them per model call for a leaf (the one place per-leaf cost actually repeats — deterministic execution is single-shot); a new `StatusEscalated` + a `ShouldEscalate()` rule (MAPTA's finding: rising tool-call count, dollar cost, token count, and elapsed time on one leaf each *independently* correlate with **falling** odds of success — r ≈ −0.6, doc90 §2) surfaces "still grinding, no confidence gain" to the coordinator as a stop signal, not a reason to spend more on the same leaf. Pairs naturally with D1: both bound aggregate cost/effort a session can pour into one target or one leaf.
 
+**D5 — eliminate redundant per-target HTTP in the template executor** ([follow-up.md](follow-up.md) LT-54 + LT-55; design-review follow-on to LT-18, which closed causes (a)–(d) of "a scan spends its wall-clock unrelated to the target"). A scoped scan still fires one loop over templates per target, each re-issuing its own `path:`/`raw:` requests; across the ~2,200-template misconfig floor the same handful of paths (`/`, `/.env`, `/.git/config`, `/robots.txt`, common CVE probes) are fetched many times over, and round-trip latency — not CPU — is the wall-clock (LT-18(b): `user 2.6s` for a 2m+ run). Two changes sharing one `pkg/template/nuclei` plumbing pass and one carve-out review: **(1)** an `Executor`-scoped, mutex-guarded, count-bounded response cache keyed on `(method, full URL, rendered-header fingerprint)`, consulted before `e.client.Do`, with hard carve-outs that always hit the network — `req.usesInteractsh`, any `duration`/`duration_N` reference (blind-timing templates), `req.pathCorrelated`, multi-value `payloads:` iterations, and `raw:` blocks unless a safe key normalization proves out; **(2)** a known-404 path set threaded from a `scan --recon-file` result so a single-request, matcher-only `path:` entry against a path recon already saw 404 is skipped — gated to the same auth posture recon ran under (an unauthenticated recon 404 is not a guaranteed authenticated-scan 404), or opt-in. The shared rate limiter stays the real throttle; both changes only remove redundant round trips, never widen concurrency. Fits this step's D1/H4 theme — bounding the effort/traffic one target absorbs — from the scan-engine side rather than the agent-session side. The carve-out set for (1) is the whole correctness surface: settle it in review before implementing.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/webui/templates/scan_status.html` — C4's injection text box + `hx-post` wiring.
 - `pkg/mcpserver/tools_scan.go` (or a session-level tracker) — D1's aggregate concurrency accounting across concurrent `scan` calls in one session.
 - `pkg/agenttask/plantree.go` — H4's per-leaf `Attempts`/`SpendUSD`, `StatusEscalated`, `ShouldEscalate()`, and the matching `PlanNodePatch` fields.
 - `pkg/llmfallback/` — increments the per-leaf counters and honors a per-leaf spend ceiling, stopping further resolution attempts on an escalated leaf.
-- `tests/unit/concurrency_ceiling_test.go`, `tests/unit/h4_escalation_test.go`.
+- `pkg/template/nuclei/executor.go` — D5's pre-`e.client.Do` cache lookup + carve-out guards in `tryPath`/`tryRaw`/`tryPathCorrelatedIteration`; the known-404 `path:` skip.
+- `pkg/template/nuclei/respcache.go` (new) — D5's bounded, mutex-guarded response cache type.
+- `pkg/scanner/{engine,config}.go`, `cmd/hackerfive/scan.go` — D5: plumb a `KnownDeadPaths` set parsed from `--recon-file` through `scanner.Config` into `nuclei.New(...)`.
+- `tests/unit/concurrency_ceiling_test.go`, `tests/unit/h4_escalation_test.go`, `tests/unit/nuclei_respcache_test.go`.
 
 ### Verification
-Unit test: two concurrent `scan` tool calls in the same session against the same target are throttled to the aggregate ceiling, not each independently allowed full concurrency. H4: a leaf that fails to resolve across the attempt/spend ceiling flips to `StatusEscalated` and the resolver stops calling a model for it. C4 live-verified by hand: an injected note visibly changes the coordinator's next action in a real session.
+Unit test: two concurrent `scan` tool calls in the same session against the same target are throttled to the aggregate ceiling, not each independently allowed full concurrency. H4: a leaf that fails to resolve across the attempt/spend ceiling flips to `StatusEscalated` and the resolver stops calling a model for it. C4 live-verified by hand: an injected note visibly changes the coordinator's next action in a real session. D5: two templates hitting an identical URL issue one HTTP request, not two; a `duration`-matcher template, an `interactsh_` template, and a `payloads:` template each still fire every request; with a `--recon-file` marking `/x` as 404, a matcher-only template whose only `path:` is `/x` makes no request when the auth posture matches and still fires when it differs.
 
 ---
 
@@ -227,6 +232,7 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [ ] `findings.export` (and any future report-drafting surface) rejects a draft citing a nonexistent `Finding.ID`
 - [ ] Aggregate per-target concurrency across concurrent `scan` calls in one session is throttled to a stated ceiling
 - [ ] Cost/attempt-aware prioritization (H4, moved from Phase 6 Step 3): a `PlanTree` leaf that repeatedly fails to resolve (rising attempts/spend, no confidence gain) flips to `StatusEscalated` and the resolver stops spending on it, rather than allocating more budget
+- [ ] Redundant per-target HTTP eliminated (D5 / [follow-up.md](follow-up.md) LT-54 + LT-55): the template executor serves a repeat `(method, URL, header-fp)` from a bounded cache — with timing/`interactsh_`/`pathCorrelated`/`payloads:` templates carved out — and skips a `path:` entry a `--recon-file` marks 404 under a matching auth posture; the shared rate limiter is still the only throughput cap
 - [ ] All ten OWASP Agentic Top 10 risks (D4) are checked against real shipped code (file/line cited) and recorded as mitigated or accepted residual risk with a stated reason
 - [ ] `templates/proposed/` exists, is confirmed never auto-loaded by the default `--templates` path, and requires explicit human promotion
 - [ ] Triage-assist annotations never mutate `Finding.Severity`/`Confidence`
