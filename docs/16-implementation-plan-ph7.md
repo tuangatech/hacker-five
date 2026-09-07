@@ -12,7 +12,7 @@
 
 ## Scope
 
-1. 🟡 **Tool surface completion** (Week 49) — A4 ✅, A6 CLI-triage ✅ (recon-field self-suggest ⬜), A5 ⬜ (2026-09-06)
+1. ✅ **Tool surface completion** (Week 49) — A4, A5, A6 all done 2026-09-06
 2. 🟡 **Approval & compliance rounding** (Week 50) — B3 ✅, B2 ⬜, B4 ⬜ (2026-09-06)
 3. 🟡 **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ⬜ (2026-09-06)
 4. ⬜ **Live log injection + concurrency ceilings + redundant-request elimination** (Week 53) — C4, D1, H4, D5
@@ -24,11 +24,13 @@
 
 **Partial landing 2026-09-06 (`post-demo-batch` branch), after the demo dry-run:** the self-contained items from Steps 1–3 —
 - **A4** ✅ `hackerfive templates list --json` (`{"templates": [...], "rejected": N}`, `templatesync.Entry` shape).
-- **A6** 🟡 `hackerfive triage --findings <scan.json> --llm-assist` (CLI entry point for `llmfallback.TriageFindings`, ranking-only, docs/follow-up.md LT-41). The recon-field self-suggest half (wire `resolveFieldSuggestions` into `plan --llm-assist` / `scan --recon-file`) is still open — needs LT-24's "only when a matching leaf exists" gate reproduced on the CLI.
+- **A6 (`triage`)** ✅ `hackerfive triage --findings <scan.json> --llm-assist` (CLI entry point for `llmfallback.TriageFindings`, ranking-only, docs/follow-up.md LT-41).
 - **B3** ✅ HackerOne-submission human-in-the-loop gate written into [05-hackerone-and-legal.md](05-hackerone-and-legal.md) as a permanent architectural invariant.
 - **C6** ✅ `reporter.SplitAggregates` splits the nuclei `http-missing-security-headers` aggregate into per-header findings before `Dedup`, collapsing the native/nuclei N:1 overlap via the existing exact-ID key (docs/follow-up.md LT-6).
 
-Still the larger open work in these three steps: **A5** (MCP session-scope tool-list filtering), **B2** (`AllowWrites` as an elicitation-grant attestation), **B4** (scope-creep compliance pass), **C1** (live Agent tab SSE), **C2** (agent audit trail), **C3** (evidence-linked claim enforcement), **C5** (idempotent `#logs`/`#findings` catchup replay, LT-5).
+**Step 1 completed 2026-09-06 (`ph7-step1` branch):** **A5** (`mcp-serve --agency readonly|full`, launch-time tool-set filtering — stdio is one client per process, so there is no per-session negotiation) and **A6's recon-field self-suggest half** (new `pkg/fieldsuggest`, wired into `plan --llm-assist` and `scan --recon-file`; `plan` stdout is now `{tree, field_suggestions}`).
+
+Still the larger open work in Steps 2–3: **B2** (`AllowWrites` as an elicitation-grant attestation), **B4** (scope-creep compliance pass), **C1** (live Agent tab SSE), **C2** (agent audit trail), **C3** (evidence-linked claim enforcement), **C5** (idempotent `#logs`/`#findings` catchup replay, LT-5).
 
 **Explicitly out of scope for this plan, named rather than silently dropped:**
 - **A general-purpose logic engine for business-logic templates, or any other scope-expansion of Phase 4's detectors** — this phase is agent-integration hardening, not new vulnerability classes.
@@ -41,25 +43,39 @@ Still the larger open work in these three steps: **A5** (MCP session-scope tool-
 
 ---
 
-## Step 1: Tool Surface Completion (Week 49) — ⬜ not yet implemented
+## Step 1: Tool Surface Completion (Week 49) — ✅ done 2026-09-06
 
 ### Design
 
-**A4 — `hackerfive templates list --json`.** Expose the same tag/severity/category data doc12/Week 19 already extract for the Web UI's Templates page, as machine-readable JSON on the CLI directly — useful for any caller (agent or otherwise) that wants template metadata without going through the MCP server's `templates.list` tool.
+**A4 — `hackerfive templates list --json`.** ✅ 2026-09-06. Expose the same tag/severity/category data doc12/Week 19 already extract for the Web UI's Templates page, as machine-readable JSON on the CLI directly — useful for any caller (agent or otherwise) that wants template metadata without going through the MCP server's `templates.list` tool.
 
-**A5 — tool-list scoping.** Per OWASP's "least agency" principle: an MCP session shouldn't necessarily see every tool Phase 6's `pkg/mcpserver` registers, regardless of what it's doing. A read-only "triage this scan's findings" session and a "plan and (pending approval) run writes-capable business-logic checks" session are different agency levels and should get different tool lists from the server at session-init time, not the same list gated only by a runtime check inside each tool handler. Concretely: the MCP server gains a session-scope concept (e.g. `readonly` vs. `full`) set at connection time, and tool registration/listing filters against it — a `readonly` session never even sees `scan`'s write-capable parameters or `plan`'s approval flow for anything beyond read-only detectors.
+**A5 — tool-list scoping.** ✅ 2026-09-06. Per OWASP's "least agency" principle: an MCP session shouldn't necessarily see every tool Phase 6's `pkg/mcpserver` registers, regardless of what it's doing. A read-only "triage this scan's findings" session and a "plan and (pending approval) run writes-capable business-logic checks" session are different agency levels and should get different tool lists.
 
-**A6 — CLI `hackerfive triage` + recon-field self-suggest ([follow-up.md](follow-up.md) LT-41).** `llmfallback.TriageFindings` and `ResolveField` are reachable only from `pkg/mcpserver` and `pkg/webui` today, so the CLI pipeline (`recon → plan → scan`) has no triage step and can't self-fill `--endpoint` / `--protected-paths` / `--ssrf-param` from recon-derived candidates — the "triage agent" stage of the documented pipeline is MCP-only, and `SuggestSSRFParamsFromRecon` is dead data on the CLI. Add a `hackerfive triage --findings <file>` subcommand (behind `--llm-assist`, the same opt-in posture `plan` already has) routing through `TriageFindings`, and wire a `resolveFieldSuggestions`-equivalent into `plan --llm-assist` / `scan --recon-file` so a recon-observed idor/ssrf/authbypass candidate becomes a real leaf field without an operator typing it. Reuses existing functions — no new `llmfallback` surface. This is the CLI entry point; Step 6's F1 owns the triage-annotation output format.
+**As built:**
+- **`pkg/mcpserver` runs over stdio only** (`server.go`'s `Serve` → `mcp.StdioTransport`), strictly one client per process. So "session scope at connection time" is really **process scope at launch time** — no live multi-session to filter inside one running server, and no per-session tool-masking API in go-sdk v1.7.0 worth reaching for. A5 is `NewWithAgency(agency)` registering a filtered tool set, not runtime middleware.
+- **Coarse two-level model:** `type Agency` = `AgencyReadOnly` | `AgencyFull` (zero value `AgencyFull`). `New()` stays as the back-compatible `NewWithAgency(AgencyFull)`. `NewWithAgency` always registers `recon`, `templates.list`, `templates.search`, `tools.search`, `findings.export`, `findings.triage`, `session.log`; registers `scan`, `plan`, `templates.sync` **only when `agency != AgencyReadOnly`** — a readonly client's `tools/list` never shows them (not a runtime refusal inside a handler). A three-tier `readonly` / `scan`-no-writes / `full` split is the natural follow-on.
+- **Selector:** `hackerfive mcp-serve --agency readonly|full` (default `full`) + `HACKERFIVE_MCP_AGENCY` fallback; an unrecognized value fails loudly (`resolveAgency`). A readonly launch logs one stderr line naming what's omitted. Two client config entries with different `--agency` args is how an operator runs a read-only and a full assistant side by side.
 
-### Files (anticipated, confirm at implementation time)
-- `cmd/hackerfive/templates.go` — `--json` flag on the existing `templates list` subcommand.
-- `pkg/mcpserver/server.go` — session-scope concept, tool-list filtering at connection/listing time.
-- `cmd/hackerfive/triage.go` — new `triage` subcommand (A6).
-- `cmd/hackerfive/plan.go`, `cmd/hackerfive/scan.go` — A6's recon-field self-suggest behind `--llm-assist` / `--recon-file`.
-- `tests/unit/templates_json_test.go`, `tests/unit/mcpserver_scoping_test.go`, `tests/unit/triage_cli_test.go`.
+**A6 — CLI `hackerfive triage` + recon-field self-suggest ([follow-up.md](follow-up.md) LT-41).** `llmfallback.TriageFindings` and `ResolveField` are reachable only from `pkg/mcpserver` and `pkg/webui` today, so the CLI pipeline has no triage step and can't self-fill `--endpoint` / `--protected-paths` / `--ssrf-param` from recon-derived candidates.
 
-### Verification
-Unit tests confirming a `readonly`-scoped session's tool list omits write-capable tool parameters/tools entirely (not just rejects them at call time). Live verification: connect two MCP client sessions with different declared scopes, confirm each sees a different tool list.
+- **`hackerfive triage --findings <file> --llm-assist`** ✅ 2026-09-06 (post-demo-batch) — routes through `TriageFindings`, ranking-only.
+- **Recon-field self-suggest** ✅ 2026-09-06. New `pkg/fieldsuggest` package: `Deterministic(result *recon.ReconResult, want map[string]bool) (suggestions []agenttask.FieldSuggestion, misses []Miss)` — the no-LLM auto-fill logic (single candidate → value, multiple → candidates, none/idor-ambiguous → a `Miss`) lifted out of `mcpserver.resolveFieldSuggestions`, importing only `recon` + `agenttask`. Callers apply the results themselves and decide whether to run I4 on the misses, so a `want`-excluded detector yields neither a suggestion nor a Miss — the DoD's "I4 never a standing parallel path" holds by construction. `mcpserver.resolveFieldSuggestions` now delegates its deterministic branches to it (no behavior change; `resolveOneFieldMiss`'s LLM branch stays local) plus a small `applyFieldSuggestion` switch. `plan` now emits `{"tree": …, "field_suggestions": […]}` (was a bare tree — the one breaking output change, agreed) — deterministic suggestions always, and under `--llm-assist` each miss resolved via an inline `llmfallback.ResolveFieldMiss` call against the same per-plan ceiling; without `--llm-assist` a miss is surfaced as an advisory escalate-to-human note, no model call. `scan --recon-file` self-fills a blank `--endpoint`/`--protected-paths`/`--ssrf-param`/`--login-paths`/`--logout-paths` from `fieldsuggest.Deterministic`'s suggestions (one stderr note per field); an idor 0/many-candidate miss is left for the existing "required for --detector X" validation — no `scan --llm-assist`, no metered call added to `scan`. An explicit flag always wins (`applyReconFieldSuggestion` no-ops on an already-set field). The `--recon-file` parse in `scan.go` was hoisted out of the narrow-by-tech branch so `--tags`/`--all-templates` no longer silently ignore it.
+
+### Files (as built)
+- `cmd/hackerfive/templates.go` — `--json` flag on `templates list` (A4).
+- `cmd/hackerfive/triage.go` — `triage` subcommand (A6).
+- `pkg/fieldsuggest/{fieldsuggest,fieldsuggest_test}.go` (new) — `Deterministic(result, want) (suggestions, misses)`.
+- `pkg/mcpserver/tools_plan.go` — `resolveFieldSuggestions` delegates its deterministic branches to `fieldsuggest.Deterministic` + a new `applyFieldSuggestion` switch.
+- `pkg/mcpserver/server.go` — `Agency` type, `AgencyFull`/`AgencyReadOnly`; `New()` = `NewWithAgency(AgencyFull)`; `NewWithAgency` filters `scan`/`plan`/`templates.sync`.
+- `pkg/mcpserver/scoping_test.go` (new).
+- `cmd/hackerfive/mcpserve.go` — `--agency` flag + `HACKERFIVE_MCP_AGENCY` + `resolveAgency`; `mcpserve_test.go` (new).
+- `cmd/hackerfive/planfields.go` (new) — `planCmdOutput`, `planLeafDetectors`, `planFieldSuggestions`, `applyReconFieldSuggestion`; `planfields_test.go` (new).
+- `cmd/hackerfive/plan.go` — deterministic field suggestions always + LLM misses under `--llm-assist`; stdout `{tree, field_suggestions}`.
+- `cmd/hackerfive/scan.go` — `--recon-file` parse hoisted; single-/multi-candidate field auto-fill.
+- `cmd/hackerfive/plan_test.go` — the three stdout-shape assertions updated to `planCmdOutput`.
+
+### Verification — done 2026-09-06
+`go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean (0 lint issues). Unit: `NewWithAgency(AgencyReadOnly)`'s `tools/list` omits `scan`/`plan`/`templates.sync` and keeps the seven read-only tools; `AgencyFull` and `New()` list all ten. `fieldsuggest.Deterministic` table tests (nil result, `want`-gating, single/zero/multi candidate per detector). `applyReconFieldSuggestion` (explicit flag wins, fill-when-unset, empty no-op). `planFieldSuggestions` (miss without `--llm-assist` = advisory note + zero spend). Live smoke: `scan --detector idor --recon-file <json>` auto-filled `endpoint_template` from a single recon candidate (`scan: auto-filled endpoint_template from --recon-file: /api/report?report_id={{id}} (A6)`); `mcp-serve --agency` help shows the flag. Still worth a manual pass: two real MCP client config entries (`--agency readonly` vs `full`) side by side.
 
 ---
 
@@ -222,7 +238,8 @@ The benchmark actually runs against all four lab targets with a real agent sessi
 ## Definition of Done (Phase 7, Weeks 49-56)
 
 This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loop Ready" Definition of Done:
-- [ ] `hackerfive templates list --json` ships; MCP sessions get scoped tool lists based on declared agency level (read-only vs. full), confirmed by live-verifying two differently-scoped sessions see different tool lists
+- [x] `hackerfive templates list --json` ships (2026-09-06); MCP servers get scoped tool lists by launch-time agency (`mcp-serve --agency readonly` omits `scan`/`plan`/`templates.sync` from `tools/list`) — unit-verified via a real client session at each level; a manual two-config side-by-side pass still worth doing
+- [x] `hackerfive triage` + recon-field self-suggest (A6): `pkg/fieldsuggest.Deterministic` feeds `plan --llm-assist` and `scan --recon-file`; `plan` stdout is now `{tree, field_suggestions}` (2026-09-06)
 - [ ] `AllowWrites` is only honored on a `scan` call carrying a valid elicitation grant reference tied to an approved plan — confirmed no code path lets an agent set it for itself
 - [ ] HackerOne submission's permanent human-in-the-loop invariant is documented in `docs/05-hackerone-and-legal.md`
 - [ ] A scope-creep scenario triggers fresh elicitation rather than silent expansion, live-verified

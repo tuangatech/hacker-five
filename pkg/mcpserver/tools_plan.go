@@ -12,6 +12,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/fieldsuggest"
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/planexec"
 	"github.com/tuangatech/hacker-five/pkg/recon"
@@ -338,53 +339,50 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 // suggestion only ever fills a field on an already-emitted leaf, so no leaf
 // for the detector means nothing to fill.
 func resolveFieldSuggestions(ctx context.Context, result *recon.ReconResult, fb *llmfallback.Client, fbErr error, tree *agenttask.PlanTree, baseCfg *scanner.Config, escalations *[]string) []agenttask.FieldSuggestion {
-	var out []agenttask.FieldSuggestion
-	leafDetectors := planLeafDetectors(tree)
+	// The deterministic (no-LLM) auto-fills now live in pkg/fieldsuggest so
+	// cmd/hackerfive's plan/scan reuse the exact same branching (doc16 Phase
+	// 7 Step 1 A6). This package keeps ownership of what fieldsuggest
+	// deliberately doesn't do: applying a value to baseCfg, and resolving a
+	// genuine miss via I4 (resolveOneFieldMiss). The planLeafDetectors gate
+	// is passed through as fieldsuggest's `want` set — a want-excluded
+	// detector yields neither a suggestion nor a Miss, so I4 still only ever
+	// fires on a confirmed decision-engine miss.
+	sugs, misses := fieldsuggest.Deterministic(result, planLeafDetectors(tree))
 
-	if leafDetectors["idor"] {
-		idorCandidates := recon.SuggestIDOREndpointCandidates(result)
-		if len(idorCandidates) == 1 {
-			baseCfg.EndpointTemplate = idorCandidates[0]
-			out = append(out, agenttask.FieldSuggestion{Detector: "idor", Field: "endpoint_template", SuggestedValue: idorCandidates[0], Rationale: "single recon-derived candidate, auto-filled"})
-		} else {
-			fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, "idor", "endpoint_template", idorCandidates, escalations)
-			if fs != nil {
-				out = append(out, *fs)
-			}
+	out := make([]agenttask.FieldSuggestion, 0, len(sugs)+len(misses))
+	for _, s := range sugs {
+		applyFieldSuggestion(baseCfg, s)
+		out = append(out, s)
+	}
+	for _, m := range misses {
+		if fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, m.Detector, m.Field, m.Candidates, escalations); fs != nil {
+			out = append(out, *fs)
 		}
 	}
-
-	if leafDetectors["authbypass"] {
-		protected, login, logout := recon.SuggestAuthBypassPathsFromRecon(result)
-		if len(protected) == 1 {
-			baseCfg.ProtectedPaths = protected
-			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "protected_paths", SuggestedValue: protected[0], Rationale: "single recon-derived candidate, auto-filled"})
-		} else if len(protected) == 0 {
-			if fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, "authbypass", "protected_paths", protected, escalations); fs != nil {
-				out = append(out, *fs)
-			}
-		} else {
-			baseCfg.ProtectedPaths = protected
-			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "protected_paths", Candidates: protected, Rationale: "multiple recon-derived candidates — all usable directly, no ambiguity to resolve"})
-		}
-		if len(login) > 0 {
-			baseCfg.LoginPaths = login
-			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "login_paths", Candidates: login, Rationale: "recon-derived, auto-fillable"})
-		}
-		if len(logout) > 0 {
-			baseCfg.LogoutPaths = logout
-			out = append(out, agenttask.FieldSuggestion{Detector: "authbypass", Field: "logout_paths", Candidates: logout, Rationale: "recon-derived, auto-fillable"})
-		}
-	}
-
-	if leafDetectors["ssrf"] {
-		if ssrfParams := recon.SuggestSSRFParamsFromRecon(result); len(ssrfParams) > 0 {
-			baseCfg.SSRFParams = ssrfParams
-			out = append(out, agenttask.FieldSuggestion{Detector: "ssrf", Field: "ssrf_params", Candidates: ssrfParams, Rationale: "every recon-derived candidate is directly usable, no ambiguity to resolve"})
-		}
-	}
-
 	return out
+}
+
+// applyFieldSuggestion writes a deterministic (non-LLM) recon-derived field
+// value into cfg. Only fieldsuggest.Deterministic's own suggestions reach
+// here — an LLM-resolved miss is surfaced in planOutput for inspection but
+// never auto-injected into execution (see buildBaseExecConfig's doc comment).
+func applyFieldSuggestion(cfg *scanner.Config, s agenttask.FieldSuggestion) {
+	switch s.Field {
+	case "endpoint_template":
+		cfg.EndpointTemplate = s.SuggestedValue
+	case "protected_paths":
+		if s.SuggestedValue != "" {
+			cfg.ProtectedPaths = []string{s.SuggestedValue}
+		} else {
+			cfg.ProtectedPaths = s.Candidates
+		}
+	case "login_paths":
+		cfg.LoginPaths = s.Candidates
+	case "logout_paths":
+		cfg.LogoutPaths = s.Candidates
+	case "ssrf_params":
+		cfg.SSRFParams = s.Candidates
+	}
 }
 
 // planLeafDetectors is the set of detector names the tree's leaves actually

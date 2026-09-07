@@ -404,9 +404,11 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Round the Phase 6 backbone out to doc90's full "Hacker-in-the-Loop Ready" Definition of Done — full `AllowWrites` attestation, a live Web UI Agent tab (now visualizing a real approval flow, not built any earlier since there was nothing to show), the OWASP Agentic Top 10 mapping against real shipped code, template-ecosystem staging, and a real agent-driven benchmark run. Full design in [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md). Depends on Phase 6, not the reverse.
 
-#### Week 49: Tool Surface Completion — ⬜ not started
-- [ ] `hackerfive templates list --json`
-- [ ] MCP tool-list scoping by session agency level (read-only vs. full)
+#### Week 49: Tool Surface Completion — ✅ done 2026-09-06
+- [x] `hackerfive templates list --json`
+- [x] `hackerfive triage --findings <file> --llm-assist` (LT-41 CLI entry point)
+- [x] Recon-derived field self-suggest wired into `plan --llm-assist` and `scan --recon-file` (new `pkg/fieldsuggest`)
+- [x] MCP tool-list scoping by launch-time agency level: `mcp-serve --agency readonly` omits `scan`/`plan`/`templates.sync` from `tools/list`
 
 #### Week 50: Approval & Compliance Rounding — ⬜ not started
 - [ ] `AllowWrites` only honored with an attested elicitation grant tied to an approved plan

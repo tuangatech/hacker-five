@@ -91,6 +91,8 @@ Nine tools are exposed:
 
 `recon`/`plan`/`scan` refuse to run at all without an explicit scope allow-list — stricter than the CLI's own `--scope`, which only warns when omitted.
 
+**Agency level** — `hackerfive mcp-serve --agency readonly` (or `HACKERFIVE_MCP_AGENCY=readonly`) starts a "recon + triage" server: `recon`, the four lookup tools, `findings.export`/`findings.triage`, and `session.log` — `scan`, `plan` and `templates.sync` are not registered, so the client's tool list never shows them. The default `--agency full` registers all ten. Stdio is one client per process, so this is fixed at launch; run a read-only and a full assistant side by side with two MCP client config entries.
+
 **Tiered LLM fallback** — a local tier first (any Ollama-compatible endpoint: `HACKERFIVE_LOCAL_MODEL_URL`/`HACKERFIVE_LOCAL_MODEL_NAME`, default `http://localhost:11434`/`llama3.1`), then OpenRouter as the frontier tier (`OPENROUTER_API_KEY`, `HACKERFIVE_OPENROUTER_MODEL` — set explicitly; no specific model is assumed current). A per-plan `HACKERFIVE_SPEND_CEILING_USD` (default $1.00) hard-caps cumulative LLM spend — once hit, no further fallback calls are made. Any of these can also go in a `.env` file in the working directory, loaded automatically (a real env var always wins). Same permanent human-in-the-loop posture as HackerOne report submission (above): nothing an LLM decides here executes, or is returned, without an explicit human approval step first.
 
 ## Building & Local Testing
