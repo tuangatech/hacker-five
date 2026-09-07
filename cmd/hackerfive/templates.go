@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -58,6 +59,7 @@ func newTemplatesSyncCmd() *cobra.Command {
 
 func newTemplatesListCmd() *cobra.Command {
 	var tags string
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -71,6 +73,24 @@ func newTemplatesListCmd() *cobra.Command {
 			}
 
 			out := cmd.OutOrStdout()
+
+			// A4 (docs/16-implementation-plan-ph7.md Step 1): machine-readable
+			// template metadata on the CLI directly, for any caller that wants
+			// the tag/severity/format/source data without going through the MCP
+			// server's templates.list tool. Same Entry shape templates/index.json
+			// uses (templatesync.Entry's own json tags).
+			if asJSON {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				if entries == nil {
+					entries = []templatesync.Entry{}
+				}
+				return enc.Encode(struct {
+					Templates []templatesync.Entry `json:"templates"`
+					Rejected  int                  `json:"rejected"`
+				}{Templates: entries, Rejected: rejected})
+			}
+
 			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 			if _, err := fmt.Fprintln(tw, "ID\tNAME\tFORMAT\tSEVERITY\tTAGS\tSOURCE"); err != nil {
 				return fmt.Errorf("writing template list: %w", err)
@@ -91,6 +111,7 @@ func newTemplatesListCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&tags, "tags", "", "comma-separated tags — only list templates carrying at least one (default: no filtering)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the template list as JSON ({\"templates\": [...], \"rejected\": N}) instead of the text table")
 	return cmd
 }
 

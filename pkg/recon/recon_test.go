@@ -222,7 +222,11 @@ func TestRun_OutOfScopeHost_GetsZeroActiveProbes(t *testing.T) {
 	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
 	parsedTarget, err := url.Parse(target)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(scopeFile, []byte(parsedTarget.Hostname()+"\n"), 0o644))
+	// The "*." marker entry keeps Wave 1 subdomain enumeration switched on
+	// (LT-35 skips it for an exact-host-only scope) so this test still
+	// exercises the discovered-then-scope-filtered path; it matches no host
+	// here, so evil.other.net still lands in OutOfScope.
+	require.NoError(t, os.WriteFile(scopeFile, []byte(parsedTarget.Hostname()+"\n*.enum-marker.test\n"), 0o644))
 	s, err := scope.Parse(scopeFile)
 	require.NoError(t, err)
 
@@ -236,6 +240,96 @@ func TestRun_OutOfScopeHost_GetsZeroActiveProbes(t *testing.T) {
 			assert.NotContains(t, c.stdin, evilHost, "%s must never be given the out-of-scope host", c.name)
 		}
 	}
+}
+
+// TestRunWave1_ExactHostScope_SkipsSubdomainEnum guards LT-35
+// (docs/follow-up.md): when --scope is a list of exact hostnames with no
+// "*." or CIDR entry, subfinder/tlsx are never invoked (every result would
+// be scope-rejected anyway) — but the listed host is still resolved and
+// probed by Wave 2.
+func TestRunWave1_ExactHostScope_SkipsSubdomainEnum(t *testing.T) {
+	calls, fake := recordingRun(t, map[string]string{
+		"subfinder": `{"host":"leaked.example.com"}`,
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+
+	s, err := scope.New([]string{hostOnly(srv.URL)}) // exact host, no wildcard
+	require.NoError(t, err)
+	r := New(newTestClient(), withRun(fake), WithScope(s))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	invoked := namesOf(*calls)
+	assert.NotContains(t, invoked, "subfinder", "subdomain enum must be skipped for an exact-host scope")
+	assert.NotContains(t, invoked, "tlsx", "TLS-SAN enum must be skipped for an exact-host scope")
+	assert.Contains(t, invoked, "httpx", "the listed host must still be probed by Wave 2")
+	assert.Contains(t, strings.Join(result.Warnings, " | "), "LT-35")
+}
+
+// TestRunWave1_WildcardScope_RunsSubdomainEnum is the counterpart: a "*."
+// entry means discovered subdomains can be in scope, so enum runs.
+func TestRunWave1_WildcardScope_RunsSubdomainEnum(t *testing.T) {
+	calls, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+
+	s, err := scope.New([]string{hostOnly(srv.URL), "*.example.com"})
+	require.NoError(t, err)
+	r := New(newTestClient(), withRun(fake), WithScope(s))
+	_, err = r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	invoked := namesOf(*calls)
+	assert.Contains(t, invoked, "subfinder", "a wildcard scope must still enumerate subdomains")
+	assert.Contains(t, invoked, "tlsx")
+}
+
+// TestRunWave2_NaabuWaveTimeout_WarnsAndKeepsPartialPorts guards LT-38
+// (docs/follow-up.md): a wave binary the per-wave deadline killed returns
+// errWaveTimeout with whatever stdout it produced. That partial output must
+// still be parsed, and the truncation must be visible in Warnings — not
+// silently indistinguishable from "found nothing".
+func TestRunWave2_NaabuWaveTimeout_WarnsAndKeepsPartialPorts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+	host := hostOnly(srv.URL)
+
+	fake := func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
+		switch name {
+		case "naabu":
+			// one port streamed before the (simulated) 60s kill
+			return []byte(`{"ip":"` + host + `","port":8080,"protocol":"tcp"}`), &errWaveTimeout{}
+		case "httpx":
+			return []byte(`{"url":"` + srv.URL + `","host":"` + host + `","host_ip":"` + host + `","status_code":200}`), nil
+		default:
+			return nil, nil
+		}
+	}
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthActive)
+	require.NoError(t, err)
+
+	joined := strings.Join(result.Warnings, " | ")
+	assert.Contains(t, joined, "naabu")
+	assert.Contains(t, joined, "results may be partial")
+
+	sawPartialPort := false
+	for _, h := range result.Hosts {
+		for _, p := range h.Ports {
+			if p.Port == 8080 {
+				sawPartialPort = true
+			}
+		}
+	}
+	assert.True(t, sawPartialPort, "the port naabu streamed before the timeout must still be recorded")
+}
+
+func TestIsWaveTimeout(t *testing.T) {
+	assert.True(t, isWaveTimeout(&errWaveTimeout{}))
+	assert.False(t, isWaveTimeout(&errBinaryMissing{name: "katana"}))
+	assert.False(t, isWaveTimeout(nil))
 }
 
 func TestRun_MissingBinaries_DegradesToWarningsNotFailure(t *testing.T) {

@@ -72,13 +72,16 @@ func (r *Recon) runDNSX(ctx context.Context, agg *aggregator, hosts []string) []
 	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "dnsx", "-silent", "-json", "-a", "-resp", "-rl", itoa(r.rateLimit))
-	if err != nil {
+	if err != nil && !isWaveTimeout(err) {
 		if isBinaryMissing(err) {
 			agg.addWarning("wave2: %v — dns resolution skipped, using wave1's host list unfiltered", err)
 		} else {
 			agg.addWarning("wave2: dnsx: %v", err)
 		}
 		return nil
+	}
+	if isWaveTimeout(err) {
+		agg.addWarning("wave2: dnsx: %v", err) // partial resolution below (LT-38)
 	}
 	var resolved []string
 	scanner := bufio.NewScanner(bytes.NewReader(out))
@@ -105,13 +108,19 @@ func (r *Recon) runNaabu(ctx context.Context, agg *aggregator, hosts []string) m
 	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "naabu", "-silent", "-json", "-top-ports", "100", "-rate", itoa(r.rateLimit))
-	if err != nil {
+	if err != nil && !isWaveTimeout(err) {
 		if isBinaryMissing(err) {
 			agg.addWarning("wave2: %v — port scan skipped", err)
 		} else {
 			agg.addWarning("wave2: naabu: %v", err)
 		}
 		return nil
+	}
+	if isWaveTimeout(err) {
+		// naabu scans top-100 ports for every in-scope host at the global
+		// rate limit — past ~6 hosts it's routinely cut off here. The partial
+		// port map below is still real, just incomplete (LT-38).
+		agg.addWarning("wave2: naabu: %v (port scan may not have reached every host)", err)
 	}
 	byIP := make(map[string][]PortFact)
 	scanner := bufio.NewScanner(bytes.NewReader(out))
@@ -175,13 +184,16 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 	}
 	httpxArgs = append(httpxArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every probe
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "httpx", httpxArgs...)
-	if err != nil {
+	if err != nil && !isWaveTimeout(err) {
 		if isBinaryMissing(err) {
 			agg.addWarning("wave2: %v — http probing skipped", err)
 		} else {
 			agg.addWarning("wave2: httpx: %v", err)
 		}
 		return nil, nil
+	}
+	if isWaveTimeout(err) {
+		agg.addWarning("wave2: httpx: %v (not every host may have been probed)", err) // partial results parsed below (LT-38)
 	}
 
 	var urls []string

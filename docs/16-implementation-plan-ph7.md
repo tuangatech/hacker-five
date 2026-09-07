@@ -12,15 +12,23 @@
 
 ## Scope
 
-1. ⬜ **Tool surface completion** (Week 49)
-2. ⬜ **Approval & compliance rounding** (Week 50)
-3. ⬜ **Observability upgrade: live Agent tab** (Weeks 51-52)
+1. 🟡 **Tool surface completion** (Week 49) — A4 ✅, A6 CLI-triage ✅ (recon-field self-suggest ⬜), A5 ⬜ (2026-09-06)
+2. 🟡 **Approval & compliance rounding** (Week 50) — B3 ✅, B2 ⬜, B4 ⬜ (2026-09-06)
+3. 🟡 **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ⬜ (2026-09-06)
 4. ⬜ **Live log injection + concurrency ceilings** (Week 53)
 5. ⬜ **OWASP Agentic Top 10 mapping** (Week 54)
 6. ⬜ **Template ecosystem & triage support** (Week 55)
 7. ⬜ **Eval maturity + release** (Week 56) — `v0.7.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-15.)
+
+**Partial landing 2026-09-06 (`post-demo-batch` branch), after the demo dry-run:** the self-contained items from Steps 1–3 —
+- **A4** ✅ `hackerfive templates list --json` (`{"templates": [...], "rejected": N}`, `templatesync.Entry` shape).
+- **A6** 🟡 `hackerfive triage --findings <scan.json> --llm-assist` (CLI entry point for `llmfallback.TriageFindings`, ranking-only, docs/follow-up.md LT-41). The recon-field self-suggest half (wire `resolveFieldSuggestions` into `plan --llm-assist` / `scan --recon-file`) is still open — needs LT-24's "only when a matching leaf exists" gate reproduced on the CLI.
+- **B3** ✅ HackerOne-submission human-in-the-loop gate written into [05-hackerone-and-legal.md](05-hackerone-and-legal.md) as a permanent architectural invariant.
+- **C6** ✅ `reporter.SplitAggregates` splits the nuclei `http-missing-security-headers` aggregate into per-header findings before `Dedup`, collapsing the native/nuclei N:1 overlap via the existing exact-ID key (docs/follow-up.md LT-6).
+
+Still the larger open work in these three steps: **A5** (MCP session-scope tool-list filtering), **B2** (`AllowWrites` as an elicitation-grant attestation), **B4** (scope-creep compliance pass), **C1** (live Agent tab SSE), **C2** (agent audit trail), **C3** (evidence-linked claim enforcement), **C5** (idempotent `#logs`/`#findings` catchup replay, LT-5).
 
 **Explicitly out of scope for this plan, named rather than silently dropped:**
 - **A general-purpose logic engine for business-logic templates, or any other scope-expansion of Phase 4's detectors** — this phase is agent-integration hardening, not new vulnerability classes.

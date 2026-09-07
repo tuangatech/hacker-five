@@ -66,6 +66,25 @@ func New(entries []string) (*Scope, error) {
 	return s, nil
 }
 
+// HasWildcard reports whether the scope contains any entry broader than a
+// single exact hostname — a "*."-prefixed domain suffix, or a CIDR block
+// (which can contain subdomains not spelled out in the file). Recon's Wave 1
+// subdomain/SAN enumeration only has somewhere in-scope to land when this is
+// true; a scope that is nothing but an exact-host allow-list (a bug-bounty
+// program's list of named assets) makes that enumeration pure latency, since
+// Allowed rejects every discovered name (docs/follow-up.md LT-35).
+func (s *Scope) HasWildcard() bool {
+	if len(s.cidrs) > 0 {
+		return true
+	}
+	for _, d := range s.domains {
+		if strings.HasPrefix(d, "*.") {
+			return true
+		}
+	}
+	return false
+}
+
 // Allowed reports whether target's host matches an entry in s — a bare
 // domain must match exactly, a "*."-prefixed entry matches that domain and
 // any subdomain, and a CIDR entry matches only when the host is a literal

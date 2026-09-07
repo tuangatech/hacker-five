@@ -218,6 +218,44 @@ func TestMisconfigMissingHeaders_AllPresent(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// TestMisconfigWeakHSTS_ShortMaxAge covers LT-47: a present but short
+// Strict-Transport-Security max-age is flagged natively (the missing-header
+// rule only checks presence), including the invalid preload+short-max-age
+// combination seen live on superstoreapp.meesho.com.
+func TestMisconfigWeakHSTS_ShortMaxAge(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Strict-Transport-Security", "max-age=86400 ; includeSubDomains ; preload")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-weak-hsts-max-age")
+	require.Len(t, got, 1)
+	assert.Equal(t, "low", got[0].Severity)
+	assert.Contains(t, got[0].Description, "86400")
+	assert.Contains(t, got[0].Description, "preload")
+	assert.Equal(t, "max-age=86400 ; includeSubDomains ; preload", got[0].Evidence["observed"])
+	// present-but-weak must NOT also show as a missing header
+	assert.Empty(t, withPrefix(findings, "misconfig-missing-header-Strict-Transport-Security"))
+}
+
+// TestMisconfigWeakHSTS_StrongMaxAgeNotFlagged: a one-year-or-longer max-age
+// produces no weak-HSTS finding.
+func TestMisconfigWeakHSTS_StrongMaxAgeNotFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-weak-hsts-max-age"))
+}
+
 func TestMisconfigMethod_PUTAccepted(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {

@@ -11,7 +11,47 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
+	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 )
+
+// TestRunKatana_OutOfScopeFetchedEndpoint_DivertedToOutOfScope guards LT-52
+// (docs/follow-up.md): katana's default scope keeps it on the seed's root
+// domain, but a cross-host link it actually fetched (no rec.Error) still
+// reaches this output. When a --scope is set and that host is neither a seed
+// nor in scope, it must be recorded in OutOfScope, never in Endpoints —
+// mirroring the existing rec.Error branch.
+func TestRunKatana_OutOfScopeFetchedEndpoint_DivertedToOutOfScope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	responses := map[string]string{
+		"katana": `{"request":{"endpoint":"` + srv.URL + `/app","method":"GET"},"response":{"status_code":200}}
+{"request":{"endpoint":"https://images.out-of-scope.example/logo.png","method":"GET"},"response":{"status_code":200}}`,
+	}
+	_, fake := recordingRun(t, responses)
+
+	s, err := scope.New([]string{hostOnly(srv.URL)}) // only the seed host is in scope
+	require.NoError(t, err)
+	r := New(newTestClient(), withRun(fake), WithScope(s))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	for _, ep := range result.Endpoints {
+		assert.NotContains(t, ep.URL, "out-of-scope.example",
+			"an out-of-scope host katana fetched must never reach Endpoints")
+	}
+	assert.Contains(t, result.OutOfScope, "images.out-of-scope.example",
+		"the out-of-scope fetched host must be recorded in OutOfScope")
+	found := false
+	for _, ep := range result.Endpoints {
+		if ep.Source == "katana-crawl" && ep.URL == srv.URL+"/app" {
+			found = true
+		}
+	}
+	assert.True(t, found, "the in-scope seed-host endpoint must still be kept")
+}
 
 func TestRunWave3_SwaggerJSONExposed_SetsAPISpec(t *testing.T) {
 	_, fake := recordingRun(t, nil)

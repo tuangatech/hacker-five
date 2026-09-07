@@ -77,9 +77,23 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if err := runPreflight(targetList, policyFile, scopeFile, allowPolicyOverride, nil, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
-			extraHeaders, err := parseHeaders(headers)
+			flagHeaders, err := parseHeaders(headers)
 			if err != nil {
 				return fmt.Errorf("parsing --header: %w", err)
+			}
+			// LT-53 (docs/follow-up.md): recon/plan already auto-apply the
+			// scope-sibling policy.yaml's request_headers: (LT-36); scan didn't,
+			// so a program-mandated identifying header (X-Hackerone) had to be
+			// passed by hand on every scan. Merge it in here too — an explicit
+			// --header of the same name still wins (mergeHeaders is
+			// case-insensitive on the name).
+			policyHeaders, err := policyRequestHeaders(policyFile, scopeFile)
+			if err != nil {
+				return err
+			}
+			extraHeaders, fromPolicy := mergeHeaders(policyHeaders, flagHeaders)
+			for _, name := range fromPolicy {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "scan: applying policy-mandated request header %q to every template request (LT-53)\n", name)
 			}
 			expandedOOBServers := expandOOBServers(oobServers)
 			if noOOB {
@@ -154,6 +168,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 					if err := json.Unmarshal(data, &result); err != nil {
 						return fmt.Errorf("parsing --recon-file: %w", err)
 					}
+					// LT-43(1): with a recon result in hand, drop floor tags
+					// whose value depends on an observed surface that isn't
+					// there (misconfig's "panel" against a target with no
+					// admin/login endpoint) — the biggest single chunk of a
+					// misconfig scan's wall-clock on a thin SPA target.
+					floor = registry.DetectorTemplateTagsForRecon(detector, &result)
 					// A missing/unreadable index degrades to floor-only, the
 					// same "missing optional input, warn and continue" posture
 					// pkg/recon/plan's own template-index loading uses.
@@ -185,7 +205,11 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("running scan: %w", err)
 			}
-			findings = reporter.Dedup(findings)
+			// LT-6 / doc16 C6: expand the nuclei http-missing-security-headers
+			// aggregate into per-header findings first, so Dedup's exact-ID key
+			// then collapses the native/nuclei overlap for the headers the
+			// native misconfig check also grades.
+			findings = reporter.Dedup(reporter.SplitAggregates(findings))
 
 			exporter, err := reporter.ExporterFor(cfg.OutputFormat)
 			if err != nil {

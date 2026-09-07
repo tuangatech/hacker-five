@@ -47,6 +47,14 @@ Huge, hyper-competitive programs (Microsoft/Google/Apple-scale); bounties under 
 2. **Write the report**: one-sentence summary, vulnerability details (what/where/how), copy-paste reproduction steps, a PoC (curl command, screenshot, or tool output), real impact (what can an attacker actually do), and a recommended fix.
 3. **Submit through the program's own form**, respond to clarification requests promptly, stay professional, and don't disclose publicly until the program authorizes it.
 
+### Report submission is a permanent human-in-the-loop invariant (Phase 7 B3)
+
+This is a standing architectural rule, not a phase-scoped decision, and it holds no matter how capable an agent orchestrating the rest of the pipeline (recon → plan → scan → triage → draft) becomes:
+
+- **No code path in this project will ever call HackerOne's report-submission endpoint without a human explicitly choosing to submit.** `pkg/hackerone.Client.CreateReportIntent` only ever creates a private, unsubmitted draft; `report create` never chains into submission; only `report submit --yes` — an explicit, interactive operator action — calls `SubmitReportIntent`. The `findings.export` MCP tool and the offline `hackerone-json` format likewise produce a *draft* a human reviews, never a submission.
+- Any future agent/automation work (see [90-research-hackerbot.md](90-research-hackerbot.md)) must preserve this gate. "Draft and stop" is the only autonomous endpoint; the submit click stays human.
+- Stated plainly and preemptively because the cost of getting it wrong is asymmetric: HackerOne's own leadership had to publicly clarify agentic-feature boundaries after a February 2026 researcher backlash (doc90 §3), and researcher trust erodes far faster than it rebuilds. HackerFive holds itself to this bar in writing before an incident ever tests it.
+
 ## See also
 - [03-development-roadmap.md](03-development-roadmap.md) — tool maturity gates required before joining HackerOne
 - [21-scanning-real-targets.md](21-scanning-real-targets.md) — the concrete scan workflow once a target from this page's process is actually authorized

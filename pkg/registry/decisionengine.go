@@ -24,6 +24,21 @@ import (
 // leafDedupKey, so in practice this is a per-(host, template) ceiling.
 const maxTemplateLeavesPerTech = 8
 
+// minTemplateLeafScore is the relevance floor a scored template entry must
+// clear before it becomes its own leaf (LT-48, docs/follow-up.md).
+// scoreTemplateForTech gives a primary product-tag hit a base of 100 and a
+// bare "shares one non-primary tag word" hit only 50, before any
+// severity/CVE-recency weight. A floor of 60 keeps every primary-tag match
+// and the secondary matches that at least carry high/critical severity,
+// while dropping the long tail of score-50 coincidental word overlaps — the
+// LT-30 (SPA-catch-all) / LT-31 (CDN-brand) fan-out shape, where one weak
+// signal produced 8 confident leaves. When even the best candidate is below
+// the floor the fact contributes no template leaf at all (it still becomes a
+// StatusUnresolved leaf via resolveTechFact's len(leaves)==0 branch). The
+// maxTemplateLeavesPerTech count cap stays as a backstop for a genuinely
+// popular product (WordPress) that clears the floor many times over.
+const minTemplateLeafScore = 60
+
 // cveRecencyBaseYear is the pivot for matchTemplateTags' CVE-recency score
 // component: a CVE-YYYY template scores (YYYY - this) * cveRecencyWeight
 // when YYYY is at or after it, so a 2024 CVE outranks a 2017 one for the
@@ -208,7 +223,8 @@ func hostnameProductHint(host string) string {
 // produce no PlanTree leaf at all — not even a visible unresolved one.
 // Each entry is either a transport/protocol fact ("HTTP/2", "HTTP/3"), a
 // security-posture fact the misconfig detector already checks directly
-// ("HSTS" — see checkMissingHeaders' Strict-Transport-Security rule), a
+// ("HSTS" — checkMissingHeaders now covers both a missing and a weak/short
+// max-age Strict-Transport-Security, LT-47), a
 // hosting/CDN brand that names no scannable product surface of its own
 // ("Hostinger", "Google Cloud"), or a sub-component fully covered by a
 // broader sibling fact ("WordPress Block Editor" — the plain "WordPress"
@@ -409,6 +425,20 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 	if len(cands) == 0 {
 		return nil
 	}
+	// LT-48: a relevance-score floor, not just a count cap. If even the
+	// best-scoring candidate is a weak coincidental-word match, this tech
+	// signal isn't worth a template leaf — drop the whole fan-out.
+	if cands[0].score < minTemplateLeafScore {
+		return nil
+	}
+	kept := cands[:0]
+	for _, c := range cands {
+		if c.score < minTemplateLeafScore {
+			break // sorted desc — nothing after this clears the floor either
+		}
+		kept = append(kept, c)
+	}
+	cands = kept
 	if len(cands) > maxTemplateLeavesPerTech {
 		cands = cands[:maxTemplateLeavesPerTech]
 	}
@@ -457,6 +487,54 @@ func DetectorTemplateTags(detector string) []string {
 	out := make([]string, len(floor))
 	copy(out, floor)
 	return out
+}
+
+// adminSurfaceHintPaths are lowercase URL substrings whose presence in a
+// recon EndpointFact means an admin/login/management surface is plausibly
+// reachable — the gate LT-43(1) (docs/follow-up.md) puts in front of
+// misconfig's "panel" category-floor tag.
+var adminSurfaceHintPaths = []string{
+	"admin", "login", "signin", "sign-in", "dashboard", "console",
+	"manage", "portal", "wp-admin", "/auth", "account",
+}
+
+// DetectorTemplateTagsForRecon is DetectorTemplateTags with the floor tags
+// that only pay off against a specific observed surface gated on that
+// surface actually appearing in result. Today the only such tag is
+// misconfig's "panel" — ~1,591 templates of admin-panel / console / device
+// login-page detection that are pure noise (and wall-clock) against a target
+// with no such surface, e.g. a public marketing SPA. It is kept only when
+// recon saw an auth-boundary endpoint, a 401/403, or an admin/login-shaped
+// path. result may be nil — then this behaves exactly like
+// DetectorTemplateTags (every tag kept), so a caller with no recon input is
+// unchanged. --all-templates still bypasses all narrowing.
+func DetectorTemplateTagsForRecon(detector string, result *recon.ReconResult) []string {
+	floor := DetectorTemplateTags(detector)
+	if detector != "misconfig" || result == nil || reconShowsAdminSurface(result) {
+		return floor
+	}
+	out := floor[:0]
+	for _, t := range floor {
+		if t != "panel" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func reconShowsAdminSurface(result *recon.ReconResult) bool {
+	for _, ep := range result.Endpoints {
+		if ep.Source == "wave3-auth-boundary-heuristic" || ep.StatusCode == 401 || ep.StatusCode == 403 {
+			return true
+		}
+		lower := strings.ToLower(ep.URL)
+		for _, hint := range adminSurfaceHintPaths {
+			if strings.Contains(lower, hint) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // genericCorpusWideTags are tags carried by such a broad, product-agnostic
@@ -1020,6 +1098,26 @@ func resolveTechFact(host string, fact recon.TechFact, templateIndex []templates
 // baseCfg field supplies the value at execution time. businesslogic and the
 // endpointSignals template-ID map are new signal, not reuse — see their own
 // doc comments.
+// apiRouteConfidence is LT-51's status-weighting (docs/follow-up.md): a
+// 400/401/403/422 on an /api path is a route confirmed live (it parsed the
+// request enough to reject its shape or demand auth), so an endpoint-driven
+// idor/authbypass/ssrf leaf for that host deserves ConfidenceHigh rather
+// than the ConfidenceMedium a bare URL-shape match gets. A 404 (route may
+// not exist) or a 2xx SPA catch-all does not trigger the bump.
+func apiRouteConfidence(hostEndpoints []recon.EndpointFact) agenttask.Confidence {
+	for _, ep := range hostEndpoints {
+		p := strings.ToLower(endpointURLPath(ep.URL))
+		if !strings.HasPrefix(p, "/api/") && !strings.Contains(p, "/api/") {
+			continue
+		}
+		switch ep.StatusCode {
+		case 400, 401, 403, 422: // bad request / unauthorized / forbidden / unprocessable — route parsed the request and rejected it
+			return agenttask.ConfidenceHigh
+		}
+	}
+	return agenttask.ConfidenceMedium
+}
+
 func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateByID map[string]templatesync.Entry, leafIdx *int) []*agenttask.PlanNode {
 	hostEndpoints := endpointsForHost(host, endpoints)
 	if len(hostEndpoints) == 0 {
@@ -1028,16 +1126,24 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 	hostResult := &recon.ReconResult{Endpoints: hostEndpoints}
 	var leaves []*agenttask.PlanNode
 
+	// LT-51 (docs/follow-up.md): an unauthenticated GET a route rejected on
+	// request *shape* or *auth* (400/401/403/422) confirms the route exists
+	// and rejected the request, not the path — a stronger idor/authbypass/
+	// ssrf candidate than a 404 (route may not exist) or a 2xx SPA catch-all.
+	// When any /api endpoint on this host carries such a status the
+	// endpoint-driven leaves go out at High instead of the default Medium.
+	endpointConf := apiRouteConfidence(hostEndpoints)
+
 	if candidates := recon.SuggestIDOREndpointCandidates(hostResult); len(candidates) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "idor", agenttask.ConfidenceMedium,
+		leaves = append(leaves, newEndpointLeaf(host, "idor", endpointConf,
 			fmt.Sprintf("recon observed %d ID-shaped endpoint candidate(s) on this host (e.g. %s)", len(candidates), candidates[0]), leafIdx))
 	}
 	if protected, _, _ := recon.SuggestAuthBypassPathsFromRecon(hostResult); len(protected) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "authbypass", agenttask.ConfidenceMedium,
+		leaves = append(leaves, newEndpointLeaf(host, "authbypass", endpointConf,
 			fmt.Sprintf("recon observed %d endpoint(s) returning 401/403 on this host (e.g. %s)", len(protected), protected[0]), leafIdx))
 	}
 	if params := recon.SuggestSSRFParamsFromRecon(hostResult); len(params) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "ssrf", agenttask.ConfidenceMedium,
+		leaves = append(leaves, newEndpointLeaf(host, "ssrf", endpointConf,
 			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx))
 	}
 	for _, ep := range hostEndpoints {

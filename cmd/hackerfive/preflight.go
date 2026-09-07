@@ -99,6 +99,7 @@ func mergeHeaders(policy, flag map[string]string) (merged map[string]string, fro
 // recon-derived security.txt/robots.txt signal set when the command has one
 // (plan), nil otherwise (scan, recon-before-it-runs).
 func runPreflight(targets []string, policyFile, scopeFile string, override bool, sig *preflight.Signals, stderr io.Writer) error {
+	warnUnstructuredPolicy(policyFile, scopeFile, stderr)
 	warns, err := preflight.Check(targets, preflight.Options{
 		PolicyPath: resolvePolicyPath(policyFile, scopeFile),
 		Override:   override,
@@ -108,4 +109,30 @@ func runPreflight(targets []string, policyFile, scopeFile string, override bool,
 		_, _ = fmt.Fprintln(stderr, "preflight: "+w)
 	}
 	return err
+}
+
+// unstructuredPolicyNames are the human-readable policy files LT-42 looks for
+// next to a --scope file when no machine-readable policy.yaml is present.
+var unstructuredPolicyNames = []string{"policy.md", "policy.markdown", "policy.txt", "POLICY.md"}
+
+// warnUnstructuredPolicy warns (LT-42, docs/follow-up.md) when an engagement
+// directory has a prose policy.md next to the --scope file but no
+// policy.yaml the D2 check can actually enforce — so restrictions written
+// only in prose (order-flow rate-limit carve-outs, "no real transactions",
+// a PIN/account-lock rule) are invisible to HackerFive and every target
+// verdict silently stays "unknown".
+func warnUnstructuredPolicy(policyFile, scopeFile string, stderr io.Writer) {
+	if policyFile != "" || scopeFile == "" {
+		return // an explicit --policy-file, or nothing to sit beside
+	}
+	if resolvePolicyPath(policyFile, scopeFile) != "" {
+		return // a policy.yaml was found — it's the authoritative signal, nothing to warn about
+	}
+	dir := filepath.Dir(scopeFile)
+	for _, name := range unstructuredPolicyNames {
+		if fileExists(filepath.Join(dir, name)) {
+			_, _ = fmt.Fprintf(stderr, "preflight: %s sits next to --scope but there is no machine-readable policy.yaml — restrictions written only in it are NOT enforced (see policy.yaml.example) (LT-42)\n", name)
+			return
+		}
+	}
 }
