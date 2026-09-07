@@ -15,14 +15,22 @@ import (
 
 func findLeaf(t *testing.T, tree *agenttask.PlanTree, host string, predicate func(*agenttask.PlanNode) bool) *agenttask.PlanNode {
 	t.Helper()
-	hostNode := tree.Find("host:" + host)
-	require.NotNil(t, hostNode, "expected a host node for %q", host)
-	for _, leaf := range hostNode.Children {
+	for _, leaf := range hostLeaves(t, tree, host) {
 		if predicate(leaf) {
 			return leaf
 		}
 	}
 	return nil
+}
+
+// hostLeaves flattens a host node's leaves — since C7a (doc16 Phase 7 Step
+// 3) registry.Resolve nests leaves one level deeper under per-vuln-class
+// intermediate nodes, so hostNode.Children are class nodes, not leaves.
+func hostLeaves(t *testing.T, tree *agenttask.PlanTree, host string) []*agenttask.PlanNode {
+	t.Helper()
+	hostNode := tree.Find("host:" + host)
+	require.NotNil(t, hostNode, "expected a host node for %q", host)
+	return agenttask.Leaves(hostNode)
 }
 
 func TestResolve_MatchedTechRule_ProducesPendingLeaf(t *testing.T) {
@@ -40,6 +48,46 @@ func TestResolve_MatchedTechRule_ProducesPendingLeaf(t *testing.T) {
 	assert.Equal(t, "example.test", leaf.Target)
 }
 
+// TestResolve_GroupsLeavesUnderVulnClassNodes covers C7a (doc16 Phase 7
+// Step 3): a host node's direct children are now per-vuln-class intermediate
+// nodes, not leaves; leaves nest one level deeper and Leaves() still
+// flattens. Each leaf carries a dispatch Priority derived from its
+// confidence band.
+func TestResolve_GroupsLeavesUnderVulnClassNodes(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "PHP", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"},
+			{Name: "TotallyUnknownStack", Host: "example.test", Source: "httpx-tech-detect", Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	hostNode := tree.Find("host:example.test")
+	require.NotNil(t, hostNode)
+	for _, cn := range hostNode.Children {
+		assert.NotEmpty(t, cn.Class, "a host node's direct child is a vuln-class node with Class set")
+		assert.NotEmpty(t, cn.Children, "a class node holds leaves")
+		assert.Equal(t, agenttask.ClassNodeID("example.test", cn.Class), cn.ID)
+	}
+
+	classes := map[string]bool{}
+	for _, cn := range hostNode.Children {
+		classes[cn.Class] = true
+	}
+	assert.True(t, classes["misconfig"], "PHP -> misconfig class node")
+	assert.True(t, classes["recon-followup"], "unmatched fact -> recon-followup class node")
+
+	// Class nodes are ordered by descending priority: misconfig (from a
+	// high-confidence fact) outranks recon-followup (low).
+	assert.Equal(t, "misconfig", hostNode.Children[0].Class)
+
+	misconfigLeaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, misconfigLeaf)
+	assert.Equal(t, agenttask.PriorityHigh, misconfigLeaf.Priority, "a high-confidence leaf gets high dispatch priority")
+}
+
 func TestResolve_UnmatchedTechFact_ProducesUnresolvedLeaf(t *testing.T) {
 	result := &recon.ReconResult{
 		Target:    "http://example.test",
@@ -50,9 +98,9 @@ func TestResolve_UnmatchedTechFact_ProducesUnresolvedLeaf(t *testing.T) {
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
-	require.Len(t, hostNode.Children, 1, "an unmatched TechFact must produce exactly one unresolved leaf, not be dropped")
-	assert.Equal(t, agenttask.StatusUnresolved, hostNode.Children[0].Status)
-	assert.Empty(t, hostNode.Children[0].Detector, "an unresolved leaf has no dispatched capability")
+	require.Len(t, agenttask.Leaves(hostNode), 1, "an unmatched TechFact must produce exactly one unresolved leaf, not be dropped")
+	assert.Equal(t, agenttask.StatusUnresolved, agenttask.Leaves(hostNode)[0].Status)
+	assert.Empty(t, agenttask.Leaves(hostNode)[0].Detector, "an unresolved leaf has no dispatched capability")
 }
 
 func TestResolve_UnmatchedTechFact_RationaleIncludesCorrelatedEndpoint(t *testing.T) {
@@ -69,8 +117,8 @@ func TestResolve_UnmatchedTechFact_RationaleIncludesCorrelatedEndpoint(t *testin
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
-	require.Len(t, hostNode.Children, 1)
-	rationale := hostNode.Children[0].Rationale
+	require.Len(t, agenttask.Leaves(hostNode), 1)
+	rationale := agenttask.Leaves(hostNode)[0].Rationale
 	assert.Contains(t, rationale, "matched no registry capability or template tag")
 	assert.Contains(t, rationale, "observed on this host:")
 	assert.Contains(t, rationale, "GET /graphql (200)")
@@ -90,7 +138,7 @@ func TestResolve_UnmatchedTechFact_PopulatesLeafContext(t *testing.T) {
 
 	tree, leafContexts := Resolve(result, nil)
 
-	leaf := tree.Find("host:example.test").Children[0]
+	leaf := agenttask.Leaves(tree.Find("host:example.test"))[0]
 	require.Equal(t, agenttask.StatusUnresolved, leaf.Status)
 	ctx, ok := leafContexts[leaf.ID]
 	require.True(t, ok, "expected a LeafContext entry for the unresolved leaf's ID")
@@ -113,7 +161,7 @@ func TestResolve_UnmatchedTechFact_NoLeafContextForResolvedLeaf(t *testing.T) {
 
 	tree, leafContexts := Resolve(result, nil)
 
-	leaf := tree.Find("host:example.test").Children[0]
+	leaf := agenttask.Leaves(tree.Find("host:example.test"))[0]
 	require.Equal(t, agenttask.StatusPending, leaf.Status, "GraphQL matches a techRule, so this leaf resolves deterministically")
 	_, ok := leafContexts[leaf.ID]
 	assert.False(t, ok, "a resolved leaf must not appear in leafContexts")
@@ -127,7 +175,7 @@ func TestResolve_UnmatchedTechFact_NoEndpoints_RationaleUnchanged(t *testing.T) 
 
 	tree, _ := Resolve(result, nil)
 
-	rationale := tree.Find("host:example.test").Children[0].Rationale
+	rationale := agenttask.Leaves(tree.Find("host:example.test"))[0].Rationale
 	assert.NotContains(t, rationale, "observed on this host:", "no real endpoints to correlate means no suffix, not an empty one")
 }
 
@@ -193,7 +241,7 @@ func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
 	templateLeaves := 0
-	for _, leaf := range hostNode.Children {
+	for _, leaf := range agenttask.Leaves(hostNode) {
 		if leaf.Detector == "tmpl" {
 			templateLeaves++
 		}
@@ -298,8 +346,8 @@ func TestResolve_NonActionableTech_MixedWithReal_OnlyRealSurvives(t *testing.T) 
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
-	require.Len(t, hostNode.Children, 1, "only the PHP fact should produce a leaf")
-	assert.Equal(t, "misconfig", hostNode.Children[0].Detector)
+	require.Len(t, agenttask.Leaves(hostNode), 1, "only the PHP fact should produce a leaf")
+	assert.Equal(t, "misconfig", agenttask.Leaves(hostNode)[0].Detector)
 }
 
 // TestResolve_GoogleAnalytics_ProducesNoLeaf is LT-10's (docs/follow-up.md)
@@ -342,7 +390,7 @@ func TestResolve_DuplicateCapabilityLeaves_Deduped(t *testing.T) {
 	require.NotNil(t, hostNode)
 	misconfigLeaves := 0
 	var kept *agenttask.PlanNode
-	for _, leaf := range hostNode.Children {
+	for _, leaf := range agenttask.Leaves(hostNode) {
 		if leaf.Detector == "misconfig" {
 			misconfigLeaves++
 			kept = leaf
@@ -368,8 +416,8 @@ func TestResolve_DuplicateUnresolvedLeaves_DedupedByTechName(t *testing.T) {
 
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
-	require.Len(t, hostNode.Children, 1, "the same unknown product from two sources must produce one unresolved leaf")
-	assert.Equal(t, agenttask.StatusUnresolved, hostNode.Children[0].Status)
+	require.Len(t, agenttask.Leaves(hostNode), 1, "the same unknown product from two sources must produce one unresolved leaf")
+	assert.Equal(t, agenttask.StatusUnresolved, agenttask.Leaves(hostNode)[0].Status)
 }
 
 // TestResolve_DuplicateTemplateLeaves_Deduped guards P0-4 for template-ID
@@ -392,7 +440,7 @@ func TestResolve_DuplicateTemplateLeaves_Deduped(t *testing.T) {
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
 	yoastLeaves := 0
-	for _, leaf := range hostNode.Children {
+	for _, leaf := range agenttask.Leaves(hostNode) {
 		if leaf.Detector == "yoast-fpd" {
 			yoastLeaves++
 		}
@@ -996,7 +1044,7 @@ func TestResolve_BaselineMisconfigLeaf_DedupsAgainstRealMisconfigLeaf(t *testing
 	tree, _ := Resolve(result, nil)
 
 	misconfigLeaves := 0
-	for _, l := range tree.Find("host:example.test").Children {
+	for _, l := range agenttask.Leaves(tree.Find("host:example.test")) {
 		if l.Detector == "misconfig" {
 			misconfigLeaves++
 		}
@@ -1079,8 +1127,8 @@ func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
 
 	hostNode := tree.Find("host:staging.example.test")
 	require.NotNil(t, hostNode, "a naabu-only host (no TechFact/Endpoint) must still produce a host node")
-	require.Len(t, hostNode.Children, 1)
-	leaf := hostNode.Children[0]
+	require.Len(t, agenttask.Leaves(hostNode), 1)
+	leaf := agenttask.Leaves(hostNode)[0]
 	assert.Equal(t, agenttask.StatusUnresolved, leaf.Status)
 	assert.Empty(t, leaf.Detector, "a port-visibility leaf must never dispatch — no loadable check exists for it")
 	assert.Contains(t, leaf.Rationale, "3306")
@@ -1103,7 +1151,7 @@ func TestResolve_InterestingPortOpen_PopulatesLeafContext(t *testing.T) {
 
 	tree, leafContexts := Resolve(result, nil)
 
-	leaf := tree.Find("host:staging.example.test").Children[0]
+	leaf := agenttask.Leaves(tree.Find("host:staging.example.test"))[0]
 	ctx, ok := leafContexts[leaf.ID]
 	require.True(t, ok, "expected a LeafContext entry for the port leaf's ID")
 	require.NotNil(t, ctx.Port)
@@ -1162,9 +1210,9 @@ func TestResolve_MultipleInterestingPorts_AllProduceLeaves(t *testing.T) {
 
 	hostNode := tree.Find("host:staging.example.test")
 	require.NotNil(t, hostNode)
-	require.Len(t, hostNode.Children, 2, "both port 21 and port 3306 must produce their own leaf")
+	require.Len(t, agenttask.Leaves(hostNode), 2, "both port 21 and port 3306 must produce their own leaf")
 	var rationales []string
-	for _, l := range hostNode.Children {
+	for _, l := range agenttask.Leaves(hostNode) {
 		rationales = append(rationales, l.Rationale)
 	}
 	assert.Contains(t, strings.Join(rationales, "|"), "21")
@@ -1187,7 +1235,7 @@ func TestResolve_PortLeafAndUnrelatedUnresolvedTechFact_BothSurvive(t *testing.T
 	// The port leaf's synthetic dedup name ("port:21") must never collide
 	// with a real unmatched TechFact's own unresolvedDedupKey — both are
 	// genuinely different findings and must both survive as distinct leaves.
-	assert.Len(t, hostNode.Children, 2)
+	assert.Len(t, agenttask.Leaves(hostNode), 2)
 }
 
 // --- LT-3 (docs/follow-up.md): APISpec now dispatches like a TechFact ---
@@ -1265,7 +1313,7 @@ func TestResolve_APISpec_DoesNotLeakOntoUnrelatedHost(t *testing.T) {
 
 	otherHost := tree.Find("host:other.example.test")
 	require.NotNil(t, otherHost)
-	for _, leaf := range otherHost.Children {
+	for _, leaf := range agenttask.Leaves(otherHost) {
 		assert.NotEqual(t, "misconfig", leaf.Detector, "the api spec belongs to example.test, not other.example.test")
 	}
 }
@@ -1286,7 +1334,7 @@ func TestResolve_APISpec_DedupsAgainstExistingTechFactLeaf(t *testing.T) {
 	hostNode := tree.Find("host:example.test")
 	require.NotNil(t, hostNode)
 	misconfigLeaves := 0
-	for _, leaf := range hostNode.Children {
+	for _, leaf := range agenttask.Leaves(hostNode) {
 		if leaf.Detector == "misconfig" {
 			misconfigLeaves++
 		}

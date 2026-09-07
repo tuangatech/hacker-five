@@ -164,7 +164,7 @@ func MergeLLMProposals(tree *agenttask.PlanTree, proposals []PlanProposal, capab
 	}
 
 	merged := 0
-	for _, p := range proposals {
+	for i, p := range proposals {
 		if p.Target == "" || p.Detector == "" {
 			continue
 		}
@@ -182,14 +182,19 @@ func MergeLLMProposals(tree *agenttask.PlanTree, proposals []PlanProposal, capab
 		if rationale == "" {
 			rationale = "no rationale given"
 		}
-		hostNode.Children = append(hostNode.Children, &agenttask.PlanNode{
-			ID:         fmt.Sprintf("%s-llm-plan-%d", p.Target, len(hostNode.Children)),
+		leaf := &agenttask.PlanNode{
+			ID:         fmt.Sprintf("%s-llm-plan-%d", p.Target, i),
 			Target:     p.Target,
 			Detector:   p.Detector,
 			Rationale:  ResolvedRationalePrefix + "recon-wide proposal: " + rationale,
 			Status:     agenttask.StatusPending,
 			Confidence: agenttask.ConfidenceLow,
-		})
+			Priority:   agenttask.PriorityForConfidence(agenttask.ConfidenceLow),
+		}
+		// C7a: route into the same per-vuln-class node registry.Resolve's
+		// GroupIntoClassNodes would place it under, creating that class node
+		// if this host doesn't have one yet.
+		agenttask.AttachLeaf(hostNode, leaf, registry.LeafClass(leaf))
 		merged++
 	}
 	return merged
@@ -210,7 +215,7 @@ func detectorCapabilities(capabilities []registry.Capability) []registry.Capabil
 }
 
 func leafExists(hostNode *agenttask.PlanNode, target, detector string) bool {
-	for _, child := range hostNode.Children {
+	for _, child := range agenttask.Leaves(hostNode) {
 		if child.Target == target && child.Detector == detector {
 			return true
 		}

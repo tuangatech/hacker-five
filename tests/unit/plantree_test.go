@@ -195,3 +195,94 @@ func TestPlanTree_AddSpend_ZeroCeilingNeverTrips(t *testing.T) {
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}
 	assert.False(t, tree.AddSpend(1000))
 }
+
+func TestPriorityForConfidence(t *testing.T) {
+	assert.Equal(t, agenttask.PriorityHigh, agenttask.PriorityForConfidence(agenttask.ConfidenceHigh))
+	assert.Equal(t, agenttask.PriorityMedium, agenttask.PriorityForConfidence(agenttask.ConfidenceMedium))
+	assert.Equal(t, agenttask.PriorityLow, agenttask.PriorityForConfidence(agenttask.ConfidenceLow))
+	assert.Equal(t, agenttask.PriorityLow, agenttask.PriorityForConfidence(""), "unset confidence is treated as low")
+}
+
+func TestDemoteConfidence(t *testing.T) {
+	assert.Equal(t, agenttask.ConfidenceMedium, agenttask.DemoteConfidence(agenttask.ConfidenceHigh))
+	assert.Equal(t, agenttask.ConfidenceLow, agenttask.DemoteConfidence(agenttask.ConfidenceMedium))
+	assert.Equal(t, agenttask.ConfidenceLow, agenttask.DemoteConfidence(agenttask.ConfidenceLow), "low is the floor")
+}
+
+// TestGroupIntoClassNodes covers C7a's structural upgrade (doc16 Phase 7
+// Step 3): a flat leaf list under a host node becomes one intermediate node
+// per vuln-class, class nodes ordered by descending priority, and Leaves()
+// still flattens the whole thing.
+func TestGroupIntoClassNodes(t *testing.T) {
+	host := &agenttask.PlanNode{ID: "host:h.test", Target: "h.test", Children: []*agenttask.PlanNode{
+		{ID: "l1", Target: "h.test", Detector: "misconfig", Status: agenttask.StatusPending, Priority: agenttask.PriorityLow},
+		{ID: "l2", Target: "h.test", Detector: "idor", Status: agenttask.StatusPending, Priority: agenttask.PriorityHigh},
+		{ID: "l3", Target: "h.test", Detector: "misconfig", Status: agenttask.StatusPending, Priority: agenttask.PriorityMedium},
+		{ID: "l4", Target: "h.test", Status: agenttask.StatusUnresolved},
+	}}
+
+	classOf := func(n *agenttask.PlanNode) string {
+		if n.Status == agenttask.StatusUnresolved {
+			return "recon-followup"
+		}
+		return n.Detector
+	}
+	agenttask.GroupIntoClassNodes(host, classOf)
+
+	require.Len(t, host.Children, 3, "one node per distinct class")
+	assert.Equal(t, "idor", host.Children[0].Class, "highest-priority class first")
+	assert.Equal(t, agenttask.ClassNodeID("h.test", "idor"), host.Children[0].ID)
+	assert.Equal(t, agenttask.PriorityHigh, host.Children[0].Priority, "class node priority is its max leaf priority")
+
+	// misconfig node holds both misconfig leaves, in input order.
+	misconfig := host.Children[1]
+	assert.Equal(t, "misconfig", misconfig.Class)
+	require.Len(t, misconfig.Children, 2)
+	assert.Equal(t, "l1", misconfig.Children[0].ID)
+	assert.Equal(t, "l3", misconfig.Children[1].ID)
+
+	// Leaves() is unchanged for consumers that only want leaves.
+	leaves := agenttask.Leaves(host)
+	require.Len(t, leaves, 4)
+
+	// Idempotent — a second call is a no-op.
+	agenttask.GroupIntoClassNodes(host, classOf)
+	require.Len(t, host.Children, 3)
+	require.Len(t, agenttask.Leaves(host), 4)
+}
+
+// TestAttachLeaf covers the post-construction path (llmfallback.MergeLLMProposals):
+// a leaf added after the tree was grouped lands under the right class node,
+// creating it if absent.
+func TestAttachLeaf(t *testing.T) {
+	host := &agenttask.PlanNode{ID: "host:h.test", Target: "h.test", Children: []*agenttask.PlanNode{
+		{ID: "c-misconfig", Target: "h.test", Class: "misconfig", Priority: agenttask.PriorityLow, Children: []*agenttask.PlanNode{
+			{ID: "l1", Target: "h.test", Detector: "misconfig", Status: agenttask.StatusPending, Priority: agenttask.PriorityLow},
+		}},
+	}}
+
+	// Same class as an existing node -> appended there, node priority bumped.
+	agenttask.AttachLeaf(host, &agenttask.PlanNode{ID: "l2", Target: "h.test", Detector: "misconfig", Status: agenttask.StatusPending, Priority: agenttask.PriorityHigh}, "misconfig")
+	require.Len(t, host.Children, 1)
+	require.Len(t, host.Children[0].Children, 2)
+	assert.Equal(t, agenttask.PriorityHigh, host.Children[0].Priority)
+
+	// New class -> new class node appended.
+	agenttask.AttachLeaf(host, &agenttask.PlanNode{ID: "l3", Target: "h.test", Detector: "idor", Status: agenttask.StatusPending}, "idor")
+	require.Len(t, host.Children, 2)
+	assert.Equal(t, "idor", host.Children[1].Class)
+	assert.Equal(t, agenttask.ClassNodeID("h.test", "idor"), host.Children[1].ID)
+
+	assert.Len(t, agenttask.Leaves(host), 3)
+}
+
+// TestApplyLeafUpdate_VetoedStatus confirms a leaf can be flipped to
+// StatusVetoed (C7b's "drop" verdict) through the same guarded mutation API.
+func TestApplyLeafUpdate_VetoedStatus(t *testing.T) {
+	tree := buildTestTree()
+	vetoed := agenttask.StatusVetoed
+	reason := "plausibility veto (dropped): premise is an SPA catch-all"
+	require.NoError(t, tree.ApplyLeafUpdate("leaf-b", agenttask.PlanNodePatch{Status: &vetoed, Rationale: &reason}))
+	assert.Equal(t, agenttask.StatusVetoed, tree.Find("leaf-b").Status)
+	assert.Equal(t, reason, tree.Find("leaf-b").Rationale)
+}

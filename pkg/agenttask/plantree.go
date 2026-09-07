@@ -8,6 +8,7 @@ package agenttask
 
 import (
 	"errors"
+	"sort"
 	"sync"
 )
 
@@ -22,7 +23,51 @@ const (
 	// couldn't match to any registry entry — visible and inspectable,
 	// never silently dropped and never itself a trigger for an LLM call.
 	StatusUnresolved PlanNodeStatus = "unresolved"
+	// StatusVetoed marks a StatusPending leaf an optional LLM plausibility
+	// pass (C7b, doc16 Phase 7 Step 3 / docs/follow-up.md LT-49) judged
+	// implausible — the deterministic engine was confident, but the fact it
+	// rested on looks fabricated or irrelevant (an SPA catch-all APISpec, a
+	// CDN-brand tech fact). Kept visible with the veto reason in Rationale,
+	// never dispatched by planexec, and never re-fed to ResolveTreeLeaves
+	// (that only acts on StatusUnresolved).
+	StatusVetoed PlanNodeStatus = "vetoed"
 )
+
+// Dispatch-ordering priority bands for a leaf (C7a, doc16 Phase 7 Step 3):
+// planexec.RunPlan submits higher-Priority leaves first. Coarse bands, not a
+// fine-grained score — the executor still dispatches concurrently within a
+// tier, so this orders *start* order, not completion order.
+const (
+	PriorityLow    = 10
+	PriorityMedium = 20
+	PriorityHigh   = 30
+)
+
+// PriorityForConfidence maps a leaf's coordinator confidence band to its
+// base dispatch priority. A caller may add a small bump on top (e.g. a
+// specific-template or endpoint-confirmed leaf is a sharper signal than a
+// broad capability sweep at the same band).
+func PriorityForConfidence(c Confidence) int {
+	switch c {
+	case ConfidenceHigh:
+		return PriorityHigh
+	case ConfidenceMedium:
+		return PriorityMedium
+	default:
+		return PriorityLow
+	}
+}
+
+// DemoteConfidence returns the next band down (high→medium→low; low stays
+// low) — used by the C7b plausibility pass's "demote" verdict.
+func DemoteConfidence(c Confidence) Confidence {
+	switch c {
+	case ConfidenceHigh:
+		return ConfidenceMedium
+	default:
+		return ConfidenceLow
+	}
+}
 
 // Confidence is the coordinator's own banded success-probability estimate
 // for attempting a PlanNode leaf — Cyber-AutoAgent's convention, and the
@@ -56,14 +101,113 @@ func BandConfidence(percent float64) Confidence {
 // decomposition — PentestGPT's PTT shape (doc90 §2) — and are not
 // individually mutable once built; only leaves may change post-construction,
 // via PlanTree.ApplyLeafUpdate.
+//
+// registry.Resolve builds three tiers: root → one node per host →
+// GroupIntoClassNodes' one intermediate node per vuln-class → the leaves of
+// that class (C7a, doc16 Phase 7 Step 3 — replacing the old flat
+// root→host→[leaf...] shape). Leaves() flattens all of it, so consumers that
+// only care about leaves are unaffected by the extra tier.
 type PlanNode struct {
 	ID         string         `json:"id"`
 	Target     string         `json:"target"`
-	Detector   string         `json:"detector,omitempty"` // detector name, or a template ID/tag
+	Detector   string         `json:"detector,omitempty"`  // detector name, or a template ID/tag
+	Class      string         `json:"class,omitempty"`     // vuln-class label — set only on a GroupIntoClassNodes intermediate node
 	Rationale  string         `json:"rationale,omitempty"` // why the coordinator picked this candidate
 	Status     PlanNodeStatus `json:"status,omitempty"`
 	Confidence Confidence     `json:"confidence,omitempty"`
+	Priority   int            `json:"priority,omitempty"` // dispatch ordering — higher runs first (C7a); 0 = unset
 	Children   []*PlanNode    `json:"children,omitempty"`
+}
+
+// ClassNodeID is the deterministic ID GroupIntoClassNodes/AttachLeaf give a
+// host's vuln-class intermediate node.
+func ClassNodeID(host, class string) string {
+	return "class:" + host + ":" + class
+}
+
+// GroupIntoClassNodes rewrites hostNode.Children — currently a flat leaf
+// list — into one intermediate node per vuln-class (C7a). classOf labels
+// each leaf; leaves sharing a label land under one node whose ID is
+// ClassNodeID(hostNode.Target, label), Class is the label, and Priority is
+// the max of its leaves' priorities. Class nodes are ordered by descending
+// node priority, then label, for a deterministic tree shape. A no-op if
+// hostNode is nil, has no children, or is already grouped (any child itself
+// has children) so calling it twice is safe.
+func GroupIntoClassNodes(hostNode *PlanNode, classOf func(*PlanNode) string) {
+	if hostNode == nil || len(hostNode.Children) == 0 {
+		return
+	}
+	for _, c := range hostNode.Children {
+		if len(c.Children) > 0 {
+			return // already grouped
+		}
+	}
+	order := make([]string, 0, 4)
+	byClass := make(map[string][]*PlanNode)
+	for _, leaf := range hostNode.Children {
+		cls := classOf(leaf)
+		if _, seen := byClass[cls]; !seen {
+			order = append(order, cls)
+		}
+		byClass[cls] = append(byClass[cls], leaf)
+	}
+	nodes := make([]*PlanNode, 0, len(order))
+	for _, cls := range order {
+		nodes = append(nodes, newClassNode(hostNode.Target, cls, byClass[cls]))
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if nodes[i].Priority != nodes[j].Priority {
+			return nodes[i].Priority > nodes[j].Priority
+		}
+		return nodes[i].Class < nodes[j].Class
+	})
+	hostNode.Children = nodes
+}
+
+// AttachLeaf routes leaf under hostNode's class node for the given label,
+// creating that class node if hostNode doesn't have one yet — the
+// post-construction equivalent of GroupIntoClassNodes for a leaf added after
+// the tree was first built (llmfallback.MergeLLMProposals). hostNode must
+// already be grouped; if it still holds bare leaves this falls back to a
+// plain append so a caller can't accidentally produce a mixed tree.
+func AttachLeaf(hostNode *PlanNode, leaf *PlanNode, class string) {
+	if hostNode == nil || leaf == nil {
+		return
+	}
+	grouped := len(hostNode.Children) == 0
+	for _, c := range hostNode.Children {
+		if len(c.Children) > 0 {
+			grouped = true
+		}
+		if c.Class == class && len(c.Children) > 0 {
+			c.Children = append(c.Children, leaf)
+			if leaf.Priority > c.Priority {
+				c.Priority = leaf.Priority
+			}
+			return
+		}
+	}
+	if !grouped {
+		hostNode.Children = append(hostNode.Children, leaf)
+		return
+	}
+	hostNode.Children = append(hostNode.Children, newClassNode(hostNode.Target, class, []*PlanNode{leaf}))
+}
+
+func newClassNode(host, class string, leaves []*PlanNode) *PlanNode {
+	prio := 0
+	for _, l := range leaves {
+		if l.Priority > prio {
+			prio = l.Priority
+		}
+	}
+	return &PlanNode{
+		ID:       ClassNodeID(host, class),
+		Target:   host,
+		Class:    class,
+		Priority: prio,
+		Children: leaves,
+	}
 }
 
 // PlanTree is a Job's task tree. Phase 6 Step 2's executor dispatches

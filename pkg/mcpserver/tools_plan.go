@@ -255,6 +255,11 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	fb, fbErr := llmfallback.New()
 
 	escalations := llmfallback.ResolveTreeLeaves(ctx, fb, fbErr, tree, registry.Capabilities, index, leafContexts)
+	// C7b (doc16 Phase 7 Step 3): plausibility pass over the confident leaves,
+	// folded into the escalation list the elicitation summary shows — the
+	// human sees any demoted/dropped leaf before approving. Ceiling-respecting
+	// and a no-op when no LLM tier is configured (fb nil).
+	escalations = append(escalations, llmfallback.VetoImplausibleLeaves(ctx, fb, fbErr, tree)...)
 
 	baseCfg := buildBaseExecConfig(in, sc)
 	// resolveFieldSuggestions applies only the deterministic (single- or
@@ -357,6 +362,10 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 		Notify:         notify,
 		DetConcurrency: defaultConcurrency,
 		LLMConcurrency: llmAssistedExecConcurrency,
+		// C7a: let an earlier same-host leaf's finding seed a later idor/ssrf
+		// leaf's blank endpoint/param (blank fields only, same host only,
+		// every applied seed logged via Notify).
+		SeedFn: planexec.EndpointSeedFromFindings,
 		// B4 scope-creep gate (doc15 Step 3): the dormant executor trigger
 		// point for a future mid-scan re-recon leaf. No leaf runs recon today,
 		// so this only fires if the approved tree somehow carries a leaf

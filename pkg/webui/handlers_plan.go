@@ -122,10 +122,15 @@ func (h *handlers) resolvePlanLeaves(w http.ResponseWriter, r *http.Request) {
 
 	fb, fbErr := llmfallback.New()
 	escalations := llmfallback.ResolveTreeLeaves(r.Context(), fb, fbErr, tree, registry.Capabilities, index, leafContexts)
+	// C7b (doc16 Phase 7 Step 3): plausibility pass over the confident leaves,
+	// folded into the escalation list the Plan Preview page shows. A no-op
+	// when no LLM tier is configured; only ever demotes/drops with a reason.
+	vetoNotes := llmfallback.VetoImplausibleLeaves(r.Context(), fb, fbErr, tree)
+	escalations = append(escalations, vetoNotes...)
 	job.SetPlanTree(tree, escalations)
 
-	finishActivity(fmt.Sprintf("%d of %d unresolved leaf/leaves resolved, %d escalation(s), spent $%.4f",
-		unresolvedBefore-countUnresolvedLeaves(tree), unresolvedBefore, len(escalations), tree.SpendSoFar()), nil)
+	finishActivity(fmt.Sprintf("%d of %d unresolved leaf/leaves resolved, %d escalation(s), %d plausibility note(s), spent $%.4f",
+		unresolvedBefore-countUnresolvedLeaves(tree), unresolvedBefore, len(escalations)-len(vetoNotes), len(vetoNotes), tree.SpendSoFar()), nil)
 
 	executeTemplate(w, h.tmpl, "fragment_plan_tree", PlanPreviewData{
 		JobID:           job.ID,
