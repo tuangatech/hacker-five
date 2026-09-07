@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +34,28 @@ func TestNewTemplatesListCmd_HasTagsFlag(t *testing.T) {
 	flag := cmd.Flags().Lookup("tags")
 	require.NotNil(t, flag, "'templates list' must expose --tags")
 	assert.Equal(t, "", flag.DefValue)
+}
+
+// TestNewTemplatesListCmd_JSONOutput covers Phase 7 A4: --json emits a
+// parseable {"templates": [...], "rejected": N} document, with an empty
+// templates array (not null) when the tag filter matches nothing.
+func TestNewTemplatesListCmd_JSONOutput(t *testing.T) {
+	cmd := newTemplatesListCmd()
+	require.NotNil(t, cmd.Flags().Lookup("json"), "'templates list' must expose --json")
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--json", "--tags", "this-tag-matches-nothing-zzz"})
+	require.NoError(t, cmd.Execute())
+
+	var got struct {
+		Templates []templatesync.Entry `json:"templates"`
+		Rejected  int                  `json:"rejected"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got), "output must be valid JSON: %s", buf.String())
+	assert.NotNil(t, got.Templates, "templates must serialize as [] not null")
+	assert.Empty(t, got.Templates)
 }
 
 // TestDefaultTemplateDirsWithLabels_Invariants avoids asserting a specific
