@@ -72,7 +72,7 @@ func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t 
 func TestPlanPreview_JobNotDone_Returns409(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.SetRunning() // never runs a recon phase, so ReconResult stays nil
 	h.store.Add(job)
 
@@ -161,7 +161,7 @@ func TestResolvePlanLeaves_NoLLMConfigured_EscalatesAndCachesTree(t *testing.T) 
 
 func TestResolvePlanLeaves_JobNotDone_Returns409(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.SetRunning() // never runs a recon phase, so ReconResult stays nil
 	h.store.Add(job)
 

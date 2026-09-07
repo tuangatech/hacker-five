@@ -39,10 +39,11 @@ type SessionLogEntry struct {
 // tools/call on its own goroutine), so both the append and the sequence
 // counter are mutex-guarded.
 type SessionLog struct {
-	mu      sync.Mutex
-	seq     int64
-	entries []SessionLogEntry
-	sink    io.Writer // optional; one JSON object per line, best-effort
+	mu       sync.Mutex
+	seq      int64
+	entries  []SessionLogEntry
+	sink     io.Writer                 // optional; one JSON object per line, best-effort
+	onAppend func(SessionLogEntry)     // optional; see SetOnAppend
 }
 
 // NewSessionLog returns a SessionLog. If sink is non-nil, every completed
@@ -51,6 +52,19 @@ type SessionLog struct {
 // broken sink must not fail a tool call.
 func NewSessionLog(sink io.Writer) *SessionLog {
 	return &SessionLog{sink: sink}
+}
+
+// SetOnAppend registers a hook invoked once per completed entry, right
+// after it is appended, with the log's mutex released (so the hook may call
+// back into read methods, or publish elsewhere, without deadlocking). At
+// most one hook; a second call replaces the first. pkg/webui uses this to
+// render and stream each agent-activity entry to the live Agent section
+// (C1). Like the JSONL sink, a hook panic/slowness is the caller's problem,
+// not this package's — keep it cheap and non-blocking.
+func (l *SessionLog) SetOnAppend(hook func(SessionLogEntry)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onAppend = hook
 }
 
 // Begin records the start of a tool call and returns a finish function to
@@ -92,12 +106,16 @@ func (l *SessionLog) Begin(tool, reason string, params any) func(resultSummary s
 		l.mu.Lock()
 		l.entries = append(l.entries, entry)
 		sink := l.sink
+		onAppend := l.onAppend
 		l.mu.Unlock()
 
 		if sink != nil {
 			if b, mErr := json.Marshal(entry); mErr == nil {
 				_, _ = sink.Write(append(b, '\n'))
 			}
+		}
+		if onAppend != nil {
+			onAppend(entry)
 		}
 	}
 }

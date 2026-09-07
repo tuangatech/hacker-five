@@ -415,10 +415,12 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [x] HackerOne submission documented as a permanent human-in-the-loop invariant (docs/05-hackerone-and-legal.md, B3)
 - [x] Scope-creep gate: compliance-rounding pass — out-of-scope observations now in the MCP `plan` session log and the Web UI job audit trail
 
-#### Week 51-52: Observability Upgrade — ⬜ not started
-- [ ] Web UI "Agent" tab streams every MCP tool call and its reasoning live, over SSE
-- [ ] Audit trail extended with agent-specific facts (session, approved plan, grant references)
-- [ ] Evidence-linked claims: a report draft citing a nonexistent `Finding.ID` is rejected
+#### Week 51-52: Observability Upgrade — 🟡 C1/C2/C3/C5 done 2026-09-07 (`ph7-step3a`); C7 → `ph7-step3b`
+- [x] Web UI "Agent" tab streams agent activity live over SSE (C1) — 2026-09-07. In-process/job-scoped: it renders the webui process's own agent-like actions (plan resolve, plan approve/reject, plan-execution dispatch) as structured `agenttask.SessionLogEntry` rows on `/scans/{id}/events`, the same record type `pkg/mcpserver`'s `session.log` uses. An out-of-process MCP session's tool calls are not streamed here (the two are separate processes with no shared store) — noted, not silently dropped.
+- [x] Audit trail extended with agent-specific facts (C2) — 2026-09-07: the `plan.execute` agent entry's params carry approved-leaf count, `allow_writes` posture, scope-enforced/wildcard, and out-of-scope count; the MCP `plan`/`scan` round-2 session-log entry records the elicitation grant reference (`RequestState`).
+- [x] Evidence-linked claims: `findings.export` rejects a draft citing a nonexistent `Finding.ID` (C3) — 2026-09-07, `reporter.ValidateCitations` + `cited_finding_ids` on the export tool.
+- [x] Sequence-gated `#logs`/`#findings`/`#agent` catchup replay (C5 / follow-up.md LT-5) — 2026-09-07: a monotonic per-Job event sequence + a client last-seen marker per list, so a late/reconnecting client recovers the connect-gap with no duplication.
+- [ ] PlanTree structural upgrade + plausibility veto (C7 / follow-up.md LT-44 + LT-49) — deferred to `ph7-step3b`
 
 #### Week 53: Live Log Injection + Concurrency Ceilings + Redundant-Request Elimination — ⬜ not started
 - [ ] Live log injection on the Agent tab (stretch)

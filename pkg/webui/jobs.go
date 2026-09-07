@@ -29,6 +29,13 @@ const (
 	EventLog      = "log"
 	EventDone     = "done"
 	EventRecon    = "recon"
+	// EventAgent streams one agent-activity entry (an MCP-style tool call an
+	// in-process agent-like action made — plan resolve, plan approve/reject,
+	// plan-execution dispatch) into the Scan Activity page's Agent section
+	// (C1, doc16 Phase 7 Step 3). Append-list, same as EventLog/EventFinding —
+	// carries a monotonic Event.Seq so a late/reconnecting client's catchup
+	// replay can be sequence-gated (C5).
+	EventAgent = "agent-event"
 )
 
 // subscriberBuffer is each SSE subscriber's channel depth — a small buffer
@@ -58,6 +65,20 @@ type LogEntry struct {
 	Level string
 	Msg   string
 	Time  string
+	// Seq is this line's slot in the Job's monotonic event sequence, set
+	// once by AppendLog. Rendered as data-seq on fragment_log_line so the
+	// browser's catchup fetch can ask for only the lines it missed (C5,
+	// follow-up.md LT-5).
+	Seq int64
+}
+
+// FindingRow pairs a Finding with its Job event-sequence number for
+// rendering — fragment_finding_row needs the Seq (as data-seq) for C5's
+// sequence-gated catchup replay, but detectors.Finding is a shared type
+// this package can't add a field to.
+type FindingRow struct {
+	detectors.Finding
+	Seq int64
 }
 
 // Event is one live update pushed to an SSE subscriber — HTML is
@@ -67,6 +88,13 @@ type LogEntry struct {
 type Event struct {
 	Type string
 	HTML template.HTML
+	// Seq is the Job's monotonic event-sequence value for an append-list
+	// event (finding/log/agent-event); zero for the idempotent
+	// last-value-wins events (progress/recon/done), which carry no sequence.
+	// The value also travels inside HTML as data-seq on the rendered row —
+	// the browser reads it from the DOM for C5's catchup gating, this field
+	// is for server-side tests and any future Last-Event-ID use.
+	Seq int64
 }
 
 // Job is the durable source of truth for one scan run — both what
@@ -83,11 +111,27 @@ type Job struct {
 	phase         string // "" | "recon" | a detector name — which main step is currently running, doc14/15's "which step are we in" gap
 	err           error
 	findings      []detectors.Finding
+	findingSeqs   []int64 // parallel to findings — each finding's event-sequence slot (C5); detectors.Finding is shared and can't carry it
 	logs          []LogEntry
 	waves         []WaveStatus       // set only when this Job runs an optional recon phase first
 	detectorSteps []WaveStatus       // the planned detector pipeline, same update-or-append shape as waves — see SetDetectorStatus
 	reconResult   *recon.ReconResult // nil until a recon phase (if any) completes
 	subs          []chan Event
+	// eventSeq is the monotonic counter behind every append-list event
+	// (finding/log/agent-event). Bumped under mu on each append and stamped
+	// onto the item so the browser's /catchup fetch can replay only what a
+	// late/reconnecting client missed, with no duplication (C5, LT-5).
+	eventSeq int64
+
+	// agentLog records this job's agent-like activity (plan resolve, plan
+	// approve/reject, plan-execution dispatch) as structured
+	// agenttask.SessionLogEntry rows — the same type pkg/mcpserver's session
+	// log uses, so the Web UI's Agent section (C1, doc16 Phase 7 Step 3)
+	// renders "matching the persisted session log exactly". Its OnAppend hook
+	// (wired in newJob) renders each new entry and publishes it as an
+	// EventAgent. Nil-safe: a job created outside newJob has no agentLog and
+	// BeginAgentActivity is then a no-op.
+	agentLog *agenttask.SessionLog
 
 	// planTree/planEscalations cache a plan-preview "Resolve via LLM
 	// fallback" pass's result (doc15 Step 2's 2026-09-03 addendum item 2) —
@@ -116,13 +160,14 @@ type Job struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	renderFinding  func(detectors.Finding) template.HTML
+	renderFinding  func(detectors.Finding, int64) template.HTML
 	renderLog      func(LogEntry) template.HTML
 	renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML
 	renderRecon    func(*recon.ReconResult) template.HTML
+	renderAgent    func(agenttask.SessionLogEntry) template.HTML
 }
 
-func newJob(id, target string, renderFinding func(detectors.Finding) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML) *Job {
+func newJob(id, target string, renderFinding func(detectors.Finding, int64) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML, renderAgent func(agenttask.SessionLogEntry) template.HTML) *Job {
 	// A placeholder context.Background()-rooted context, immediately
 	// replaced by bindParentContext once a real caller (startLaunch) has
 	// h.baseCtx to derive from — kept here rather than making ctx/cancel
@@ -131,7 +176,7 @@ func newJob(id, target string, renderFinding func(detectors.Finding) template.HT
 	// updating for a concern (server-shutdown/kill-switch propagation)
 	// they don't exercise.
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Job{
+	j := &Job{
 		ID:             id,
 		Target:         target,
 		CreatedAt:      time.Now(),
@@ -142,7 +187,21 @@ func newJob(id, target string, renderFinding func(detectors.Finding) template.HT
 		renderLog:      renderLog,
 		renderProgress: renderProgress,
 		renderRecon:    renderRecon,
+		renderAgent:    renderAgent,
 	}
+	// The agent log's OnAppend hook is this job's live Agent-section feed:
+	// every recorded activity is rendered and published as an EventAgent,
+	// carrying the entry's own Seq so a reconnecting client's catchup can
+	// gate on it exactly as it does for logs/findings (C1 + C5). A nil
+	// renderAgent (a test constructing a job without the full render set)
+	// leaves the log usable but unpublished.
+	j.agentLog = agenttask.NewSessionLog(nil)
+	if renderAgent != nil {
+		j.agentLog.SetOnAppend(func(e agenttask.SessionLogEntry) {
+			j.publish(Event{Type: EventAgent, HTML: j.renderAgent(e), Seq: e.Seq})
+		})
+	}
+	return j
 }
 
 // bindParentContext replaces j's placeholder context with one derived from
@@ -208,25 +267,48 @@ type Snapshot struct {
 	Phase         string
 	Err           error
 	Findings      []detectors.Finding
+	FindingSeqs   []int64 // parallel to Findings — each finding's event-sequence slot, for C5's catchup gating and data-seq rendering
 	Logs          []LogEntry
 	Waves         []WaveStatus
 	DetectorSteps []WaveStatus
-	ReconResult   *recon.ReconResult // nil unless this Job ran a recon phase that completed
+	ReconResult   *recon.ReconResult          // nil unless this Job ran a recon phase that completed
+	AgentEntries  []agenttask.SessionLogEntry // this job's agent-activity log so far (C1) — empty for a job that ran no agent-like action
 }
 
 func (j *Job) Snapshot() Snapshot {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	var agentEntries []agenttask.SessionLogEntry
+	if j.agentLog != nil {
+		agentEntries = j.agentLog.Entries()
+	}
 	return Snapshot{
 		Status:        j.status,
 		Phase:         j.phase,
 		Err:           j.err,
 		Findings:      append([]detectors.Finding(nil), j.findings...),
+		FindingSeqs:   append([]int64(nil), j.findingSeqs...),
 		Logs:          append([]LogEntry(nil), j.logs...),
 		Waves:         append([]WaveStatus(nil), j.waves...),
 		DetectorSteps: append([]WaveStatus(nil), j.detectorSteps...),
 		ReconResult:   j.reconResult,
+		AgentEntries:  agentEntries,
 	}
+}
+
+// BeginAgentActivity records the start of an agent-like action (an
+// MCP-style tool call an in-process action makes — plan resolve, plan
+// approve/reject, plan-execution dispatch) and returns a finish func to
+// call once it completes, exactly like agenttask.SessionLog.Begin. The
+// entry is appended to this job's agent log and — via the OnAppend hook
+// wired in newJob — rendered and streamed to the Scan Activity page's
+// Agent section as an EventAgent (C1, doc16 Phase 7 Step 3). No-op finish
+// on a job with no agentLog (constructed outside newJob).
+func (j *Job) BeginAgentActivity(tool, reason string, params any) func(resultSummary string, err error) {
+	if j.agentLog == nil {
+		return func(string, error) {}
+	}
+	return j.agentLog.Begin(tool, reason, params)
 }
 
 // Subscribe registers a new live SSE subscriber and returns the channel to
@@ -283,10 +365,13 @@ func (j *Job) publish(ev Event) {
 // dropped live push never loses the finding itself.
 func (j *Job) AppendFinding(f detectors.Finding) {
 	j.mu.Lock()
+	j.eventSeq++
+	seq := j.eventSeq
 	j.findings = append(j.findings, f)
+	j.findingSeqs = append(j.findingSeqs, seq)
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventFinding, HTML: j.renderFinding(f)})
+	j.publish(Event{Type: EventFinding, HTML: j.renderFinding(f, seq), Seq: seq})
 }
 
 // AppendLog is AppendFinding's counterpart for scanner.Engine's
@@ -294,10 +379,12 @@ func (j *Job) AppendFinding(f detectors.Finding) {
 func (j *Job) AppendLog(level, msg string) {
 	entry := LogEntry{Level: level, Msg: msg, Time: time.Now().Format("15:04")}
 	j.mu.Lock()
+	j.eventSeq++
+	entry.Seq = j.eventSeq
 	j.logs = append(j.logs, entry)
 	j.mu.Unlock()
 
-	j.publish(Event{Type: EventLog, HTML: j.renderLog(entry)})
+	j.publish(Event{Type: EventLog, HTML: j.renderLog(entry), Seq: entry.Seq})
 }
 
 // SetRunning transitions a queued job to running and publishes a progress

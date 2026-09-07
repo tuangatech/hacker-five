@@ -3,7 +3,17 @@
      the SSE extension's already-bound sse-swap listeners from the live page
      (they'd keep firing against the old, now-invisible node). Explicit
      "innerHTML:#selector" targets only the *content* of the existing
-     element, leaving it and its listener binding untouched. */}}
+     element, leaving it and its listener binding untouched.
+
+     #logs / #findings / #agent are append lists, so they use positional
+     OOB swaps (beforeend / afterbegin) that add only the rows this client
+     missed (C5) — rendered server-side into LogsHTML/FindingsHTML/AgentHTML,
+     empty and omitted entirely when the client missed nothing. FindingsHTML
+     is rendered newest-first so a single afterbegin insertion lands the
+     block in the same order snapshotData paints it. */}}
 {{define "fragment_catchup"}}<div hx-swap-oob="innerHTML:#progress">{{.ProgressHTML}}</div>
 <div hx-swap-oob="innerHTML:#recon-results">{{.ReconHTML}}</div>
+{{if .LogsHTML}}<div hx-swap-oob="beforeend:#logs">{{.LogsHTML}}</div>{{end}}
+{{if .FindingsHTML}}<div hx-swap-oob="afterbegin:#findings">{{.FindingsHTML}}</div>{{end}}
+{{if .AgentHTML}}<div hx-swap-oob="beforeend:#agent">{{.AgentHTML}}</div>{{end}}
 {{end}}

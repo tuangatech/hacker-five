@@ -109,10 +109,56 @@ func (h *handlers) scanCatchup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snap := job.Snapshot()
+
+	// C5 (follow-up.md LT-5): replay only the append-list rows this client
+	// hasn't already rendered. since_* are the highest Seq the client
+	// currently holds in each list (scan_status.html's hfMaxSeq) — a row at
+	// or below that point was already delivered, live or on first paint, and
+	// re-sending it would duplicate it.
+	sinceLog := parseSeqParam(r, "since_log")
+	sinceFinding := parseSeqParam(r, "since_finding")
+	sinceAgent := parseSeqParam(r, "since_agent")
+
+	var logsHTML strings.Builder
+	for _, entry := range snap.Logs {
+		if entry.Seq > sinceLog {
+			logsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_log_line", entry)))
+		}
+	}
+	// Newest-first, matching snapshotData — the whole block is inserted with
+	// one afterbegin OOB swap (fragment_catchup), so its internal order must
+	// already be the on-page order.
+	var findingsHTML strings.Builder
+	for i := len(snap.Findings) - 1; i >= 0; i-- {
+		if snap.FindingSeqs[i] > sinceFinding {
+			findingsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_finding_row", FindingRow{Finding: snap.Findings[i], Seq: snap.FindingSeqs[i]})))
+		}
+	}
+	var agentHTML strings.Builder
+	for _, entry := range snap.AgentEntries {
+		if entry.Seq > sinceAgent {
+			agentHTML.WriteString(string(renderFragment(h.tmpl, "fragment_agent_entry", entry)))
+		}
+	}
+
 	executeTemplate(w, h.tmpl, "fragment_catchup", CatchupData{
 		ProgressHTML: renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: readCSRFCookie(r)}),
 		ReconHTML:    renderFragment(h.tmpl, "fragment_recon_results", newReconView(snap.ReconResult)),
+		LogsHTML:     template.HTML(logsHTML.String()),     //nolint:gosec // our own already-escaped fragment renders, not raw input
+		FindingsHTML: template.HTML(findingsHTML.String()), //nolint:gosec // same
+		AgentHTML:    template.HTML(agentHTML.String()),    //nolint:gosec // same
 	})
+}
+
+// parseSeqParam reads a non-negative int64 query parameter, defaulting to 0
+// (replay everything) on absence or any parse error — a catchup request
+// with a malformed marker should over-deliver, never under-deliver.
+func parseSeqParam(r *http.Request, name string) int64 {
+	n, err := strconv.ParseInt(r.URL.Query().Get(name), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (h *handlers) exportJSON(w http.ResponseWriter, r *http.Request) {
@@ -225,11 +271,15 @@ func (h *handlers) snapshotData(job *Job, csrfTok string) ScanStatusData {
 
 	var findingsHTML strings.Builder
 	for i := len(snap.Findings) - 1; i >= 0; i-- {
-		findingsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_finding_row", snap.Findings[i])))
+		findingsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_finding_row", FindingRow{Finding: snap.Findings[i], Seq: snap.FindingSeqs[i]})))
 	}
 	var logsHTML strings.Builder
 	for _, entry := range snap.Logs {
 		logsHTML.WriteString(string(renderFragment(h.tmpl, "fragment_log_line", entry)))
+	}
+	var agentHTML strings.Builder
+	for _, entry := range snap.AgentEntries {
+		agentHTML.WriteString(string(renderFragment(h.tmpl, "fragment_agent_entry", entry)))
 	}
 
 	return ScanStatusData{
@@ -239,6 +289,7 @@ func (h *handlers) snapshotData(job *Job, csrfTok string) ScanStatusData {
 		CSRFToken:       csrfTok,
 		FindingRowsHTML: template.HTML(findingsHTML.String()), //nolint:gosec // built only from our own already-escaped fragment renders, not raw input
 		LogLinesHTML:    template.HTML(logsHTML.String()),     //nolint:gosec // same
+		AgentRowsHTML:   template.HTML(agentHTML.String()),    //nolint:gosec // same
 		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: csrfTok}),
 	}
 }

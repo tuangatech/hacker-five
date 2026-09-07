@@ -49,7 +49,7 @@ func newTestServerHandlers(t *testing.T) (*httptest.Server, *handlers) {
 }
 
 func newTestJobWithRecon(id string, result *recon.ReconResult) *Job {
-	j := newJob(id, "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	j := newJob(id, "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	j.SetReconResult(result)
 	j.MarkDone(nil)
 	return j
@@ -595,7 +595,7 @@ func TestLaunchTargetScheme(t *testing.T) {
 func TestScanStatus_NewScanLink_ShownOnlyOnceTerminal(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.SetRunning()
 	h.store.Add(job)
 
@@ -646,7 +646,7 @@ func TestLaunchForm_PrefillsTargetFromQueryParam(t *testing.T) {
 func TestSnapshotData_FindingsRenderNewestFirst(t *testing.T) {
 	_, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.AppendFinding(detectors.Finding{ID: "first"})
 	job.AppendFinding(detectors.Finding{ID: "second"})
 
@@ -664,7 +664,7 @@ func TestSnapshotData_FindingsRenderNewestFirst(t *testing.T) {
 func TestSnapshotData_LogsRenderOldestFirst(t *testing.T) {
 	_, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.AppendLog("info", "first-log")
 	job.AppendLog("info", "second-log")
 
@@ -682,7 +682,7 @@ func TestSnapshotData_LogsRenderOldestFirst(t *testing.T) {
 func TestScanStatus_LogsPanel_HasCopyButtonAndAppendsAtBottom(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.AppendLog("info", "first-log")
 	job.AppendLog("info", "second-log")
 	h.store.Add(job)

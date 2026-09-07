@@ -65,7 +65,7 @@ Prefer a browser over flags? `hackerfive serve` runs a local-only web UI on top 
 ```
 Loopback-only by default (`--port`/`--host` to change) — nothing you scan or any token you enter ever leaves your machine. Binding beyond `127.0.0.1` requires the access token printed on startup (`?token=...`), exchanged for a session cookie on first use.
 
-From there: **New Scan** (the same targets/detector/flags as the CLI, in a form) starts a scan and streams findings/logs live as they're detected; **Scan Status** is bookmarkable and safe to refresh mid-scan; **Scan History** and **Dashboard** list past runs from this session; **Templates** shows what's currently loaded (bundled vs. synced), lets you filter by tag, and has a "Sync now" button for the same corpus sync described below.
+From there: **New Scan** (the same targets/detector/flags as the CLI, in a form) starts a scan and streams findings/logs live as they're detected; **Scan Status** is bookmarkable and safe to refresh mid-scan — a reconnecting or late-joining browser recovers every log line, finding, and agent entry it missed while disconnected, with none duplicated; the **Agent** section on that page streams each decision-engine action (plan resolve, approve/reject, plan-execution dispatch) as a structured entry as it happens; **Plan Preview** turns recon into an approvable, decision-engine-ranked plan; **Scan History** and **Dashboard** list past runs from this session; **Templates** shows what's currently loaded (bundled vs. synced), lets you filter by tag, and has a "Sync now" button for the same corpus sync described below.
 
 For scripted/headless use, the equivalent CLI subcommands work without the web UI:
 ```bash
@@ -86,7 +86,7 @@ Nine tools are exposed:
 - **`plan`** — the flagship tool: runs recon, resolves it via the same deterministic registry the CLI's `plan` command uses (below), and for whatever that can't resolve, falls back to a tiered LLM to decide whether an existing template/tag covers it, a new template should be drafted, or a human should decide. The resulting plan requires explicit human approval via MCP elicitation before anything executes; only then does it run and return real findings.
 - **`recon`**, **`scan`** — the same recon phase and detector/template scan the CLI runs, callable by an agent.
 - **`tools.search`**, **`templates.search`**, **`templates.list`**, **`templates.sync`** — capability/template lookups an agent can use to reason about what's available before calling `plan`/`scan`.
-- **`findings.export`** — render a finding list via the same `pkg/reporter` the CLI's `--format` flag uses.
+- **`findings.export`** — render a finding list via the same `pkg/reporter` the CLI's `--format` flag uses. If an agent-drafted narrative accompanies the export, its `cited_finding_ids` are checked against the finding set first — a citation to an ID that doesn't exist rejects the whole export (evidence-linked claims).
 - **`findings.triage`** — ranks findings by what's worth investigating first via the same tiered LLM fallback; never adds a finding or changes severity/confidence, and its ranking also requires elicitation approval before being returned.
 
 `recon`/`plan`/`scan` refuse to run at all without an explicit scope allow-list — stricter than the CLI's own `--scope`, which only warns when omitted.

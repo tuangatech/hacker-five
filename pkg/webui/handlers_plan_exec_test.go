@@ -161,7 +161,7 @@ func containsLogMsg(snap Snapshot, msg string) bool {
 
 func TestExecutePlan_JobNotDone_Returns409(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.SetRunning() // never runs a recon phase, so ReconResult stays nil
 	h.store.Add(job)
 
@@ -185,7 +185,7 @@ func TestExecutePlan_UnknownJob_404s(t *testing.T) {
 // Cancel, not about a specific goroutine's reaction).
 func TestCancelScan_CancelsJobContextAndLogs(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.SetRunning()
 	h.store.Add(job)
 	ctx := job.Ctx()
@@ -215,7 +215,7 @@ func TestCancelScan_UnknownJob_404s(t *testing.T) {
 // no dead "Cancel" button on an already-terminal job's status page.
 func TestFragmentProgress_CancelButton_OnlyWhileRunningOrQueued(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	h.store.Add(job)
 
 	resp, err := http.Get(ts.URL + "/scans/job1")

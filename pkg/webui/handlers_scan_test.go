@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 )
 
@@ -216,7 +217,7 @@ func TestScanCatchup_UnknownJobID_404(t *testing.T) {
 func TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
 	job.SetRunning()
 	job.SetPhase("misconfig")
 	job.SetReconResult(&recon.ReconResult{
@@ -239,6 +240,88 @@ func TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps(t *testing.T) 
 	assert.NotContains(t, html, `id="recon-results"`)
 	assert.Contains(t, html, "running: misconfig")
 	assert.Contains(t, html, "example.com")
+}
+
+// TestScanCatchup_ReplaysOnlyRowsPastTheClientSequence is C5's core
+// regression (follow-up.md LT-5): #logs/#findings/#agent are append lists,
+// so a blind catchup replay would duplicate rows already delivered live.
+// The client reports the highest Seq it holds in each list; catchup must
+// return only rows past that point — never a row at or below it, never a
+// gap.
+func TestScanCatchup_ReplaysOnlyRowsPastTheClientSequence(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job.AppendLog("info", "log-one")   // seq 1
+	job.AppendLog("info", "log-two")   // seq 2
+	job.AppendLog("info", "log-three") // seq 3
+	job.AppendFinding(detectors.Finding{ID: "finding-a"}) // seq 4
+	job.AppendFinding(detectors.Finding{ID: "finding-b"}) // seq 5
+	h.store.Add(job)
+
+	// A client holding logs through seq 2 and findings through seq 4.
+	resp, err := http.Get(ts.URL + "/scans/job1/catchup?since_log=2&since_finding=4&since_agent=0")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	html := string(body)
+
+	assert.Contains(t, html, `hx-swap-oob="beforeend:#logs"`)
+	assert.Contains(t, html, "log-three", "the one missed log line must be replayed")
+	assert.NotContains(t, html, "log-one", "an already-delivered log line must not be replayed")
+	assert.NotContains(t, html, "log-two", "the row at the client's own sequence must not be replayed")
+
+	assert.Contains(t, html, `hx-swap-oob="afterbegin:#findings"`)
+	assert.Contains(t, html, "finding-b", "the one missed finding must be replayed")
+	assert.NotContains(t, html, "finding-a", "an already-delivered finding must not be replayed")
+}
+
+// TestScanCatchup_ClientFullyCaughtUp_EmitsNoAppendBlocks confirms a client
+// that missed nothing gets only the two idempotent innerHTML swaps back —
+// no empty beforeend/afterbegin OOB blocks that htmx would still process.
+func TestScanCatchup_ClientFullyCaughtUp_EmitsNoAppendBlocks(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job.AppendLog("info", "log-one")                      // seq 1
+	job.AppendFinding(detectors.Finding{ID: "finding-a"}) // seq 2
+	h.store.Add(job)
+
+	resp, err := http.Get(ts.URL + "/scans/job1/catchup?since_log=1&since_finding=2&since_agent=0")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+
+	assert.NotContains(t, html, "beforeend:#logs")
+	assert.NotContains(t, html, "afterbegin:#findings")
+	assert.NotContains(t, html, "beforeend:#agent")
+	assert.Contains(t, html, `hx-swap-oob="innerHTML:#progress"`, "the idempotent swaps still go out unconditionally")
+}
+
+// TestScanCatchup_NoSequenceParams_ReplaysEverything confirms a malformed or
+// absent marker over-delivers (every row) rather than under-delivering —
+// parseSeqParam's documented default.
+func TestScanCatchup_NoSequenceParams_ReplaysEverything(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job.AppendLog("info", "log-one")
+	job.AppendFinding(detectors.Finding{ID: "finding-a"})
+	h.store.Add(job)
+
+	resp, err := http.Get(ts.URL + "/scans/job1/catchup?since_log=bogus")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+
+	assert.Contains(t, html, "log-one")
+	assert.Contains(t, html, "finding-a")
 }
 
 func TestSplitCSV(t *testing.T) {

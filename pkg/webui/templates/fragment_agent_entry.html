@@ -1,0 +1,6 @@
+{{/* One agent-activity row (C1). Input is an agenttask.SessionLogEntry —
+     the same structured record pkg/mcpserver's session.log tool returns, so
+     what the Web UI shows and what a persisted JSONL session log holds line
+     up field-for-field. data-seq drives C5's catchup gating. */}}
+{{define "fragment_agent_entry"}}<div class="agent-entry{{if .Error}} agent-entry-error{{end}}" data-seq="{{.Seq}}"><span class="agent-tool">{{.Tool}}</span>{{if .Reason}} — <span class="agent-reason">{{.Reason}}</span>{{end}} <span class="agent-result">{{if .Error}}error: {{.Error}}{{else}}{{.Result}}{{end}}</span> <span class="agent-dur">({{.DurationMS}}ms)</span></div>
+{{end}}

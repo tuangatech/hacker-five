@@ -62,6 +62,49 @@ func TestFindingsExportTool_Formats(t *testing.T) {
 	}
 }
 
+// TestFindingsExportTool_CitedIDNotPresent_Rejected covers C3 (doc16 Phase
+// 7 Step 3): an export whose cited_finding_ids names an ID absent from the
+// finding set is rejected at the tool boundary — an agent-drafted narrative
+// cannot cite evidence that does not exist.
+func TestFindingsExportTool_CitedIDNotPresent_Rejected(t *testing.T) {
+	ctx := context.Background()
+	session, err := connect(ctx, New())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	finding := map[string]any{
+		"id": "real-1", "type": "misconfig", "severity": "low", "confidence": "high",
+		"target": "https://example.com/", "description": "x", "evidence": map[string]any{},
+	}
+
+	// A present citation passes.
+	okRes, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "findings.export", Arguments: map[string]any{
+		"findings": []any{finding}, "cited_finding_ids": []any{"real-1"},
+	}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if okRes.IsError {
+		t.Fatalf("a citation to a present finding must pass, got: %s", textContent(t, okRes))
+	}
+
+	// An absent citation is rejected, and the offending ID is named.
+	badRes, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "findings.export", Arguments: map[string]any{
+		"findings": []any{finding}, "cited_finding_ids": []any{"real-1", "ghost-9"},
+	}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !badRes.IsError {
+		t.Fatal("expected IsError=true for a citation to a nonexistent finding ID")
+	}
+	if !strings.Contains(textContent(t, badRes), "ghost-9") {
+		t.Errorf("rejection should name the missing ID, got: %s", textContent(t, badRes))
+	}
+}
+
 func TestFindingsExportTool_UnknownFormat_Rejected(t *testing.T) {
 	ctx := context.Background()
 	session, err := connect(ctx, New())
