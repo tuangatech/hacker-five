@@ -14,12 +14,14 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
+	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
@@ -43,7 +45,18 @@ type executionResult struct {
 	findings []detectors.Finding
 	logs     []string
 	err      error
+	// skip is set (instead of running the leaf) when a C7a deferred-gate
+	// leaf still has no required field after any SeedFn contribution —
+	// RunPlan appends it to skipped and does not mark the leaf done.
+	skip string
 }
+
+// seedFillableDetector names the detectors whose one required field a
+// SeedFn can supply (C7a) — the pre-dispatch missing-field gate is deferred
+// to runLeaf for these when opts.SeedFn is set. EndpointSeedFromFindings
+// only fills idor/ssrf; authbypass is here so a custom SeedFn could fill it
+// too (the built-in leaves it, so it simply skips later — same outcome).
+var seedFillableDetector = map[string]bool{"idor": true, "ssrf": true, "authbypass": true}
 
 // ExecOptions configures one RunPlan call — every field is optional/nil-safe
 // except the two concurrency sizes, which a caller should always set
@@ -67,6 +80,17 @@ type ExecOptions struct {
 	OnFinding func(leaf *agenttask.PlanNode, f detectors.Finding)
 	// OnLog mirrors OnFinding for scanner.Engine's log lines.
 	OnLog func(leaf *agenttask.PlanNode, level, msg string)
+	// SeedFn is C7a's early-leaf-output → later-leaf-input hook (doc16 Phase
+	// 7 Step 3): after each leaf finishes, RunPlan calls it with that leaf,
+	// its findings, and the same-host leaves not yet dispatched; it returns
+	// zero or more LeafSeeds applied to a target leaf's cloned Config
+	// (blank fields only) just before that leaf runs. Best-effort by design
+	// — a seed only lands if its target leaf hasn't started yet, which
+	// priority ordering (sharper, higher-priority leaves first) makes the
+	// common case. planexec.EndpointSeedFromFindings is the one built-in
+	// implementation (idor EndpointTemplate / ssrf SSRFParams from a
+	// same-host finding's URL). nil disables seeding entirely.
+	SeedFn func(done *agenttask.PlanNode, findings []detectors.Finding, candidates []*agenttask.PlanNode) []LeafSeed
 	// Excluded marks leaf IDs an operator deselected before approving (a
 	// webui Plan Preview "run this leaf" checkbox left unchecked) — skipped
 	// outright, reported in the returned skipped slice like any other skip
@@ -152,6 +176,13 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 			skipped = append(skipped, fmt.Sprintf("%s: excluded by operator before approval", leaf.ID))
 			continue
 		}
+		if leaf.Status == agenttask.StatusVetoed {
+			// C7b: an LLM plausibility pass judged this leaf implausible. It
+			// stays in the tree (visible, with the veto reason in Rationale)
+			// but is never dispatched.
+			skipped = append(skipped, fmt.Sprintf("%s: skipped — plausibility veto: %s", leaf.ID, leaf.Rationale))
+			continue
+		}
 		eligible := recognizedDetectors[leaf.Detector] || (leaf.Detector != "" && knownTemplateIDs[leaf.Detector])
 		if !eligible {
 			if leaf.Detector != "" {
@@ -159,9 +190,16 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 			}
 			continue
 		}
-		if reason := missingRequiredField(leaf.Detector, baseCfg); reason != "" {
-			skipped = append(skipped, fmt.Sprintf("%s: skipped — %s (same skip-and-explain posture as pkg/webui's fillReconFields)", leaf.ID, reason))
-			continue
+		// C7a: when a SeedFn is set, an idor/ssrf/authbypass leaf missing its
+		// field here may still get it from an earlier same-host leaf's finding
+		// during dispatch — defer that gate to runLeaf (post-seed) for those
+		// detectors. Every other detector, and the no-SeedFn path, keep the
+		// pre-dispatch gate exactly as before.
+		if opts.SeedFn == nil || !seedFillableDetector[leaf.Detector] {
+			if reason := missingRequiredField(leaf.Detector, baseCfg); reason != "" {
+				skipped = append(skipped, fmt.Sprintf("%s: skipped — %s (same skip-and-explain posture as pkg/webui's fillReconFields)", leaf.ID, reason))
+				continue
+			}
 		}
 		if strings.HasPrefix(leaf.Rationale, llmfallback.ResolvedRationalePrefix) {
 			llmAssisted = append(llmAssisted, leaf)
@@ -169,6 +207,14 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 			deterministic = append(deterministic, leaf)
 		}
 	}
+
+	// C7a: within each tier, dispatch higher-Priority leaves first. The
+	// worker pool submits in slice order, so with a bounded pool this orders
+	// *start* order — sharper, higher-confidence leaves (and, for SeedFn, the
+	// ones whose findings help a later sibling) get a head start. Stable, so
+	// leaves with no priority set keep their registry.Resolve order.
+	sortByPriorityDesc(deterministic)
+	sortByPriorityDesc(llmAssisted)
 
 	// LT-18 part (c): decide which leaves carry the additive template-corpus
 	// pass. A specific-template leaf always does (it needs a full load to
@@ -193,16 +239,52 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 		}
 	}
 
+	// C7a seed store: a completed leaf's SeedFn output, keyed by the target
+	// leaf ID, read by runLeaf just before that leaf builds its Config.
+	// First writer wins. leavesByHost gives SeedFn its same-host candidate
+	// set. Both guarded by mu, alongside the findings/logs accumulation.
 	var mu sync.Mutex
+	seeds := map[string]LeafSeed{}
+	leavesByHost := map[string][]*agenttask.PlanNode{}
+	if opts.SeedFn != nil {
+		for _, leaf := range agenttask.Leaves(tree.Root) {
+			h := targetHostKey(leaf.Target)
+			leavesByHost[h] = append(leavesByHost[h], leaf)
+		}
+	}
+	seedLookup := func(id string) (LeafSeed, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		s, ok := seeds[id]
+		return s, ok
+	}
+
 	dispatch := func(pool *workerpool.Pool, batch []*agenttask.PlanNode) {
 		for _, leaf := range batch {
 			leaf := leaf
 			loadCorpus := corpusLeaves[leaf.ID]
 			_ = pool.Submit(func(ctx context.Context) error {
-				res := runLeaf(ctx, leaf, baseCfg, loadCorpus, opts)
+				res := runLeaf(ctx, leaf, baseCfg, loadCorpus, opts, seedLookup)
+				if res.skip != "" {
+					mu.Lock()
+					skipped = append(skipped, res.skip)
+					mu.Unlock()
+					return nil // deferred-gate leaf still missing its field — not run, not marked done
+				}
 				mu.Lock()
 				findings = append(findings, res.findings...)
 				logs = append(logs, res.logs...)
+				if opts.SeedFn != nil {
+					candidates := sameHostOthers(leavesByHost[targetHostKey(leaf.Target)], leaf.ID)
+					for _, s := range opts.SeedFn(leaf, res.findings, candidates) {
+						if s.TargetLeafID == "" || s.TargetLeafID == leaf.ID {
+							continue
+						}
+						if _, exists := seeds[s.TargetLeafID]; !exists {
+							seeds[s.TargetLeafID] = s
+						}
+					}
+				}
 				mu.Unlock()
 				status := agenttask.StatusDone
 				patch := agenttask.PlanNodePatch{Status: &status}
@@ -285,7 +367,7 @@ func targetHostKey(target string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Config, loadCorpus bool, opts ExecOptions) executionResult {
+func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Config, loadCorpus bool, opts ExecOptions, seedLookup func(string) (LeafSeed, bool)) executionResult {
 	cfg := baseCfg
 	cfg.Targets = []string{leaf.Target}
 	if !loadCorpus {
@@ -295,12 +377,34 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		cfg.TemplatePaths = nil
 	}
 
+	// C7a: a seed produced by an earlier same-host leaf that finished before
+	// this one started. Fills a blank required field only — an explicit
+	// --endpoint/--ssrf-param, a recon/I4 auto-fill, and a value from any
+	// other source all win. The seed value came from a Finding this run
+	// itself produced against this already-approved, in-scope host, so it
+	// stays inside the approved blast radius; it is logged, never silent.
+	if seedLookup != nil {
+		if s, ok := seedLookup(leaf.ID); ok {
+			applyLeafSeed(&cfg, s, leaf, opts)
+		}
+	}
+
 	validateOpts := scanner.ValidateOptions{
 		SkipEndpointRequired:       true,
 		SkipProtectedPathsRequired: true,
 		SkipSSRFParamsRequired:     true,
 		SkipAuthTokenRequired:      true,
 	}
+	// C7a deferred gate: for a seed-fillable detector whose pre-dispatch
+	// missing-field check RunPlan skipped, re-check now that any seed has been
+	// applied — still blank means skip (reported via executionResult.skip),
+	// never a live request against an unset endpoint/param.
+	if opts.SeedFn != nil && seedFillableDetector[leaf.Detector] {
+		if reason := missingRequiredField(leaf.Detector, cfg); reason != "" {
+			return executionResult{skip: fmt.Sprintf("%s: skipped — %s (deferred gate, no SeedFn contribution)", leaf.ID, reason)}
+		}
+	}
+
 	if recognizedDetectors[leaf.Detector] {
 		cfg.Detector = leaf.Detector
 	} else {
@@ -349,4 +453,122 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		res.err = fmt.Errorf("leaf %s: %w", leaf.ID, err)
 	}
 	return res
+}
+
+// sortByPriorityDesc stable-sorts leaves so a higher agenttask.PlanNode
+// Priority comes first (C7a dispatch ordering). Stable: leaves that share a
+// priority — including the 0 default on a hand-built tree — keep their input
+// order.
+func sortByPriorityDesc(leaves []*agenttask.PlanNode) {
+	sort.SliceStable(leaves, func(i, j int) bool {
+		return leaves[i].Priority > leaves[j].Priority
+	})
+}
+
+// sameHostOthers returns every leaf in group except the one with exceptID —
+// the candidate set RunPlan hands SeedFn after a same-host leaf finishes.
+func sameHostOthers(group []*agenttask.PlanNode, exceptID string) []*agenttask.PlanNode {
+	out := make([]*agenttask.PlanNode, 0, len(group))
+	for _, l := range group {
+		if l.ID != exceptID {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// LeafSeed is one input a completed leaf contributes to a still-pending
+// same-host leaf (C7a). applyLeafSeed fills only a blank field, so a seed
+// never overrides an explicit flag or a recon/I4 auto-fill.
+type LeafSeed struct {
+	TargetLeafID     string   // the leaf whose Config this seed fills
+	EndpointTemplate string   // idor: an {{id}}-templated path, used only if cfg.EndpointTemplate is blank
+	SSRFParams       []string // ssrf: URL-valued query param names, used only if cfg.SSRFParams is empty
+}
+
+// applyLeafSeed writes a seed's values into cfg's blank fields and logs each
+// one it actually applied (via opts.Notify) — a seeded value that reaches a
+// live request is always visible in the run's log, never silent.
+func applyLeafSeed(cfg *scanner.Config, s LeafSeed, leaf *agenttask.PlanNode, opts ExecOptions) {
+	notify := func(msg string) {
+		if opts.Notify != nil {
+			opts.Notify(leaf.Target, msg)
+		}
+	}
+	if s.EndpointTemplate != "" && cfg.EndpointTemplate == "" {
+		cfg.EndpointTemplate = s.EndpointTemplate
+		notify(fmt.Sprintf("seeded idor endpoint_template from an earlier same-host finding: %s (C7a)", s.EndpointTemplate))
+	}
+	if len(s.SSRFParams) > 0 && len(cfg.SSRFParams) == 0 {
+		cfg.SSRFParams = append([]string(nil), s.SSRFParams...)
+		notify(fmt.Sprintf("seeded ssrf params from an earlier same-host finding: %s (C7a)", strings.Join(s.SSRFParams, ", ")))
+	}
+}
+
+// EndpointSeedFromFindings is planexec's one built-in SeedFn (C7a): it pulls
+// URLs out of a completed leaf's findings (Finding.Target and any
+// http(s)-valued Finding.Evidence entry), keeps those on the same host as
+// the completed leaf, and — reusing pkg/recon's own vetted
+// SuggestIDOREndpointCandidates / SuggestSSRFParamsFromRecon templating —
+// hands a still-pending same-host idor leaf an {{id}}-templated
+// EndpointTemplate and a still-pending ssrf leaf its URL-valued param names.
+// Conservative: same host only, blank fields only (enforced in
+// applyLeafSeed), never touches auth/allow-writes.
+func EndpointSeedFromFindings(done *agenttask.PlanNode, findings []detectors.Finding, candidates []*agenttask.PlanNode) []LeafSeed {
+	if len(findings) == 0 || len(candidates) == 0 {
+		return nil
+	}
+	doneHost := targetHostKey(done.Target)
+	var eps []recon.EndpointFact
+	seen := map[string]bool{}
+	addURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || seen[raw] {
+			return
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return
+		}
+		if u.Scheme+"://"+u.Host != doneHost {
+			return // never seed across hosts
+		}
+		seen[raw] = true
+		eps = append(eps, recon.EndpointFact{URL: raw, Method: "GET", Source: "planexec-seed", Confidence: "low"})
+	}
+	for _, f := range findings {
+		addURL(f.Target)
+		for _, v := range f.Evidence {
+			if strings.HasPrefix(strings.TrimSpace(v), "http://") || strings.HasPrefix(strings.TrimSpace(v), "https://") {
+				addURL(v)
+			}
+		}
+	}
+	if len(eps) == 0 {
+		return nil
+	}
+	rr := &recon.ReconResult{Endpoints: eps}
+	idorCandidates := recon.SuggestIDOREndpointCandidates(rr)
+	ssrfParams := recon.SuggestSSRFParamsFromRecon(rr)
+	if len(idorCandidates) == 0 && len(ssrfParams) == 0 {
+		return nil
+	}
+
+	var seeds []LeafSeed
+	for _, leaf := range candidates {
+		if leaf.Status != agenttask.StatusPending || targetHostKey(leaf.Target) != doneHost {
+			continue // RunPlan pre-filters to same-host, but a custom caller may not
+		}
+		switch leaf.Detector {
+		case "idor":
+			if len(idorCandidates) > 0 {
+				seeds = append(seeds, LeafSeed{TargetLeafID: leaf.ID, EndpointTemplate: idorCandidates[0]})
+			}
+		case "ssrf":
+			if len(ssrfParams) > 0 {
+				seeds = append(seeds, LeafSeed{TargetLeafID: leaf.ID, SSRFParams: ssrfParams})
+			}
+		}
+	}
+	return seeds
 }

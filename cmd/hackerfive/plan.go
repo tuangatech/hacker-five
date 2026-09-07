@@ -203,6 +203,16 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 					}
 				}
 
+				// C7b (doc16 Phase 7 Step 3, docs/follow-up.md LT-49): one
+				// plausibility pass over the confident (StatusPending) leaves
+				// — the per-fact rule table structurally can't notice its own
+				// premise is an artifact (SPA catch-all APISpec, CDN-brand
+				// tech). Opt-in via --llm-assist, ceiling-respecting, and it
+				// can only demote/drop with a logged reason, never add a leaf.
+				for _, n := range llmfallback.VetoImplausibleLeaves(cmd.Context(), fb, fbErr, tree) {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: plausibility: %s\n", n)
+				}
+
 				// A6: recon-derived field suggestions, resolving any genuine
 				// miss via I4 now that a tier is in hand. Its spend is added
 				// to tree.SpendSoFar, so the summary below reflects it.

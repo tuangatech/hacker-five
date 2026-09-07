@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
+	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
@@ -476,5 +477,154 @@ func TestRunPlan_MultiLeafRunsInParallel(t *testing.T) {
 	// leaf. A serial dispatch would be ~nLeaf x one (~4x here).
 	if many > 2*one {
 		t.Fatalf("multi-leaf wall-clock %s exceeds 2x the single-leaf time %s — leaves are not running in parallel", many, one)
+	}
+}
+
+// --- C7 (doc16 Phase 7 Step 3, ph7-step3b) ---
+
+// TestRunPlan_SkipsVetoedLeaf: a StatusVetoed leaf (C7b's "drop" verdict)
+// is reported in skipped with the veto reason and never dispatched.
+func TestRunPlan_SkipsVetoedLeaf(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "vetoed", Target: "http://127.0.0.1:1", Detector: "misconfig", Status: agenttask.StatusVetoed,
+			Rationale: "plausibility veto (dropped): premise is an SPA catch-all"},
+		{ID: "live", Target: "http://127.0.0.1:1", Detector: "misconfig", Status: agenttask.StatusPending},
+	}}}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 2 * time.Second, OutputFormat: "json"}
+
+	_, _, skipped, _ := RunPlan(context.Background(), tree, baseCfg, nil, testOpts())
+
+	var found bool
+	for _, s := range skipped {
+		if strings.Contains(s, "vetoed") && strings.Contains(s, "plausibility veto") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the vetoed leaf in skipped with its reason; got %v", skipped)
+	}
+	if tree.Find("vetoed").Status != agenttask.StatusVetoed {
+		t.Fatalf("a skipped vetoed leaf must keep StatusVetoed, got %q", tree.Find("vetoed").Status)
+	}
+}
+
+// TestEndpointSeedFromFindings: URLs pulled from a completed leaf's findings
+// seed a same-host idor leaf's EndpointTemplate and a same-host ssrf leaf's
+// params; a cross-host candidate is never seeded.
+func TestEndpointSeedFromFindings(t *testing.T) {
+	done := &agenttask.PlanNode{ID: "m1", Target: "http://h.test", Detector: "misconfig"}
+	findings := []detectors.Finding{
+		{ID: "f1", Type: "misconfig", Target: "http://h.test/api/orders/42"},
+		{ID: "f2", Type: "misconfig", Target: "http://h.test/fetch", Evidence: map[string]string{"observed_url": "http://h.test/fetch?dest=https://internal.h.test/x"}},
+	}
+	candidates := []*agenttask.PlanNode{
+		{ID: "l-idor", Target: "http://h.test", Detector: "idor", Status: agenttask.StatusPending},
+		{ID: "l-ssrf", Target: "http://h.test", Detector: "ssrf", Status: agenttask.StatusPending},
+		{ID: "l-idor-other", Target: "http://other.test", Detector: "idor", Status: agenttask.StatusPending},
+	}
+
+	seeds := EndpointSeedFromFindings(done, findings, candidates)
+
+	byTarget := map[string]LeafSeed{}
+	for _, s := range seeds {
+		byTarget[s.TargetLeafID] = s
+	}
+	if s, ok := byTarget["l-idor"]; !ok || !strings.Contains(s.EndpointTemplate, "{{id}}") {
+		t.Fatalf("expected an idor seed with an {{id}}-templated endpoint, got %+v", byTarget["l-idor"])
+	}
+	if s, ok := byTarget["l-ssrf"]; !ok || len(s.SSRFParams) == 0 {
+		t.Fatalf("expected an ssrf seed with params, got %+v", byTarget["l-ssrf"])
+	}
+	if _, ok := byTarget["l-idor-other"]; ok {
+		t.Fatal("a cross-host candidate must never be seeded")
+	}
+}
+
+// TestRunPlan_SeedFillsBlankEndpoint_DeferredGate: an idor leaf with no
+// EndpointTemplate is normally skipped pre-dispatch; with a SeedFn that
+// supplies one from an earlier same-host leaf, the pre-dispatch gate is
+// deferred and the leaf runs instead.
+func TestRunPlan_SeedFillsBlankEndpoint_DeferredGate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+
+	newTree := func() *agenttask.PlanTree {
+		return &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+			{ID: "m1", Target: srv.URL, Detector: "misconfig", Status: agenttask.StatusPending, Priority: agenttask.PriorityHigh},
+			{ID: "i1", Target: srv.URL, Detector: "idor", Status: agenttask.StatusPending, Priority: agenttask.PriorityLow},
+		}}}
+	}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	idorSkipped := func(skipped []string) bool {
+		for _, s := range skipped {
+			if strings.HasPrefix(s, "i1:") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Control: no SeedFn -> i1 skipped for the missing field, pre-dispatch.
+	_, _, skipped, _ := RunPlan(context.Background(), newTree(), baseCfg, nil, ExecOptions{DetConcurrency: 1, LLMConcurrency: 1})
+	if !idorSkipped(skipped) {
+		t.Fatalf("without a SeedFn the endpoint-less idor leaf must be skipped; got %v", skipped)
+	}
+
+	// With a SeedFn seeding i1 from m1's completion, the deferred gate passes.
+	seedFn := func(d *agenttask.PlanNode, _ []detectors.Finding, cands []*agenttask.PlanNode) []LeafSeed {
+		if d.ID != "m1" {
+			return nil
+		}
+		var out []LeafSeed
+		for _, c := range cands {
+			if c.Detector == "idor" {
+				out = append(out, LeafSeed{TargetLeafID: c.ID, EndpointTemplate: "/item/{{id}}"})
+			}
+		}
+		return out
+	}
+	_, _, skipped, _ = RunPlan(context.Background(), newTree(), baseCfg, nil, ExecOptions{DetConcurrency: 1, LLMConcurrency: 1, SeedFn: seedFn})
+	if idorSkipped(skipped) {
+		t.Fatalf("with a SeedFn supplying the endpoint, the idor leaf must run, not skip; got %v", skipped)
+	}
+}
+
+// TestRunPlan_HigherPriorityDispatchedFirst: with DetConcurrency 1 the pool
+// runs leaves in submit order, which C7a sorts by descending Priority.
+func TestRunPlan_HigherPriorityDispatchedFirst(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		order []string
+		seen  = map[string]bool{}
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		for _, tag := range []string{"/p10", "/p20", "/p30"} {
+			if strings.HasPrefix(r.URL.Path, tag) && !seen[tag] {
+				seen[tag] = true
+				order = append(order, tag)
+			}
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "l10", Target: srv.URL + "/p10", Detector: "misconfig", Status: agenttask.StatusPending, Priority: 10},
+		{ID: "l30", Target: srv.URL + "/p30", Detector: "misconfig", Status: agenttask.StatusPending, Priority: 30},
+		{ID: "l20", Target: srv.URL + "/p20", Detector: "misconfig", Status: agenttask.StatusPending, Priority: 20},
+	}}}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	if _, _, skipped, err := RunPlan(context.Background(), tree, baseCfg, nil, ExecOptions{DetConcurrency: 1, LLMConcurrency: 1}); err != nil || len(skipped) != 0 {
+		t.Fatalf("RunPlan: err=%v skipped=%v", err, skipped)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 || order[0] != "/p30" || order[1] != "/p20" || order[2] != "/p10" {
+		t.Fatalf("leaves did not run in descending-priority order: %v", order)
 	}
 }

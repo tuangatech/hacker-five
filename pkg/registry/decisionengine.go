@@ -906,8 +906,50 @@ type LeafContext struct {
 	Endpoints []recon.EndpointFact
 }
 
+// builtinDetectorClasses is the set of leaf Detector values that are one of
+// planexec's five recognized built-in detectors rather than a raw template
+// ID — mirrors planexec.recognizedDetectors and pkg/scanner's own set
+// (small, stable list; each copy is documented). LeafClass uses it to label
+// a leaf's vuln-class node.
+var builtinDetectorClasses = map[string]bool{
+	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
+}
+
+// LeafClass returns the vuln-class label a leaf belongs under in the
+// GroupIntoClassNodes tree (C7a, doc16 Phase 7 Step 3): its Detector when
+// that's a built-in detector, "templates" when Detector is a raw template
+// ID/tag, and "recon-followup" for a StatusUnresolved/detector-less leaf.
+// Exported so llmfallback.MergeLLMProposals can route a merged leaf into the
+// same class node registry.Resolve would have.
+func LeafClass(leaf *agenttask.PlanNode) string {
+	switch {
+	case leaf == nil:
+		return "recon-followup"
+	case leaf.Status == agenttask.StatusUnresolved || leaf.Detector == "":
+		return "recon-followup"
+	case builtinDetectorClasses[leaf.Detector]:
+		return leaf.Detector
+	default:
+		return "templates"
+	}
+}
+
+// leafPriority derives a leaf's dispatch-ordering priority (C7a) from its
+// confidence band, with a small bump for a specific-template or
+// endpoint-confirmed leaf — a sharper signal than a broad capability sweep
+// at the same band, and (for seeding, C7a) the kind of leaf whose findings
+// are most useful to a later sibling, so it should start first.
+func leafPriority(leaf *agenttask.PlanNode) int {
+	p := agenttask.PriorityForConfidence(leaf.Confidence)
+	if leaf.Detector != "" && !builtinDetectorClasses[leaf.Detector] {
+		p += 5
+	}
+	return p
+}
+
 // Resolve builds a PlanTree from result: one child node per host that
-// produced at least one TechFact, and under each host one leaf per
+// produced at least one TechFact, then under each host one intermediate
+// vuln-class node (GroupIntoClassNodes, C7a) holding one leaf per
 // registry/template-tag match (Status: StatusPending) or, if a TechFact
 // matched neither, one leaf with Status: StatusUnresolved — visible and
 // inspectable, never silently dropped (Decision 6). templateIndex may be
@@ -992,6 +1034,14 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
 		}
+		// C7a (doc16 Phase 7 Step 3): stamp each leaf's dispatch priority,
+		// then fold the flat leaf list into per-vuln-class intermediate
+		// nodes. Order matters — GroupIntoClassNodes reads Priority to order
+		// the class nodes.
+		for _, leaf := range hostNode.Children {
+			leaf.Priority = leafPriority(leaf)
+		}
+		agenttask.GroupIntoClassNodes(hostNode, LeafClass)
 		root.Children = append(root.Children, hostNode)
 	}
 	return &agenttask.PlanTree{Root: root}, leafContexts

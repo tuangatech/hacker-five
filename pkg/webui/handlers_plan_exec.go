@@ -128,6 +128,10 @@ func (h *handlers) executePlan(w http.ResponseWriter, r *http.Request) {
 			OnFinding: func(_ *agenttask.PlanNode, f detectors.Finding) { job.AppendFinding(f) },
 			OnLog:     func(_ *agenttask.PlanNode, level, msg string) { job.AppendLog(level, msg) },
 			Excluded:  excluded,
+			// C7a: an earlier same-host leaf's finding can seed a later
+			// idor/ssrf leaf's blank endpoint/param — blank fields only, same
+			// host only, every applied seed written to the job log via Notify.
+			SeedFn: planexec.EndpointSeedFromFindings,
 			// B4 scope-creep gate (doc15 Step 3): dormant executor trigger point.
 			// No leaf runs recon today, so this only fires if the approved tree
 			// carries a leaf outside execCfg.Scope — halt the job with a clear
