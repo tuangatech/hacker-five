@@ -16,7 +16,7 @@ func TestApplyLeafDecision_UseExistingTag(t *testing.T) {
 	var escalations []string
 	addEscalation := func(format string, args ...any) { escalations = append(escalations, format) }
 
-	applyLeafDecision(tree, tree.Find("leaf-1"), LeafDecision{UseExistingTag: "misconfig"}, addEscalation)
+	applyLeafDecision(tree, tree.Find("leaf-1"), LeafDecision{UseExistingTag: "misconfig"}, false, addEscalation)
 
 	leaf := tree.Find("leaf-1")
 	if leaf.Detector != "misconfig" {
@@ -37,7 +37,7 @@ func TestApplyLeafDecision_Escalate(t *testing.T) {
 	var escalations []string
 	addEscalation := func(format string, args ...any) { escalations = append(escalations, format) }
 
-	applyLeafDecision(tree, tree.Find("leaf-1"), LeafDecision{EscalateToHuman: "not confident"}, addEscalation)
+	applyLeafDecision(tree, tree.Find("leaf-1"), LeafDecision{EscalateToHuman: "not confident"}, false, addEscalation)
 
 	if tree.Find("leaf-1").Detector != "" {
 		t.Fatal("an escalated leaf must not gain a Detector")

@@ -31,6 +31,28 @@ const (
 	// never dispatched by planexec, and never re-fed to ResolveTreeLeaves
 	// (that only acts on StatusUnresolved).
 	StatusVetoed PlanNodeStatus = "vetoed"
+	// StatusEscalated marks a leaf whose LLM-fallback resolution ground
+	// through its per-leaf attempt/spend budget without a confident answer
+	// (H4, doc16 Phase 7 Step 4). MAPTA's finding (doc90 §2): rising
+	// tool-call count and dollar cost on one leaf each independently
+	// correlate with *falling* odds of success (r ≈ −0.6), so "still
+	// grinding, no confidence gain" is a stop signal, not a reason to spend
+	// more. A StatusEscalated leaf is terminal for the resolver —
+	// ResolveTreeLeaves never calls a model for it again — and, like
+	// StatusUnresolved/StatusVetoed, is never dispatched by planexec.
+	StatusEscalated PlanNodeStatus = "escalated"
+)
+
+// MaxLeafResolveAttempts/MaxLeafResolveSpendUSD are PlanNode.ShouldEscalate's
+// per-leaf ceilings (H4). Deliberately small: leaf resolution
+// (pkg/llmfallback.ResolveLeaf) is single-shot per plan pass, so Attempts
+// only climbs when the same persisted tree is re-resolved across passes,
+// and a single resolve call that costs this much has already spent more on
+// one leaf than a whole default plan pass is budgeted for
+// (llmfallback.PerCallDefaultSpendCeilingUSD == $0.10 for the entire tree).
+const (
+	MaxLeafResolveAttempts = 3
+	MaxLeafResolveSpendUSD = 0.05
 )
 
 // Dispatch-ordering priority bands for a leaf (C7a, doc16 Phase 7 Step 3):
@@ -116,7 +138,27 @@ type PlanNode struct {
 	Status     PlanNodeStatus `json:"status,omitempty"`
 	Confidence Confidence     `json:"confidence,omitempty"`
 	Priority   int            `json:"priority,omitempty"` // dispatch ordering — higher runs first (C7a); 0 = unset
-	Children   []*PlanNode    `json:"children,omitempty"`
+	// Attempts/SpendUSD accrue per-leaf across LLM-fallback resolution
+	// passes (H4, doc16 Phase 7 Step 4) — incremented by
+	// PlanTree.RecordLeafAttempt, read by ShouldEscalate. Both 0 on a leaf
+	// the resolver never touched.
+	Attempts int     `json:"attempts,omitempty"`
+	SpendUSD float64 `json:"spend_usd,omitempty"`
+	Children []*PlanNode `json:"children,omitempty"`
+}
+
+// ShouldEscalate reports whether this leaf has ground through its per-leaf
+// resolution budget (MaxLeafResolveAttempts / MaxLeafResolveSpendUSD)
+// without a confident answer — the H4 stop signal. Only meaningful for a
+// leaf; a non-leaf or nil node never escalates.
+func (n *PlanNode) ShouldEscalate() bool {
+	if n == nil || len(n.Children) > 0 {
+		return false
+	}
+	if n.Attempts >= MaxLeafResolveAttempts {
+		return true
+	}
+	return MaxLeafResolveSpendUSD > 0 && n.SpendUSD >= MaxLeafResolveSpendUSD
 }
 
 // ClassNodeID is the deterministic ID GroupIntoClassNodes/AttachLeaf give a
@@ -308,7 +350,13 @@ type PlanNodePatch struct {
 	Confidence *Confidence
 	Rationale  *string
 	Detector   *string
-	Children   []*PlanNode // any non-nil value here is rejected: see ApplyLeafUpdate
+	// Attempts/SpendUSD, when non-nil, set the leaf's H4 counters
+	// absolutely (assignment, matching the other pointer fields). The
+	// resolver's own additive path is PlanTree.RecordLeafAttempt; these are
+	// here so an external coordinator patch can report or reset grind.
+	Attempts *int
+	SpendUSD *float64
+	Children []*PlanNode // any non-nil value here is rejected: see ApplyLeafUpdate
 }
 
 var (
@@ -353,5 +401,34 @@ func (t *PlanTree) ApplyLeafUpdate(nodeID string, patch PlanNodePatch) error {
 	if patch.Detector != nil {
 		node.Detector = *patch.Detector
 	}
+	if patch.Attempts != nil {
+		node.Attempts = *patch.Attempts
+	}
+	if patch.SpendUSD != nil {
+		node.SpendUSD = *patch.SpendUSD
+	}
 	return nil
+}
+
+// RecordLeafAttempt additively charges one LLM-fallback resolution attempt
+// and its cost against a leaf's H4 counters and reports whether the leaf
+// has now exhausted its per-leaf budget (PlanNode.ShouldEscalate). It does
+// NOT itself flip Status to StatusEscalated — the caller does that only
+// when the attempt also failed to resolve the leaf, so a successful but
+// expensive resolution isn't wrongly marked escalated. spentUSD may be 0
+// (a cache hit, a call that never reached a paid tier). Errors mirror
+// ApplyLeafUpdate: ErrNodeNotFound, ErrNotLeaf.
+func (t *PlanTree) RecordLeafAttempt(nodeID string, spentUSD float64) (budgetExhausted bool, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	node := t.findLocked(nodeID)
+	if node == nil {
+		return false, ErrNodeNotFound
+	}
+	if len(node.Children) > 0 {
+		return false, ErrNotLeaf
+	}
+	node.Attempts++
+	node.SpendUSD += spentUSD
+	return node.ShouldEscalate(), nil
 }
