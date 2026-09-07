@@ -148,6 +148,16 @@ type HTTPRequest struct {
 	// the ~9,000+ other synced-corpus templates with no OOB component are
 	// completely unaffected. See docs/follow-up.md's OOB item.
 	usesInteractsh bool
+
+	// usesTiming reports whether any of this request's matchers/extractors
+	// observes response timing — a dsl: expression referencing the bare
+	// "duration" identifier or a duration_N alias, or a part: duration
+	// matcher (blind time-based checks, e.g. a sleep-based SQLi template's
+	// dsl: 'duration>=6'). Computed once at load time by loader.go's
+	// validate/usesTimingRef, never set from YAML. D5's Executor response
+	// cache (respcache.go) always hits the network for such a request — a
+	// cache hit has no meaningful elapsed time.
+	usesTiming bool
 }
 
 // resolvePayloads validates req.Payloads/req.Attack and returns every

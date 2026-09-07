@@ -181,13 +181,24 @@ type Config struct {
 	// ("waf-block" | "catchall") a prior recon pass recorded on
 	// ReconResult.UniformResponse (Phase 7 Step 4 D6). A frontend
 	// (cmd/hackerfive/scan.go's --recon-file parse, pkg/webui, pkg/mcpserver)
-	// populates it; the engine also probes inline for any target not covered
-	// here. When a target's host resolves to a wall, the per-target template
-	// corpus is skipped (it would fetch the one block/catch-all page
-	// thousands of times for zero findings — LT-59) and one
-	// `misconfig-waf-blocked` / `misconfig-uniform-catchall` finding is
-	// emitted instead. nil/empty = probe every host inline.
+	// populates it from that recon fact. When a target's host resolves to a
+	// wall, the per-target template corpus is skipped (it would fetch the
+	// one block/catch-all page thousands of times for zero findings — LT-59)
+	// and one `misconfig-waf-blocked` / `misconfig-uniform-catchall` finding
+	// is emitted instead. nil/empty (no --recon-file, or recon saw normal
+	// routing) = run the corpus as usual; the engine does not probe inline
+	// (`ph7-step4a` "Deliberately not done" — the expensive case always has
+	// a recon result to carry the verdict).
 	UniformWallHosts map[string]string
+
+	// KnownDeadPaths are URL paths a prior recon pass (scan --recon-file)
+	// observed return HTTP 404 — recon.ReconResult.DeadPaths(). Threaded
+	// into pkg/template/nuclei.Executor (WithKnownDeadPaths) so a lone
+	// matcher-only path: template whose only path is one of these is
+	// skipped without a request. Gated there to a scan running under
+	// recon's own unauthenticated posture (no --header). Phase 7 Step 4 D5,
+	// docs/follow-up.md LT-55. nil/empty = no path skipping.
+	KnownDeadPaths []string
 
 	// ScanUniformAnyway (from --scan-uniform-anyway, also implied by
 	// --all-templates) forces the full per-target template corpus to run even

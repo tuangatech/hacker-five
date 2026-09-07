@@ -206,7 +206,7 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 	// ensureOOBPoller) the first time a loaded template embeds
 	// {{interactsh-url}}, so a scan/--templates set with none never talks
 	// to an OOB server at all, default or not.
-	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders).WithOOBServers(e.cfg.OOBServers)
+	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders).WithOOBServers(e.cfg.OOBServers).WithKnownDeadPaths(e.cfg.KnownDeadPaths)
 	defer nucleiExec.Close()
 	nativeExec := native.New(e.client, e.idorOptions()...).WithHeaders(e.cfg.ExtraHeaders)
 

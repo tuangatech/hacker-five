@@ -25,6 +25,18 @@ type Executor struct {
 	client       *httpclient.Client
 	extraHeaders map[string]string
 
+	// respCache serves an identical prior GET/HEAD (same method, URL,
+	// rendered headers, body) instead of re-fetching it — D5, see
+	// respcache.go for the carve-outs. Always non-nil (New allocates it);
+	// only tryPath consults it.
+	respCache *respCache
+
+	// knownDead is the set of URL paths a scan --recon-file result already
+	// saw return 404 (WithKnownDeadPaths). A lone matcher-only path:
+	// request against one of them is skipped without a request — see
+	// respcache.go's knownDeadSkip. nil/empty disables the skip.
+	knownDead map[string]bool
+
 	// oobServers are the Interactsh-protocol server URL(s) a request
 	// embedding {{interactsh-url}} registers against and polls for a
 	// correlated out-of-band callback — see WithOOBServers/prepareOOB/
@@ -40,7 +52,27 @@ type Executor struct {
 
 // New constructs an Executor.
 func New(client *httpclient.Client) *Executor {
-	return &Executor{client: client}
+	return &Executor{client: client, respCache: newRespCache()}
+}
+
+// WithKnownDeadPaths registers URL paths a prior recon pass (scan
+// --recon-file, threaded via scanner.Config.KnownDeadPaths) observed
+// return HTTP 404. A lone matcher-only path: request whose single path
+// renders to one of these is then skipped entirely — no request — but
+// only when this Executor carries no --header credential (WithHeaders),
+// i.e. the scan runs under the same unauthenticated posture recon did.
+// nil/empty is a no-op, leaving any prior call's value in place. Returns
+// the Executor for chaining, mirroring WithHeaders/WithOOBServers.
+func (e *Executor) WithKnownDeadPaths(paths []string) *Executor {
+	if len(paths) == 0 {
+		return e
+	}
+	m := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		m[normalizeDeadPath(p)] = true
+	}
+	e.knownDead = m
+	return e
 }
 
 // WithHeaders sets static HTTP headers applied to every request this
@@ -676,6 +708,15 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 		return detectors.Finding{}, false, false, nil
 	}
 	fullURL = strings.TrimSpace(fullURL)
+
+	// D5 (docs/follow-up.md LT-55): a --recon-file already saw this exact
+	// path 404 and this is a lone matcher-only path: request under recon's
+	// own (unauthenticated) posture — skip it, no request; re-fetching can
+	// only re-confirm the 404. See respcache.go's knownDeadSkip.
+	if e.knownDeadSkip(tmpl, reqIdx, req, idSuffix, fullURL) {
+		return detectors.Finding{}, false, false, nil
+	}
+
 	body, err := vars.Render(req.Body, renderCtx)
 	if err != nil {
 		return detectors.Finding{}, false, false, nil
@@ -699,15 +740,36 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 		}
 	}
 
-	start := time.Now()
-	resp, err := e.client.Do(httpReq)
-	if err != nil {
-		return detectors.Finding{}, false, false, nil
+	// D5 (docs/follow-up.md LT-54): serve an identical prior GET/HEAD for
+	// this exact (method, URL, header, body) from the Executor-scoped
+	// response cache rather than re-fetching it — respCacheableKey carves
+	// out timing/interactsh/pathCorrelated/payloads: requests, and tryRaw
+	// never consults the cache at all.
+	cacheKey, cacheable := e.respCacheableKey(httpReq, body, req, idSuffix)
+	var resp *http.Response
+	var respBody []byte
+	var elapsed int
+	if cacheable {
+		if hit, ok := e.respCache.get(cacheKey); ok {
+			resp, respBody = hit.response(), hit.body
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return detectors.Finding{}, false, false, nil
+	if resp == nil {
+		start := time.Now()
+		fresh, doErr := e.client.Do(httpReq)
+		if doErr != nil {
+			return detectors.Finding{}, false, false, nil
+		}
+		defer func() { _ = fresh.Body.Close() }()
+		rb, readErr := io.ReadAll(fresh.Body)
+		if readErr != nil {
+			return detectors.Finding{}, false, false, nil
+		}
+		elapsed = int(time.Since(start).Seconds())
+		resp, respBody = fresh, rb
+		if cacheable {
+			e.respCache.put(cacheKey, fresh, rb)
+		}
 	}
 	// Elapsed time for this single request, bound as the bare "duration" DSL
 	// identifier (blind time-based SQLi templates, e.g. upstream's
@@ -728,8 +790,9 @@ func (e *Executor) tryPath(ctx context.Context, target string, tmpl *Template, r
 	// yonyou-nc-baseapp-deserialization.yaml's
 	// `contains_all(body_1, "java.io", ...)` — both single-path templates).
 	// body_1/header_1/content_type_1 get the matching string-side alias via
-	// aliasVars below, merged into dslVars.
-	elapsed := int(time.Since(start).Seconds())
+	// aliasVars below, merged into dslVars. On a D5 cache hit elapsed is 0 —
+	// harmless, since respCacheableKey never lets a timing template (req.
+	// usesTiming) reach the cache.
 	durationInts := map[string]int{"duration": elapsed, "duration_1": elapsed, "status_code_1": resp.StatusCode}
 
 	// Extraction runs unconditionally, before matchers evaluate — not just
