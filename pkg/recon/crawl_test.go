@@ -131,6 +131,61 @@ func TestRunWave3_SpecPathServesHTMLShell_NoAPISpec(t *testing.T) {
 	assert.True(t, sawSuppressWarning, "a suppressed catch-all must leave one visible warning")
 }
 
+// TestRunWave3_UniformResponseWall covers D6 (docs/16-implementation-plan-ph7.md
+// Step 4): Wave 3 records a UniformResponseFact when a host answers every
+// probe with one generic page — "waf-block" for a 403-everything wall,
+// "catchall" for a 200-everything shell.
+func TestRunWave3_UniformResponseWall(t *testing.T) {
+	t.Run("403 on every path -> waf-block", func(t *testing.T) {
+		_, fake := recordingRun(t, nil)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("Access Denied"))
+		}))
+		defer srv.Close()
+
+		r := New(newTestClient(), withRun(fake))
+		result, err := r.Run(context.Background(), srv.URL, DepthFull)
+		require.NoError(t, err)
+		require.NotNil(t, result.UniformResponse, "a 403-everything host must be recorded as a uniform wall")
+		assert.Equal(t, "waf-block", result.UniformResponse.Kind)
+		assert.Equal(t, http.StatusForbidden, result.UniformResponse.CanaryStatus)
+	})
+
+	t.Run("200 shell on every path -> catchall", func(t *testing.T) {
+		_, fake := recordingRun(t, nil)
+		const shell = `<!doctype html><html><head><title>App</title></head><body><div id="root"></div></body></html>`
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(shell))
+		}))
+		defer srv.Close()
+
+		r := New(newTestClient(), withRun(fake))
+		result, err := r.Run(context.Background(), srv.URL, DepthFull)
+		require.NoError(t, err)
+		require.NotNil(t, result.UniformResponse)
+		assert.Equal(t, "catchall", result.UniformResponse.Kind)
+	})
+
+	t.Run("normal host (real 404 for nonexistent) -> no fact", func(t *testing.T) {
+		_, fake := recordingRun(t, nil)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/" {
+				_, _ = w.Write([]byte("<html>real homepage with lots of distinct content " + strings.Repeat("x", 4000) + "</html>"))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		r := New(newTestClient(), withRun(fake))
+		result, err := r.Run(context.Background(), srv.URL, DepthFull)
+		require.NoError(t, err)
+		assert.Nil(t, result.UniformResponse, "a host with a real 404 for nonexistent paths is not a wall")
+	})
+}
+
 func TestRunWave3_MultipleRealSpecPathsExposed_FirstOneWins(t *testing.T) {
 	_, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

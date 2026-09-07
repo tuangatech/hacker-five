@@ -24,6 +24,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
 	"github.com/tuangatech/hacker-five/pkg/template/native"
 	"github.com/tuangatech/hacker-five/pkg/template/nuclei"
+	"github.com/tuangatech/hacker-five/pkg/uniformwall"
 )
 
 const (
@@ -219,6 +220,14 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 		tmplConc = promptInjectionSafeConcurrency
 	}
 
+	// D6 (docs/16-implementation-plan-ph7.md Step 4, docs/follow-up.md LT-59):
+	// a host that answers every request with one block/catch-all page gets
+	// its per-target template corpus skipped — firing thousands of templates
+	// at an identical response is pure wall-clock for zero findings.
+	// --all-templates or --scan-uniform-anyway forces the corpus anyway.
+	uwGate := newUniformWallGate(e)
+	uniformShortCircuit := !e.cfg.AllTemplates && !e.cfg.ScanUniformAnyway
+
 	var mu sync.Mutex
 
 	for _, target := range e.cfg.Targets {
@@ -257,7 +266,17 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 			// Fired with bounded intra-target concurrency (doc15 Step 6b); the
 			// shared rate limiter still caps aggregate req/s, so this only
 			// removes a sequential loop's per-request round-trip dead time.
-			results = append(results, e.runTemplates(ctx, target, nucleiTemplates, nativeTemplates, nucleiExec, nativeExec, tmplConc)...)
+			//
+			// D6: unless overridden, a target recon classified as a uniform
+			// response wall skips the corpus and gets one honest finding.
+			if v := uwGate.verdict(host); uniformShortCircuit && v != uniformwall.VerdictNone {
+				e.warnf("info", "%s", warnUniformWall(target, v))
+				f := uniformWallFinding(target, v)
+				e.emitFinding(f)
+				results = append(results, f)
+			} else {
+				results = append(results, e.runTemplates(ctx, target, nucleiTemplates, nativeTemplates, nucleiExec, nativeExec, tmplConc)...)
+			}
 
 			mu.Lock()
 			findings = append(findings, results...)

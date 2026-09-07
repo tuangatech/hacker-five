@@ -119,17 +119,36 @@ type PolicySignals struct {
 	RobotsDisallowAll bool   `json:"robots_disallow_all,omitempty"` // robots.txt has "User-agent: *" + "Disallow: /"
 }
 
+// UniformResponseFact records that a host answers effectively every request
+// with one generic page rather than routing — a WAF/bot/auth block wall
+// ("waf-block") or a SPA-shell / storage-bucket catch-all ("catchall").
+// Set by probeCommonPaths (Wave 3) from the guaranteed-nonexistent canary
+// probe plus the host's root response, via pkg/uniformwall.Classify — the
+// one primitive Phase 7 Step 4's D6 wires into the decision engine
+// (reconShowsAdminSurface stops trusting a blanket 403 as an admin surface,
+// LT-58) and the scan engine (skip the per-target template corpus, LT-59).
+// BlockedRatio is the fraction of this host's Wave 3 HTTP probes that came
+// back intercepted (canary-shaped or 401/403/429) — at ~1.0, recon is
+// effectively blind here and plan says so (LT-62).
+type UniformResponseFact struct {
+	Host         string  `json:"host"`
+	Kind         string  `json:"kind"` // "waf-block" | "catchall"
+	CanaryStatus int     `json:"canary_status,omitempty"`
+	BlockedRatio float64 `json:"blocked_ratio,omitempty"`
+}
+
 // ReconResult is the frozen, versioned output of a Run — see
 // docs/schema/recon-result.schema.json. Never raw tool stdout in an agent's
 // context (docs/91-research-recon-phase.md §4).
 type ReconResult struct {
-	Target      string         `json:"target"`
-	Hosts       []HostFact     `json:"hosts,omitempty"`
-	Endpoints   []EndpointFact `json:"endpoints,omitempty"`
-	TechStack   []TechFact     `json:"tech_stack,omitempty"`
-	APISpec     *APISpecFact   `json:"api_spec,omitempty"`
-	OutOfScope  []string       `json:"out_of_scope,omitempty"`
-	Policy      *PolicySignals `json:"policy,omitempty"`
-	Warnings    []string       `json:"warnings,omitempty"`
-	GeneratedAt time.Time      `json:"generated_at"`
+	Target          string               `json:"target"`
+	Hosts           []HostFact           `json:"hosts,omitempty"`
+	Endpoints       []EndpointFact       `json:"endpoints,omitempty"`
+	TechStack       []TechFact           `json:"tech_stack,omitempty"`
+	APISpec         *APISpecFact         `json:"api_spec,omitempty"`
+	UniformResponse *UniformResponseFact `json:"uniform_response,omitempty"`
+	OutOfScope      []string             `json:"out_of_scope,omitempty"`
+	Policy          *PolicySignals       `json:"policy,omitempty"`
+	Warnings        []string             `json:"warnings,omitempty"`
+	GeneratedAt     time.Time            `json:"generated_at"`
 }

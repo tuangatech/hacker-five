@@ -18,6 +18,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
+	"github.com/tuangatech/hacker-five/pkg/uniformwall"
 )
 
 // corsProbeOrigin is a non-existent origin used to test whether a target
@@ -721,24 +722,13 @@ func (d *Detector) looksLikeInterceptedPage(status int, body []byte) bool {
 	return d.looksLikeBaselinePage(status, body, "")
 }
 
-// knownWAFBlockPageMarkers are content signatures of a specific, real
-// WAF/CDN interception page — confirmed live (2026-08-30), not guessed.
-// Deliberately narrow: only Akamai's confirmed marker, not a guessed
-// general list for other vendors (Cloudflare, Imperva, Sucuri, ...) —
-// expand only with the same live-confirmation discipline this one used,
-// per CLAUDE.md's "flag doubtful matchers instead of guessing" rule.
-// Deliberately just the alphanumeric word "edgesuite," not the full
-// "errors.edgesuite.net" domain: Akamai HTML-entity-encodes punctuation
-// in this page (dots become "&#46;", same reasoning as
-// baselineCanaryPath's own alphanumeric-only choice above) — a marker
-// containing literal dots silently never matches, found live the same
-// way the hyphenated canary path did.
-var knownWAFBlockPageMarkers = []string{
-	"edgesuite", // Akamai's own block-page reference-link domain (errors.edgesuite.net)
-}
-
+// looksLikeKnownWAFBlockPage delegates to pkg/uniformwall, the single
+// shared copy of the block-page marker list (Phase 7 Step 4 D6). The list
+// originated here — narrow by design, only Akamai's live-confirmed
+// "edgesuite" marker, expand only with the same live-confirmation
+// discipline (CLAUDE.md's "flag doubtful matchers instead of guessing").
 func looksLikeKnownWAFBlockPage(body []byte) bool {
-	return containsAny(body, knownWAFBlockPageMarkers)
+	return uniformwall.LooksLikeKnownBlockPage(body)
 }
 
 // bodyLengthExcluding returns body's length minus every occurrence of

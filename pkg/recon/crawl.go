@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/tuangatech/hacker-five/pkg/uniformwall"
 )
 
 // commonPaths are probed directly (via r.client, not katana) to map the
@@ -40,13 +42,22 @@ const reconCanaryPath = "/hackerfivereconcanary8b2e14d0"
 // still compares equal.
 const maxCanaryBodyRead = 1 << 20
 
+// blockPageSampleBytes is how much of the canary/root body is kept in
+// memory for pkg/uniformwall's block-page marker match — a WAF block page's
+// signature is in the first few hundred bytes; the rest is only counted for
+// bodyLen and discarded.
+const blockPageSampleBytes = 8192
+
 // canaryResponse is what reconCanaryPath returned for one host — the
-// yardstick sameAsCanary compares each real common-path probe against.
+// yardstick sameAsCanary compares each real common-path probe against, and
+// (Phase 7 Step 4 D6) the input to pkg/uniformwall.Classify.
 type canaryResponse struct {
 	fetched     bool
 	status      int
 	bodyLen     int
 	contentType string // normalized: media type only, lower-cased
+	server      string // raw Server header
+	bodySample  []byte // first blockPageSampleBytes of the body
 }
 
 // sameAsCanary reports whether a probe's (status, bodyLen, contentType)
@@ -317,6 +328,7 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 	canary := r.fetchReconCanary(ctx, agg, base, host)
 
 	suppressed := 0
+	blocked, answered := 0, 0
 	for _, path := range commonPaths {
 		reqURL := base + path
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -342,6 +354,11 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		r.hostErrors.RecordSuccess(host)
 		n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
 		_ = resp.Body.Close()
+		answered++
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+			blocked++ // D6 / LT-62: an intercept status, not the app routing
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 			continue
 		}
@@ -349,7 +366,8 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		ctype := normalizeContentType(resp.Header.Get("Content-Type"))
 		if canary.sameAsCanary(resp.StatusCode, bodyLen, ctype) {
 			suppressed++
-			continue // indistinguishable from the catch-all — not a real resource
+			blocked++ // every path is the same catch-all page — recon is blind here too
+			continue  // indistinguishable from the catch-all — not a real resource
 		}
 		agg.addEndpoint(EndpointFact{
 			URL: reqURL, Method: http.MethodGet, StatusCode: resp.StatusCode,
@@ -363,6 +381,72 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 	if suppressed > 0 {
 		agg.addWarning("wave3: %s: %d common-path probe(s) returned a response indistinguishable from a random-path canary (uniform SPA/catch-all) — not recorded as endpoints (LT-30)", host, suppressed)
 	}
+
+	r.recordUniformResponse(ctx, agg, base, host, canary, blocked, answered)
+}
+
+// recordUniformResponse classifies whether host is a uniform wall — a
+// WAF/bot/auth block layer or a SPA/bucket catch-all — from the canary
+// probe plus a single root GET, and records the verdict on the aggregator
+// (Phase 7 Step 4 D6). The blocked/answered counts from probeCommonPaths'
+// own loop become UniformResponseFact.BlockedRatio (LT-62). A request error
+// on the root fetch is non-fatal: Classify still runs on the canary alone.
+func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base, host string, canary canaryResponse, blocked, answered int) {
+	if !canary.fetched {
+		return
+	}
+	canaryObs := uniformwall.Observation{
+		Status: canary.status, BodyLen: canary.bodyLen, ContentType: canary.contentType,
+		ServerHeader: canary.server, Body: canary.bodySample,
+	}
+	var rootObs *uniformwall.Observation
+	if o, ok := r.fetchRootObservation(ctx, base, host); ok {
+		rootObs = &o
+	}
+	verdict := uniformwall.Classify(canaryObs, rootObs)
+	if verdict == uniformwall.VerdictNone {
+		return
+	}
+	ratio := 0.0
+	if answered > 0 {
+		ratio = float64(blocked) / float64(answered)
+	}
+	agg.setUniformResponse(UniformResponseFact{
+		Host: host, Kind: string(verdict), CanaryStatus: canary.status, BlockedRatio: ratio,
+	})
+	switch verdict {
+	case uniformwall.VerdictWAFBlock:
+		agg.addWarning("wave3: %s: every probe hit a WAF/bot/auth block wall (canary status %d, %.0f%% of probes intercepted) — recon is blind here; a scan from this vantage will not reach the application (D6/LT-59; consider an in-region/residential egress)", host, canary.status, ratio*100)
+	case uniformwall.VerdictCatchall:
+		agg.addWarning("wave3: %s: host returns one generic catch-all page for every path (canary status %d) — no real routing to map from this vantage (D6/LT-43)", host, canary.status)
+	}
+}
+
+// fetchRootObservation GETs base+"/" once for recordUniformResponse's
+// Classify — the root's shape is what tells a real SPA (shell on unknown
+// paths, real content at "/") from a total catch-all. ok is false on a
+// request error; the circuit breaker is already handled by the caller's
+// loop, so this only reads.
+func (r *Recon) fetchRootObservation(ctx context.Context, base, host string) (uniformwall.Observation, bool) {
+	if r.hostErrors.ShouldSkip(host) {
+		return uniformwall.Observation{}, false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/", nil)
+	if err != nil {
+		return uniformwall.Observation{}, false
+	}
+	r.applyHeaders(req)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return uniformwall.Observation{}, false
+	}
+	sample, n := readBodySampleAndLen(resp.Body)
+	_ = resp.Body.Close()
+	return uniformwall.Observation{
+		Status: resp.StatusCode, BodyLen: n,
+		ContentType:  normalizeContentType(resp.Header.Get("Content-Type")),
+		ServerHeader: resp.Header.Get("Server"), Body: sample,
+	}, true
 }
 
 // fetchReconCanary GETs reconCanaryPath against base once, giving
@@ -387,14 +471,42 @@ func (r *Recon) fetchReconCanary(ctx context.Context, agg *aggregator, base, hos
 		return canaryResponse{}
 	}
 	r.hostErrors.RecordSuccess(host)
-	n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+	sample, n := readBodySampleAndLen(resp.Body)
 	_ = resp.Body.Close()
 	return canaryResponse{
 		fetched:     true,
 		status:      resp.StatusCode,
-		bodyLen:     int(n),
+		bodyLen:     n,
 		contentType: normalizeContentType(resp.Header.Get("Content-Type")),
+		server:      resp.Header.Get("Server"),
+		bodySample:  sample,
 	}
+}
+
+// readBodySampleAndLen reads up to blockPageSampleBytes of body into a
+// returned slice (for pkg/uniformwall marker matching) while still counting
+// the full body length up to maxCanaryBodyRead (for the sameAsCanary shape
+// comparison) — the rest is discarded.
+func readBodySampleAndLen(body io.Reader) (sample []byte, total int) {
+	sample = make([]byte, 0, blockPageSampleBytes)
+	buf := make([]byte, 4096)
+	for total < maxCanaryBodyRead {
+		nr, err := body.Read(buf)
+		if nr > 0 {
+			total += nr
+			if len(sample) < blockPageSampleBytes {
+				take := blockPageSampleBytes - len(sample)
+				if take > nr {
+					take = nr
+				}
+				sample = append(sample, buf[:take]...)
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return sample, total
 }
 
 // tagAuthBoundary fetches seed's homepage once and tags an EndpointFact if

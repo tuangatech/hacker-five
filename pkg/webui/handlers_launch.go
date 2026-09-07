@@ -556,8 +556,10 @@ func applyTechStackNarrowing(job *Job, form LaunchFormData, cfgs []scanner.Confi
 	// DetectorTemplateTags). Recon's tech stack, when present, only adds the
 	// product-specific "extras" on top — it's no longer all-or-nothing.
 	var techStack []recon.TechFact
+	var uniform *recon.UniformResponseFact
 	if result := job.Snapshot().ReconResult; result != nil {
 		techStack = result.TechStack
+		uniform = result.UniformResponse
 	}
 	var index []templatesync.Entry
 	if len(techStack) > 0 {
@@ -567,7 +569,17 @@ func applyTechStackNarrowing(job *Job, form LaunchFormData, cfgs []scanner.Confi
 			index = idx
 		}
 	}
-	return narrowConfigsByTechStack(job, techStack, index, cfgs)
+	narrowed := narrowConfigsByTechStack(job, techStack, index, cfgs)
+	// D6 (docs/16-implementation-plan-ph7.md Step 4): if recon classified the
+	// target as a uniform response wall, thread that to the engine so it
+	// skips the per-target template corpus (LT-59).
+	if uniform != nil {
+		job.AppendLog("info", fmt.Sprintf("template scope: recon classified %s as a %s — the template corpus will be skipped for it (D6)", uniform.Host, uniform.Kind))
+		for i := range narrowed {
+			narrowed[i].UniformWallHosts = map[string]string{uniform.Host: uniform.Kind}
+		}
+	}
+	return narrowed
 }
 
 // narrowConfigsByTechStack is applyTechStackNarrowing's pure decision

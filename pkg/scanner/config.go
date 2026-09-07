@@ -177,6 +177,25 @@ type Config struct {
 	// disables it. Takes precedence over Verbose for the per-file detail.
 	LogRejectedPath string
 
+	// UniformWallHosts maps a host to a uniform-response verdict
+	// ("waf-block" | "catchall") a prior recon pass recorded on
+	// ReconResult.UniformResponse (Phase 7 Step 4 D6). A frontend
+	// (cmd/hackerfive/scan.go's --recon-file parse, pkg/webui, pkg/mcpserver)
+	// populates it; the engine also probes inline for any target not covered
+	// here. When a target's host resolves to a wall, the per-target template
+	// corpus is skipped (it would fetch the one block/catch-all page
+	// thousands of times for zero findings — LT-59) and one
+	// `misconfig-waf-blocked` / `misconfig-uniform-catchall` finding is
+	// emitted instead. nil/empty = probe every host inline.
+	UniformWallHosts map[string]string
+
+	// ScanUniformAnyway (from --scan-uniform-anyway, also implied by
+	// --all-templates) forces the full per-target template corpus to run even
+	// against a host classified as a uniform response wall — the override for
+	// D6's short-circuit, for the rare case an operator wants every template
+	// fired regardless.
+	ScanUniformAnyway bool
+
 	// IDORPreview (from --idor-preview) fires one extra preflight GET against
 	// the resolved --endpoint before idor's real ID-enumeration loop begins,
 	// logging its status/body-length — closes the "a wrong EndpointTemplate
