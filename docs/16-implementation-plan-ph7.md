@@ -17,7 +17,7 @@
 3. ✅ **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ✅ 2026-09-07 (`ph7-step3a`), C7 ✅ 2026-09-07 (`ph7-step3b`)
 4. ✅ **Live log injection + concurrency ceilings + redundant-request elimination** (Week 53) — D6 ✅ 2026-09-07 (`ph7-step4a`), D5 ✅ 2026-09-07 (`ph7-step4b`), C4 + D1 + H4 ✅ 2026-09-07 (`ph7-step4c`)
 5. ⬜ **OWASP Agentic Top 10 mapping** (Week 54)
-6. ⬜ **Template ecosystem & triage support** (Week 55)
+6. ⬜ **Template ecosystem & triage support** (Week 55) — plus F3 (content-gate response-grep secret templates, LT-67) and F4 (narrow corpus load for a small leaf set, LT-71)
 7. ⬜ **Eval maturity + release** (Week 56) — `v0.7.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-15.)
@@ -255,14 +255,21 @@ Every row in the table above is checked against real code (a file path and line,
 
 **F2 — structured feedback capture.** When a human overrides or dismisses an agent-surfaced finding/triage note during review, capture that decision in a structured, queryable form (not just "the user closed the tab") — useful raw material for Step 7's eval-maturity work and any future tuning of the coordinator's own prioritization logic.
 
+**F3 — gate response-grep secret/exposure templates on real app content ([follow-up.md](follow-up.md) LT-67).** The `shopify-*` / generic secret-scanning templates grep a response body for leaked credentials; against a static error page or a storage-bucket 404 shell (linkpop's 746-byte SPA, 2026-09-07) that is structurally impossible, yet `registry.Resolve` still emits and `planexec` still fires those leaves — 8 of them on linkpop. Add a minimum-dynamic-content gate to template selection: a response-grep secret/exposure template is only emitted for a host whose recon shows app-generated markup — body size over a floor, a server-rendered/framework marker, or a non-catch-all canary (`ReconResult.UniformResponse.Kind != "catchall"`, D6). Fits this step because it's template-selection quality — the same surface F1's triage annotations describe. Keep the <5% false-positive discipline: a doubtful "is this app content" signal errs toward still emitting the leaf, not suppressing it.
+
+**F4 — "load only these template IDs/paths" fast path in the corpus loader ([follow-up.md](follow-up.md) LT-71).** `planexec.RunPlan`'s LT-18(c) logic forces a full ~9.5k-template corpus load/parse/filter for any specific-template leaf, and a narrow `--tags` scan pays the same cost to run a handful of matches (linkpop: 2,224 loaded + 201 rejected + 7,256 filtered to run 9 named leaves). Add an enumerable-ID/path load path in `pkg/templatesync` + the `pkg/template/nuclei` loader, used when the requested tag/ID set resolves to a small explicit list — skips parsing everything else. Speeds the plan-executor path and any narrow `--tags` scan; pairs with a future `scan --plan-file` that dispatches exactly the approved leaves. Originally slated for Step 4 with LT-54/55; re-homed here when Step 4 shipped without it. Pure performance — no behavior change to which templates match, verified by a before/after finding-set diff on a fixed target.
+
 ### Files (anticipated, confirm at implementation time)
 - `templates/proposed/` — new, empty (gitkept) directory; `pkg/template` loader confirmed to never auto-load from it.
 - `pkg/reporter/triageassist.go` — F1's annotation layer.
 - `pkg/webui/handlers_scan.go` (or a new `feedback.go`) — F2's capture endpoint.
-- `tests/unit/template_index_test.go`, `tests/unit/proposed_dir_isolation_test.go`, `tests/unit/triage_assist_test.go`.
+- `pkg/registry/decisionengine.go` — F3's dynamic-content gate in `matchTemplateTags` / `resolveTechFact` for response-grep secret/exposure templates.
+- `pkg/templatesync/`, `pkg/template/nuclei/loader.go` — F4's enumerable-ID/path fast load path, taken when the requested set is small and explicit.
+- `pkg/planexec/executor.go` — F4: pass the specific-template leaf's ID set to the loader instead of forcing a full corpus load.
+- `tests/unit/template_index_test.go`, `tests/unit/proposed_dir_isolation_test.go`, `tests/unit/triage_assist_test.go`, `tests/unit/template_select_content_gate_test.go`, `tests/unit/nuclei_loader_idlist_test.go`.
 
 ### Verification
-Unit test confirming `templates/proposed/` is never picked up by the default `--templates` load path (mirrors the isolation guarantee `templates/nuclei-samples/` already needs, but inverted — proposed is deliberately *excluded* by default). Triage-assist output verified to never mutate the underlying `Finding` struct it annotates.
+Unit test confirming `templates/proposed/` is never picked up by the default `--templates` load path (mirrors the isolation guarantee `templates/nuclei-samples/` already needs, but inverted — proposed is deliberately *excluded* by default). Triage-assist output verified to never mutate the underlying `Finding` struct it annotates. F3: against a recon fixture whose host serves a static catch-all, no response-grep secret/exposure leaf is emitted; against an app-content fixture they still are; measure the gate's decoy false-positive rate. F4: a plan naming N specific templates loads exactly those (assert the loader's parsed count), and a full before/after finding-set diff on a fixed lab target is empty.
 
 ---
 
@@ -312,6 +319,8 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [ ] All ten OWASP Agentic Top 10 risks (D4) are checked against real shipped code (file/line cited) and recorded as mitigated or accepted residual risk with a stated reason
 - [ ] `templates/proposed/` exists, is confirmed never auto-loaded by the default `--templates` path, and requires explicit human promotion
 - [ ] Triage-assist annotations never mutate `Finding.Severity`/`Confidence`
+- [ ] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content, decoy false-positive rate measured (F3 / [follow-up.md](follow-up.md) LT-67)
+- [ ] A specific-template leaf or a small explicit `--tags` set loads only its own templates, not the full corpus, with an empty before/after finding-set diff (F4 / [follow-up.md](follow-up.md) LT-71)
 - [ ] Agent-driven false-positive/false-negative rate is measured live against all four lab targets, tracked separately from detector-level rate, with full cost accounting recorded
 - [ ] `authbypass_crapi_test.go`/`authbypass_vapi_test.go` land as reproducible tests against the compose stack, and the crAPI credentialed recon → plan → approve → scan → export round trip is live-verified (moved from Phase 6 Step 5)
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean

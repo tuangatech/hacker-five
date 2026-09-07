@@ -435,6 +435,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [ ] `templates/proposed/` staging directory, confirmed never auto-loaded
 - [ ] Triage-assist mode on `Exporter` output (annotation only, never mutates `Finding`)
 - [ ] Structured feedback capture on human override/dismissal of agent triage notes
+- [ ] F3: gate response-grep secret/exposure templates on a real-app-content signal before emitting them (LT-67); F4: narrow corpus load for a small explicit template-ID/tag set (LT-71)
 
 #### Week 56: Eval Maturity + Release — ⬜ not started
 - [ ] Real agent-driven benchmark run against all four lab targets, fp/fn rate tracked separately from detector-level rate, full cost accounting recorded honestly
@@ -474,9 +475,11 @@ throughout — banner-grab and passive inspection, never command execution.
 #### Week 63: Version gating + richer crawl — ⬜ not started
 - [ ] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b)
 - [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8)
+- [ ] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); endpoint-name → redirect-parameter-probe rule for `*/bounce`/OAuth/SSO/logout paths (LT-77)
 
-#### Week 64: Remaining template-format gaps + release — ⬜ not started
+#### Week 64: Remaining template-format gaps + AI-agent surface + release — ⬜ not started
 - [ ] `xpath` matcher/extractor (dependency footprint verified first) or explicitly descoped; `flow:` cross-block `_N` indexing or explicitly descoped
+- [ ] AI-agent surface (`llms.txt`/`SKILL.md`/MCP): passive recon fact + read-only detector (manifest injection-marker scan, unauthenticated MCP `tools/list`, no `tools/call`) (closes LT-78)
 - [ ] New-detector yield + any new false-positive mode measured against all lab targets, tracked against the <5% target
 - [ ] Release **v0.8.0**
 

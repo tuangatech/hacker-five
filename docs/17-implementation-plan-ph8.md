@@ -26,9 +26,10 @@ inspection, never literal command execution on a target.
 3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
 4. ⬜ **OOB blind-RCE verification** (Week 62)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
-6. ⬜ **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8
+6. ⬜ **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77)
 7. ⬜ **Remaining template-format gaps needing a dependency or larger design** (Week 64) — `xpath`, `flow:` cross-block `_N`, `flow:` script constructs, `substr`/`date_time`/`generate_jwt` DSL
-8. ⬜ **Eval maturity + release** (Week 64) — `v0.8.0`
+8. ⬜ **AI-agent surface modeling — `llms.txt` / `SKILL.md` / MCP endpoints** (Week 64) — closes LT-78
+9. ⬜ **Eval maturity + release** (Week 64) — `v0.8.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step lands, same convention as doc09-16.)
 
@@ -350,16 +351,45 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
   and probe whether an already-in-scope API host (`prod.meeshoapi.com`) answers the
   app's conventional paths. Only surfaces hosts that pass the scope check — never widens
   scope, matching LT-35/LT-52's discipline.
+- **Probe high-interest low-confidence robots/sitemap endpoints**
+  ([follow-up.md](follow-up.md) LT-76). `resolveEndpointFacts` (P1-1) only reasons over
+  endpoints carrying an *observed* status, so the ~100 paths recon lifts from
+  `robots.txt` / `sitemap.xml` without probing (`shop.app`, 2026-09-07:
+  `/oauth/authorize`, `/oauth/continue`, `/accounts/bounce`, `/pay/*`, `/u/*`,
+  `/delete-account/confirm`, `/checkouts/internal`, …) drive no leaves at all — the plan
+  had one `businesslogic` leaf off `/cart` against a 110-endpoint recon. Before
+  resolution, probe a bounded sample (~20) of the highest-interest names — ranked by
+  shape (`/oauth/*`, `*/bounce`, `*/callback`, `/pay/*`, `/u/*`, `*/logout`) — for a live
+  status, so a name-suggestive endpoint can seed `authbypass` / `ssrf` / redirect leaves.
+  Rides the same per-tool rate limit and `--scope` gate as the curated content-discovery
+  pass above; distinct in that the paths come from the target's own robots/sitemap, not
+  an embedded wordlist, so it needs no wordlist-provenance handling and is not gated
+  behind `--content-discovery` (it's bounded by the endpoint set recon already holds).
+- **Redirect / OAuth-flow probe rule for bounce-shaped endpoints**
+  ([follow-up.md](follow-up.md) LT-77). `/accounts/bounce` 302s to `/account`;
+  `/oauth/authorize` + `/oauth/continue` are textbook `redirect_uri` / `return_to`
+  open-redirect and OAuth-flow candidates, but `decisionengine.go` has no rule mapping a
+  `*/bounce` / `/oauth/authorize` / `/sso` / `*/logout`-shaped path to a
+  redirect-parameter probe. Add an endpoint-name → probe rule that fuzzes
+  `url,return_to,redirect_uri,redirect,next,continue,RelayState,checkout_url` against
+  such paths and flags an off-origin `Location`; reuse the existing `redirect` template
+  tag for the corpus side. Consumes LT-76's newly-probed endpoints — sequence it after
+  that bullet. Read-only: a single benign off-origin marker value per param, no payload
+  beyond the redirect target.
 
 No new dependency — katana already ships headless support and httpx already accepts a
 path list, an OpenAPI/GraphQL document is JSON/YAML the stdlib already parses, and
 subfinder already carries a CT-log source; this is flag plumbing, an embedded wordlist,
-a spec walker, a known-CDN-ASN table, and a timeout guard.
+a spec walker, a known-CDN-ASN table, a timeout guard, and (LT-76/LT-77) a bounded
+endpoint probe reusing the existing recon HTTP client plus a redirect-parameter rule
+over the `redirect` corpus tag.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/recon/crawl.go` — `runKatana` takes depth + a headless bool + per-host timeout; a new `discoverContentPaths` shelling `httpx -path <wordlist>`, gated on the opt-in flag, folding hits into `agg` as `wave3-content-discovery` endpoints.
+- `pkg/recon/endpointprobe.go` (new) — LT-76's bounded, name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints (reusing `recon`'s own HTTP client + rate limiter), folding a live status onto the existing `EndpointFact` so `resolveEndpointFacts` treats it like any observed endpoint.
 - `pkg/recon/apispec.go` (new) — LT-40's OpenAPI/GraphQL document walker: `paths`/`parameters` → `EndpointFact{Source: "api-spec"}` with an ID-shaped/URL-shaped param classification; only invoked when LT-30's canary+content-type gate says the spec body is real.
-- `pkg/registry/decisionengine.go` — LT-50's tech×endpoint correlation in `resolveTechFact` (per-product endpoint-signature table, Confidence upgrade / targeted-leaf emission).
+- `pkg/registry/decisionengine.go` — LT-50's tech×endpoint correlation in `resolveTechFact` (per-product endpoint-signature table, Confidence upgrade / targeted-leaf emission); LT-77's endpoint-name → redirect-parameter-probe rule (`*/bounce`, `/oauth/authorize`, `/sso`, `*/logout` shapes → a `redirect`-tagged leaf).
+- `pkg/detectors/` — LT-77's off-origin `Location` check: extend the `ssrf` detector's redirect handling, or a thin `openredirect` rule, dispatched only from the LT-77 decision-engine rule.
 - `pkg/recon/asn.go` (or the existing WHOIS/ASN file) — LT-61's known-CDN-ASN table + the "all resolved addrs in a CDN ASN ⇒ skip/shorten naabu, tag endpoints" gate in the Wave 2 port-scan path.
 - `pkg/recon/passive.go` / `crawl.go` — LT-63's CT-log sibling-API pass (subfinder `crtsh` source, `api.`/`gw.`/`mobile.` labels), scope-checked, `--recon-depth full` only.
 - `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
@@ -369,11 +399,16 @@ a spec walker, a known-CDN-ASN table, and a timeout guard.
 
 ### Verification
 Unit: the katana arg list reflects the configured depth/headless; the httpx arg list
-carries `-path` only with the flag on. Live: a depth-3 + headless run against a
-JS-heavy owned SPA yields materially more endpoints than the depth-2 static run; a
-`--content-discovery` run against an owned target with a known unlinked path (e.g.
-`/admin`, a dir index) discovers it only with the flag on, and the extra endpoints —
-from both sources — reach the plan tree's idor/authbypass candidate lists.
+carries `-path` only with the flag on. LT-76: a recon fixture with unprobed
+`robots.txt` endpoints probes only the bounded name-ranked sample, and a probed
+`/oauth/authorize` reaching a live status produces an `authbypass`/redirect leaf that a
+bare listing did not. LT-77: a fixture `/accounts/bounce?url=<off-origin>` that honours
+the param yields an open-redirect finding; one that ignores it yields none. Live: a
+depth-3 + headless run against a JS-heavy owned SPA yields materially more endpoints
+than the depth-2 static run; a `--content-discovery` run against an owned target with a
+known unlinked path (e.g. `/admin`, a dir index) discovers it only with the flag on, and
+the extra endpoints — from all sources — reach the plan tree's idor/authbypass
+candidate lists.
 
 ---
 
@@ -431,13 +466,67 @@ against the real sampled templates each gap was measured from.
 
 ---
 
-## Step 8: Eval Maturity + Release (Week 64) — ⬜ not yet implemented — `v0.8.0`
+## Step 8: AI-Agent Surface Modeling — `llms.txt` / `SKILL.md` / MCP (Week 64) — ⬜ not yet implemented — closes LT-78
+
+### Design
+
+[follow-up.md](follow-up.md) LT-78, live-observed on `shop.app` (2026-09-07): the host
+publishes an agent skill manifest (`/llms.txt` → `/SKILL.md`: "search the catalog, build
+a checkout on the merchant's domain, handle orders") and a live `shop-mcp` endpoint at
+`/mcp/`. This is an emerging, largely-unscanned surface — prompt injection into agent
+instructions, an unauthenticated MCP `tools/list`, agent-reachable state-changing tools,
+checkout manipulation via the agent path — and HackerFive has neither a recon signal nor
+a detector for it. Recon fetched none of it usefully on the live run (UA-blocked, then
+429-drowned — this step depends on LT-75's browser-UA recon landing first).
+
+Two read-only pieces:
+- **A passive recon signal.** Wave 3 fetches and records `/llms.txt`, `/SKILL.md` (and
+  any file `llms.txt` points at), `/.well-known/mcp`, `/.well-known/ai-plugin.json`, and
+  a `GET /mcp` / `/mcp/` probe, into a new `ReconResult.AgentSurface` fact (manifest
+  URLs, declared capabilities/tools, MCP endpoint + transport). Scope- and rate-limited
+  like every other Wave 3 fetch; manifest text is stored as data, never followed as
+  instructions.
+- **A follow-up leaf class.** When `AgentSurface` is present: (1) an injection-marker
+  scan of the manifest text — does it carry text shaped like instructions to a
+  downstream agent ("ignore previous", tool-call syntax, role markers) that a merchant
+  could have planted; (2) an unauthenticated `POST /mcp
+  {"jsonrpc":"2.0","method":"tools/list"}` and a flag on any returned tool whose
+  name/description implies a mutation (`create`/`update`/`delete`/`checkout`/`order`/`refund`);
+  (3) a note when a declared capability implies agent-reachable state change on the
+  merchant's own domain. All read-only enumeration — `tools/list` never becomes
+  `tools/call`. Injection-marker patterns held to the <5% false-positive target
+  ([03-development-roadmap.md](03-development-roadmap.md)) — a doubtful marker is left
+  out, not guessed.
+
+Needs its own design pass before implementation — the MCP client subset, the manifest
+schemas (`llms.txt` is a de-facto convention, not a spec), and the injection-marker
+ruleset each need pinning against real published examples. A Detection Coverage table
+row lands in [follow-up.md](follow-up.md) when this ships.
+
+### Files (anticipated, confirm at implementation time)
+- `pkg/recon/agentsurface.go` (new) — the Wave 3 manifest / `/mcp` fetch + `ReconResult.AgentSurface` fact; `docs/schema/recon-result.schema.json` version bump.
+- `pkg/detectors/agentsurface/` (new) — the injection-marker scan, the unauthenticated `tools/list` enumeration, the mutation-implying-tool flag.
+- `pkg/registry/decisionengine.go` — an `agentsurface` capability dispatched only when the recon fact is present, never speculatively.
+- `pkg/scanner/{config,engine}.go` — `agentsurface` wired into `runDetector`.
+- `tests/unit/agentsurface_recon_test.go`, `tests/unit/detector_agentsurface_test.go` — fixture `llms.txt` / `SKILL.md` / MCP `tools/list` responses, including a planted injection-marker decoy set.
+
+### Verification
+Unit: a fixture manifest with planted injection markers and a decoy set (measure the
+false-positive rate against the decoys explicitly); a fixture MCP `tools/list` carrying
+both read-only and mutating tools (only the mutating ones flagged); `tools/call` is
+never issued. Live: re-run against `shop.app` once LT-75's browser-UA recon lands and
+confirm `/llms.txt`, `/SKILL.md`, `/mcp/` are recorded as an `AgentSurface` fact and the
+enumeration runs read-only.
+
+---
+
+## Step 9: Eval Maturity + Release (Week 64) — ⬜ not yet implemented — `v0.8.0`
 
 ### Design
 
 Re-run the fixed eval challenge set (Phase 5's harness, Phase 7's agent-driven
-extension) against the lab targets with every new detector from Steps 1-4 enabled, and
-record the delta: new true positives found, and — held to the same
+extension) against the lab targets with every new detector from Steps 1-4 and Step 8
+enabled, and record the delta: new true positives found, and — held to the same
 "revise down with reasoning, don't pad" discipline — any new false-positive mode the
 new detectors introduced, tracked against the <5% target. Full cost accounting per run
 as in Phase 7 Step 7. Then full integration testing across the Phase 5-8 stack, and
@@ -463,6 +552,9 @@ stated reason.
 - [ ] `templates/index.json` carries optional `AffectedRange` data; `matchTemplateTags` drops an out-of-affected-range CVE template when the `TechFact` version is known, and real multi-version Nginx hosts get different template lists (LT-7 closed)
 - [ ] An unversioned WordPress plugin/theme slug gets a `readme.txt`/`style.css` version probe (P1-3 leftover closed)
 - [ ] Crawl depth is configurable (default unchanged); an opt-in JS-rendered crawl merges into the Wave 3 endpoint set with a per-host timeout ceiling; an opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints (LT-8 closed)
+- [ ] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed)
+- [ ] An endpoint-name → redirect-parameter-probe rule flags an off-origin `Location` on `*/bounce` / OAuth / SSO / logout-shaped paths, read-only, reusing the `redirect` corpus tag (LT-77 closed)
+- [ ] A passive recon signal records an `/llms.txt` / `SKILL.md` / MCP "agent surface" fact; a read-only detector scans the manifest for injection markers and enumerates an unauthenticated MCP `tools/list`, flagging mutation-implying tools, never issuing `tools/call` — decoy false-positive rate measured (LT-78 closed)
 - [ ] `xpath` matcher/extractor support ships (dependency footprint verified first) or is explicitly descoped with a stated reason; `flow:` cross-block `_N` indexing ships or is explicitly descoped; `substr`/`date_time`/`generate_jwt` DSL functions ship; `flow:` `if`/`set`/`for` script constructs ship or are explicitly descoped
 - [ ] New-detector yield and any new false-positive mode measured against all lab targets, tracked against the <5% target, with full cost accounting
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
