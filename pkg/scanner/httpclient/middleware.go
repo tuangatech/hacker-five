@@ -46,6 +46,26 @@ func WithLogging() Middleware {
 	}
 }
 
+// WithOutcomeObserver calls fn once for every request after it has fully
+// resolved (all retries exhausted) with the final status code (0 on a
+// transport error) and error. Registered outermost so it sees the same
+// answer the caller does, not each retry attempt. fn must not block — the
+// adaptive throttle's observer (docs/follow-up.md LT-74/LT-88) only bumps a
+// few counters under a short lock.
+func WithOutcomeObserver(fn func(status int, err error)) Middleware {
+	return func(next http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			resp, err := next.RoundTrip(req)
+			status := 0
+			if resp != nil {
+				status = resp.StatusCode
+			}
+			fn(status, err)
+			return resp, err
+		})
+	}
+}
+
 // WithHeaders sets extra headers on every outgoing request.
 func WithHeaders(headers map[string]string) Middleware {
 	return func(next http.RoundTripper) http.RoundTripper {

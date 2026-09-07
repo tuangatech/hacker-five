@@ -64,6 +64,14 @@ func TestSuggestIDOREndpointCandidates(t *testing.T) {
 			},
 			want: nil,
 		},
+		{
+			name: "an ID-shaped segment inside a JavaScript string-concat fragment is still rejected (LT-85)",
+			urls: []string{
+				"https://example.com/library/video/42/'+D.prop(",
+				"https://example.com/library/ideabox/7'+e.query.results.item[n].link+'",
+			},
+			want: nil,
+		},
 	}
 
 	for _, tc := range cases {

@@ -234,6 +234,11 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				fieldSuggestions = planFieldSuggestions(cmd.Context(), result, tree, false, nil, nil, cmd.ErrOrStderr())
 			}
 
+			// LT-68 (docs/follow-up.md): recon's one-line "is there a live app
+			// here" verdict, before anything else — a decommissioned or fully
+			// walled asset otherwise still prints a multi-leaf plan.
+			appSurfaceDiagnostic(cmd.ErrOrStderr(), result)
+
 			// D6 / LT-62 (docs/follow-up.md): if recon classified the target as
 			// a uniform response wall, say so before the tree — the plan is
 			// technically valid but a scan from this vantage will not reach the
@@ -305,6 +310,23 @@ func emptyPlanDiagnostic(w io.Writer, tree *agenttask.PlanTree, result *recon.Re
 	}
 	_, _ = fmt.Fprintf(w, "plan: empty plan — %s, %d/%d endpoint(s) WAF/auth-blocked, 0 actionable leaves; nothing to scan from this vantage\n",
 		detail, blocked, len(result.Endpoints))
+}
+
+// appSurfaceDiagnostic prints recon's LT-68 live-application-surface verdict
+// to stderr. Always printed (not just on "none") so an operator sees at a
+// glance whether the plan below is worth acting on; a "none" verdict is
+// flagged loudly because a plan still resolves (LT-57's baseline leaf) and
+// would otherwise read as normal work.
+func appSurfaceDiagnostic(w io.Writer, result *recon.ReconResult) {
+	if result == nil || result.AppSurface == nil {
+		return
+	}
+	s := result.AppSurface
+	prefix := "plan: recon verdict"
+	if s.Verdict == "none" {
+		prefix = "plan: WARNING — recon verdict"
+	}
+	_, _ = fmt.Fprintf(w, "%s: live application surface: %s (%s)\n", prefix, s.Verdict, s.Reason)
 }
 
 // uniformWallDiagnostic prints one stderr line when recon classified the

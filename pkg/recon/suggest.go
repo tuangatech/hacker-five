@@ -22,6 +22,28 @@ func isIDShaped(s string) bool {
 	return s != "" && (numericIDPattern.MatchString(s) || uuidPattern.MatchString(s))
 }
 
+// jsSyntaxInPath matches a character that never legitimately appears
+// unescaped in a URL path but is common in a JavaScript source fragment —
+// a quote, a backtick, a paren/bracket, a "+", an angle bracket, a
+// backslash, or whitespace. Endpoint extraction that reads crawled .js
+// bodies can otherwise surface a string-concatenation snippet like
+// "/library/video/'+D.prop(" as an endpoint or "protected path"
+// candidate, which then seeds a nonsensical idor/authbypass leaf
+// (docs/follow-up.md LT-85, same junk-candidate family as LT-20 / LT-66).
+var jsSyntaxInPath = regexp.MustCompile("['\"`()\\[\\]<>\\\\ +]")
+
+// IsPlausibleURLPath reports whether p could be a real, requestable URL
+// path: non-empty, rooted at "/", and free of the JavaScript-syntax
+// punctuation that marks a fragment scraped out of a .js body rather than
+// an observed request. Kept deliberately strict — a candidate this
+// rejects is one no scan should ever have dispatched.
+func IsPlausibleURLPath(p string) bool {
+	if p == "" || !strings.HasPrefix(p, "/") {
+		return false
+	}
+	return !jsSyntaxInPath.MatchString(p)
+}
+
 // SuggestIDOREndpointCandidates walks result's EndpointFacts looking for a
 // path segment or query value shaped like a database ID, and returns each
 // distinct {{id}}-templated candidate found — e.g. an observed
@@ -65,6 +87,12 @@ func SuggestIDOREndpointCandidates(result *ReconResult) []string {
 		// "4 candidates found, none auto-selected" instead of the more
 		// honest "recon found no candidate."
 		if IsStaticAssetPath(endpointPath(ep.URL)) {
+			continue
+		}
+		// A path scraped as a JavaScript string-concat fragment
+		// ("/library/video/'+D.prop(") is not a requestable endpoint —
+		// drop it before it can become an {{id}} candidate (LT-85).
+		if !IsPlausibleURLPath(endpointPath(ep.URL)) {
 			continue
 		}
 		tmpl, ok := idShapedCandidate(ep.URL)
@@ -244,7 +272,12 @@ func looksLikeStaticAssetOrJunk(p string) bool {
 	if IsStaticAssetPath(p) {
 		return true
 	}
-	return !hasAlphanumeric(p)
+	if !hasAlphanumeric(p) {
+		return true
+	}
+	// A JavaScript-syntax fragment ("/library/ideabox/'+e.query...") has
+	// alphanumeric content but is not a real path (LT-85).
+	return !IsPlausibleURLPath(p)
 }
 
 func hasAlphanumeric(s string) bool {

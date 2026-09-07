@@ -35,6 +35,32 @@ func TestNew_DomainsAndCIDRs(t *testing.T) {
 	}
 }
 
+// TestNew_InlineCommentStripped locks in LT-80: a "host  # note" line must
+// yield the bare host, not an unmatchable literal that silently drops an
+// in-scope target.
+func TestNew_InlineCommentStripped(t *testing.T) {
+	s, err := New([]string{
+		"sandbox-royal.securegateway.com  # H1 asset 867317",
+		"api.example.com#no-space-comment",
+		"   # indented full-line comment",
+	})
+	if err != nil {
+		t.Fatalf("New returned an error: %v", err)
+	}
+	for _, c := range []struct {
+		target string
+		want   bool
+	}{
+		{"https://sandbox-royal.securegateway.com/", true},
+		{"https://api.example.com/v1", true},
+		{"https://securegateway.com/", false},
+	} {
+		if got := s.Allowed(c.target); got != c.want {
+			t.Errorf("Allowed(%q) = %v, want %v", c.target, got, c.want)
+		}
+	}
+}
+
 func TestHasWildcard(t *testing.T) {
 	cases := []struct {
 		name    string

@@ -67,6 +67,36 @@ func TestMisconfigExposedPath_Hit(t *testing.T) {
 	assert.Equal(t, "high", got[0].Confidence)
 }
 
+// TestMisconfigExposedPath_429NotFlagged locks in LT-73: a CDN 429 whose
+// body still matches an exposed-path keyword (seen live on shop.app after
+// sustained scanning tripped Cloudflare's rate limiter) is a throttle page,
+// not an exposed resource.
+func TestMisconfigExposedPath_429NotFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("error: rate limited — too many requests to /graphql /admin"))
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-exposed-path-"),
+		"a 429 throttle page must not be reported as an exposed path")
+}
+
+// TestMisconfigMethod_SamePageForEveryVerb_NotFlagged locks in LT-69: a
+// CDN/static origin (www.shopify.com, live) that serves the identical page
+// for PUT/DELETE/PATCH as for GET is not "accepting" the method.
+func TestMisconfigMethod_SamePageForEveryVerb_NotFlagged(t *testing.T) {
+	body := "<html><body>" + strings.Repeat("home ", 200) + "</body></html>"
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/hackerfivebaselinecanary") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-method-"),
+		"same status + body as a GET, no Allow/Location/created signal -> not an accept")
+}
+
 func TestMisconfigExposedPath_CustomNotFoundPage_NoFinding(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

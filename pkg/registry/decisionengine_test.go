@@ -88,6 +88,29 @@ func TestResolve_GroupsLeavesUnderVulnClassNodes(t *testing.T) {
 	assert.Equal(t, agenttask.PriorityHigh, misconfigLeaf.Priority, "a high-confidence leaf gets high dispatch priority")
 }
 
+// TestResolve_UnresolvedLeaf_DeadEndPriority covers LT-70: a leaf with
+// nothing to dispatch (an unmatched tech fact) must sort below every real
+// class node so it can't push actual scan work later in start order.
+func TestResolve_UnresolvedLeaf_DeadEndPriority(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		TechStack: []recon.TechFact{
+			{Name: "PHP", Host: "example.test", Source: "httpx-tech-detect", Confidence: "low"},
+			{Name: "TotallyUnknownStack", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"},
+		},
+	}
+	tree, _ := Resolve(result, nil)
+
+	unresolved := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Status == agenttask.StatusUnresolved })
+	require.NotNil(t, unresolved)
+	assert.Equal(t, agenttask.PriorityDeadEnd, unresolved.Priority,
+		"an unresolved leaf sorts below every dispatchable class even when its source fact was high-confidence")
+
+	misconfigLeaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, misconfigLeaf)
+	assert.Greater(t, misconfigLeaf.Priority, unresolved.Priority)
+}
+
 func TestResolve_UnmatchedTechFact_ProducesUnresolvedLeaf(t *testing.T) {
 	result := &recon.ReconResult{
 		Target:    "http://example.test",

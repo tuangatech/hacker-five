@@ -80,10 +80,23 @@ func TestWithHeaders_PassedToHTTPXAndKatana(t *testing.T) {
 }
 
 func TestHeaderArgs_SortedAndPaired(t *testing.T) {
+	// A default desktop-browser User-Agent is always included unless the
+	// operator overrode it (LT-75 / LT-81), sorted in with the rest.
 	r := &Recon{headers: map[string]string{"X-Hackerone": "tonytran", "A-Header": "v"}}
-	assert.Equal(t, []string{"-H", "A-Header: v", "-H", "X-Hackerone: tonytran"}, r.headerArgs())
+	assert.Equal(t, []string{
+		"-H", "A-Header: v",
+		"-H", "User-Agent: " + DefaultBrowserUserAgent,
+		"-H", "X-Hackerone: tonytran",
+	}, r.headerArgs())
 
-	assert.Nil(t, (&Recon{}).headerArgs(), "no configured headers -> no args")
+	assert.Equal(t, []string{"-H", "User-Agent: " + DefaultBrowserUserAgent}, (&Recon{}).headerArgs(),
+		"no configured headers -> just the default UA")
+}
+
+func TestHeaderArgs_UserAgentOverrideWins(t *testing.T) {
+	r := &Recon{headers: map[string]string{"user-agent": "custom/1.0"}}
+	assert.Equal(t, []string{"-H", "user-agent: custom/1.0"}, r.headerArgs(),
+		"an operator-supplied User-Agent (any casing) replaces the default, not appended to")
 }
 
 func TestWithHeaders_EmptyMapIsNoOp(t *testing.T) {

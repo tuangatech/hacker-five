@@ -265,6 +265,16 @@ var nonActionableTech = map[string]bool{
 	// versa-analytics-server) purely on the shared "analytics" tag word.
 	"google analytics":   true,
 	"google tag manager": true,
+	// LT-84 (docs/follow-up.md, 2026-09-07 ALSCO run): a public JS-asset CDN
+	// fingerprinted off a crawled <script src> host names an asset origin,
+	// not the target's own surface — left in, each spawned an unresolved
+	// "matched no registry capability" recon-followup leaf (and LLM-fallback
+	// bait). The companion "don't attribute a Cloudflare/CDN fact absent
+	// from the host's own response headers" half is Phase 8 Step 6 (LT-65).
+	"cdnjs":                  true,
+	"jsdelivr":               true,
+	"unpkg":                  true,
+	"google hosted libraries": true,
 	// "Basic" is httpx/fingerprint reporting a WWW-Authenticate: Basic realm,
 	// not a product — left in, its normalized "basic" word matched a sizable
 	// generic "basic"-tagged template family and widened --narrow-by-tech
@@ -953,6 +963,12 @@ func LeafClass(leaf *agenttask.PlanNode) string {
 // at the same band, and (for seeding, C7a) the kind of leaf whose findings
 // are most useful to a later sibling, so it should start first.
 func leafPriority(leaf *agenttask.PlanNode) int {
+	// LT-70: a leaf with nothing to dispatch (an unresolved tech fact, a
+	// detector-less recon-followup) sorts below every real class node, so
+	// it can never push actual scan work later in start order.
+	if leaf.Status == agenttask.StatusUnresolved || leaf.Detector == "" {
+		return agenttask.PriorityDeadEnd
+	}
 	p := agenttask.PriorityForConfidence(leaf.Confidence)
 	if leaf.Detector != "" && !builtinDetectorClasses[leaf.Detector] {
 		p += 5

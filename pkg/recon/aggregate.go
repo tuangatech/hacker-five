@@ -174,9 +174,46 @@ func (a *aggregator) finalize() *ReconResult {
 		TechStack:       a.techStack,
 		APISpec:         a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
 		UniformResponse: a.uniformResponse,
+		AppSurface:      classifyAppSurface(a.endpoints, a.techStack, a.uniformResponse),
 		OutOfScope:      a.outOfScope,
 		Policy:          policy,
 		Warnings:        a.warnings,
 		GeneratedAt:     time.Now().UTC(),
+	}
+}
+
+// classifyAppSurface synthesises recon's "is there a live app here" verdict
+// (LT-68) from facts already collected. Deterministic and conservative: it
+// only says "none" when a wall verdict is set or nothing served real
+// content at all.
+func classifyAppSurface(endpoints []EndpointFact, tech []TechFact, uniform *UniformResponseFact) *AppSurfaceFact {
+	if uniform != nil {
+		return &AppSurfaceFact{
+			Verdict: "none",
+			Reason:  fmt.Sprintf("every recon probe hit a %s wall — recon is blind from this vantage", uniform.Kind),
+		}
+	}
+	live2xx, redirects := 0, 0
+	for _, ep := range endpoints {
+		switch {
+		case ep.StatusCode >= 200 && ep.StatusCode < 300:
+			live2xx++
+		case ep.StatusCode >= 300 && ep.StatusCode < 400:
+			redirects++
+		}
+	}
+	switch {
+	case live2xx == 0 && len(tech) == 0:
+		reason := "no endpoint served a 2xx response and no technology was fingerprinted"
+		if redirects > 0 {
+			reason = "every reachable endpoint only redirected away and no technology was fingerprinted"
+		}
+		return &AppSurfaceFact{Verdict: "none", Reason: reason}
+	case live2xx == 0:
+		return &AppSurfaceFact{Verdict: "thin", Reason: "no endpoint served a 2xx response; only passive / fingerprint signal"}
+	case live2xx <= 3:
+		return &AppSurfaceFact{Verdict: "thin", Reason: fmt.Sprintf("%d endpoint(s) served real content", live2xx)}
+	default:
+		return &AppSurfaceFact{Verdict: "full", Reason: fmt.Sprintf("%d endpoint(s) served real content", live2xx)}
 	}
 }

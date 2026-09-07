@@ -31,6 +31,33 @@ const (
 	DefaultConcurrency = 25
 )
 
+// DefaultBrowserUserAgent is the User-Agent recon's own direct HTTP probes
+// send unless an operator overrides it with a --header of the same name.
+// Recon's client previously sent Go's default ("Go-http-client/1.1"), which
+// a UA-sniffing origin or a selective bot-challenge treats very differently
+// from a browser: a plain nginx/PHP target answered 200 to Chrome and 302
+// to the default UA, and a Cloudflare managed-challenge 403'd the default
+// UA on every path — in both cases recon's own canary/common-path probes
+// came back uniformly "blocked" while katana/httpx (which send a
+// browser-ish UA, LT-4) had already crawled real content into the same
+// result, and D6 then short-circuited the whole scan on a verdict the
+// recon data itself refuted (docs/follow-up.md LT-75 / LT-81). Kept in
+// sync in spirit with a current desktop Chrome release; the exact build
+// number is not load-bearing.
+const DefaultBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+// hasUserAgentOverride reports whether h carries a User-Agent key under any
+// casing — HTTP header names are case-insensitive and an operator may pass
+// "user-agent" or "User-Agent".
+func hasUserAgentOverride(h map[string]string) bool {
+	for k := range h {
+		if strings.EqualFold(k, "User-Agent") {
+			return true
+		}
+	}
+	return false
+}
+
 // Recon runs the recon waves against a single target.
 type Recon struct {
 	client      *httpclient.Client
@@ -247,10 +274,14 @@ func defaultScheme(target string) string {
 	return "https://" + target
 }
 
-// applyHeaders sets every configured static header on req (LT-36). Called
-// at each of this package's own http.NewRequestWithContext sites; a nil
-// r.headers makes it a no-op.
+// applyHeaders sets every configured static header on req (LT-36), plus a
+// default desktop-browser User-Agent (LT-75 / LT-81) whenever the operator
+// hasn't overridden it. Called at each of this package's own
+// http.NewRequestWithContext sites; a nil r.headers still gets the UA.
 func (r *Recon) applyHeaders(req *http.Request) {
+	if !hasUserAgentOverride(r.headers) {
+		req.Header.Set("User-Agent", DefaultBrowserUserAgent)
+	}
 	for k, v := range r.headers {
 		req.Header.Set(k, v)
 	}
@@ -258,20 +289,29 @@ func (r *Recon) applyHeaders(req *http.Request) {
 
 // headerArgs renders the configured static headers as repeated "-H", "Name:
 // Value" argument pairs for httpx and katana, which both accept -H exactly
-// this way (verified against their -h output). Order is sorted so a run is
-// reproducible and tests are stable. Empty when no headers are configured.
+// this way (verified against their -h output). A default desktop-browser
+// User-Agent is included unless the operator overrode it, so the subprocess
+// crawls observe the same thing recon's own client does (LT-75 / LT-81).
+// Order is sorted so a run is reproducible and tests are stable.
 func (r *Recon) headerArgs() []string {
-	if len(r.headers) == 0 {
+	effective := make(map[string]string, len(r.headers)+1)
+	if !hasUserAgentOverride(r.headers) {
+		effective["User-Agent"] = DefaultBrowserUserAgent
+	}
+	for k, v := range r.headers {
+		effective[k] = v
+	}
+	if len(effective) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(r.headers))
-	for k := range r.headers {
+	names := make([]string, 0, len(effective))
+	for k := range effective {
 		names = append(names, k)
 	}
 	sort.Strings(names)
 	args := make([]string, 0, len(names)*2)
 	for _, k := range names {
-		args = append(args, "-H", k+": "+r.headers[k])
+		args = append(args, "-H", k+": "+effective[k])
 	}
 	return args
 }

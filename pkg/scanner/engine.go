@@ -70,8 +70,10 @@ func templateConcurrency(cfg Config) int {
 
 // Engine orchestrates a single scan run across every configured target.
 type Engine struct {
-	cfg    Config
-	client *httpclient.Client
+	cfg      Config
+	client   *httpclient.Client
+	limiter  *ratelimit.Limiter
+	throttle *adaptiveThrottle // nil when --no-adaptive-throttle
 
 	findingCB func(detectors.Finding)
 	logCB     func(level, msg string)
@@ -140,15 +142,31 @@ func New(cfg Config) *Engine {
 	// summed so a single-target full-corpus scan's per-host connection reuse
 	// isn't starved into per-request TCP/TLS churn that would add back the
 	// round-trip dead time Step 6b removes.
-	client := httpclient.New(httpclient.Config{
+	e := &Engine{cfg: cfg}
+	e.limiter = ratelimit.New(cfg.RateLimit)
+	if !cfg.DisableAdaptiveThrottle {
+		e.throttle = newAdaptiveThrottle(e.limiter, cfg.RateLimit, e.warnf)
+	}
+
+	mws := []httpclient.Middleware{
+		httpclient.WithRateLimit(e.limiter),
+		httpclient.WithRetry(retryMaxAttempts, retryBackoff),
+	}
+	if e.throttle != nil {
+		// Outermost (passed last): it sees the final, post-retry outcome, the
+		// same answer the caller gets — LT-74/LT-88.
+		mws = append(mws, httpclient.WithOutcomeObserver(e.throttle.observe))
+	}
+
+	e.client = httpclient.New(httpclient.Config{
 		Timeout:             cfg.Timeout,
 		MaxRedirects:        maxRedirects,
 		InsecureSkipVerify:  cfg.Insecure,
 		MaxIdleConnsPerHost: cfg.Concurrency + templateConcurrency(cfg),
 		ProxyURL:            cfg.ProxyURL,
-	}, httpclient.WithRateLimit(ratelimit.New(cfg.RateLimit)), httpclient.WithRetry(retryMaxAttempts, retryBackoff))
+	}, mws...)
 
-	return &Engine{cfg: cfg, client: client}
+	return e
 }
 
 // roundScanDuration trims the scan-completion duration to a precision that
@@ -248,7 +266,25 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 				return nil
 			}
 
-			results, err := e.runDetector(ctx, target)
+			// LT-74/LT-88: the adaptive throttle already gave up on a prior
+			// target this run (sustained 429/503, or a mid-run connect-failure
+			// spike). Our egress is almost certainly the problem — don't
+			// hammer the rest of the list; record it and move on.
+			if reason := e.throttle.tripped(); reason != "" {
+				f := adaptiveAbortFinding(target, reason, 0, 0)
+				e.emitFinding(f)
+				mu.Lock()
+				findings = append(findings, f)
+				mu.Unlock()
+				return nil
+			}
+
+			// LT-79: cap the wall-clock any one target may spend under
+			// template dispatch.
+			tctx, tcancel := targetCtx(ctx, e.cfg.MaxTargetDuration)
+			defer tcancel()
+
+			results, err := e.runDetector(tctx, target)
 			if err != nil {
 				hostCache.RecordError(host)
 				e.warnf("error", "running %s detector against %s: %v", e.cfg.Detector, target, err)
@@ -275,7 +311,21 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 				e.emitFinding(f)
 				results = append(results, f)
 			} else {
-				results = append(results, e.runTemplates(ctx, target, nucleiTemplates, nativeTemplates, nucleiExec, nativeExec, tmplConc)...)
+				tf := e.runTemplates(tctx, target, nucleiTemplates, nativeTemplates, nucleiExec, nativeExec, tmplConc)
+				results = append(results, tf...)
+
+				// LT-74/LT-88: the throttle gave up on this target mid-corpus.
+				if reason := e.throttle.tripped(); reason != "" {
+					f := adaptiveAbortFinding(target, reason, len(tf), len(nucleiTemplates)+len(nativeTemplates))
+					e.emitFinding(f)
+					results = append(results, f)
+				} else if tctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+					// LT-79: the per-target time budget fired (not a whole-scan cancel).
+					f := timeBudgetFinding(target, e.cfg.MaxTargetDuration, len(tf), len(nucleiTemplates)+len(nativeTemplates))
+					e.warnf("warn", "%s", f.Description)
+					e.emitFinding(f)
+					results = append(results, f)
+				}
 			}
 
 			mu.Lock()
@@ -331,9 +381,13 @@ func (e *Engine) runTemplates(
 		sem      = make(chan struct{}, conc)
 	)
 
-	// acquire takes a concurrency slot, or reports false if ctx ends first so
+	// acquire takes a concurrency slot, or reports false if ctx ends first
+	// (or the adaptive throttle has given up on this target, LT-74/LT-88) so
 	// the caller stops dispatching. Slots are released in fire's defer.
 	acquire := func() bool {
+		if e.throttle.tripped() != "" {
+			return false
+		}
 		select {
 		case sem <- struct{}{}:
 			return true

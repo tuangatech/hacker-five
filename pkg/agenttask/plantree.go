@@ -60,9 +60,15 @@ const (
 // fine-grained score — the executor still dispatches concurrently within a
 // tier, so this orders *start* order, not completion order.
 const (
-	PriorityLow    = 10
-	PriorityMedium = 20
-	PriorityHigh   = 30
+	// PriorityDeadEnd sits below every dispatchable band — for a
+	// StatusUnresolved / "matched nothing" leaf that has no automated check
+	// to run. Without it a recon-followup class node (e.g. a lone
+	// unresolved "tech fact X matched no capability") could outrank real
+	// scan work in start order (docs/follow-up.md LT-70).
+	PriorityDeadEnd = 1
+	PriorityLow     = 10
+	PriorityMedium  = 20
+	PriorityHigh    = 30
 )
 
 // PriorityForConfidence maps a leaf's coordinator confidence band to its

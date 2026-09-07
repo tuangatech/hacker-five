@@ -53,8 +53,18 @@ func Parse(path string) (*Scope, error) {
 func New(entries []string) (*Scope, error) {
 	s := &Scope{}
 	for _, line := range entries {
+		// Cut an inline "# comment" before anything else — a "#" is legal in
+		// neither a hostname nor a CIDR, so from the first one on the rest of
+		// the line is a comment, not part of the entry. Without this a
+		// "host  # note" line was stored whole (lowercased) as one domain
+		// that Allowed could never match, silently dropping an in-scope
+		// target (docs/follow-up.md LT-80). A full-line "# comment" reduces
+		// to "" here and is skipped by the blank test below.
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
 			continue
 		}
 		if _, ipNet, err := net.ParseCIDR(line); err == nil {

@@ -137,6 +137,22 @@ type UniformResponseFact struct {
 	BlockedRatio float64 `json:"blocked_ratio,omitempty"`
 }
 
+// AppSurfaceFact is recon's one-line verdict on whether there is a live
+// application here worth planning against, synthesised from signals the
+// result already carries (a uniform-wall verdict, how many endpoints
+// answered 2xx, whether anything was fingerprinted). Without it a
+// decommissioned or fully-walled asset still produced a multi-leaf plan and
+// a multi-minute scan with nothing to find (docs/follow-up.md LT-68).
+// Verdict is one of:
+//   - "none": nothing to scan from this vantage — a WAF/catch-all wall, or
+//     no endpoint served real content and no technology was fingerprinted.
+//   - "thin": reachable but sparse — a live root and little else.
+//   - "full": a real mapped surface (several live endpoints / actionable tech).
+type AppSurfaceFact struct {
+	Verdict string `json:"verdict"` // "none" | "thin" | "full"
+	Reason  string `json:"reason"`
+}
+
 // ReconResult is the frozen, versioned output of a Run — see
 // docs/schema/recon-result.schema.json. Never raw tool stdout in an agent's
 // context (docs/91-research-recon-phase.md §4).
@@ -147,6 +163,7 @@ type ReconResult struct {
 	TechStack       []TechFact           `json:"tech_stack,omitempty"`
 	APISpec         *APISpecFact         `json:"api_spec,omitempty"`
 	UniformResponse *UniformResponseFact `json:"uniform_response,omitempty"`
+	AppSurface      *AppSurfaceFact      `json:"app_surface,omitempty"`
 	OutOfScope      []string             `json:"out_of_scope,omitempty"`
 	Policy          *PolicySignals       `json:"policy,omitempty"`
 	Warnings        []string             `json:"warnings,omitempty"`

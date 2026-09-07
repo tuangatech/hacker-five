@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/uniformwall"
@@ -389,37 +390,153 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 // WAF/bot/auth block layer or a SPA/bucket catch-all — from the canary
 // probe plus a single root GET, and records the verdict on the aggregator
 // (Phase 7 Step 4 D6). The blocked/answered counts from probeCommonPaths'
-// own loop become UniformResponseFact.BlockedRatio (LT-62). A request error
-// on the root fetch is non-fatal: Classify still runs on the canary alone.
+// own loop become UniformResponseFact.BlockedRatio (LT-62).
+//
+// Three refinements over the original canary-only path:
+//   - LT-72 / LT-86a: when this wave's own canary probe errored (a reset,
+//     a Cloudflare challenge, or the LT-4 circuit breaker having tripped
+//     mid-wave-3), fall back to the wave-2 httpx GET of the root — a 401/403
+//     root, or a known block-page marker in its title, is decisive on its
+//     own, and a clean 2xx root there means there is no wall to record.
+//   - LT-82: never set a `catchall`/`waf-block` verdict when recon's own
+//     crawl already mapped several distinct endpoints spanning more than one
+//     routed status code (a real 404 among 200s) — that combination is
+//     proof the "one page for every path" conclusion is wrong, and the
+//     scanner would otherwise short-circuit the whole corpus on it.
 func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base, host string, canary canaryResponse, blocked, answered int) {
-	if !canary.fetched {
+	distinct, statuses, httpxRoot := hostEndpointEvidence(agg, host)
+
+	var canaryObs uniformwall.Observation
+	switch {
+	case canary.fetched:
+		canaryObs = uniformwall.Observation{
+			Status: canary.status, BodyLen: canary.bodyLen, ContentType: canary.contentType,
+			ServerHeader: canary.server, Body: canary.bodySample,
+		}
+	case httpxRoot != nil:
+		// LT-72 / LT-86a: no usable canary this wave, but wave 2 already has
+		// a readable root. Treat that as the yardstick instead of bailing.
+		canaryObs = uniformwall.Observation{
+			Status: httpxRoot.StatusCode, BodyLen: httpxRoot.BodyLen,
+			ContentType: httpxRoot.ContentType, Body: []byte(httpxRoot.Title),
+		}
+	default:
 		return
 	}
-	canaryObs := uniformwall.Observation{
-		Status: canary.status, BodyLen: canary.bodyLen, ContentType: canary.contentType,
-		ServerHeader: canary.server, Body: canary.bodySample,
-	}
+
 	var rootObs *uniformwall.Observation
 	if o, ok := r.fetchRootObservation(ctx, base, host); ok {
 		rootObs = &o
+	} else if httpxRoot != nil && canary.fetched {
+		rootObs = &uniformwall.Observation{
+			Status: httpxRoot.StatusCode, BodyLen: httpxRoot.BodyLen,
+			ContentType: httpxRoot.ContentType, Body: []byte(httpxRoot.Title),
+		}
 	}
 	verdict := uniformwall.Classify(canaryObs, rootObs)
 	if verdict == uniformwall.VerdictNone {
 		return
+	}
+	if crawlEvidenceRefutesWall(distinct, statuses) {
+		agg.addWarning("wave3: %s: a uniform-wall signal (%s) was suppressed — recon already mapped %d distinct endpoints across %d routed status codes on this host, which contradicts it (LT-82)", host, verdict, distinct, countRoutedStatuses(statuses))
+		return
+	}
+	effCanaryStatus := canary.status
+	if !canary.fetched && httpxRoot != nil {
+		effCanaryStatus = httpxRoot.StatusCode
 	}
 	ratio := 0.0
 	if answered > 0 {
 		ratio = float64(blocked) / float64(answered)
 	}
 	agg.setUniformResponse(UniformResponseFact{
-		Host: host, Kind: string(verdict), CanaryStatus: canary.status, BlockedRatio: ratio,
+		Host: host, Kind: string(verdict), CanaryStatus: effCanaryStatus, BlockedRatio: ratio,
 	})
 	switch verdict {
 	case uniformwall.VerdictWAFBlock:
-		agg.addWarning("wave3: %s: every probe hit a WAF/bot/auth block wall (canary status %d, %.0f%% of probes intercepted) — recon is blind here; a scan from this vantage will not reach the application (D6/LT-59; consider an in-region/residential egress)", host, canary.status, ratio*100)
+		agg.addWarning("wave3: %s: every probe hit a WAF/bot/auth block wall (canary status %d, %.0f%% of probes intercepted) — recon is blind here; a scan from this vantage will not reach the application (D6/LT-59; consider an in-region/residential egress)", host, effCanaryStatus, ratio*100)
 	case uniformwall.VerdictCatchall:
-		agg.addWarning("wave3: %s: host returns one generic catch-all page for every path (canary status %d) — no real routing to map from this vantage (D6/LT-43)", host, canary.status)
+		agg.addWarning("wave3: %s: host returns one generic catch-all page for every path (canary status %d) — no real routing to map from this vantage (D6/LT-43)", host, effCanaryStatus)
 	}
+}
+
+// hostEndpointEvidence summarises what recon's other passes already recorded
+// for host: the number of distinct endpoint URLs, the set of distinct HTTP
+// status codes seen across them, and the wave-2 httpx GET of the root
+// (Source "httpx", root path) if one exists. recordUniformResponse uses the
+// root as a canary fallback (LT-72 / LT-86a) and the distinct/status counts
+// to veto a uniform-wall verdict the crawl itself refutes (LT-82).
+func hostEndpointEvidence(agg *aggregator, host string) (distinct int, statuses map[int]bool, httpxRoot *EndpointFact) {
+	statuses = map[int]bool{}
+	seenURL := map[string]bool{}
+	host = NormalizeHost(host)
+	for i := range agg.endpoints {
+		ep := &agg.endpoints[i]
+		if NormalizeHost(hostOnly(ep.URL)) != host {
+			continue
+		}
+		if !seenURL[ep.URL] {
+			seenURL[ep.URL] = true
+			distinct++
+		}
+		if ep.StatusCode != 0 {
+			statuses[ep.StatusCode] = true
+		}
+		if httpxRoot == nil && ep.Source == "httpx" && ep.StatusCode != 0 && isRootURL(ep.URL) {
+			httpxRoot = ep
+		}
+	}
+	return distinct, statuses, httpxRoot
+}
+
+// isRootURL reports whether rawURL's path is empty or "/".
+func isRootURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return u.Path == "" || u.Path == "/"
+}
+
+// countRoutedStatuses counts distinct status codes that represent the
+// application actually routing a request — anything but a throttle (429) or
+// a gateway/server error (5xx). Used only for the suppression warning's
+// wording; the decision itself is crawlEvidenceRefutesWall's stricter test.
+func countRoutedStatuses(statuses map[int]bool) int {
+	n := 0
+	for s := range statuses {
+		if s == http.StatusTooManyRequests || s >= 500 {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// crawlEvidenceRefutesWall reports whether recon's own crawl already mapped
+// enough of a host to contradict a "one generic page for every path"
+// verdict (LT-82). The dispositive signal is a genuine 404 sitting among
+// real 2xx responses across several distinct endpoints: a WAF/bot/auth wall
+// answers a nonexistent path 401/403/429 (never 404), and a storage
+// catch-all answers it 2xx — neither produces a real 404 alongside real
+// content. Deliberately strict so a selective challenge that lets a couple
+// of paths through (the model D6 case on accounts.shopify.com) is NOT
+// mistaken for a mapped surface.
+func crawlEvidenceRefutesWall(distinct int, statuses map[int]bool) bool {
+	const minDistinctEndpoints = 5
+	if distinct < minDistinctEndpoints {
+		return false
+	}
+	has2xx, has404 := false, false
+	for s := range statuses {
+		switch {
+		case s >= 200 && s < 300:
+			has2xx = true
+		case s == http.StatusNotFound:
+			has404 = true
+		}
+	}
+	return has2xx && has404
 }
 
 // fetchRootObservation GETs base+"/" once for recordUniformResponse's

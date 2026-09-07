@@ -207,6 +207,24 @@ type Config struct {
 	// fired regardless.
 	ScanUniformAnyway bool
 
+	// MaxTargetDuration (from --max-target-duration) caps the wall-clock a
+	// single target may spend having templates dispatched at it. Once
+	// exceeded the engine stops starting new templates for that target and
+	// records one scan-partial-time-budget finding ("stopped at n/m
+	// templates"), so a slow or throttled Cloudflare-fronted host can't eat
+	// the whole run (docs/follow-up.md LT-79 — one host consumed 58 min).
+	// Distinct from LT-71 (don't *load* the whole corpus for a small leaf
+	// set); this is a dispatch cap. 0 = no cap.
+	MaxTargetDuration time.Duration
+
+	// DisableAdaptiveThrottle (from --no-adaptive-throttle) turns off the
+	// LT-74/LT-88 rolling-error monitor that halves the effective rate — and
+	// then aborts the target with a scan-target-rate-limited /
+	// scan-target-unreachable-mid-run finding — when a host starts returning
+	// sustained 429/503 or connect failures mid-scan. On by default; the
+	// escape hatch for an operator who has authorised a hard hammer.
+	DisableAdaptiveThrottle bool
+
 	// IDORPreview (from --idor-preview) fires one extra preflight GET against
 	// the resolved --endpoint before idor's real ID-enumeration loop begins,
 	// logging its status/body-length — closes the "a wrong EndpointTemplate

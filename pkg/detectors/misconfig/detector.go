@@ -69,6 +69,39 @@ var suspiciousBaselineStatuses = map[int]bool{
 // injection attempt — a single fixed probe, not fuzzing.
 const malformedQuery = "?id=%27"
 
+// notServedStatus reports whether a response status means "this is not
+// evidence the path is actually served": a 404 (not found), a 429 throttle,
+// or any 5xx (the origin or a gateway failed to answer). A keyword or
+// banner match inside such a body is noise — the response is a generic
+// error/throttle page, not the resource the rule is looking for. Closes the
+// recurring exposed-path false-positive family: 404 (partners.shopify.com,
+// LT-2), and 429 after sustained scanning tripped a CDN rate limiter whose
+// body still matched exposed-path keywords (shop.app, LT-73). 5xx is
+// excluded here for exposed-path / dir-listing checks specifically; the
+// verbose-error check keeps 5xx (a 500 stack trace is exactly what it
+// wants) and only drops 429.
+func notServedStatus(status int) bool {
+	return status == http.StatusNotFound ||
+		status == http.StatusTooManyRequests ||
+		status >= 500
+}
+
+// bodyLenWithinTolerance reports whether two body lengths are close enough
+// to be the same generic page — the 10%-or-32-bytes tolerance
+// looksLikeBaselinePage already uses, factored out for the LT-69
+// disallowed-method baseline-diff.
+func bodyLenWithinTolerance(a, b int) bool {
+	tol := a / 10
+	if tol < 32 {
+		tol = 32
+	}
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d <= tol
+}
+
 var verboseErrorRegexes = compilePatterns(VerboseErrorPatterns)
 var commentLeakRegexes = compilePatternsCaseInsensitive(CommentLeakPatterns)
 
@@ -197,8 +230,8 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 		if err != nil {
 			continue // already recorded against hostErrors; keep checking other paths
 		}
-		if resp.StatusCode == http.StatusNotFound {
-			continue
+		if notServedStatus(resp.StatusCode) {
+			continue // 404 / 429 / 5xx — a generic error page, not an exposed resource (LT-73)
 		}
 		if !containsAny(body, rule.Keywords) {
 			continue
@@ -236,8 +269,8 @@ func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken 
 		if err != nil {
 			continue
 		}
-		if resp.StatusCode == http.StatusNotFound {
-			continue
+		if notServedStatus(resp.StatusCode) {
+			continue // 404 / 429 / 5xx — not a served directory listing (LT-73)
 		}
 		if !containsAnyFold(body, DirListingMarkers) {
 			continue
@@ -411,6 +444,12 @@ func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, aut
 		if rejected(resp.StatusCode) {
 			continue
 		}
+		if looksLikeKnownWAFBlockPage(body) {
+			continue // a WAF block page served for this verb too — not an accept
+		}
+		if d.methodResponseMatchesGET(ctx, target, host, rule.Path, authToken, resp, body) {
+			continue // LT-69: same status + body shape as a plain GET, no mutate signal
+		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("misconfig-method-%s-%s", strings.ToLower(rule.Method), sanitizeID(rule.Path)),
 			Type:        "misconfig",
@@ -427,6 +466,40 @@ func (d *Detector) checkDisallowedMethods(ctx context.Context, target, host, aut
 		})
 	}
 	return findings, nil
+}
+
+// methodResponseMatchesGET reports whether a disallowed-method probe's
+// response is indistinguishable from a plain GET of the same path — the
+// LT-69 false-positive shape: a CDN / static-origin (www.shopify.com, hit
+// live) serves the same page for PUT/DELETE/PATCH as for GET, which the
+// status-only rejected() check reads as "method accepted". A method that
+// really was handled differs from a read: a created/accepted/no-content
+// status, an Allow header, or a Location. Absent any of those, if the
+// method response's status and body shape match a GET of the same path, the
+// server isn't routing the verb at all.
+func (d *Detector) methodResponseMatchesGET(ctx context.Context, target, host, path, authToken string, methodResp *http.Response, methodBody []byte) bool {
+	// Only a success-shaped response can be "the same static page served for
+	// every verb" (the LT-69 shape). A 500 the disallowed method drew is the
+	// origin app itself erroring — kept as a real signal, per LT-2's own
+	// reasoning — so it's never suppressed here.
+	if methodResp.StatusCode < 200 || methodResp.StatusCode >= 400 {
+		return false
+	}
+	switch methodResp.StatusCode {
+	case http.StatusCreated, http.StatusAccepted, http.StatusNoContent, http.StatusResetContent:
+		return false // a distinct mutate outcome — treat as a real accept
+	}
+	if methodResp.Header.Get("Location") != "" || methodResp.Header.Get("Allow") != "" {
+		return false
+	}
+	_, getResp, getBody, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
+	if err != nil {
+		return false // can't compare — fall back to the status-only signal
+	}
+	if getResp.StatusCode != methodResp.StatusCode {
+		return false
+	}
+	return bodyLenWithinTolerance(len(getBody), len(methodBody))
 }
 
 // rejected reports whether status is one of the expected "method not
@@ -490,6 +563,9 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
 		if err != nil {
 			continue
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			continue // a throttle page's body is not a verbose error (LT-73); 5xx is kept — a 500 stack trace is the point
 		}
 		pattern, matched := matchAny(body, verboseErrorRegexes)
 		if !matched {

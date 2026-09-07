@@ -186,6 +186,47 @@ func TestRunWave3_UniformResponseWall(t *testing.T) {
 	})
 }
 
+// TestCrawlEvidenceRefutesWall covers LT-82: a uniform-wall verdict must be
+// suppressed when recon's own crawl already mapped several distinct
+// endpoints including a real 404 among 2xx responses — a WAF/bot wall never
+// 404s a canary, a storage catch-all never serves a real 404, so that
+// combination disproves "one page for every path".
+func TestCrawlEvidenceRefutesWall(t *testing.T) {
+	cases := []struct {
+		name     string
+		distinct int
+		statuses map[int]bool
+		want     bool
+	}{
+		{"54 endpoints, 200s + a real 404 (the ALSCO shape)", 54, map[int]bool{200: true, 404: true}, true},
+		{"only 200s, no 404 — could be a catch-all", 20, map[int]bool{200: true}, false},
+		{"403 + 404, no 2xx — a real wall", 20, map[int]bool{403: true, 404: true}, false},
+		{"200 + 404 but too few endpoints", 3, map[int]bool{200: true, 404: true}, false},
+		{"selective challenge lets a couple 200s through, no 404 (model D6 case)", 8, map[int]bool{200: true, 403: true}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, crawlEvidenceRefutesWall(c.distinct, c.statuses))
+		})
+	}
+}
+
+// TestHostEndpointEvidence_PicksHTTPXRoot covers the LT-72 / LT-86a
+// fallback: recordUniformResponse must be able to find a wave-2 httpx GET
+// of the root to use as its canary when its own probe errored.
+func TestHostEndpointEvidence_PicksHTTPXRoot(t *testing.T) {
+	agg := &aggregator{endpoints: []EndpointFact{
+		{URL: "https://x.example/", Method: "GET", StatusCode: 403, Source: "httpx"},
+		{URL: "https://x.example/login", Method: "GET", StatusCode: 200, Source: "katana-crawl"},
+		{URL: "https://other.example/", Method: "GET", StatusCode: 200, Source: "httpx"},
+	}}
+	distinct, statuses, root := hostEndpointEvidence(agg, "x.example")
+	require.NotNil(t, root)
+	assert.Equal(t, 403, root.StatusCode)
+	assert.Equal(t, 2, distinct)
+	assert.True(t, statuses[403] && statuses[200])
+}
+
 func TestRunWave3_MultipleRealSpecPathsExposed_FirstOneWins(t *testing.T) {
 	_, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

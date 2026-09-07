@@ -6,6 +6,25 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestClassifyAppSurface covers LT-68's synthesised none/thin/full verdict.
+func TestClassifyAppSurface(t *testing.T) {
+	twoXX := func(n int) []EndpointFact {
+		out := make([]EndpointFact, n)
+		for i := range out {
+			out[i] = EndpointFact{StatusCode: 200}
+		}
+		return out
+	}
+	tech := []TechFact{{Name: "nginx"}}
+
+	assert.Equal(t, "none", classifyAppSurface(nil, nil, &UniformResponseFact{Kind: "waf-block"}).Verdict)
+	assert.Equal(t, "none", classifyAppSurface(nil, nil, nil).Verdict)
+	assert.Equal(t, "none", classifyAppSurface([]EndpointFact{{StatusCode: 301}}, nil, nil).Verdict)
+	assert.Equal(t, "thin", classifyAppSurface(nil, tech, nil).Verdict)
+	assert.Equal(t, "thin", classifyAppSurface(twoXX(2), nil, nil).Verdict)
+	assert.Equal(t, "full", classifyAppSurface(twoXX(9), tech, nil).Verdict)
+}
+
 func TestAddTech_SameNameAndHost_MergesInsteadOfDuplicating(t *testing.T) {
 	agg := &aggregator{}
 	agg.addTech(TechFact{Name: "Cloudflare", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
