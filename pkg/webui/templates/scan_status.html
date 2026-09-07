@@ -1,13 +1,35 @@
 {{define "fragment_scan_status_body"}}<h1>Scan Activity: {{.JobID}}</h1>
 <p>Target: <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a>{{if .Snapshot.ReconResult}} — <a href="/plan-preview?job={{.JobID}}" title="Review and run decision-engine-ranked leaves beyond the detectors already checked">Plan Preview</a>{{end}}</p>
 
+<script>
+// hfMaxSeq returns the highest data-seq among the direct children of the
+// element with the given id, or 0. The /catchup fetch (fragment_catchup, C5)
+// passes these so the server replays only the #logs/#findings/#agent rows
+// this client hasn't already rendered — whether from the initial page load
+// or the live SSE stream, both of which stamp data-seq on every row.
+function hfMaxSeq(id) {
+  var el = document.getElementById(id);
+  if (!el) { return 0; }
+  var max = 0, kids = el.children;
+  for (var i = 0; i < kids.length; i++) {
+    var s = parseInt(kids[i].getAttribute("data-seq"), 10);
+    if (!isNaN(s) && s > max) { max = s; }
+  }
+  return max;
+}
+</script>
+
 <div id="sse-root" hx-ext="sse" sse-connect="/scans/{{.JobID}}/events" sse-close="done">
 {{/* A separate, inert element — not the sse-root div itself — fires the
      catch-up request. Putting hx-get/hx-trigger directly on sse-root risked
      htmx's own request/settle cycle re-touching that element's SSE
      extension state; this sibling has no hx-ext of its own, so its request
-     cycle can't interact with the EventSource lifecycle at all. */}}
-<div hx-get="/scans/{{.JobID}}/catchup" hx-trigger="htmx:sseOpen from:#sse-root" hx-target="this" hx-swap="none"></div>
+     cycle can't interact with the EventSource lifecycle at all. The
+     since_* values (C5) are computed from the DOM at request time. */}}
+<div hx-get="/scans/{{.JobID}}/catchup"
+     hx-trigger="htmx:sseOpen from:#sse-root"
+     hx-target="this" hx-swap="none"
+     hx-vals='js:{since_log: hfMaxSeq("logs"), since_finding: hfMaxSeq("findings"), since_agent: hfMaxSeq("agent")}'></div>
 <h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
 
 <div id="recon-results" sse-swap="recon">{{template "fragment_recon_results" (reconView .Snapshot.ReconResult)}}</div>
@@ -17,6 +39,13 @@
 <thead><tr><th>ID</th><th>Type</th><th>Severity</th><th>Confidence</th><th>URL &amp; Description</th></tr></thead>
 <tbody id="findings" sse-swap="finding" hx-swap="afterbegin">{{.FindingRowsHTML}}</tbody>
 </table>
+
+{{/* Agent — every in-process agent-like action (plan resolve, plan
+     approve/reject, plan-execution dispatch) recorded as a structured
+     agenttask.SessionLogEntry, streamed live (C1, doc16 Phase 7 Step 3).
+     Append list, oldest-first, same shape as Logs. */}}
+<h2>Agent</h2>
+<div id="agent" sse-swap="agent-event" hx-swap="beforeend">{{.AgentRowsHTML}}</div>
 
 <div class="section-header">
 <h2>Logs</h2>

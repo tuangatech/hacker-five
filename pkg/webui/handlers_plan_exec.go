@@ -49,7 +49,9 @@ func (h *handlers) executePlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.PostFormValue("action") == "reject" {
+		finish := job.BeginAgentActivity("plan.reject", "operator rejected the plan in Plan Preview", nil)
 		job.AppendLog("info", "plan-preview: plan rejected by operator — not executed")
+		finish("plan rejected by operator — nothing dispatched", nil)
 		http.Redirect(w, r, "/scans/"+job.ID, http.StatusSeeOther)
 		return
 	}
@@ -84,6 +86,22 @@ func (h *handlers) executePlan(w http.ResponseWriter, r *http.Request) {
 	index, _ := loadTemplateIndex(defaultTemplateIndexPath)
 	execCfg := job.ExecConfig()
 
+	oosCount := len(snap.ReconResult.OutOfScope)
+	// C1 + C2 (doc16 Phase 7 Step 3): the approval itself is one agent
+	// activity on the Agent section, with the approved scope/leaf-count/
+	// writes facts captured as structured params — the agent-specific audit
+	// trail C2 asks for, alongside the human-readable job-log lines below.
+	// finishActivity is called from the dispatch goroutine once execution
+	// reaches a terminal state.
+	finishActivity := job.BeginAgentActivity("plan.execute", "operator approved the plan in Plan Preview", map[string]any{
+		"approved_leaves":    dispatchCount,
+		"excluded_leaves":    len(excluded),
+		"allow_writes":       execCfg.AllowWrites,
+		"scope_enforced":     execCfg.Scope != nil,
+		"scope_wildcard":     execCfg.Scope != nil && execCfg.Scope.HasWildcard(),
+		"out_of_scope_count": oosCount,
+	})
+
 	job.AppendLog("info", fmt.Sprintf("plan-preview: operator approved — dispatching %d leaf/leaves (%d excluded)", dispatchCount, len(excluded)))
 	// B4 scope-creep compliance rounding (doc16 Phase 7 Step 2): record the
 	// out-of-scope hosts recon discovered as an audit-trail entry at approval
@@ -105,7 +123,7 @@ func (h *handlers) executePlan(w http.ResponseWriter, r *http.Request) {
 	job.SetPhase("plan-execution")
 
 	go func() {
-		_, _, skipped, err := planexec.RunPlan(job.Ctx(), tree, execCfg, index, planexec.ExecOptions{
+		findings, _, skipped, err := planexec.RunPlan(job.Ctx(), tree, execCfg, index, planexec.ExecOptions{
 			Notify:    func(target, message string) { job.AppendLog("info", target+": "+message) },
 			OnFinding: func(_ *agenttask.PlanNode, f detectors.Finding) { job.AppendFinding(f) },
 			OnLog:     func(_ *agenttask.PlanNode, level, msg string) { job.AppendLog(level, msg) },
@@ -125,6 +143,7 @@ func (h *handlers) executePlan(w http.ResponseWriter, r *http.Request) {
 		for _, s := range skipped {
 			job.AppendLog("info", "plan-execution: "+s)
 		}
+		finishActivity(fmt.Sprintf("%d leaf/leaves dispatched, %d finding(s), %d skipped", dispatchCount, len(findings), len(skipped)), err)
 		job.MarkDone(err)
 	}()
 

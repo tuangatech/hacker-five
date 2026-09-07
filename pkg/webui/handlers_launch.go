@@ -140,13 +140,18 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 
 	target := launchTargetScheme(form.Target)
 	job := newJob(id, target,
-		func(f detectors.Finding) template.HTML { return renderFragment(h.tmpl, "fragment_finding_row", f) },
+		func(f detectors.Finding, seq int64) template.HTML {
+			return renderFragment(h.tmpl, "fragment_finding_row", FindingRow{Finding: f, Seq: seq})
+		},
 		func(entry LogEntry) template.HTML { return renderFragment(h.tmpl, "fragment_log_line", entry) },
 		func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML {
 			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves, DetectorSteps: detectorSteps, Target: target, JobID: id, CSRFToken: csrfTok})
 		},
 		func(result *recon.ReconResult) template.HTML {
 			return renderFragment(h.tmpl, "fragment_recon_results", newReconView(result))
+		},
+		func(e agenttask.SessionLogEntry) template.HTML {
+			return renderFragment(h.tmpl, "fragment_agent_entry", e)
 		},
 	)
 	job.bindParentContext(h.baseCtx)

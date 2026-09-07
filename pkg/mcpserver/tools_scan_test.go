@@ -324,6 +324,44 @@ func TestScanTool_BusinessLogicWrites_Attested_Completes(t *testing.T) {
 		"the writes-withheld log line must be absent once attested, got %v", out.Logs)
 }
 
+// TestScanTool_Attested_SessionLogRecordsElicitationGrant covers C2 (doc16
+// Phase 7 Step 3): the round-2 (post-attestation) scan entry in the session
+// log carries the elicitation grant reference — which approval round trip
+// authorized the writes-capable run — while the round-1 entry, which has no
+// InputResponses, does not.
+func TestScanTool_Attested_SessionLogRecordsElicitationGrant(t *testing.T) {
+	isolateFromInstalledReconBinaries(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	session, err := connectWithElicitation(ctx, New(), func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_writes": true}}, nil
+	})
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	_, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":      []string{srv.URL},
+			"scope":        []string{"127.0.0.1"},
+			"detector":     "businesslogic",
+			"allow_writes": true,
+			"auth_token":   "test-owner-token",
+		},
+	})
+	require.NoError(t, err)
+
+	entries := sessionLog.Query("scan", 0)
+	require.GreaterOrEqual(t, len(entries), 2, "expected a round-1 (awaiting) and a round-2 (run) scan entry")
+	round1, round2 := entries[0], entries[len(entries)-1]
+	require.NotContains(t, string(round1.Params), "elicitation_grant", "round 1 has no grant yet")
+	require.Contains(t, string(round2.Params), "elicitation_grant", "round 2 records which elicitation grant authorized the run")
+}
+
 func hasLogContaining(logs []string, sub string) bool {
 	for _, l := range logs {
 		if strings.Contains(l, sub) {

@@ -3,8 +3,27 @@ package mcpserver
 import (
 	"fmt"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 )
+
+// withElicitationGrant annotates a plan/scan param summary with the
+// elicitation grant reference on the round-2 (post-elicitation) retry —
+// req.Params.RequestState is the id of the specific approval round trip
+// that authorized this call, the "elicitation grant references B2
+// introduced" the C2 audit trail (doc16 Phase 7 Step 3) asks for. A round-1
+// call carries no InputResponses and is returned unchanged. The grant's
+// accept/decline outcome is already visible in the result summary
+// (planResultSummary's approved=, or scan's withheld-writes log line), so
+// only the reference itself is added here.
+func withElicitationGrant(params map[string]any, req *mcp.CallToolRequest) map[string]any {
+	if req == nil || len(req.Params.InputResponses) == 0 {
+		return params
+	}
+	params["elicitation_grant"] = req.Params.RequestState
+	return params
+}
 
 // The summarizers below feed pkg/agenttask.SessionLog.Begin. They
 // deliberately drop every secret-bearing field — auth_token,
@@ -73,7 +92,7 @@ func planResultSummary(out planOutput) string {
 }
 
 func exportParamsSummary(in findingsExportInput) map[string]any {
-	return map[string]any{"format": in.Format, "finding_count": len(in.Findings)}
+	return map[string]any{"format": in.Format, "finding_count": len(in.Findings), "cited_count": len(in.CitedFindingIDs)}
 }
 
 func exportResultSummary(out findingsExportOutput) string {

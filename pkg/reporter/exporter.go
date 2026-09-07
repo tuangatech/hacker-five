@@ -3,9 +3,37 @@ package reporter
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 )
+
+// ValidateCitations rejects any citedIDs that name no finding in findings —
+// the C3 evidence-linked-claim gate (doc16 Phase 7 Step 3). Agent-drafted
+// report text (via findings.export, or any future report-drafting surface)
+// may only cite a Finding.ID that actually exists in the job's finding set;
+// enforcing it here, at the exporter boundary, makes it a hard guarantee
+// rather than prompt discipline. An empty citedIDs is always valid — a
+// caller that claims nothing cites nothing.
+func ValidateCitations(citedIDs []string, findings []detectors.Finding) error {
+	if len(citedIDs) == 0 {
+		return nil
+	}
+	present := make(map[string]struct{}, len(findings))
+	for _, f := range findings {
+		present[f.ID] = struct{}{}
+	}
+	var missing []string
+	for _, id := range citedIDs {
+		if _, ok := present[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("evidence-linked-claim check: cited finding ID(s) not present in the finding set: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
 
 // Exporter renders a full set of findings to w in one particular output
 // format.

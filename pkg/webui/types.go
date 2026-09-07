@@ -80,22 +80,31 @@ type ProgressData struct {
 }
 
 // CatchupData is fragment_catchup.html's input — an out-of-band re-sync of
-// the progress badge and Recon Results against the job's *current* snapshot,
-// fetched once the SSE connection actually opens. Closes a real gap: the
-// browser's EventSource only receives events published after its own
-// Subscribe() call registers, so anything published between job-start and
-// connection-open (SetRunning, early wave transitions, a fast recon
-// finishing before the connection opens) is silently missed — the page
-// could sit on "queued" indefinitely even though the job had already
-// finished. Deliberately narrow: only the two idempotent, last-value-wins
-// fragments (progress badge, Recon Results) are re-synced this way, not
-// Findings/Logs — those use hx-swap="afterbegin" (an append list), and
-// blindly overwriting them here would risk duplicating rows already
-// delivered live; a finding/log missed in the same narrow window still
-// recovers via reload, same as before this fix.
+// the job's *current* snapshot against a client whose SSE connection just
+// opened. Closes a real gap: the browser's EventSource only receives events
+// published after its own Subscribe() call registers, so anything published
+// between job-start and connection-open (SetRunning, early wave transitions,
+// a fast recon finishing before the connection opens) is silently missed —
+// the page could sit on "queued" indefinitely even though the job had
+// already finished.
+//
+// ProgressHTML/ReconHTML are the two idempotent, last-value-wins fragments —
+// re-synced unconditionally as innerHTML swaps.
+//
+// LogsHTML/FindingsHTML (C5, follow-up.md LT-5) carry only the #logs/#findings
+// rows this client actually missed: the catchup fetch reports the highest
+// Seq already present in each list (scan_status.html's hfMaxSeq, reading the
+// data-seq every row carries whether it arrived via the initial render or
+// the live stream), and the handler replays only rows past that point.
+// Append-list rows already delivered live are therefore never duplicated,
+// and a row missed in the connect gap is no longer lost until a manual
+// reload. Empty when the client missed nothing.
 type CatchupData struct {
 	ProgressHTML template.HTML
 	ReconHTML    template.HTML
+	LogsHTML     template.HTML
+	FindingsHTML template.HTML
+	AgentHTML    template.HTML
 }
 
 // ScanStatusData is what scan_status.html renders — the job's snapshot at
@@ -109,6 +118,7 @@ type ScanStatusData struct {
 
 	FindingRowsHTML template.HTML
 	LogLinesHTML    template.HTML
+	AgentRowsHTML   template.HTML // this job's agent-activity log so far (C1), oldest-first
 	ProgressHTML    template.HTML
 }
 

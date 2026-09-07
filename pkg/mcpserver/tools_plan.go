@@ -79,7 +79,7 @@ func addPlanTool(s *mcp.Server) {
 // 2 (the elicitation retry, where execution happens) each get their own
 // entry, so the log shows the approval as a distinct event, not a gap.
 func recordingPlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (res *mcp.CallToolResult, out planOutput, err error) {
-	finish := sessionLog.Begin("plan", in.Reason, planParamsSummary(in))
+	finish := sessionLog.Begin("plan", in.Reason, withElicitationGrant(planParamsSummary(in), req))
 	res, out, err = handlePlan(ctx, req, in)
 	summary := planResultSummary(out)
 	if res != nil && len(res.InputRequests) > 0 {

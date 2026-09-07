@@ -90,7 +90,7 @@ func addScanTool(s *mcp.Server) {
 // attestation exchange (InputRequests set, Out suppressed by the SDK) is
 // logged as a distinct "awaiting" event, not a gap.
 func recordingScan(ctx context.Context, req *mcp.CallToolRequest, in scanInput) (res *mcp.CallToolResult, out scanOutput, err error) {
-	finish := sessionLog.Begin("scan", in.Reason, scanParamsSummary(in))
+	finish := sessionLog.Begin("scan", in.Reason, withElicitationGrant(scanParamsSummary(in), req))
 	res, out, err = handleScan(ctx, req, in)
 	summary := scanResultSummary(out)
 	if res != nil && len(res.InputRequests) > 0 {

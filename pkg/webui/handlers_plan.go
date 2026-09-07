@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
@@ -108,9 +109,23 @@ func (h *handlers) resolvePlanLeaves(w http.ResponseWriter, r *http.Request) {
 		tree.SpendCeilingUSD = llmfallback.PerCallDefaultSpendCeilingUSD()
 	}
 
+	// C1 (doc16 Phase 7 Step 3): record the resolve pass as one agent
+	// activity on the job's Agent section — an in-process action that
+	// classifies/drafts against unresolved leaves, the Web UI's closest
+	// equivalent of an MCP `plan` tool call's fallback phase.
+	unresolvedBefore := countUnresolvedLeaves(tree)
+	finishActivity := job.BeginAgentActivity(
+		"plan.resolve",
+		"operator ran LLM fallback resolve from Plan Preview",
+		map[string]any{"unresolved_leaves": unresolvedBefore, "spend_ceiling_usd": tree.SpendCeilingUSD},
+	)
+
 	fb, fbErr := llmfallback.New()
 	escalations := llmfallback.ResolveTreeLeaves(r.Context(), fb, fbErr, tree, registry.Capabilities, index, leafContexts)
 	job.SetPlanTree(tree, escalations)
+
+	finishActivity(fmt.Sprintf("%d of %d unresolved leaf/leaves resolved, %d escalation(s), spent $%.4f",
+		unresolvedBefore-countUnresolvedLeaves(tree), unresolvedBefore, len(escalations), tree.SpendSoFar()), nil)
 
 	executeTemplate(w, h.tmpl, "fragment_plan_tree", PlanPreviewData{
 		JobID:           job.ID,
@@ -146,13 +161,21 @@ func loadTemplateIndex(path string) ([]templatesync.Entry, error) {
 // drives whether plan_preview.html's "Resolve via LLM fallback" button
 // renders at all.
 func hasUnresolvedLeaf(tree *agenttask.PlanTree) bool {
+	return countUnresolvedLeaves(tree) > 0
+}
+
+// countUnresolvedLeaves returns how many of tree's leaves are still
+// StatusUnresolved — used both for the resolve button's visibility and for
+// the C1 plan.resolve agent-activity summary's before/after delta.
+func countUnresolvedLeaves(tree *agenttask.PlanTree) int {
 	if tree == nil {
-		return false
+		return 0
 	}
+	n := 0
 	for _, leaf := range agenttask.Leaves(tree.Root) {
 		if leaf.Status == agenttask.StatusUnresolved {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }

@@ -17,7 +17,14 @@ import (
 type findingsExportInput struct {
 	Findings []detectors.Finding `json:"findings"`
 	Format   string              `json:"format,omitempty" jsonschema:"one of json (default), markdown, html, hackerone-json"`
-	Reason   string              `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
+	// CitedFindingIDs enforces C3's evidence-linked claims (doc16 Phase 7
+	// Step 3): if the coordinator is drafting narrative report text alongside
+	// this export, it passes every Finding.ID that text cites here — the
+	// export is rejected if any named ID is absent from findings, so a draft
+	// can never reference evidence that does not exist. Empty = no claim to
+	// check.
+	CitedFindingIDs []string `json:"cited_finding_ids,omitempty" jsonschema:"Finding.ID values an accompanying agent-drafted narrative cites; every one must exist in findings or the export is rejected"`
+	Reason          string   `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
 }
 
 type findingsExportOutput struct {
@@ -34,6 +41,9 @@ func addFindingsExportTool(s *mcp.Server) {
 
 		exporter, err := reporter.ExporterFor(in.Format)
 		if err != nil {
+			return nil, findingsExportOutput{}, err
+		}
+		if err := reporter.ValidateCitations(in.CitedFindingIDs, in.Findings); err != nil {
 			return nil, findingsExportOutput{}, err
 		}
 		var buf bytes.Buffer
