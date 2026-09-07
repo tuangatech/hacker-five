@@ -205,7 +205,11 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("running scan: %w", err)
 			}
-			findings = reporter.Dedup(findings)
+			// LT-6 / doc16 C6: expand the nuclei http-missing-security-headers
+			// aggregate into per-header findings first, so Dedup's exact-ID key
+			// then collapses the native/nuclei overlap for the headers the
+			// native misconfig check also grades.
+			findings = reporter.Dedup(reporter.SplitAggregates(findings))
 
 			exporter, err := reporter.ExporterFor(cfg.OutputFormat)
 			if err != nil {
