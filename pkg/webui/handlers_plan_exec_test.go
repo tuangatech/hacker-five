@@ -116,6 +116,40 @@ func TestExecutePlan_NoIncludeValues_AllLeavesExcluded(t *testing.T) {
 	assert.True(t, containsLogMsg(snap, "plan-preview: operator approved — dispatching 0 leaf/leaves (2 excluded)"))
 }
 
+// TestExecutePlan_Approve_LogsOutOfScopeHostsToAuditTrail covers B4's
+// compliance-rounding pass (doc16 Phase 7 Step 2): when recon discovered
+// hosts outside the approved scope, approving a plan writes them to the
+// job's log as a warn-level audit entry — previously they were only shown
+// in the recon-results table, so the audit trail couldn't show a run was
+// approved while scope-creep observations were outstanding.
+func TestExecutePlan_Approve_LogsOutOfScopeHostsToAuditTrail(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+	recResult := fixtureReconResultForPlan()
+	recResult.OutOfScope = []string{"cdn.vendor.example", "old.example.net"}
+	job := newTestJobWithRecon("job1", recResult)
+	job.SetExecConfig(scanner.Config{})
+	h.store.Add(job)
+
+	tree, _ := registry.Resolve(recResult, nil)
+	job.SetPlanTree(tree, nil)
+
+	form := url.Values{"action": {"approve"}}
+	for _, id := range dispatchableLeafIDs(tree) {
+		form.Add("include", id)
+	}
+	resp := postWithCSRFForm(t, ts, "/plan-preview/execute?job=job1", form)
+	require.NoError(t, resp.Body.Close())
+
+	assert.True(t, containsLogMsg(job.Snapshot(),
+		"scope: recon found 2 host(s) outside the approved scope; they will NOT be scanned: cdn.vendor.example, old.example.net"),
+		"expected the B4 out-of-scope audit log entry at approval time")
+
+	require.Eventually(t, func() bool {
+		s := job.Snapshot().Status
+		return s == StatusDone || s == StatusFailed
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
 func containsLogMsg(snap Snapshot, msg string) bool {
 	for _, l := range snap.Logs {
 		if l.Msg == msg {

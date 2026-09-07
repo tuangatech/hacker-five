@@ -410,10 +410,10 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [x] Recon-derived field self-suggest wired into `plan --llm-assist` and `scan --recon-file` (new `pkg/fieldsuggest`)
 - [x] MCP tool-list scoping by launch-time agency level: `mcp-serve --agency readonly` omits `scan`/`plan`/`templates.sync` from `tools/list`
 
-#### Week 50: Approval & Compliance Rounding — ⬜ not started
-- [ ] `AllowWrites` only honored with an attested elicitation grant tied to an approved plan
-- [ ] HackerOne submission documented as a permanent human-in-the-loop invariant
-- [ ] Scope-creep gate: compliance-rounding pass (audit trail, docs) over Phase 6's first implementation
+#### Week 50: Approval & Compliance Rounding — ✅ done 2026-09-06
+- [x] `AllowWrites` only honored via a two-round elicitation attestation (`scan`: `approve` + `acknowledge_writes`; `plan`: per-plan `acknowledge_writes` when a businesslogic leaf exists) — never from the request body; CLI `--allow-writes` unchanged
+- [x] HackerOne submission documented as a permanent human-in-the-loop invariant (docs/05-hackerone-and-legal.md, B3)
+- [x] Scope-creep gate: compliance-rounding pass — out-of-scope observations now in the MCP `plan` session log and the Web UI job audit trail
 
 #### Week 51-52: Observability Upgrade — ⬜ not started
 - [ ] Web UI "Agent" tab streams every MCP tool call and its reasoning live, over SSE

@@ -104,6 +104,18 @@ type pendingTriage struct {
 	createdAt time.Time
 }
 
+// pendingScan is the scan tool's own SEP-2322 cache entry, holding the
+// original scanInput between round 1 (the allow_writes attestation prompt)
+// and round 2 (the client's retry with the human's response) — doc16 Phase
+// 7 Step 2 B2. Only a detector=businesslogic scan that requested
+// allow_writes ever creates one; every other scan runs single-round as
+// before. Same bounded, short-lived, one-shot contract as pendingPlan /
+// pendingTriage.
+type pendingScan struct {
+	in        scanInput
+	createdAt time.Time
+}
+
 var (
 	pendingTriagesMu sync.Mutex
 	pendingTriages   = map[string]*pendingTriage{}
@@ -130,6 +142,36 @@ func takePendingTriage(id string) (*pendingTriage, bool) {
 	p, ok := pendingTriages[id]
 	if ok {
 		delete(pendingTriages, id)
+	}
+	return p, ok
+}
+
+var (
+	pendingScansMu sync.Mutex
+	pendingScans   = map[string]*pendingScan{}
+)
+
+func storePendingScan(p *pendingScan) string {
+	pendingScansMu.Lock()
+	defer pendingScansMu.Unlock()
+	cutoff := time.Now().Add(-pendingPlanTTL)
+	for id, existing := range pendingScans {
+		if existing.createdAt.Before(cutoff) {
+			delete(pendingScans, id)
+		}
+	}
+	id := mintStateID()
+	p.createdAt = time.Now()
+	pendingScans[id] = p
+	return id
+}
+
+func takePendingScan(id string) (*pendingScan, bool) {
+	pendingScansMu.Lock()
+	defer pendingScansMu.Unlock()
+	p, ok := pendingScans[id]
+	if ok {
+		delete(pendingScans, id)
 	}
 	return p, ok
 }

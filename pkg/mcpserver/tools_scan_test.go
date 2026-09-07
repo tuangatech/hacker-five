@@ -192,6 +192,147 @@ func TestScanTool_TechStackNarrowing_DegradesGracefullyWithoutIndex(t *testing.T
 	}
 }
 
+// TestIsWritesAttested is B2's unit check: only accept + approve=true +
+// acknowledge_writes=true clears the gate.
+func TestIsWritesAttested(t *testing.T) {
+	tests := []struct {
+		name string
+		resp mcp.InputResponse
+		want bool
+	}{
+		{"both true", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_writes": true}}, true},
+		{"approve true, ack absent", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, false},
+		{"approve true, ack false", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_writes": false}}, false},
+		{"ack true, approve false", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": false, "acknowledge_writes": true}}, false},
+		{"declined", &mcp.ElicitResult{Action: "decline"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isWritesAttested(tt.resp))
+		})
+	}
+}
+
+// TestScanTool_BusinessLogicWrites_NonElicitationClient_SkipsWrites covers
+// B2's degrade path: a client with no elicitation capability cannot attest,
+// so the businesslogic scan still runs but with writes off and a log line
+// saying the grant was requested and withheld — never an error, never a
+// silent write.
+func TestScanTool_BusinessLogicWrites_NonElicitationClient_SkipsWrites(t *testing.T) {
+	isolateFromInstalledReconBinaries(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	session, err := connect(ctx, New()) // no ElicitationHandler
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":      []string{srv.URL},
+			"scope":        []string{"127.0.0.1"},
+			"detector":     "businesslogic",
+			"allow_writes": true,
+			"auth_token":   "test-owner-token", // businesslogic's Config.Validate requires one; no real request needs it here
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "a writes-requested businesslogic scan must still run read-only, not error: %s", textContent(t, res))
+
+	var out scanOutput
+	decodeToolResult(t, res, &out)
+	require.True(t, hasLogContaining(out.Logs, "not attested"),
+		"expected a log line recording that allow_writes was withheld, got %v", out.Logs)
+}
+
+// TestScanTool_BusinessLogicWrites_ElicitationDeclined_SkipsWrites: an
+// elicitation-capable client that declines (or omits acknowledge_writes)
+// gets the same writes-off outcome as a non-capable client.
+func TestScanTool_BusinessLogicWrites_ElicitationDeclined_SkipsWrites(t *testing.T) {
+	isolateFromInstalledReconBinaries(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	// The SDK's client middleware validates the elicitation response against
+	// the requested schema, so acknowledge_writes must be present — false here
+	// is the real "approved the scan, did NOT authorize writes" answer.
+	session, err := connectWithElicitation(ctx, New(), func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_writes": false}}, nil
+	})
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":      []string{srv.URL},
+			"scope":        []string{"127.0.0.1"},
+			"detector":     "businesslogic",
+			"allow_writes": true,
+			"auth_token":   "test-owner-token", // businesslogic's Config.Validate requires one; no real request needs it here
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "declined attestation must not error: %s", textContent(t, res))
+
+	var out scanOutput
+	decodeToolResult(t, res, &out)
+	require.True(t, hasLogContaining(out.Logs, "not attested"),
+		"expected the writes-withheld log line after a declined attestation, got %v", out.Logs)
+}
+
+// TestScanTool_BusinessLogicWrites_Attested_Completes: approve=true +
+// acknowledge_writes=true clears the gate; the scan runs and the
+// writes-withheld log line is absent.
+func TestScanTool_BusinessLogicWrites_Attested_Completes(t *testing.T) {
+	isolateFromInstalledReconBinaries(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	session, err := connectWithElicitation(ctx, New(), func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_writes": true}}, nil
+	})
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "scan",
+		Arguments: map[string]any{
+			"targets":      []string{srv.URL},
+			"scope":        []string{"127.0.0.1"},
+			"detector":     "businesslogic",
+			"allow_writes": true,
+			"auth_token":   "test-owner-token", // businesslogic's Config.Validate requires one; no real request needs it here
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "an attested businesslogic scan must run: %s", textContent(t, res))
+
+	var out scanOutput
+	decodeToolResult(t, res, &out)
+	require.False(t, hasLogContaining(out.Logs, "not attested"),
+		"the writes-withheld log line must be absent once attested, got %v", out.Logs)
+}
+
+func hasLogContaining(logs []string, sub string) bool {
+	for _, l := range logs {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // textContent extracts the first TextContent block's text from a
 // CallToolResult, failing the test if none is present.
 func textContent(t *testing.T, res *mcp.CallToolResult) string {

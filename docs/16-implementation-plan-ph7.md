@@ -13,7 +13,7 @@
 ## Scope
 
 1. ✅ **Tool surface completion** (Week 49) — A4, A5, A6 all done 2026-09-06
-2. 🟡 **Approval & compliance rounding** (Week 50) — B3 ✅, B2 ⬜, B4 ⬜ (2026-09-06)
+2. ✅ **Approval & compliance rounding** (Week 50) — B2, B3, B4 all done 2026-09-06
 3. 🟡 **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ⬜ (2026-09-06)
 4. ⬜ **Live log injection + concurrency ceilings + redundant-request elimination** (Week 53) — C4, D1, H4, D5
 5. ⬜ **OWASP Agentic Top 10 mapping** (Week 54)
@@ -30,7 +30,9 @@
 
 **Step 1 completed 2026-09-06 (`ph7-step1` branch):** **A5** (`mcp-serve --agency readonly|full`, launch-time tool-set filtering — stdio is one client per process, so there is no per-session negotiation) and **A6's recon-field self-suggest half** (new `pkg/fieldsuggest`, wired into `plan --llm-assist` and `scan --recon-file`; `plan` stdout is now `{tree, field_suggestions}`).
 
-Still the larger open work in Steps 2–3: **B2** (`AllowWrites` as an elicitation-grant attestation), **B4** (scope-creep compliance pass), **C1** (live Agent tab SSE), **C2** (agent audit trail), **C3** (evidence-linked claim enforcement), **C5** (idempotent `#logs`/`#findings` catchup replay, LT-5).
+**Step 2 completed 2026-09-06 (`ph7-step2` branch):** **B2** (`AllowWrites` is now a two-round elicitation attestation on the `scan` tool and a per-plan `acknowledge_writes` on `plan`, never a bare request-body boolean; CLI `--allow-writes` unchanged), **B3** (confirmed already documented in doc05), **B4** (scope-creep compliance rounding — out-of-scope observations now land in the MCP `plan` session log and the Web UI job audit trail).
+
+Still the larger open work in Step 3: **C1** (live Agent tab SSE), **C2** (agent audit trail), **C3** (evidence-linked claim enforcement), **C5** (idempotent `#logs`/`#findings` catchup replay, LT-5), **C7** (PlanTree structural upgrade + plausibility veto, LT-44/LT-49).
 
 **Explicitly out of scope for this plan, named rather than silently dropped:**
 - **A general-purpose logic engine for business-logic templates, or any other scope-expansion of Phase 4's detectors** — this phase is agent-integration hardening, not new vulnerability classes.
@@ -79,23 +81,35 @@ Still the larger open work in Steps 2–3: **B2** (`AllowWrites` as an elicitati
 
 ---
 
-## Step 2: Approval & Compliance Rounding (Week 50) — ⬜ not yet implemented
+## Step 2: Approval & Compliance Rounding (Week 50) — ✅ done 2026-09-06 (`ph7-step2`)
 
 ### Design
 
-**B2 — turn `AllowWrites` into an attested approval, not a bare boolean.** By this phase, Phase 4's `--allow-writes` flag exists (`scanner.Config.AllowWrites`, doc13 Step 3) and Phase 6's `plan`/`elicitation` flow exists. This step wires them together: the `scan` MCP tool only honors a write-capable business-logic check when the request carries an approval grant tied to a `plan` the human already reviewed via Phase 6's approval gate — an `elicitation` grant, not a self-asserted flag. **No process, including the agent itself, can set `AllowWrites` for its own call in the same breath it decided it wanted to** — this holds by construction (the grant comes from a separate elicitation round trip the agent doesn't control the content of), not by convention.
+**B2 — turn `AllowWrites` into an attested approval, not a bare boolean.** ✅ 2026-09-06. By this phase, Phase 4's `--allow-writes` flag exists (`scanner.Config.AllowWrites`, doc13 Step 3) and Phase 6's `plan`/`elicitation` flow exists. This step wires them together: the `scan` MCP tool only honors a write-capable business-logic check when the request carries an approval grant tied to a `plan` the human already reviewed via Phase 6's approval gate — an `elicitation` grant, not a self-asserted flag. **No process, including the agent itself, can set `AllowWrites` for its own call in the same breath it decided it wanted to** — this holds by construction (the grant comes from a separate elicitation round trip the agent doesn't control the content of), not by convention.
 
-**B3 — document HackerOne submission as a permanent architectural invariant**, not a Phase-4-scoped decision: the `findings.export` tool (Phase 6) and the HackerOne `Exporter` (doc13 Step 4) produce a *draft* report a human reviews and submits — this doc states explicitly, for the record, that no code path in this project will ever call HackerOne's submission endpoint without a human clicking submit, regardless of how capable an agent orchestrating the rest of the flow becomes. Worth stating plainly given HackerOne's own CEO had to publicly clarify agentic-feature boundaries after a February 2026 researcher backlash (doc90 §3) — HackerFive holds itself to the same bar preemptively, in writing, before it's ever tested by an incident.
+**As built:**
+- **`scan` tool** — `allow_writes: true` **with `detector: businesslogic`** now triggers a SEP-2322 two-round-trip attestation, the same mechanism `plan`/`findings.triage` already use (`handleScan` splits round 1 / round 2 around a bounded `pendingScan` cache in `planstate.go`). Round 1 returns an `InputRequests` elicitation carrying `attestWritesSchema` — two required booleans, `approve` **and** `acknowledge_writes` — with a message naming the concrete mutating checks (coupon self-mint/apply, apply-race) and the targets. `scanner.Config.AllowWrites` is set `true` only on the round-2 retry when `isWritesAttested(resp)` (accept + both booleans true). Every other scan runs single-round exactly as before; `allow_writes` for a non-`businesslogic` detector is inert and needs no attestation.
+- **Degrade path:** a client with no elicitation capability, a declined attestation, or `acknowledge_writes=false` all land the same way — the businesslogic scan still runs, read-only, mutating checks skipped, with a `warn: allow_writes was requested but not attested via elicitation …` log line ahead of the engine's own generic `--allow-writes not set` warning. Never an error, never a silent write.
+- **`plan` tool** — when `allow_writes` was requested **and** `registry.Resolve` actually produced a `businesslogic` leaf (`planHasBusinessLogicLeaf`), the plan's own elicitation schema gains `acknowledge_writes` alongside B4's existing `acknowledge_out_of_scope` (`buildApprovalSchema(requireScopeAck, requireWritesAck)` replaced the two hand-written schema vars), `summarizePlan` spells out the mutating checks, and `isPlanApproved(resp, requireScopeAck, requireWritesAck)` gates execution. On round 2 `pending.baseCfg.AllowWrites` is re-derived as `requireWritesAck` — a plan that asked for writes but has no businesslogic leaf runs with writes off (nothing would use them); approve-without-the-ack returns the plan unexecuted with a note naming the missing acknowledgement, mirroring the scope-ack behaviour exactly.
+- **CLI `scan --allow-writes` is unchanged** — a human typing the flag on their own command line is already the explicit, non-agent decision B2 is about; this step only touches the MCP surface where an agent fills the field.
 
-**B4 — scope-creep gate.** By this phase, Phase 6 has already wired `ReconResult.OutOfScope` into a first version of this gate; this step is the compliance-rounding pass over it (Web UI audit-trail entries, documentation) rather than the gate's first implementation.
+**B3 — document HackerOne submission as a permanent architectural invariant.** ✅ 2026-09-06 (landed in `post-demo-batch`, confirmed still current). `docs/05-hackerone-and-legal.md` §"Report submission is a permanent human-in-the-loop invariant (Phase 7 B3)" states, for the record, that no code path in this project will ever call HackerOne's submission endpoint without a human explicitly choosing to submit — `CreateReportIntent` only ever drafts, `report create` never chains into submission, only `report submit --yes` calls `SubmitReportIntent`. Worth stating plainly given HackerOne's own CEO had to publicly clarify agentic-feature boundaries after a February 2026 researcher backlash (doc90 §3).
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/mcpserver/tools_scan.go` — `AllowWrites` gated on an elicitation grant reference, not a request-body boolean.
-- `docs/05-hackerone-and-legal.md` — B3's invariant statement added.
-- `tests/unit/allowwrites_attestation_test.go`.
+**B4 — scope-creep gate compliance rounding.** ✅ 2026-09-06. Phase 6 wired `ReconResult.OutOfScope` into the gate (the `plan` tool's `acknowledge_out_of_scope`, and the `OnOutOfScope` executor halt on both the MCP and Web UI paths); this step is the audit-trail/documentation pass over it:
+- **MCP `plan` session log** — `planResultSummary` now records `N out-of-scope host(s) observed` alongside the `approved=` outcome, so a reader of `session.log` sees the scope-creep observation and its acknowledgement together (`out.Note` already carries the "approve given but ack withheld" case verbatim).
+- **Web UI audit trail** — `executePlan` appends a `warn`-level job-log entry (`scope: recon found N host(s) outside the approved scope; they will NOT be scanned: …`) at approval time. The hosts were rendered in the recon-results table but never written to the job's log, so the audit trail could not previously show that a run was approved while scope-creep observations were outstanding. They are still never scanned.
 
-### Verification
-Unit tests: a `scan` call carrying `AllowWrites=true` without a valid elicitation grant reference is rejected. Live verification against a real MCP client.
+### Files (as built)
+- `pkg/mcpserver/tools_scan.go` — `recordingScan`/`handleScan`/`runScan` split; `attestWritesSchema`, `isWritesAttested`, `writesRequested`, `writesAttestMessage`.
+- `pkg/mcpserver/planstate.go` — `pendingScan` + `storePendingScan`/`takePendingScan`.
+- `pkg/mcpserver/tools_plan.go` — `buildApprovalSchema`, `ackGiven`, `planHasBusinessLogicLeaf`; `isPlanApproved` and `summarizePlan` gain the writes-ack parameter; round-2 re-derives `baseCfg.AllowWrites`.
+- `pkg/mcpserver/sessionlog_summary.go` — `scanParamsSummary` records `allow_writes`; `planResultSummary` records the out-of-scope count (B4).
+- `pkg/webui/handlers_plan_exec.go` — B4 audit-trail log entry at approval time.
+- `pkg/mcpserver/{tools_scan_test,tools_plan_test,planstate_test}.go` — attestation unit + round-trip tests.
+- `docs/05-hackerone-and-legal.md` — B3 (already present).
+
+### Verification — done 2026-09-06
+`go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean. Unit: `isWritesAttested`/`isPlanApproved` truth tables; `pendingScan` one-shot + sweep; a non-elicitation-capable client and a declined/`acknowledge_writes=false` attestation each run the businesslogic scan read-only with the withheld-writes log line; an `approve + acknowledge_writes` attestation runs it without that line; `handlePlanApproval` leaves a writes-capable businesslogic plan unexecuted with an `acknowledge_writes` note when the ack is withheld. Still worth a manual pass: a real MCP client driving the `scan` attestation round trip against a live crAPI target with `--allow-writes` actually exercised.
 
 ---
 
@@ -240,9 +254,9 @@ The benchmark actually runs against all four lab targets with a real agent sessi
 This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loop Ready" Definition of Done:
 - [x] `hackerfive templates list --json` ships (2026-09-06); MCP servers get scoped tool lists by launch-time agency (`mcp-serve --agency readonly` omits `scan`/`plan`/`templates.sync` from `tools/list`) — unit-verified via a real client session at each level; a manual two-config side-by-side pass still worth doing
 - [x] `hackerfive triage` + recon-field self-suggest (A6): `pkg/fieldsuggest.Deterministic` feeds `plan --llm-assist` and `scan --recon-file`; `plan` stdout is now `{tree, field_suggestions}` (2026-09-06)
-- [ ] `AllowWrites` is only honored on a `scan` call carrying a valid elicitation grant reference tied to an approved plan — confirmed no code path lets an agent set it for itself
-- [ ] HackerOne submission's permanent human-in-the-loop invariant is documented in `docs/05-hackerone-and-legal.md`
-- [ ] A scope-creep scenario triggers fresh elicitation rather than silent expansion, live-verified
+- [x] `AllowWrites` is only honored on a `scan` call once a human clears a two-round elicitation attestation (`approve` + `acknowledge_writes`), and on `plan` only with a per-plan `acknowledge_writes` when a businesslogic leaf exists — set by the round-2 handler from the elicitation response, never from the request body, so no code path lets an agent set it for itself (2026-09-06, `ph7-step2`)
+- [x] HackerOne submission's permanent human-in-the-loop invariant is documented in `docs/05-hackerone-and-legal.md` (§"Report submission is a permanent human-in-the-loop invariant (Phase 7 B3)")
+- [x] Scope-creep gate (Phase 6) rounded out 2026-09-06: out-of-scope observations recorded in the MCP `plan` session log (`planResultSummary`) and the Web UI job audit trail (`executePlan`); a full fresh-elicitation live re-run stays on the Step 7 integration pass
 - [ ] The Web UI's Agent tab streams every MCP tool call and its reasoning live, matching the persisted session log exactly
 - [ ] SSE `/catchup` replays `#logs`/`#findings` a late/reconnecting client missed, sequence-gated so nothing duplicates (C5 / [follow-up.md](follow-up.md) LT-5)
 - [ ] A missing-header response yields one finding per absent header with no native/nuclei duplicate pair — the nuclei `http-missing-security-headers` aggregate is split into per-header sub-facts before `reporter.Dedup` (C6 / [follow-up.md](follow-up.md) LT-6 / doc15 Open Issue #6)
