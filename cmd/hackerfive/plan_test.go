@@ -11,8 +11,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/tuangatech/hacker-five/pkg/agenttask"
 )
 
 func TestNewPlanCmd_MissingTarget_ReturnsError(t *testing.T) {
@@ -88,8 +86,9 @@ func TestNewPlanCmd_HappyPath_MissingTemplateIndexDegradesToWarning(t *testing.T
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, errOut.String(), "template-tag matching skipped")
 
-	var tree agenttask.PlanTree
-	require.NoError(t, json.Unmarshal(out.Bytes(), &tree))
+	var res planCmdOutput
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	require.NotNil(t, res.Tree)
 }
 
 func TestNewPlanCmd_OutputFlag_WritesToFile(t *testing.T) {
@@ -113,8 +112,9 @@ func TestNewPlanCmd_OutputFlag_WritesToFile(t *testing.T) {
 
 	data, err := os.ReadFile(outPath)
 	require.NoError(t, err)
-	var tree agenttask.PlanTree
-	require.NoError(t, json.Unmarshal(data, &tree))
+	var res planCmdOutput
+	require.NoError(t, json.Unmarshal(data, &res))
+	require.NotNil(t, res.Tree)
 }
 
 func TestNewPlanCmd_FlagDefaults(t *testing.T) {
@@ -167,8 +167,9 @@ func TestNewPlanCmd_LLMAssist_NoTierConfigured_DegradesToEscalationWarning(t *te
 
 	require.NoError(t, cmd.Execute())
 
-	var tree agenttask.PlanTree
-	require.NoError(t, json.Unmarshal(out.Bytes(), &tree))
+	var res planCmdOutput
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	require.NotNil(t, res.Tree)
 }
 
 // forceNoLLMTier makes llmfallback.New() deterministically fail (fb == nil,

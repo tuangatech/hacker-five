@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
+	"github.com/tuangatech/hacker-five/pkg/fieldsuggest"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/reporter"
@@ -148,6 +149,24 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				Verbose:             verbose,
 				LogRejectedPath:     logRejected,
 			}
+			// LT-34 / A6 (doc16 Phase 7 Step 1): parse --recon-file once, up
+			// front — it feeds both the template scoping below and the
+			// recon-derived field auto-fill further down. Previously it was
+			// read only inside the narrow-by-tech branch, so --tags /
+			// --all-templates / --narrow-by-tech=false silently ignored it.
+			var reconResult *recon.ReconResult
+			if reconFile != "" {
+				data, err := os.ReadFile(reconFile)
+				if err != nil {
+					return fmt.Errorf("reading --recon-file: %w", err)
+				}
+				var rr recon.ReconResult
+				if err := json.Unmarshal(data, &rr); err != nil {
+					return fmt.Errorf("parsing --recon-file: %w", err)
+				}
+				reconResult = &rr
+			}
+
 			// doc15 Step 6a: template scoping is on by default. An explicit
 			// --tags wins untouched; --all-templates (or --narrow-by-tech=false)
 			// forces the full synced corpus; otherwise the scan is scoped to
@@ -159,21 +178,13 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if len(cfg.Tags) == 0 && narrowByTech && !allTemplates {
 				floor := registry.DetectorTemplateTags(detector)
 				var extras []string
-				if reconFile != "" {
-					data, err := os.ReadFile(reconFile)
-					if err != nil {
-						return fmt.Errorf("reading --recon-file: %w", err)
-					}
-					var result recon.ReconResult
-					if err := json.Unmarshal(data, &result); err != nil {
-						return fmt.Errorf("parsing --recon-file: %w", err)
-					}
+				if reconResult != nil {
 					// LT-43(1): with a recon result in hand, drop floor tags
 					// whose value depends on an observed surface that isn't
 					// there (misconfig's "panel" against a target with no
 					// admin/login endpoint) — the biggest single chunk of a
 					// misconfig scan's wall-clock on a thin SPA target.
-					floor = registry.DetectorTemplateTagsForRecon(detector, &result)
+					floor = registry.DetectorTemplateTagsForRecon(detector, reconResult)
 					// A missing/unreadable index degrades to floor-only, the
 					// same "missing optional input, warn and continue" posture
 					// pkg/recon/plan's own template-index loading uses.
@@ -181,10 +192,26 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 					if idxErr != nil {
 						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "scan: could not load template index %s (%v) — scoping by --detector category only\n", templateIndex, idxErr)
 					}
-					extras = registry.TechStackTags(result.TechStack, index)
+					extras = registry.TechStackTags(reconResult.TechStack, index)
 				}
 				cfg.DerivedTags = unionTags(floor, extras)
 				describeTemplateScope(cmd.ErrOrStderr(), detector, cfg.DerivedTags, len(floor), len(extras), reconFile != "")
+			}
+
+			// A6 (doc16 Phase 7 Step 1): self-fill a detector's required field
+			// from an unambiguous recon-derived candidate so a `recon -> scan`
+			// pipeline needs no hand-copied --endpoint / --protected-paths /
+			// --ssrf-param. Deterministic only — an idor 0-or-many endpoint
+			// miss is left to the existing "required for --detector X"
+			// validation, or to `plan --llm-assist`. An explicit flag always
+			// wins (applyReconFieldSuggestion no-ops on an already-set field).
+			if reconResult != nil {
+				sugs, _ := fieldsuggest.Deterministic(reconResult, map[string]bool{detector: true})
+				for _, s := range sugs {
+					if applied, value := applyReconFieldSuggestion(&cfg, s); applied {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "scan: auto-filled %s from --recon-file: %s (A6)\n", s.Field, value)
+					}
+				}
 			}
 
 			// LT-45 (docs/follow-up.md): authbypass's highest-value case on a

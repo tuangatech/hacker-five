@@ -141,6 +141,13 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 
 			tree, leafContexts := registry.Resolve(result, index)
 
+			// A6 (doc16 Phase 7 Step 1): recon-derived field suggestions,
+			// previously computed only inside the MCP plan tool. The
+			// deterministic auto-fills need no LLM; a genuine miss is only
+			// I4-resolved under --llm-assist (else surfaced as an advisory
+			// note). Filled in both branches below.
+			var fieldSuggestions []agenttask.FieldSuggestion
+
 			// P2-4 (docs/follow-up.md): opt-in, since it's a real, metered
 			// LLM call and today's default CLI behavior (zero LLM calls,
 			// Decision 6's own standalone proof) should stay the default.
@@ -196,6 +203,11 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 					}
 				}
 
+				// A6: recon-derived field suggestions, resolving any genuine
+				// miss via I4 now that a tier is in hand. Its spend is added
+				// to tree.SpendSoFar, so the summary below reflects it.
+				fieldSuggestions = planFieldSuggestions(cmd.Context(), result, tree, true, fb, fbErr, cmd.ErrOrStderr())
+
 				// LT-37: end-of-phase spend summary + a warn line naming the
 				// model when this one plan ran past the (low, env-tunable)
 				// warn threshold — catches an accidental switch to an
@@ -206,6 +218,8 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				if warn := llmfallback.CostWarnThresholdUSD(); fb != nil && warn > 0 && spent > warn {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: WARNING: $%.4f exceeds the $%.2f warn threshold (model %s) — check HACKERFIVE_OPENROUTER_MODEL / HACKERFIVE_LLM_COST_WARN_USD\n", spent, warn, fb.ModelLabel())
 				}
+			} else {
+				fieldSuggestions = planFieldSuggestions(cmd.Context(), result, tree, false, nil, nil, cmd.ErrOrStderr())
 			}
 
 			out := cmd.OutOrStdout()
@@ -219,7 +233,7 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 			}
 			enc := json.NewEncoder(out)
 			enc.SetIndent("", "  ")
-			return enc.Encode(tree)
+			return enc.Encode(planCmdOutput{Tree: tree, FieldSuggestions: fieldSuggestions})
 		},
 	}
 
