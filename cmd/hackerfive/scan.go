@@ -178,6 +178,15 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				cfg.UniformWallHosts = map[string]string{u.Host: u.Kind}
 			}
 
+			// D5 (doc16 Phase 7 Step 4, docs/follow-up.md LT-55): hand the
+			// engine the paths recon already saw return 404 so a lone
+			// matcher-only template targeting one of them is skipped without a
+			// request. The engine gates this to a scan with no --header,
+			// matching recon's own unauthenticated posture.
+			if reconResult != nil {
+				cfg.KnownDeadPaths = reconResult.DeadPaths()
+			}
+
 			// doc15 Step 6a: template scoping is on by default. An explicit
 			// --tags wins untouched; --all-templates (or --narrow-by-tech=false)
 			// forces the full synced corpus; otherwise the scan is scoped to

@@ -250,8 +250,48 @@ func validate(tmpl *Template) error {
 		if usesInteractshURL(req) {
 			tmpl.HTTP[i].usesInteractsh = true
 		}
+
+		// usesTiming gates D5's response cache (respcache.go): a request
+		// whose matcher/extractor reads response timing must always hit the
+		// network, since a cache hit's elapsed time is meaningless.
+		if usesTimingRef(req.Matchers, req.Extractors) {
+			tmpl.HTTP[i].usesTiming = true
+		}
 	}
 	return nil
+}
+
+// timingIdentifierPattern matches the bare "duration" DSL identifier or a
+// duration_N alias — the blind time-based signal D5's response cache
+// (respcache.go) must never serve from cache. Word-boundary-anchored, same
+// discipline as indexedIdentifierPattern.
+var timingIdentifierPattern = regexp.MustCompile(`\bduration(?:_[0-9]+)?\b`)
+
+// usesTimingRef reports whether any matcher/extractor observes response
+// timing — a dsl: expression referencing duration/duration_N, or a
+// part: duration matcher/extractor.
+func usesTimingRef(matchers []matcher.Matcher, extractors []extractor.Extractor) bool {
+	for _, m := range matchers {
+		if m.Part == "duration" {
+			return true
+		}
+		for _, expr := range m.DSL {
+			if timingIdentifierPattern.MatchString(expr) {
+				return true
+			}
+		}
+	}
+	for _, e := range extractors {
+		if e.Part == "duration" {
+			return true
+		}
+		for _, expr := range e.DSL {
+			if timingIdentifierPattern.MatchString(expr) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // interactshURLPlaceholder is real Nuclei's own out-of-band correlation
