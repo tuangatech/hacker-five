@@ -262,6 +262,12 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	escalations = append(escalations, llmfallback.VetoImplausibleLeaves(ctx, fb, fbErr, tree)...)
 
 	baseCfg := buildBaseExecConfig(in, sc)
+	// D6 (docs/16-implementation-plan-ph7.md Step 4): carry recon's
+	// uniform-response-wall verdict into execution so RunPlan's per-leaf
+	// scans skip the template corpus for a walled host (LT-59).
+	if result.UniformResponse != nil {
+		baseCfg.UniformWallHosts = map[string]string{result.UniformResponse.Host: result.UniformResponse.Kind}
+	}
 	// resolveFieldSuggestions applies only the deterministic (single- or
 	// multi-candidate, no-ambiguity) auto-fills directly to baseCfg — the
 	// same thing pkg/webui's fillReconFields already does unconditionally,

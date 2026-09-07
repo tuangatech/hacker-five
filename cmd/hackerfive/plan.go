@@ -234,6 +234,12 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				fieldSuggestions = planFieldSuggestions(cmd.Context(), result, tree, false, nil, nil, cmd.ErrOrStderr())
 			}
 
+			// D6 / LT-62 (docs/follow-up.md): if recon classified the target as
+			// a uniform response wall, say so before the tree — the plan is
+			// technically valid but a scan from this vantage will not reach the
+			// application.
+			uniformWallDiagnostic(cmd.ErrOrStderr(), result)
+
 			// LT-60 (docs/follow-up.md): an empty plan (`{"tree":{"root":…}}`,
 			// exit 0) otherwise looks identical to a bug. Say what recon
 			// produced and why none of it became a leaf.
@@ -299,4 +305,23 @@ func emptyPlanDiagnostic(w io.Writer, tree *agenttask.PlanTree, result *recon.Re
 	}
 	_, _ = fmt.Fprintf(w, "plan: empty plan — %s, %d/%d endpoint(s) WAF/auth-blocked, 0 actionable leaves; nothing to scan from this vantage\n",
 		detail, blocked, len(result.Endpoints))
+}
+
+// uniformWallDiagnostic prints one stderr line when recon classified the
+// target as a uniform response wall (Phase 7 Step 4 D6 / docs/follow-up.md
+// LT-59, LT-62) — a WAF/bot/auth block layer or a SPA/bucket catch-all that
+// answers every path with one page. The plan still resolves (LT-57's
+// baseline misconfig leaf keeps it non-empty), but a scan from this vantage
+// will not reach the application, so `scan` will short-circuit the corpus.
+func uniformWallDiagnostic(w io.Writer, result *recon.ReconResult) {
+	if result == nil || result.UniformResponse == nil {
+		return
+	}
+	u := result.UniformResponse
+	what := "returns one generic catch-all page for every path"
+	if u.Kind == "waf-block" {
+		what = "sits behind a WAF/bot/auth block wall that intercepts every request"
+	}
+	_, _ = fmt.Fprintf(w, "plan: %s %s (canary status %d, %.0f%% of recon probes blocked) — a scan from this vantage will short-circuit the template corpus (D6); consider an in-region/residential egress or the target's non-web surface\n",
+		u.Host, what, u.CanaryStatus, u.BlockedRatio*100)
 }

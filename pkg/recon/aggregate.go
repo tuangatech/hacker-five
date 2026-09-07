@@ -23,9 +23,24 @@ type aggregator struct {
 	warnings    []string
 	outOfScopeM map[string]bool
 
+	// uniformResponse is set by probeCommonPaths (Wave 3) when a host answers
+	// every probe with one generic page — see UniformResponseFact. First
+	// writer wins (recon usually has one directly-probed host); a later
+	// seed's VerdictNone never clears an earlier wall verdict.
+	uniformResponse *UniformResponseFact
+
 	// policy signals from Wave 0 (pkg/preflight's D2 input) — see PolicySignals.
 	securityTxt       string
 	robotsDisallowAll bool
+}
+
+// setUniformResponse records the first uniform-wall verdict seen for a host
+// (Phase 7 Step 4 D6). Ignored once one is set, and never overwritten by a
+// later, weaker signal.
+func (a *aggregator) setUniformResponse(f UniformResponseFact) {
+	if a.uniformResponse == nil {
+		a.uniformResponse = &f
+	}
 }
 
 func (a *aggregator) addHost(h HostFact) {
@@ -153,14 +168,15 @@ func (a *aggregator) finalize() *ReconResult {
 		policy = &PolicySignals{SecurityTxt: a.securityTxt, RobotsDisallowAll: a.robotsDisallowAll}
 	}
 	return &ReconResult{
-		Target:      a.target,
-		Hosts:       a.hosts,
-		Endpoints:   a.endpoints,
-		TechStack:   a.techStack,
-		APISpec:     a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
-		OutOfScope:  a.outOfScope,
-		Policy:      policy,
-		Warnings:    a.warnings,
-		GeneratedAt: time.Now().UTC(),
+		Target:          a.target,
+		Hosts:           a.hosts,
+		Endpoints:       a.endpoints,
+		TechStack:       a.techStack,
+		APISpec:         a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
+		UniformResponse: a.uniformResponse,
+		OutOfScope:      a.outOfScope,
+		Policy:          policy,
+		Warnings:        a.warnings,
+		GeneratedAt:     time.Now().UTC(),
 	}
 }

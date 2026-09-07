@@ -326,7 +326,7 @@ var genericTechWords = map[string]bool{
 	"app": true, "application": true, "core": true, "plugin": true, "theme": true,
 	"module": true, "extension": true, "addon": true, "block": true, "editor": true,
 	"storage": true, // LT-31: "storage" alone is not a product — see nonActionableTech's "google cloud storage" entry
-	"cache": true, "caching": true, "js": true, "ui": true, "cms": true,
+	"cache":   true, "caching": true, "js": true, "ui": true, "cms": true,
 	"framework": true, "platform": true, "service": true, "manager": true,
 	"management": true, "console": true, "dashboard": true, "portal": true,
 	"google": true, "amazon": true, "aws": true, "azure": true, "microsoft": true,
@@ -523,8 +523,21 @@ func DetectorTemplateTagsForRecon(detector string, result *recon.ReconResult) []
 }
 
 func reconShowsAdminSurface(result *recon.ReconResult) bool {
+	// D6 / LT-58 (docs/follow-up.md): a host behind a WAF/bot/auth wall
+	// answers 401/403 on *every* path, canary included — a blanket intercept,
+	// not an admin surface. Against www.valmo.in (Akamai, 2026-09-07) the
+	// unguarded 403 check below re-admitted the ~1,591-template "panel" floor
+	// this gate exists to drop, and the scan ran 30 min+ for nothing. When
+	// recon classified the host as a uniform block wall, a 401/403 endpoint
+	// is only an admin-surface signal if its path is discriminating — an
+	// auth-boundary heuristic hit or an admin/login-shaped URL — not the
+	// status code alone.
+	wafWalled := result.UniformResponse != nil && result.UniformResponse.Kind == "waf-block"
 	for _, ep := range result.Endpoints {
-		if ep.Source == "wave3-auth-boundary-heuristic" || ep.StatusCode == 401 || ep.StatusCode == 403 {
+		if ep.Source == "wave3-auth-boundary-heuristic" {
+			return true
+		}
+		if !wafWalled && (ep.StatusCode == 401 || ep.StatusCode == 403) {
 			return true
 		}
 		lower := strings.ToLower(ep.URL)

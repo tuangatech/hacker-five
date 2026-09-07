@@ -709,6 +709,26 @@ func TestDetectorTemplateTagsForRecon(t *testing.T) {
 	// nil result and non-misconfig detectors are untouched.
 	assert.Equal(t, DetectorTemplateTags("misconfig"), DetectorTemplateTagsForRecon("misconfig", nil))
 	assert.Equal(t, DetectorTemplateTags("authbypass"), DetectorTemplateTagsForRecon("authbypass", noAdmin))
+
+	// D6 / LT-58: when recon classified the host as a WAF block wall, a bare
+	// 401/403 on every path is a blanket intercept, not an admin surface —
+	// "panel" is dropped. A path-discriminating signal (an admin-shaped URL,
+	// an auth-boundary heuristic hit) still keeps it even behind the wall.
+	wafWalled := func(eps ...recon.EndpointFact) *recon.ReconResult {
+		return &recon.ReconResult{
+			Endpoints:       eps,
+			UniformResponse: &recon.UniformResponseFact{Host: "walled.test", Kind: "waf-block", CanaryStatus: 403},
+		}
+	}
+	assert.NotContains(t,
+		DetectorTemplateTagsForRecon("misconfig", wafWalled(recon.EndpointFact{URL: "https://walled.test/x", StatusCode: 403, Source: "katana-crawl"})),
+		"panel", "blanket WAF 403 → drop panel (LT-58)")
+	assert.Contains(t,
+		DetectorTemplateTagsForRecon("misconfig", wafWalled(recon.EndpointFact{URL: "https://walled.test/admin/", StatusCode: 403, Source: "katana-crawl"})),
+		"panel", "admin-shaped path even behind a WAF → keep panel")
+	assert.Contains(t,
+		DetectorTemplateTagsForRecon("misconfig", wafWalled(recon.EndpointFact{URL: "https://walled.test/", StatusCode: 403, Source: "wave3-auth-boundary-heuristic"})),
+		"panel", "auth-boundary heuristic hit even behind a WAF → keep panel")
 }
 
 func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {

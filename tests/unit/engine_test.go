@@ -111,6 +111,77 @@ http:
 	assert.True(t, haveNuclei, "nuclei-compatible template finding must be present alongside the built-in detector's")
 }
 
+// TestEngineRun_UniformWallHost_SkipsTemplateCorpus covers D6 (doc16 Phase 7
+// Step 4, docs/follow-up.md LT-59): a target whose host recon classified as
+// a uniform response wall (threaded in via Config.UniformWallHosts) skips
+// the per-target template corpus and gets one honest finding instead.
+// --scan-uniform-anyway / --all-templates forces the corpus.
+func TestEngineRun_UniformWallHost_SkipsTemplateCorpus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("hello-from-target"))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "nuclei.yaml"), []byte(`
+id: nuclei-hello-check
+info:
+  name: Nuclei hello check
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: word
+        words:
+          - "hello-from-target"
+`), 0o644))
+
+	u, err := url.Parse(server.URL)
+	require.NoError(t, err)
+
+	base := scanner.Config{
+		Targets:          []string{server.URL},
+		TemplatePaths:    []string{dir},
+		Concurrency:      5,
+		RateLimit:        50,
+		Timeout:          5 * time.Second,
+		Detector:         "misconfig",
+		UniformWallHosts: map[string]string{u.Host: "waf-block"},
+	}
+
+	// Default: the wall short-circuits the corpus.
+	require.NoError(t, base.Validate())
+	findings, err := scanner.New(base).Run(context.Background())
+	require.NoError(t, err)
+	var haveTemplate, haveWallFinding bool
+	for _, f := range findings {
+		switch f.ID {
+		case "nuclei-nuclei-hello-check-0":
+			haveTemplate = true
+		case "misconfig-waf-blocked":
+			haveWallFinding = true
+		}
+	}
+	assert.False(t, haveTemplate, "template corpus must be skipped for a uniform-wall host")
+	assert.True(t, haveWallFinding, "a misconfig-waf-blocked finding must be emitted in place of the corpus")
+
+	// Override: --scan-uniform-anyway runs the corpus regardless.
+	anyway := base
+	anyway.ScanUniformAnyway = true
+	require.NoError(t, anyway.Validate())
+	findings, err = scanner.New(anyway).Run(context.Background())
+	require.NoError(t, err)
+	haveTemplate = false
+	for _, f := range findings {
+		if f.ID == "nuclei-nuclei-hello-check-0" {
+			haveTemplate = true
+		}
+	}
+	assert.True(t, haveTemplate, "--scan-uniform-anyway must run the template corpus even against a uniform-wall host")
+}
+
 // TestEngineRun_RejectedCount_OnlyCountsFilesInvalidInBothFormats confirms
 // loadTemplates' logged "rejected" count doesn't flag a file that's simply
 // written in the other template format (a nuclei-format file always fails
