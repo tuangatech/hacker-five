@@ -475,11 +475,12 @@ throughout — banner-grab and passive inspection, never command execution.
 #### Week 63: Version gating + richer crawl — ⬜ not started
 - [ ] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b)
 - [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8)
-- [ ] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); endpoint-name → redirect-parameter-probe rule for `*/bounce`/OAuth/SSO/logout paths (LT-77)
+- [ ] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); endpoint-name → redirect-parameter-probe rule for `*/bounce`/OAuth/SSO/logout paths (LT-77); redirect-chain fidelity + per-host tech-fact attribution (LT-64/LT-65/LT-84b); numeric-query-param ID candidates (LT-83); per-path-timeout vs host-down breaker (LT-86)
 
-#### Week 64: Remaining template-format gaps + AI-agent surface + release — ⬜ not started
+#### Week 64: Template-format gaps + AI-agent surface + WAF-aware / injection detectors + release — ⬜ not started
 - [ ] `xpath` matcher/extractor (dependency footprint verified first) or explicitly descoped; `flow:` cross-block `_N` indexing or explicitly descoped
 - [ ] AI-agent surface (`llms.txt`/`SKILL.md`/MCP): passive recon fact + read-only detector (manifest injection-marker scan, unauthenticated MCP `tools/list`, no `tools/call`) (closes LT-78)
+- [ ] WAF-detect recon fact + `403`-is-signal mutation retry + first-party `sqli`/`xss`/`lfi`/`uploadbypass` detectors, parameter-aware & read-only, decoy FP rate measured (closes LT-87)
 - [ ] New-detector yield + any new false-positive mode measured against all lab targets, tracked against the <5% target
 - [ ] Release **v0.8.0**
 
@@ -510,7 +511,7 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 | 5 | 33-40 | 8 wks | Recon & orchestration foundations (`pkg/recon`, `Finding` schema freeze, `PlanTree` data model, deterministic decision engine + capability registry, read-only recon/plan-preview UI) | v0.5.0 |
 | 6 | 41-48 | 8 wks | MCP server & approval gate (elicitation-based approval seeded from recon, `tools.search`/`templates.search`, tiered LLM fallback, hard safety blockers, actionable approval UI) | v0.6.0 |
 | 7 | 49-56 | 8 wks | Agent hardening, ecosystem & trust (AllowWrites attestation, live Agent tab, OWASP Agentic Top 10 mapping, eval maturity) | v0.7.0 |
-| 8 | 57-64 | 8 wks | Detection coverage expansion (TCP + network-service detector, TLS/SSL passive checks, JS static analysis, OOB blind-RCE verification, affected-version gating, richer crawl) | v0.8.0 |
+| 8 | 57-64 | 8 wks | Detection coverage expansion (TCP + network-service detector, TLS/SSL passive checks, JS static analysis, OOB blind-RCE verification, affected-version gating, richer crawl, AI-agent surface, WAF-aware probing + `sqli`/`xss`/`lfi`/`uploadbypass` detectors) | v0.8.0 |
 | — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 |
 
 **Parallel tracks** (start weeks are approximate targets, not hard dependencies):

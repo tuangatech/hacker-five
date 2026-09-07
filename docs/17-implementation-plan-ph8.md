@@ -26,10 +26,11 @@ inspection, never literal command execution on a target.
 3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
 4. ⬜ **OOB blind-RCE verification** (Week 62)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
-6. ⬜ **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77)
+6. ⬜ **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86)
 7. ⬜ **Remaining template-format gaps needing a dependency or larger design** (Week 64) — `xpath`, `flow:` cross-block `_N`, `flow:` script constructs, `substr`/`date_time`/`generate_jwt` DSL
 8. ⬜ **AI-agent surface modeling — `llms.txt` / `SKILL.md` / MCP endpoints** (Week 64) — closes LT-78
-9. ⬜ **Eval maturity + release** (Week 64) — `v0.8.0`
+9. ⬜ **WAF-aware probing + active injection / upload-bypass detectors** (Week 64) — closes LT-87
+10. ⬜ **Eval maturity + release** (Week 64) — `v0.8.0`
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step lands, same convention as doc09-16.)
 
@@ -376,6 +377,35 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
   tag for the corpus side. Consumes LT-76's newly-probed endpoints — sequence it after
   that bullet. Read-only: a single benign off-origin marker value per param, no payload
   beyond the redirect target.
+- **Redirect-chain fidelity + per-host fact attribution**
+  ([follow-up.md](follow-up.md) LT-64 / LT-65, with LT-84). `pkg/recon` follows a
+  cross-host redirect and records the *destination's* response (status, title, body_len,
+  tech) as the in-scope target's — `linkpop.com` got `www.shopify.com`'s 200 + a
+  `Shopify` fact that then seeded an 8-leaf template class and widened the scan corpus.
+  Three coupled changes: (1) record `redirect_chain` / `final_url` on the `EndpointFact`,
+  keep `status_code` as the first hop, and warn + add a plan note when `final_url`'s host
+  is outside `--scope`; (2) tag every `TechFact` with the host/URL it was *observed* on,
+  and in `resolveTechFact` drop (or ConfidenceLow + "seen on redirect target") a fact
+  whose observed host ≠ the target host; (3) the same host-attribution guard covers
+  LT-84 — a `Cloudflare` / CDN fact not present in the host's *own* response headers is
+  not attributed to it. (LT-84's `cdnjs`/`jsdelivr`/`unpkg`/`google hosted libraries` →
+  `nonActionableTech` half is a do-now item, not this step.)
+- **Numeric-query-parameter ID candidates** ([follow-up.md](follow-up.md) LT-83).
+  `SuggestIDOREndpointCandidates` inspects only *path* segments, so a query-routed CMS
+  (`?article=3..13`, `?topic=1..2` — `sandbox-royal.securegateway.com`, 2026-09-07) yields
+  only a blind `/{{id}}` path guess even though the real IDOR/SQLi surface is right there
+  in the crawled endpoint set. A query param whose observed value is a small integer and
+  varies across ≥2 crawled URLs becomes an ID-shaped candidate → `/?article={{id}}`,
+  feeding `resolveEndpointFacts` like any path candidate. Same "turn a discovered
+  endpoint/param into a real candidate" lineage as LT-40/LT-50/LT-76; realises value once
+  auth is available for `idor` or the Step 9 native injection detector exists.
+- **Per-path-timeout vs host-down circuit-breaker** ([follow-up.md](follow-up.md) LT-86).
+  Recon's repeated-error breaker (LT-4) abandons a host when a few Wave-3 paths time out —
+  `sandbox.securegateway.com` served `GET /` and `/robots.txt` fine but tarpits
+  `.well-known/*`, and the final result was `0 endpoints, 0 tech`. A timed-out path
+  counts toward a per-path skip, not the host-down tally; the host-down verdict needs
+  connection-level failures (refused / DNS / TLS), not response tarpits. (The companion
+  fix — *retain* a Wave-2 `200` root even when the breaker does trip — is a do-now item.)
 
 No new dependency — katana already ships headless support and httpx already accepts a
 path list, an OpenAPI/GraphQL document is JSON/YAML the stdlib already parses, and
@@ -388,8 +418,9 @@ over the `redirect` corpus tag.
 - `pkg/recon/crawl.go` — `runKatana` takes depth + a headless bool + per-host timeout; a new `discoverContentPaths` shelling `httpx -path <wordlist>`, gated on the opt-in flag, folding hits into `agg` as `wave3-content-discovery` endpoints.
 - `pkg/recon/endpointprobe.go` (new) — LT-76's bounded, name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints (reusing `recon`'s own HTTP client + rate limiter), folding a live status onto the existing `EndpointFact` so `resolveEndpointFacts` treats it like any observed endpoint.
 - `pkg/recon/apispec.go` (new) — LT-40's OpenAPI/GraphQL document walker: `paths`/`parameters` → `EndpointFact{Source: "api-spec"}` with an ID-shaped/URL-shaped param classification; only invoked when LT-30's canary+content-type gate says the spec body is real.
-- `pkg/registry/decisionengine.go` — LT-50's tech×endpoint correlation in `resolveTechFact` (per-product endpoint-signature table, Confidence upgrade / targeted-leaf emission); LT-77's endpoint-name → redirect-parameter-probe rule (`*/bounce`, `/oauth/authorize`, `/sso`, `*/logout` shapes → a `redirect`-tagged leaf).
+- `pkg/registry/decisionengine.go` — LT-50's tech×endpoint correlation in `resolveTechFact` (per-product endpoint-signature table, Confidence upgrade / targeted-leaf emission); LT-77's endpoint-name → redirect-parameter-probe rule (`*/bounce`, `/oauth/authorize`, `/sso`, `*/logout` shapes → a `redirect`-tagged leaf); LT-65/LT-84 per-host fact-attribution guard in `resolveTechFact` (drop / ConfidenceLow a fact whose observed host ≠ the target host).
 - `pkg/detectors/` — LT-77's off-origin `Location` check: extend the `ssrf` detector's redirect handling, or a thin `openredirect` rule, dispatched only from the LT-77 decision-engine rule.
+- `pkg/recon/{crawl,types}.go`, `docs/schema/recon-result.schema.json` — LT-64's `redirect_chain` / `final_url` on `EndpointFact` + the off-scope-redirect warning/plan-note; LT-65's per-`TechFact` observed-host tag; LT-83's numeric-query-param candidate in `SuggestIDOREndpointCandidates`; LT-86's per-path-timeout accounting in the Wave-3 error-breaker.
 - `pkg/recon/asn.go` (or the existing WHOIS/ASN file) — LT-61's known-CDN-ASN table + the "all resolved addrs in a CDN ASN ⇒ skip/shorten naabu, tag endpoints" gate in the Wave 2 port-scan path.
 - `pkg/recon/passive.go` / `crawl.go` — LT-63's CT-log sibling-API pass (subfinder `crtsh` source, `api.`/`gw.`/`mobile.` labels), scope-checked, `--recon-depth full` only.
 - `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
@@ -403,8 +434,13 @@ carries `-path` only with the flag on. LT-76: a recon fixture with unprobed
 `robots.txt` endpoints probes only the bounded name-ranked sample, and a probed
 `/oauth/authorize` reaching a live status produces an `authbypass`/redirect leaf that a
 bare listing did not. LT-77: a fixture `/accounts/bounce?url=<off-origin>` that honours
-the param yields an open-redirect finding; one that ignores it yields none. Live: a
-depth-3 + headless run against a JS-heavy owned SPA yields materially more endpoints
+the param yields an open-redirect finding; one that ignores it yields none. LT-64/LT-65:
+a recon fixture whose in-scope root 301s cross-host records `final_url` + a
+"redirects out of scope" warning, and the destination's tech fact does not seed the
+original target's plan. LT-83: a fixture with `?article=8` / `?article=12` crawled
+yields an `/?article={{id}}` idor candidate, not `/{{id}}`. LT-86: a fixture host that
+serves `/` but times out on `/.well-known/*` keeps its root endpoint in the result.
+Live: a depth-3 + headless run against a JS-heavy owned SPA yields materially more endpoints
 than the depth-2 static run; a `--content-discovery` run against an owned target with a
 known unlinked path (e.g. `/admin`, a dir index) discovers it only with the flag on, and
 the extra endpoints — from all sources — reach the plan tree's idor/authbypass
@@ -520,12 +556,80 @@ enumeration runs read-only.
 
 ---
 
-## Step 9: Eval Maturity + Release (Week 64) — ⬜ not yet implemented — `v0.8.0`
+## Step 9: WAF-Aware Probing + Active Injection / Upload-Bypass Detectors (Week 64) — ⬜ not yet implemented — closes LT-87
+
+### Design
+
+[follow-up.md](follow-up.md) LT-87, live-observed on `sandbox-royal.securegateway.com`
+(2026-09-07): the whole ALSCO bounty premise is *bypassing* a WAF ("Secure Gateway", the
+product under test) plus its upload filters. Read-only manual probes — `?article=8'`,
+`?article=8 AND 1=1`, `?article=8/**/OR/**/1=1`, `?lang=../../../../etc/passwd` — all drew
+`403`/`503`/`302` from the WAF. HackerFive today has: no WAF-detect step; no notion that
+a `403` on a payload (vs `2xx` on a benign control) is *signal*, not a negative result;
+no payload mutation/encoding retry; no upload-filter-bypass detector; and — the base gap
+— **no native `sqli` / `xss` / `lfi` / command-injection detector at all** (`--detector`
+is only `idor|misconfig|authbypass|ssrf|businesslogic`; those classes are covered solely
+by generic corpus templates, which a WAF like this catches and which get short-circuited
+by the D6 verdict besides). This step is the one place Phase 8 adds active
+vulnerability-class detectors rather than protocol/recon breadth.
+
+Read/enumerate-only throughout — a bypass payload's *only* effect is to reach the app;
+never a shell, file write, or data exfil, the same boundary blind-SSRF/RCE verification
+already holds ([05-hackerone-and-legal.md](05-hackerone-and-legal.md)).
+
+Four pieces, sequenced:
+- **WAF-detect recon signal.** A `ReconResult.WAF` fact from: a known block-page
+  fingerprint set (`pkg/uniformwall` already has the primitive), the `Server` /
+  `cf-mitigated` / vendor headers, and a benign-vs-canary-payload status delta on one
+  probed endpoint. Feeds a plan/report note and gates the retry logic below.
+- **403-is-signal retry in the executor.** When a template or detector payload draws a
+  `403`/`406`/`429`/`501` but a benign control on the *same* endpoint returns `2xx`,
+  retry that one payload through a small, bounded mutation/encoding set (case, inline
+  comment, URL/double-URL/unicode encoding, whitespace alternatives) — a bypass that
+  then matches the original matcher is recorded as a finding ("WAF bypass: `<mutation>`").
+  Bounded per endpoint; off unless the WAF fact is set, so a WAF-free target is
+  unaffected.
+- **Native `sqli` / `xss` / `lfi` detectors.** First-party, parameter-aware active
+  checks over recon's ID-/URL-/value-shaped params (incl. LT-83's numeric query params):
+  error-based + boolean/time-diff SQLi, reflected-XSS context probe, `../`-traversal /
+  wrapper LFI. Conservative signatures, decoy-set FP rate measured against the <5%
+  target. Dispatched by `resolveEndpointFacts` on a param candidate, like `idor` today.
+- **`uploadbypass` detector.** For a discovered upload endpoint: permute extension ×
+  `Content-Type` × magic bytes × trailing-null / double-extension against the target's
+  allow-list, and confirm the stored file is retrievable and served executable — exactly
+  the ALSCO 867316 challenge. Requires an upload endpoint from recon; never speculative.
+
+Needs its own design pass — the mutation set, the SQLi confirmation logic (no `sqlmap`
+dependency; a bounded first-party subset), and the `uploadbypass` success oracle each
+need pinning. Descopable sub-item by sub-item with a stated reason if Week 64 runs short;
+the WAF-detect signal + `403`-is-signal retry are the minimum that changes outcomes.
+
+### Files (anticipated, confirm at implementation time)
+- `pkg/recon/waf.go` (new) — the `ReconResult.WAF` fact (block-page fingerprint reuse from `pkg/uniformwall`, header set, benign-vs-payload delta); `docs/schema/recon-result.schema.json` bump.
+- `pkg/template/nuclei/executor.go` — the bounded `403`-is-signal mutation/encoding retry, gated on the WAF fact; a `waf-bypass` finding shape.
+- `pkg/detectors/sqli/`, `pkg/detectors/xss/`, `pkg/detectors/lfi/` (new) — first-party parameter-aware active checks; conservative signatures, decoy fixtures.
+- `pkg/detectors/uploadbypass/` (new) — extension × content-type × magic-byte permutation against a discovered upload endpoint + a served-executable oracle.
+- `pkg/registry/decisionengine.go` — `sqli`/`xss`/`lfi` dispatched from `resolveEndpointFacts` param candidates; `uploadbypass` only from a discovered upload endpoint; all note the WAF fact in their rationale.
+- `pkg/scanner/{config,engine}.go`, `cmd/hackerfive/scan.go` — the four new `--detector` values wired into `runDetector`; `--detector` help updated.
+- `tests/unit/{detector_sqli,detector_xss,detector_lfi,detector_uploadbypass,waf_detect,executor_wafbypass_retry}_test.go` — planted-vuln + planted-decoy fixtures, FP rate asserted; a fake WAF fixture (benign `2xx`, payload `403`, one encoding that slips through).
+
+### Verification
+Unit: each new detector fires on its planted-vuln fixture and stays silent on the decoy
+set (FP rate recorded); the executor retry turns a fake-WAF `403` into a finding only
+when a mutation actually matches, and does nothing when the WAF fact is absent;
+`uploadbypass` confirms a served-executable file, not just a `200` on upload. Live: re-run
+against the ALSCO sandboxes (once the IP block clears) — the WAF fact is set, blocked
+payloads are recorded as attempts not negatives, and any real bypass is a finding with a
+reproducible request.
+
+---
+
+## Step 10: Eval Maturity + Release (Week 64) — ⬜ not yet implemented — `v0.8.0`
 
 ### Design
 
 Re-run the fixed eval challenge set (Phase 5's harness, Phase 7's agent-driven
-extension) against the lab targets with every new detector from Steps 1-4 and Step 8
+extension) against the lab targets with every new detector from Steps 1-4, 8 and 9
 enabled, and record the delta: new true positives found, and — held to the same
 "revise down with reasoning, don't pad" discipline — any new false-positive mode the
 new detectors introduced, tracked against the <5% target. Full cost accounting per run
@@ -554,7 +658,12 @@ stated reason.
 - [ ] Crawl depth is configurable (default unchanged); an opt-in JS-rendered crawl merges into the Wave 3 endpoint set with a per-host timeout ceiling; an opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints (LT-8 closed)
 - [ ] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed)
 - [ ] An endpoint-name → redirect-parameter-probe rule flags an off-origin `Location` on `*/bounce` / OAuth / SSO / logout-shaped paths, read-only, reusing the `redirect` corpus tag (LT-77 closed)
+- [ ] Recon records `redirect_chain` / `final_url` and warns when an in-scope root redirects out of scope; a `TechFact`'s observed host is tracked and a cross-host (post-redirect / CDN-not-in-own-headers) fact does not seed the target's plan (LT-64 / LT-65 / LT-84b closed)
+- [ ] A numeric-valued query parameter that varies across crawled URLs becomes an `/?param={{id}}` ID candidate, not a blind `/{{id}}` (LT-83 closed)
+- [ ] A Wave-3 path timeout counts toward a per-path skip, not the host-down breaker; a host serving `/` but tarpitting some paths keeps its endpoints/tech in the result (LT-86 closed)
 - [ ] A passive recon signal records an `/llms.txt` / `SKILL.md` / MCP "agent surface" fact; a read-only detector scans the manifest for injection markers and enumerates an unauthenticated MCP `tools/list`, flagging mutation-implying tools, never issuing `tools/call` — decoy false-positive rate measured (LT-78 closed)
+- [ ] A `ReconResult.WAF` fact is set from block-page / header / payload-delta signals; a payload `403`/`406`/`429` against a `2xx` benign control is retried through a bounded mutation/encoding set and a slip-through is a `waf-bypass` finding — off when no WAF fact (LT-87)
+- [ ] First-party `sqli` / `xss` / `lfi` / `uploadbypass` detectors ship (parameter-aware, read-only, dispatched from recon candidates), each with its decoy-set false-positive rate measured against the <5% target — or a sub-item is explicitly descoped with a stated reason (LT-87)
 - [ ] `xpath` matcher/extractor support ships (dependency footprint verified first) or is explicitly descoped with a stated reason; `flow:` cross-block `_N` indexing ships or is explicitly descoped; `substr`/`date_time`/`generate_jwt` DSL functions ship; `flow:` `if`/`set`/`for` script constructs ship or are explicitly descoped
 - [ ] New-detector yield and any new false-positive mode measured against all lab targets, tracked against the <5% target, with full cost accounting
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
