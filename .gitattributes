@@ -1,0 +1,17 @@
+# Normalize every text file to LF in the repository *and* the working tree.
+#
+# Why: this project's toolchain is WSL2/Linux Go plus Linux CI, so every
+# tool that writes a file (gofmt, `go test` updating golden files, etc.)
+# produces LF. Git for Windows ships with core.autocrlf=true in its system
+# config, which smudges the whole checkout to CRLF on clone — so every file
+# the WSL toolchain then rewrites shows up as a phantom whole-file
+# "modification" in `git status` with a zero-line content diff. Pinning
+# eol=lf here makes autocrlf a no-op for this repo and stops that churn on
+# any platform. See docs/04-environment-and-testing.md.
+* text=auto eol=lf
+
+# Binary assets: never touch these.
+*.png binary
+*.ico binary
+*.gz  binary
+*.zip binary
