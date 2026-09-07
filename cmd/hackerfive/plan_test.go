@@ -11,6 +11,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
+	"github.com/tuangatech/hacker-five/pkg/recon"
 )
 
 func TestNewPlanCmd_MissingTarget_ReturnsError(t *testing.T) {
@@ -170,6 +173,46 @@ func TestNewPlanCmd_LLMAssist_NoTierConfigured_DegradesToEscalationWarning(t *te
 	var res planCmdOutput
 	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
 	require.NotNil(t, res.Tree)
+}
+
+// TestEmptyPlanDiagnostic covers LT-60: a tree with no host nodes prints one
+// stderr line naming the recon facts that produced nothing; a tree with any
+// host node (or a nil input) prints nothing.
+func TestEmptyPlanDiagnostic(t *testing.T) {
+	wafResult := &recon.ReconResult{
+		TechStack: []recon.TechFact{
+			{Name: "HSTS"}, {Name: "HTTP/3"},
+		},
+		Endpoints: []recon.EndpointFact{
+			{URL: "https://www.example.test", StatusCode: 403, Source: "httpx"},
+		},
+	}
+
+	t.Run("empty tree prints the diagnostic", func(t *testing.T) {
+		var b bytes.Buffer
+		emptyPlanDiagnostic(&b, &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}, wafResult)
+		out := b.String()
+		assert.Contains(t, out, "empty plan")
+		assert.Contains(t, out, "non-actionable tech fact(s) [HSTS, HTTP/3]")
+		assert.Contains(t, out, "1/1 endpoint(s) WAF/auth-blocked")
+	})
+
+	t.Run("tree with a host node prints nothing", func(t *testing.T) {
+		var b bytes.Buffer
+		tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{
+			ID:       "root",
+			Children: []*agenttask.PlanNode{{ID: "host:www.example.test"}},
+		}}
+		emptyPlanDiagnostic(&b, tree, wafResult)
+		assert.Empty(t, b.String())
+	})
+
+	t.Run("nil inputs are safe", func(t *testing.T) {
+		var b bytes.Buffer
+		emptyPlanDiagnostic(&b, nil, wafResult)
+		emptyPlanDiagnostic(&b, &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}, nil)
+		assert.Empty(t, b.String())
+	})
 }
 
 // forceNoLLMTier makes llmfallback.New() deterministically fail (fb == nil,

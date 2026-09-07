@@ -48,6 +48,7 @@ The `/mnt/c` checkout, via `wsl.exe`, can now do the full live-testing loop itse
 - Keep new detectors/templates within the <5% false-positive target ([docs/03-development-roadmap.md](docs/03-development-roadmap.md)) — flag doubtful matchers instead of guessing.
 - Search for the current stable version of a library/framework before use; don't rely on your own knowledge of versions.
 - Before adding a new dependency, check its real transitive footprint (`go get` in a scratch branch, read the `go.mod` diff / `go list -m all`) — a lightweight-looking package can pull in unrelated subsystems (see [docs/02-architecture-and-tech-stack.md](docs/02-architecture-and-tech-stack.md) §8: `interactsh-client` added 134 unneeded go.mod lines from server-mode code). If the footprint is disproportionate, prefer a first-party implementation of just the needed protocol subset.
+- Do not write "co-authored" in any commits, PRs.
 
 ## Workflow
 
