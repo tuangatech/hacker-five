@@ -1070,6 +1070,61 @@ func TestResolve_KatanaOnlyEndpoint_NoBaselineMisconfigLeaf(t *testing.T) {
 	assert.Nil(t, tree.Find("host:example.test"), "a katana-only endpoint with no vuln-shaped signal must still produce no host node")
 }
 
+// TestResolve_WAFBlockedHost_GetsBaselineMisconfigLeaf is LT-57's regression
+// guard (docs/follow-up.md), mirroring www.valmo.in behind Akamai: a host
+// recon directly probed (an "httpx" EndpointFact) that answers 403 on every
+// path — no 2xx anywhere, only non-actionable tech facts — must still get one
+// ConfidenceLow misconfig leaf. Before LT-57 the 2xx/3xx-only gate excluded
+// it and Resolve produced a completely empty tree for a reachable target.
+func TestResolve_WAFBlockedHost_GetsBaselineMisconfigLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "https://www.example.test",
+		TechStack: []recon.TechFact{
+			{Name: "HSTS", Host: "www.example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+			{Name: "HTTP/3", Host: "www.example.test", Source: "httpx-tech-detect", Confidence: "medium"},
+		},
+		Endpoints: []recon.EndpointFact{
+			{URL: "https://www.example.test", Method: "GET", StatusCode: 403, Source: "httpx", Confidence: "high"},
+			{URL: "https://www.example.test", Method: "GET", StatusCode: 403, Source: "katana-crawl", Confidence: "high"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	require.NotNil(t, tree.Find("host:www.example.test"), "a 403-on-every-path WAF wall is still a live host — the tree must not be empty")
+	leaf := findLeaf(t, tree, "www.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, leaf, "a directly-probed host answering 403 must still get a baseline misconfig leaf (LT-57)")
+	assert.Equal(t, agenttask.StatusPending, leaf.Status)
+	assert.Equal(t, agenttask.ConfidenceLow, leaf.Confidence)
+}
+
+// TestResolve_WAFBlockedHost_KatanaOnlyRoot403_NoLeaf confirms LT-57 still
+// keys off a *direct* probe: a 403 on the bare root seen only via a
+// katana-crawl link (no path for resolveEndpointFacts' authbypass check to
+// bite on, and katana-crawl is not a liveBaselineEndpointSources source) is
+// not enough on its own — mirrors www.valmo.in's own katana-crawl endpoint.
+func TestResolve_WAFBlockedHost_KatanaOnlyRoot403_NoLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "https://www.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "https://www.example.test", Method: "GET", StatusCode: 403, Source: "katana-crawl", Confidence: "medium"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	assert.Nil(t, tree.Find("host:www.example.test"), "a katana-only root 403 with no direct probe must produce no host node")
+}
+
+func TestLiveBaselineStatus(t *testing.T) {
+	for _, code := range []int{200, 204, 301, 302, 399, 401, 403, 429} {
+		assert.True(t, liveBaselineStatus(code), "status %d should count as a live server", code)
+	}
+	for _, code := range []int{0, 400, 404, 405, 500, 502, 503} {
+		assert.False(t, liveBaselineStatus(code), "status %d should not trip the baseline leaf on its own", code)
+	}
+}
+
 func TestResolve_XmlrpcEndpoint_ProducesKnownTemplateLeaf(t *testing.T) {
 	result := &recon.ReconResult{
 		Target: "http://example.test",

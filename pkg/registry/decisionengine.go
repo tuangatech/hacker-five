@@ -1378,19 +1378,44 @@ var liveBaselineEndpointSources = map[string]bool{
 	"wave3-auth-boundary-heuristic": true,
 }
 
+// liveBaselineStatus reports whether a status code from a direct recon probe
+// confirms a live HTTP server worth misconfig's baseline pass. 2xx/3xx is the
+// obvious case; 401/403/429 also mean a server answered — an auth wall, a
+// WAF/bot-protection block page, or a rate-limit response is still a live
+// endpoint whose headers/CORS/exposed-path surface misconfig should check,
+// and whose block page misconfig's own WAF recognition
+// (looksLikeKnownWAFBlockPage / probeBaseline, pkg/detectors/misconfig) then
+// identifies and suppresses against. Without the 401/403 cases a host that
+// answers 403 on every path (an Akamai-style WAF wall — hit live on
+// www.valmo.in, 2026-09-07) produced a completely empty PlanTree for a
+// reachable target: LT-57 (docs/follow-up.md), the hole left in LT-32's
+// 2xx/3xx-only gate.
+func liveBaselineStatus(code int) bool {
+	if code >= 200 && code < 400 {
+		return true
+	}
+	switch code {
+	case 401, 403, 429:
+		return true
+	}
+	return false
+}
+
 // resolveLiveHostBaseline emits one ConfidenceLow misconfig leaf for a host
 // recon directly confirmed serving HTTP that produced no misconfig leaf any
 // other way (LT-32, docs/follow-up.md). misconfig's own registry entry
 // calls it "the broadest, lowest-risk, first detector to run against
 // something new" — yet a WAF/SPA/thin-fingerprint host (i.e. most of a
 // modern bug-bounty scope) whose only tech facts are all nonActionableTech
-// got zero baseline header/CORS/exposed-path dispatch. Routed through
-// addLeaf with pendingDedupKey so a real TechFact/APISpec/endpoint-driven
-// misconfig leaf already on this host always wins and this never doubles it.
+// got zero baseline header/CORS/exposed-path dispatch. "Confirmed serving
+// HTTP" includes an auth/WAF wall (a 401/403/429 from a direct probe), not
+// just a 2xx/3xx — see liveBaselineStatus (LT-57). Routed through addLeaf
+// with pendingDedupKey so a real TechFact/APISpec/endpoint-driven misconfig
+// leaf already on this host always wins and this never doubles it.
 func resolveLiveHostBaseline(host string, endpoints []recon.EndpointFact, leafIdx *int, addLeaf func(*agenttask.PlanNode, string)) {
 	live := false
 	for _, ep := range endpointsForHost(host, endpoints) {
-		if ep.StatusCode >= 200 && ep.StatusCode < 400 && liveBaselineEndpointSources[ep.Source] {
+		if liveBaselineStatus(ep.StatusCode) && liveBaselineEndpointSources[ep.Source] {
 			live = true
 			break
 		}
@@ -1402,7 +1427,7 @@ func resolveLiveHostBaseline(host string, endpoints []recon.EndpointFact, leafId
 		ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
 		Target:     host,
 		Detector:   "misconfig",
-		Rationale:  "recon confirmed a live HTTP response on this host but no tech/endpoint/spec signal produced a misconfig leaf — running misconfig's baseline header/CORS/exposed-path checks anyway (LT-32)",
+		Rationale:  "recon confirmed a live HTTP response on this host (a 2xx/3xx or an auth/WAF wall) but no tech/endpoint/spec signal produced a misconfig leaf — running misconfig's baseline header/CORS/exposed-path checks anyway (LT-32, LT-57)",
 		Status:     agenttask.StatusPending,
 		Confidence: agenttask.ConfidenceLow,
 	}

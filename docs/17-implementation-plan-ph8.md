@@ -332,14 +332,36 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
   endpoint-signature table; shares the "turn recon signal into leaves" lineage of
   Phase 6's P1 items.
 
+- **Consume the CDN-ASN fact recon already collects** ([follow-up.md](follow-up.md)
+  LT-61). Recon's WHOIS/ASN pass records the host's ASN (e.g. `asn: 20940` = Akamai on
+  `www.valmo.in`) in a host note, but nothing downstream reads it: naabu still spent its
+  full 60 s wave cap SYN-scanning a CDN edge IP that can carry no origin service. A small
+  known-CDN-ASN table (Akamai 20940/16625/…, Cloudflare 13335, Fastly 54113, …): when
+  *every* resolved address for a host is in one, skip or sharply shorten the port scan
+  and annotate its `EndpointFact`s "CDN edge, not origin" so the plan/report doesn't
+  imply origin coverage. Same "turn recon signal into a decision" lineage as LT-50.
+- **Companion mobile-app API discovery** ([follow-up.md](follow-up.md) LT-63). A scope
+  entry with a documented mobile app (`.engagements/meesho/policy.md`: "Valmo Mobile
+  App", test MSISDNs) gets no API-host discovery — recon only pivots via DNS/crawl/ports
+  off the given *web* host, so when that host is WAF-walled (LT-57/LT-62) there is
+  nowhere left to look even though the app's API is the real surface. A passive,
+  `--scope`-checked pass: reuse **subfinder's existing `crtsh` CT-log source** (no new
+  dependency) to enumerate `api.`/`gw.`/`mobile.`/`edge.` siblings of the scope host,
+  and probe whether an already-in-scope API host (`prod.meeshoapi.com`) answers the
+  app's conventional paths. Only surfaces hosts that pass the scope check — never widens
+  scope, matching LT-35/LT-52's discipline.
+
 No new dependency — katana already ships headless support and httpx already accepts a
-path list, and an OpenAPI/GraphQL document is JSON/YAML the stdlib already parses;
-this is flag plumbing, an embedded wordlist, a spec walker, and a timeout guard.
+path list, an OpenAPI/GraphQL document is JSON/YAML the stdlib already parses, and
+subfinder already carries a CT-log source; this is flag plumbing, an embedded wordlist,
+a spec walker, a known-CDN-ASN table, and a timeout guard.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/recon/crawl.go` — `runKatana` takes depth + a headless bool + per-host timeout; a new `discoverContentPaths` shelling `httpx -path <wordlist>`, gated on the opt-in flag, folding hits into `agg` as `wave3-content-discovery` endpoints.
 - `pkg/recon/apispec.go` (new) — LT-40's OpenAPI/GraphQL document walker: `paths`/`parameters` → `EndpointFact{Source: "api-spec"}` with an ID-shaped/URL-shaped param classification; only invoked when LT-30's canary+content-type gate says the spec body is real.
 - `pkg/registry/decisionengine.go` — LT-50's tech×endpoint correlation in `resolveTechFact` (per-product endpoint-signature table, Confidence upgrade / targeted-leaf emission).
+- `pkg/recon/asn.go` (or the existing WHOIS/ASN file) — LT-61's known-CDN-ASN table + the "all resolved addrs in a CDN ASN ⇒ skip/shorten naabu, tag endpoints" gate in the Wave 2 port-scan path.
+- `pkg/recon/passive.go` / `crawl.go` — LT-63's CT-log sibling-API pass (subfinder `crtsh` source, `api.`/`gw.`/`mobile.` labels), scope-checked, `--recon-depth full` only.
 - `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
 - `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs (crawl depth, headless, content-discovery on/off + wordlist override).
 - `cmd/hackerfive/{recon,plan}.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_recon.go` — surface the flags/fields.

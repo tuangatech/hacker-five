@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -232,6 +234,11 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				fieldSuggestions = planFieldSuggestions(cmd.Context(), result, tree, false, nil, nil, cmd.ErrOrStderr())
 			}
 
+			// LT-60 (docs/follow-up.md): an empty plan (`{"tree":{"root":…}}`,
+			// exit 0) otherwise looks identical to a bug. Say what recon
+			// produced and why none of it became a leaf.
+			emptyPlanDiagnostic(cmd.ErrOrStderr(), tree, result)
+
 			out := cmd.OutOrStdout()
 			if root.output != "" {
 				f, err := os.Create(root.output)
@@ -261,4 +268,35 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
 
 	return cmd
+}
+
+// emptyPlanDiagnostic prints one stderr line when registry.Resolve produced a
+// tree with no host nodes at all — every recon tech fact was non-actionable
+// (a transport/posture fact like HSTS or HTTP/3, dropped by
+// registry.nonActionableTech) and every observed endpoint was a WAF/auth block
+// or carried no vuln-shaped signal, so there is nothing to scan. Without it an
+// empty plan (`{"tree":{"root":…}}`, exit 0) is indistinguishable from a bug
+// (LT-60, docs/follow-up.md — hit live on www.valmo.in behind an Akamai WAF
+// that 403s every path). No-op the moment the tree has any host node.
+func emptyPlanDiagnostic(w io.Writer, tree *agenttask.PlanTree, result *recon.ReconResult) {
+	if tree == nil || tree.Root == nil || len(tree.Root.Children) > 0 || result == nil {
+		return
+	}
+	blocked := 0
+	for _, ep := range result.Endpoints {
+		switch ep.StatusCode {
+		case 401, 403, 429:
+			blocked++
+		}
+	}
+	detail := fmt.Sprintf("%d tech fact(s)", len(result.TechStack))
+	if len(result.TechStack) > 0 {
+		names := make([]string, 0, len(result.TechStack))
+		for _, f := range result.TechStack {
+			names = append(names, f.Name)
+		}
+		detail = fmt.Sprintf("%d non-actionable tech fact(s) [%s]", len(names), strings.Join(names, ", "))
+	}
+	_, _ = fmt.Fprintf(w, "plan: empty plan — %s, %d/%d endpoint(s) WAF/auth-blocked, 0 actionable leaves; nothing to scan from this vantage\n",
+		detail, blocked, len(result.Endpoints))
 }
