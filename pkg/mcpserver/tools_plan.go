@@ -103,19 +103,32 @@ var approveRequestSchema = &jsonschema.Schema{
 	Required:   []string{"approve"},
 }
 
-// approveWithScopeAckSchema is approveRequestSchema plus B4's explicit
-// out-of-scope acknowledgement (doc15 Step 3): when the plan's own recon
-// discovered hosts outside the approved scope, the human must separately
-// acknowledge that they will NOT be scanned before execution proceeds — a
-// hallucinated "yes" to a single approve field shouldn't also silently wave
-// through a scope-creep observation.
-var approveWithScopeAckSchema = &jsonschema.Schema{
-	Type: "object",
-	Properties: map[string]*jsonschema.Schema{
-		"approve":                  {Type: "boolean", Description: "Approve for execution"},
-		"acknowledge_out_of_scope": {Type: "boolean", Description: "Confirm you have seen the out-of-scope hosts recon discovered; they will NOT be scanned"},
-	},
-	Required: []string{"approve", "acknowledge_out_of_scope"},
+// buildApprovalSchema is approveRequestSchema plus whichever explicit
+// acknowledgements this particular plan needs the human to make separately
+// from the single approve field — a hallucinated "yes" to one boolean
+// shouldn't silently wave the others through:
+//
+//   - acknowledge_out_of_scope (B4, doc15 Step 3): the plan's own recon
+//     discovered hosts outside the approved scope; the human must confirm
+//     they have seen them and that they will NOT be scanned.
+//   - acknowledge_writes (B2, doc16 Phase 7 Step 2): the plan carries a
+//     businesslogic leaf AND allow_writes was requested; the human must
+//     separately attest that state-changing requests to the target are
+//     authorized before any mutating check runs.
+func buildApprovalSchema(requireScopeAck, requireWritesAck bool) *jsonschema.Schema {
+	props := map[string]*jsonschema.Schema{
+		"approve": {Type: "boolean", Description: "Approve for execution"},
+	}
+	required := []string{"approve"}
+	if requireScopeAck {
+		props["acknowledge_out_of_scope"] = &jsonschema.Schema{Type: "boolean", Description: "Confirm you have seen the out-of-scope hosts recon discovered; they will NOT be scanned"}
+		required = append(required, "acknowledge_out_of_scope")
+	}
+	if requireWritesAck {
+		props["acknowledge_writes"] = &jsonschema.Schema{Type: "boolean", Description: "Confirm that sending state-changing (mutating) businesslogic requests — coupon self-mint/apply, apply-race — to this target is explicitly authorized and in scope"}
+		required = append(required, "acknowledge_writes")
+	}
+	return &jsonschema.Schema{Type: "object", Properties: props, Required: required}
 }
 
 // isApproved reports whether resp — an entry from req.Params.InputResponses
@@ -127,18 +140,48 @@ func isApproved(resp mcp.InputResponse) bool {
 	return ok && er.Action == "accept" && er.Content["approve"] == true
 }
 
-// isPlanApproved is isApproved plus B4's gate: when requireScopeAck is true
-// (the plan's recon found out-of-scope hosts), acknowledge_out_of_scope must
-// also be true for the plan to execute.
-func isPlanApproved(resp mcp.InputResponse, requireScopeAck bool) bool {
+// ackGiven reports whether resp is an accepted elicitation whose named
+// boolean acknowledgement field is true — used to tell "approved but forgot
+// an ack" apart from "declined outright" when composing the round-2 note.
+func ackGiven(resp mcp.InputResponse, key string) bool {
+	er, ok := resp.(*mcp.ElicitResult)
+	return ok && er.Content[key] == true
+}
+
+// isPlanApproved is isApproved plus the per-plan acknowledgement gates: when
+// requireScopeAck is true (B4 — recon found out-of-scope hosts)
+// acknowledge_out_of_scope must also be true, and when requireWritesAck is
+// true (B2 — a businesslogic leaf with allow_writes requested)
+// acknowledge_writes must also be true, for the plan to execute.
+func isPlanApproved(resp mcp.InputResponse, requireScopeAck, requireWritesAck bool) bool {
 	if !isApproved(resp) {
 		return false
 	}
-	if !requireScopeAck {
-		return true
-	}
 	er := resp.(*mcp.ElicitResult) // isApproved already type-asserted
-	return er.Content["acknowledge_out_of_scope"] == true
+	if requireScopeAck && er.Content["acknowledge_out_of_scope"] != true {
+		return false
+	}
+	if requireWritesAck && er.Content["acknowledge_writes"] != true {
+		return false
+	}
+	return true
+}
+
+// planHasBusinessLogicLeaf reports whether any leaf of tree carries the
+// businesslogic detector — the gate (with allow_writes requested) for B2's
+// acknowledge_writes attestation. A plan with no businesslogic leaf never
+// runs a mutating check regardless of allow_writes, so it needs no
+// attestation.
+func planHasBusinessLogicLeaf(tree *agenttask.PlanTree) bool {
+	if tree == nil {
+		return false
+	}
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if leaf.Detector == "businesslogic" {
+			return true
+		}
+	}
+	return false
 }
 
 // handlePlan implements the plan tool across SEP-2322's two-round-trip
@@ -235,6 +278,10 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	// but the human must see them and separately acknowledge before execution.
 	outOfScope := result.OutOfScope
 	requireScopeAck := len(outOfScope) > 0
+	// B2 (doc16 Phase 7 Step 2): allow_writes was requested AND the resolved
+	// tree actually carries a businesslogic leaf — the human must attest to
+	// the mutating checks separately from the plan approval itself.
+	requireWritesAck := in.AllowWrites && planHasBusinessLogicLeaf(tree)
 
 	if !clientSupportsElicitation(req.Session) {
 		return nil, planOutput{
@@ -249,14 +296,10 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 
 	id := storePendingPlan(&pendingPlan{tree: tree, fieldSuggestions: fieldSuggestions, baseCfg: baseCfg, escalations: escalations, preflightLogs: preflightLogs, outOfScope: outOfScope})
 
-	schema := approveRequestSchema
-	if requireScopeAck {
-		schema = approveWithScopeAckSchema
-	}
 	return &mcp.CallToolResult{
 		InputRequests: mcp.InputRequestMap{"approve": &mcp.ElicitParams{
-			Message:         summarizePlan(tree, fieldSuggestions, escalations, preflightWarnings, outOfScope),
-			RequestedSchema: schema,
+			Message:         summarizePlan(tree, fieldSuggestions, escalations, preflightWarnings, outOfScope, requireWritesAck),
+			RequestedSchema: buildApprovalSchema(requireScopeAck, requireWritesAck),
 		}},
 		RequestState: id,
 	}, planOutput{}, nil
@@ -272,14 +315,27 @@ func handlePlanApproval(ctx context.Context, req *mcp.CallToolRequest, resp mcp.
 
 	out := planOutput{Tree: pending.tree, FieldSuggestions: pending.fieldSuggestions, SpendUSD: pending.tree.SpendSoFar(), Logs: pending.preflightLogs, OutOfScope: pending.outOfScope}
 	requireScopeAck := len(pending.outOfScope) > 0
-	if !isPlanApproved(resp, requireScopeAck) {
-		if requireScopeAck && isApproved(resp) {
-			out.Note = "plan not executed — approve was given but the out-of-scope acknowledgement (acknowledge_out_of_scope) was not; re-run and confirm both"
-		} else {
+	// B2: recompute rather than cache on pendingPlan — baseCfg.AllowWrites
+	// records that writes were requested, and the tree tells us whether a
+	// businesslogic leaf exists to run them.
+	requireWritesAck := pending.baseCfg.AllowWrites && planHasBusinessLogicLeaf(pending.tree)
+	if !isPlanApproved(resp, requireScopeAck, requireWritesAck) {
+		switch {
+		case isApproved(resp) && requireScopeAck && !ackGiven(resp, "acknowledge_out_of_scope"):
+			out.Note = "plan not executed — approve was given but the out-of-scope acknowledgement (acknowledge_out_of_scope) was not; re-run and confirm all required acknowledgements"
+		case isApproved(resp) && requireWritesAck && !ackGiven(resp, "acknowledge_writes"):
+			out.Note = "plan not executed — approve was given but the write acknowledgement (acknowledge_writes) was not; re-run and set acknowledge_writes=true, or drop allow_writes to run the plan without the businesslogic mutating checks"
+		default:
 			out.Note = "plan not approved — returned unexecuted"
 		}
 		return nil, out, nil
 	}
+	// From here the plan is fully approved. AllowWrites is honored only when
+	// the attestation was actually required and given (requireWritesAck true ⇒
+	// acknowledge_writes was true, checked above); a plan that requested
+	// allow_writes but has no businesslogic leaf leaves it off — nothing would
+	// use it.
+	pending.baseCfg.AllowWrites = requireWritesAck
 
 	token := req.Params.GetProgressToken()
 	// Reloaded here rather than cached on pendingPlan — cheap (a JSON file
@@ -414,7 +470,7 @@ func resolveOneFieldMiss(ctx context.Context, fb *llmfallback.Client, fbErr erro
 	return &agenttask.FieldSuggestion{Detector: detector, Field: field, SuggestedValue: decision.SuggestedValue, Rationale: decision.Rationale, Candidates: candidates}
 }
 
-func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations, preflightWarnings, outOfScope []string) string {
+func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldSuggestion, escalations, preflightWarnings, outOfScope []string, requireWritesAck bool) string {
 	total, unresolved := 0, 0
 	for _, leaf := range agenttask.Leaves(tree.Root) {
 		total++
@@ -433,6 +489,9 @@ func summarizePlan(tree *agenttask.PlanTree, fieldSuggestions []agenttask.FieldS
 	}
 	if len(outOfScope) > 0 {
 		fmt.Fprintf(&b, " Out-of-scope hosts recon found (they will NOT be scanned): %s — set acknowledge_out_of_scope=true to proceed.", strings.Join(outOfScope, ", "))
+	}
+	if requireWritesAck {
+		b.WriteString(" This plan includes state-changing (mutating) businesslogic checks (coupon self-mint/apply, apply-race) because allow_writes was requested — set acknowledge_writes=true to authorize them, or they will be skipped.")
 	}
 	b.WriteString(" Approve to execute against the live target?")
 	return b.String()

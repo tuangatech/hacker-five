@@ -19,6 +19,7 @@ func scanParamsSummary(in scanInput) map[string]any {
 		"detector":      in.Detector,
 		"tags":          in.Tags,
 		"all_templates": in.AllTemplates,
+		"allow_writes":  in.AllowWrites, // B2: records that a write grant was requested, regardless of whether it was later attested
 	}
 }
 
@@ -58,8 +59,17 @@ func planResultSummary(out planOutput) string {
 			unresolved++
 		}
 	}
-	return fmt.Sprintf("approved=%t, %d leaf/leaves (%d unresolved), %d finding(s), spend $%.4f%s",
-		out.Approved, total, unresolved, len(out.Findings), out.SpendUSD, noteSuffix(out.Note))
+	// B4 (doc16 Phase 7 Step 2, compliance rounding): the audit trail records
+	// how many hosts recon found outside the approved scope alongside the
+	// approve outcome, so a reader of the session log sees the scope-creep
+	// observation and its acknowledgement together — out.Note already carries
+	// the "approve given but ack withheld" case verbatim.
+	oos := ""
+	if n := len(out.OutOfScope); n > 0 {
+		oos = fmt.Sprintf(", %d out-of-scope host(s) observed", n)
+	}
+	return fmt.Sprintf("approved=%t, %d leaf/leaves (%d unresolved), %d finding(s), spend $%.4f%s%s",
+		out.Approved, total, unresolved, len(out.Findings), out.SpendUSD, oos, noteSuffix(out.Note))
 }
 
 func exportParamsSummary(in findingsExportInput) map[string]any {

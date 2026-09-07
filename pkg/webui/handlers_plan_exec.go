@@ -85,6 +85,17 @@ func (h *handlers) executePlan(w http.ResponseWriter, r *http.Request) {
 	execCfg := job.ExecConfig()
 
 	job.AppendLog("info", fmt.Sprintf("plan-preview: operator approved — dispatching %d leaf/leaves (%d excluded)", dispatchCount, len(excluded)))
+	// B4 scope-creep compliance rounding (doc16 Phase 7 Step 2): record the
+	// out-of-scope hosts recon discovered as an audit-trail entry at approval
+	// time — they are rendered in the recon results table (fragment_recon_
+	// results.html) but were not otherwise written to the job's log, so a
+	// later reader of the audit trail could not see that the operator
+	// approved a run while scope-creep observations were outstanding. They are
+	// still never scanned; registry.Resolve only builds leaves from in-scope
+	// hosts and the OnOutOfScope executor gate below is the hard stop.
+	if oos := snap.ReconResult.OutOfScope; len(oos) > 0 {
+		job.AppendLog("warn", fmt.Sprintf("scope: recon found %d host(s) outside the approved scope; they will NOT be scanned: %s", len(oos), strings.Join(oos, ", ")))
+	}
 	// Reopens the job's own progress/SSE lifecycle: this job may already be
 	// StatusDone from its native-detector phase by the time a plan is
 	// approved, and scanEvents refuses to open a live stream for an

@@ -121,7 +121,7 @@ func TestSummarizePlan(t *testing.T) {
 		SpendCeilingUSD: 1.00,
 	}
 
-	msg := summarizePlan(tree, []agenttask.FieldSuggestion{{Detector: "idor", Field: "endpoint_template"}}, []string{"idor.endpoint_template: no candidates found"}, []string{"example.com: no entry in policy.yaml"}, []string{"cdn.vendor.example", "old.example.net"})
+	msg := summarizePlan(tree, []agenttask.FieldSuggestion{{Detector: "idor", Field: "endpoint_template"}}, []string{"idor.endpoint_template: no candidates found"}, []string{"example.com: no entry in policy.yaml"}, []string{"cdn.vendor.example", "old.example.net"}, false)
 
 	assert.Contains(t, msg, "http://example.com")
 	assert.Contains(t, msg, "2 leaves (1 still unresolved)")
@@ -136,10 +136,35 @@ func TestSummarizePlan(t *testing.T) {
 
 func TestSummarizePlan_NoEscalations_OmitsOptionalClauses(t *testing.T) {
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Target: "http://example.com"}}
-	msg := summarizePlan(tree, nil, nil, nil, nil)
+	msg := summarizePlan(tree, nil, nil, nil, nil, false)
 	assert.NotContains(t, msg, "Escalations:")
 	assert.NotContains(t, msg, "Pre-flight:")
 	assert.NotContains(t, msg, "Out-of-scope")
+	assert.NotContains(t, msg, "acknowledge_writes")
+}
+
+// TestSummarizePlan_WritesAck covers B2: when the plan carries a
+// businesslogic leaf and allow_writes was requested, the elicitation message
+// spells out the mutating checks and asks for acknowledge_writes.
+func TestSummarizePlan_WritesAck(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Target: "http://example.com"}}
+	msg := summarizePlan(tree, nil, nil, nil, nil, true)
+	assert.Contains(t, msg, "acknowledge_writes=true")
+	assert.Contains(t, msg, "mutating")
+}
+
+func TestPlanHasBusinessLogicLeaf(t *testing.T) {
+	blTree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "a", Detector: "misconfig"},
+		{ID: "b", Detector: "businesslogic"},
+	}}}
+	plainTree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "a", Detector: "misconfig"},
+		{ID: "b", Detector: "idor"},
+	}}}
+	assert.True(t, planHasBusinessLogicLeaf(blTree))
+	assert.False(t, planHasBusinessLogicLeaf(plainTree))
+	assert.False(t, planHasBusinessLogicLeaf(nil))
 }
 
 // TestIsPlanApproved_ScopeAck covers B4's extra gate: when the plan's recon
@@ -150,11 +175,25 @@ func TestIsPlanApproved_ScopeAck(t *testing.T) {
 	both := &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_out_of_scope": true}}
 	declined := &mcp.ElicitResult{Action: "decline"}
 
-	assert.True(t, isPlanApproved(approveOnly, false), "no ack required -> approve alone is enough")
-	assert.False(t, isPlanApproved(approveOnly, true), "ack required but not given -> not approved")
-	assert.True(t, isPlanApproved(both, true), "ack required and given -> approved")
-	assert.False(t, isPlanApproved(declined, true))
-	assert.False(t, isPlanApproved(declined, false))
+	assert.True(t, isPlanApproved(approveOnly, false, false), "no ack required -> approve alone is enough")
+	assert.False(t, isPlanApproved(approveOnly, true, false), "scope ack required but not given -> not approved")
+	assert.True(t, isPlanApproved(both, true, false), "scope ack required and given -> approved")
+	assert.False(t, isPlanApproved(declined, true, false))
+	assert.False(t, isPlanApproved(declined, false, false))
+}
+
+// TestIsPlanApproved_WritesAck covers B2's gate: when the plan carries a
+// businesslogic leaf with allow_writes requested, approve=true alone is not
+// enough — acknowledge_writes=true is also required.
+func TestIsPlanApproved_WritesAck(t *testing.T) {
+	approveOnly := &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}
+	withWrites := &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_writes": true}}
+	bothAcks := &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_writes": true, "acknowledge_out_of_scope": true}}
+
+	assert.False(t, isPlanApproved(approveOnly, false, true), "writes ack required but not given -> not approved")
+	assert.True(t, isPlanApproved(withWrites, false, true), "writes ack required and given -> approved")
+	assert.False(t, isPlanApproved(withWrites, true, true), "both acks required, only writes given -> not approved")
+	assert.True(t, isPlanApproved(bothAcks, true, true), "both acks required and given -> approved")
 }
 
 // TestHandlePlanApproval_OutOfScope_RequiresAck drives the round-2 handler
@@ -185,6 +224,24 @@ func TestHandlePlanApproval_OutOfScope_RequiresAck(t *testing.T) {
 		&mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true, "acknowledge_out_of_scope": true}})
 	require.NoError(t, err)
 	assert.True(t, out.Approved, "approve + ack must execute")
+}
+
+// TestHandlePlanApproval_WritesAck_RequiredButWithheld covers B2's round-2
+// gate: a pending plan whose tree has a businesslogic leaf and whose baseCfg
+// carries AllowWrites (allow_writes was requested) is NOT executed when the
+// human approves without acknowledge_writes — the note names the missing ack.
+func TestHandlePlanApproval_WritesAck_RequiredButWithheld(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "bl", Detector: "businesslogic", Target: "http://example.com"},
+	}}}
+	id := storePendingPlan(&pendingPlan{tree: tree, baseCfg: scanner.Config{AllowWrites: true}})
+
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{RequestState: id}}
+	_, out, err := handlePlanApproval(context.Background(), req,
+		&mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}})
+	require.NoError(t, err)
+	assert.False(t, out.Approved, "approve without acknowledge_writes must not execute a writes-capable businesslogic plan")
+	assert.Contains(t, out.Note, "acknowledge_writes")
 }
 
 func TestBuildBaseExecConfig_ExplicitAuthTokenWins(t *testing.T) {

@@ -70,6 +70,32 @@ func TestStorePendingTriage_TakePendingTriage_RoundTrip(t *testing.T) {
 	assert.False(t, ok, "a triage RequestState must also be one-shot")
 }
 
+func TestStorePendingScan_TakePendingScan_RoundTrip(t *testing.T) {
+	p := &pendingScan{in: scanInput{Detector: "businesslogic", AllowWrites: true}}
+	id := storePendingScan(p)
+	require.NotEmpty(t, id)
+
+	got, ok := takePendingScan(id)
+	require.True(t, ok)
+	assert.Same(t, p, got)
+
+	_, ok = takePendingScan(id)
+	assert.False(t, ok, "a scan RequestState must also be one-shot")
+}
+
+func TestStorePendingScan_SweepsExpiredEntries(t *testing.T) {
+	pendingScansMu.Lock()
+	pendingScans["stale"] = &pendingScan{createdAt: time.Now().Add(-2 * pendingPlanTTL)}
+	pendingScansMu.Unlock()
+
+	storePendingScan(&pendingScan{})
+
+	pendingScansMu.Lock()
+	_, stillThere := pendingScans["stale"]
+	pendingScansMu.Unlock()
+	assert.False(t, stillThere)
+}
+
 func TestStorePendingTriage_SweepsExpiredEntries(t *testing.T) {
 	pendingTriagesMu.Lock()
 	pendingTriages["stale"] = &pendingTriage{createdAt: time.Now().Add(-2 * pendingPlanTTL)}
