@@ -39,6 +39,7 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 		policyFile          string
 		allowPolicyOverride bool
 		reconFile           string
+		openAPISpecs        []string
 	)
 
 	cmd := &cobra.Command{
@@ -110,6 +111,24 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				result = &rr
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "plan: using recon result from %s (%d host(s), %d endpoint(s), %d tech fact(s)) — skipping the recon run\n",
 					reconFile, len(rr.Hosts), len(rr.Endpoints), len(rr.TechStack))
+				// LT-89: an --openapi-spec supplied alongside --recon-file is
+				// walked into the loaded result here (the recon run that would
+				// otherwise do it was skipped).
+				if len(openAPISpecs) > 0 {
+					specClient := httpclient.New(recon.ClientConfig(httpclient.Config{
+						Timeout:      root.timeout,
+						MaxRedirects: 5,
+						ProxyURL:     root.proxy,
+					}), httpclient.WithRateLimit(ratelimit.New(rateLimit)))
+					ing := recon.IngestOpenAPISpecs(cmd.Context(), specClient, s, policyHeaders, openAPISpecs, target)
+					result.Endpoints = append(result.Endpoints, ing.Endpoints...)
+					if result.APISpec == nil {
+						result.APISpec = ing.APISpec
+					}
+					for _, w := range ing.Warnings {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "plan: "+w)
+					}
+				}
 			} else {
 				client := httpclient.New(recon.ClientConfig(httpclient.Config{
 					Timeout:             root.timeout,
@@ -127,6 +146,9 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 				}
 				if len(policyHeaders) > 0 {
 					opts = append(opts, recon.WithHeaders(policyHeaders))
+				}
+				if len(openAPISpecs) > 0 {
+					opts = append(opts, recon.WithOpenAPISpecs(openAPISpecs))
 				}
 				r := recon.New(client, opts...)
 
@@ -277,6 +299,7 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&llmAssist, "llm-assist", false, "resolve any StatusUnresolved leaf via the tiered LLM fallback (I4) before printing the tree — off by default (zero LLM calls is 'plan's own no-agent-required proof); requires OPENROUTER_API_KEY and/or a local runtime (see pkg/llmfallback)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave recon progress to stderr (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 	cmd.Flags().StringVar(&reconFile, "recon-file", "", "path to a prior 'hackerfive recon --output <path>' JSON result — when given, plan resolves that instead of re-running recon (LT-34, docs/follow-up.md); --recon-depth is then ignored")
+	cmd.Flags().StringArrayVar(&openAPISpecs, "openapi-spec", nil, "path or http(s) URL to an OpenAPI/Swagger document to walk into endpoint candidates — for a target that doesn't serve its spec at a discoverable unauthenticated path (repeatable, LT-89); works with or without --recon-file")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
 

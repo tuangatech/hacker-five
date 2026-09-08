@@ -40,6 +40,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 		policyFile          string
 		allowPolicyOverride bool
 		headers             []string
+		openAPISpecs        []string
 	)
 
 	cmd := &cobra.Command{
@@ -94,6 +95,9 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 			if verbose {
 				opts = append(opts, recon.WithProgressCallback(verboseProgress(cmd.ErrOrStderr())))
 			}
+			if len(openAPISpecs) > 0 {
+				opts = append(opts, recon.WithOpenAPISpecs(openAPISpecs))
+			}
 			r := recon.New(client, opts...)
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), reconRunTimeout)
@@ -129,7 +133,8 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
-	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every recon request — this package's own probes plus httpx/katana via their -H flag (repeatable); merged with any request_headers: from policy.yaml, which a program-mandated identifying header (e.g. X-Hackerone) should live in instead (LT-36)`)
+	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every recon request — this package's own probes plus httpx/katana via their -H flag (repeatable); merged with any request_headers: from policy.yaml, which a program-mandated identifying header (e.g. X-Hackerone) should live in instead (LT-36). For authenticated recon of an API, pass 'Authorization: Bearer <token>' here`)
+	cmd.Flags().StringArrayVar(&openAPISpecs, "openapi-spec", nil, "path or http(s) URL to an OpenAPI/Swagger document to walk into endpoint candidates — for a target that doesn't serve its spec at a discoverable unauthenticated path (repeatable, LT-89)")
 
 	cmd.AddCommand(newReconSetupCmd())
 
