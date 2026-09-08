@@ -201,7 +201,7 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 // OutOfScope, not silently followed" applies, so it's recorded there
 // instead of silently dropped.
 func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	katanaArgs := []string{
 		"-silent", "-jsonl", "-jc", "-depth", itoa(r.crawlDepth), "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency),

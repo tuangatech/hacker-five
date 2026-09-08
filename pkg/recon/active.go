@@ -124,7 +124,7 @@ func (r *Recon) runWave2(ctx context.Context, agg *aggregator, targetHost string
 }
 
 func (r *Recon) runDNSX(ctx context.Context, agg *aggregator, hosts []string) []string {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "dnsx", "-silent", "-json", "-a", "-resp", "-rl", itoa(r.rateLimit))
 	if err != nil && !isWaveTimeout(err) {
@@ -178,7 +178,7 @@ func (r *Recon) runNaabu(ctx context.Context, agg *aggregator, hosts []string) m
 	}
 	hosts = scanHosts
 
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "naabu", "-silent", "-json", "-top-ports", "100", "-rate", itoa(r.rateLimit))
 	if err != nil && !isWaveTimeout(err) {
@@ -247,7 +247,7 @@ type hostWithIP struct {
 }
 
 func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) ([]string, []hostWithIP) {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	httpxArgs := []string{
 		"-silent", "-json", "-status-code", "-title", "-web-server", "-tech-detect", "-follow-redirects",

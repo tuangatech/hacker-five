@@ -328,7 +328,7 @@ func (r *Recon) filterScope(agg *aggregator, hosts []string) []string {
 }
 
 func (r *Recon) runSubfinder(ctx context.Context, domain string) ([]string, error) {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, "", "subfinder", "-d", domain, "-silent", "-json", "-rate-limit", itoa(r.rateLimit))
 	if err != nil && !isWaveTimeout(err) {
@@ -356,7 +356,7 @@ func (r *Recon) runSubfinder(ctx context.Context, domain string) ([]string, erro
 }
 
 func (r *Recon) runTLSX(ctx context.Context, domain string) ([]string, error) {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	target := domain + ":443"
 	out, err := r.run(waveCtx, "", "tlsx", "-u", target, "-san", "-silent", "-json")
