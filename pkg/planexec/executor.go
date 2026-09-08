@@ -203,7 +203,7 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 		// detectors. Every other detector, and the no-SeedFn path, keep the
 		// pre-dispatch gate exactly as before.
 		if opts.SeedFn == nil || !seedFillableDetector[leaf.Detector] {
-			if reason := missingRequiredField(leaf.Detector, baseCfg); reason != "" {
+			if reason := missingRequiredFieldForLeaf(leaf, baseCfg); reason != "" {
 				skipped = append(skipped, fmt.Sprintf("%s: skipped — %s (same skip-and-explain posture as pkg/webui's fillReconFields)", leaf.ID, reason))
 				continue
 			}
@@ -337,6 +337,20 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 // are exactly the two things recon/I4 must never supply on their own
 // (CLAUDE.md's write-safety rule), so this only ever narrows what already
 // requires a human, it never relaxes it.
+// missingRequiredFieldForLeaf is missingRequiredField with LT-91's per-leaf
+// override: an endpoint-driven idor leaf carries its own EndpointTemplate on
+// the PlanNode (set by registry.resolveEndpointFacts' fan-out), which
+// runLeaf copies into the config just before dispatch — so the gate must
+// treat that leaf as already having its required field even though baseCfg
+// doesn't. Every other leaf/detector falls through to the baseCfg check
+// unchanged.
+func missingRequiredFieldForLeaf(leaf *agenttask.PlanNode, cfg scanner.Config) string {
+	if leaf.Detector == "idor" && leaf.EndpointTemplate != "" {
+		cfg.EndpointTemplate = leaf.EndpointTemplate
+	}
+	return missingRequiredField(leaf.Detector, cfg)
+}
+
 func missingRequiredField(detector string, cfg scanner.Config) string {
 	switch detector {
 	case "idor":
@@ -393,6 +407,19 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 	if seedLookup != nil {
 		if s, ok := seedLookup(leaf.ID); ok {
 			applyLeafSeed(&cfg, s, leaf, opts)
+		}
+	}
+
+	// LT-91: an endpoint-driven idor leaf carries its own {{id}} template on
+	// the PlanNode (registry.resolveEndpointFacts' per-candidate fan-out).
+	// Fill a still-blank config field from it — an explicit --endpoint, a
+	// recon/I4 auto-fill on baseCfg, or a C7a seed all still win. Logged,
+	// never silent; the value is a recon-derived path on the already-approved
+	// host, inside the approved blast radius.
+	if leaf.EndpointTemplate != "" && cfg.EndpointTemplate == "" {
+		cfg.EndpointTemplate = leaf.EndpointTemplate
+		if opts.Notify != nil {
+			opts.Notify(leaf.Target, fmt.Sprintf("idor: enumerating recon-derived endpoint %s (LT-91)", leaf.EndpointTemplate))
 		}
 	}
 

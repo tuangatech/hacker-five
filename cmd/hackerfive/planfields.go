@@ -41,6 +41,21 @@ func planLeafDetectors(tree *agenttask.PlanTree) map[string]bool {
 	return out
 }
 
+// treeHasEndpointDrivenIdorLeaf reports whether tree carries an idor leaf
+// that already has its own EndpointTemplate (registry's LT-91 per-candidate
+// fan-out) — idor's endpoint field then needs no further resolution.
+func treeHasEndpointDrivenIdorLeaf(tree *agenttask.PlanTree) bool {
+	if tree == nil {
+		return false
+	}
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if leaf.Detector == "idor" && leaf.EndpointTemplate != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // planFieldSuggestions returns the recon-derived field suggestions for tree's
 // leaf detectors: fieldsuggest.Deterministic's no-LLM auto-fills always, plus
 // — when llmAssist — an I4 resolution (llmfallback.ResolveFieldMiss) of each
@@ -55,6 +70,12 @@ func planFieldSuggestions(ctx context.Context, result *recon.ReconResult, tree *
 	sugs, misses := fieldsuggest.Deterministic(result, planLeafDetectors(tree))
 
 	for _, m := range misses {
+		// LT-91: idor's ">1 endpoint candidate" is not a miss once the
+		// decision engine has fanned out a per-candidate idor leaf for each —
+		// every candidate is already being enumerated on its own leaf.
+		if m.Detector == "idor" && m.Field == "endpoint_template" && treeHasEndpointDrivenIdorLeaf(tree) {
+			continue
+		}
 		fs := agenttask.FieldSuggestion{Detector: m.Detector, Field: m.Field, Candidates: m.Candidates}
 		if !llmAssist {
 			fs.EscalateToHuman = "no unambiguous recon candidate — pass the field explicitly to scan, or re-run plan with --llm-assist"

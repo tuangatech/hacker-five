@@ -321,6 +321,58 @@ func TestResolve_SpecAuthRequiredRoute_ProducesAuthbypassLeaf(t *testing.T) {
 	require.NotNil(t, leaf, "a spec-declared auth-required route must yield an authbypass leaf")
 }
 
+// TestResolve_IdorEndpointCandidates_FanOutPerCandidate covers LT-91: every
+// distinct ID-shaped recon endpoint becomes its own idor leaf carrying that
+// {{id}} template, and the bare tech-capability idor leaf is dropped once a
+// runnable per-candidate leaf exists.
+func TestResolve_IdorEndpointCandidates_FanOutPerCandidate(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		// OpenResty matches the "idor" capability rule -> a bare idor leaf; the
+		// three spec routes below each yield one endpoint-driven idor leaf.
+		TechStack: []recon.TechFact{{Name: "OpenResty", Host: "api.example.test", Source: "httpx-tech-detect", Confidence: "medium"}},
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/workshop/api/shop/orders/{order_id}", Method: "GET", Source: "api-spec", Confidence: "low"},
+			{URL: "http://api.example.test/identity/api/v2/user/videos/{video_id}", Method: "GET", Source: "api-spec", Confidence: "low"},
+			{URL: "http://api.example.test/community/api/v2/community/posts/{postId}", Method: "GET", Source: "api-spec", Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	var idorLeaves []*agenttask.PlanNode
+	for _, leaf := range hostLeaves(t, tree, "api.example.test") {
+		if leaf.Detector == "idor" {
+			idorLeaves = append(idorLeaves, leaf)
+		}
+	}
+	require.Len(t, idorLeaves, 3, "one idor leaf per ID-shaped endpoint candidate, bare capability leaf dropped")
+	got := map[string]bool{}
+	for _, leaf := range idorLeaves {
+		assert.NotEmpty(t, leaf.EndpointTemplate, "each fanned-out idor leaf carries its own {{id}} template")
+		got[leaf.EndpointTemplate] = true
+	}
+	assert.True(t, got["/workshop/api/shop/orders/{{id}}"])
+	assert.True(t, got["/identity/api/v2/user/videos/{{id}}"])
+	assert.True(t, got["/community/api/v2/community/posts/{{id}}"])
+}
+
+// TestResolve_IdorCapabilityOnly_KeepsBareLeaf: a host with a tech-matched
+// idor capability but zero ID-shaped recon endpoints keeps its single bare
+// idor leaf (nothing to fan out).
+func TestResolve_IdorCapabilityOnly_KeepsBareLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "OpenResty", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"}},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "idor" })
+	require.NotNil(t, leaf, "the bare tech-capability idor leaf stays when there is no endpoint candidate to fan out")
+	assert.Empty(t, leaf.EndpointTemplate)
+}
+
 func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {
 	var index []templatesync.Entry
 	for i := 0; i < maxTemplateLeavesPerTech+10; i++ {

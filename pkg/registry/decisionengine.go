@@ -24,6 +24,14 @@ import (
 // leafDedupKey, so in practice this is a per-(host, template) ceiling.
 const maxTemplateLeavesPerTech = 8
 
+// maxEndpointDrivenIdorLeaves caps how many per-candidate idor leaves
+// resolveEndpointFacts fans out from SuggestIDOREndpointCandidates (LT-91),
+// so a large OpenAPI spec with dozens of {{id}} routes can't balloon the
+// tokenless-probe count. Mirrors recon.maxSpecAuthProtectedPaths' role for
+// authbypass. SuggestIDOREndpointCandidates already returns candidates in a
+// stable order, so the truncation is deterministic.
+const maxEndpointDrivenIdorLeaves = 12
+
 // minTemplateLeafScore is the relevance floor a scored template entry must
 // clear before it becomes its own leaf (LT-48, docs/follow-up.md).
 // scoreTemplateForTech gives a primary product-tag hit a base of 100 and a
@@ -1101,11 +1109,20 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 		}
 		resolveAPISpecFact(host, result.APISpec, templateIndex, &leafIdx, addLeaf)
 		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
-			addLeaf(leaf, pendingDedupKey(leaf.Target, leaf.Detector))
+			// LT-91: a fanned-out idor leaf carries its own EndpointTemplate, so
+			// two of them on one host are distinct checks — fold the template
+			// into the dedup key so they don't collapse to one. Every other
+			// endpoint-driven leaf still keys on (target, detector).
+			key := pendingDedupKey(leaf.Target, leaf.Detector)
+			if leaf.EndpointTemplate != "" {
+				key += "\x00" + leaf.EndpointTemplate
+			}
+			addLeaf(leaf, key)
 		}
 		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf, leafContexts)
 		resolveHostnameHints(host, templateIndex, &leafIdx, addLeaf)
 		resolveLiveHostBaseline(host, result.Endpoints, &leafIdx, addLeaf)
+		hostNode.Children = dropBareIdorLeafWhenFannedOut(hostNode.Children)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
 		}
@@ -1281,8 +1298,24 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 	endpointConf := apiRouteConfidence(hostEndpoints)
 
 	if candidates := recon.SuggestIDOREndpointCandidates(hostResult); len(candidates) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "idor", endpointConf,
-			fmt.Sprintf("recon observed %d ID-shaped endpoint candidate(s) on this host (e.g. %s)", len(candidates), candidates[0]), leafIdx))
+		// LT-91 (docs/follow-up.md): fan out one idor leaf per {{id}}-templated
+		// candidate rather than a single leaf whose one EndpointTemplate a
+		// downstream field-suggestion pass then has to pick from N (a genuine
+		// "ambiguous miss" that escalates to a human / LLM and, absent one,
+		// drops idor entirely — the gap the crAPI live round surfaced). Each
+		// candidate is an independent cheap enumerate-1..N run, exactly like
+		// authbypass probing every ProtectedPaths entry; the leaf carries its
+		// own EndpointTemplate and planexec.runLeaf copies it into the config.
+		// Bounded so a large spec can't balloon the tokenless-probe count.
+		if len(candidates) > maxEndpointDrivenIdorLeaves {
+			candidates = candidates[:maxEndpointDrivenIdorLeaves]
+		}
+		for _, cand := range candidates {
+			leaf := newEndpointLeaf(host, "idor", endpointConf,
+				fmt.Sprintf("recon derived the ID-shaped endpoint %s on this host — enumerating its {{id}}", cand), leafIdx)
+			leaf.EndpointTemplate = cand
+			leaves = append(leaves, leaf)
+		}
 	}
 	if protected, _, _ := recon.SuggestAuthBypassPathsFromRecon(hostResult); len(protected) > 0 {
 		leaves = append(leaves, newEndpointLeaf(host, "authbypass", endpointConf,
@@ -1368,6 +1401,34 @@ func firstRedirectFlowEndpoint(endpoints []recon.EndpointFact) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// dropBareIdorLeafWhenFannedOut removes the bare capability idor leaf a
+// TechFact rule emits (Detector "idor", no EndpointTemplate) when
+// resolveEndpointFacts has already fanned out one or more endpoint-driven
+// idor leaves for the same host (LT-91). The bare leaf only ever reaches
+// execution to be skipped for a missing --endpoint, so once a runnable
+// per-candidate leaf exists it is pure noise. A host with a tech-matched
+// idor capability but zero recon endpoint candidates keeps its bare leaf.
+func dropBareIdorLeafWhenFannedOut(children []*agenttask.PlanNode) []*agenttask.PlanNode {
+	fannedOut := false
+	for _, c := range children {
+		if c.Detector == "idor" && c.EndpointTemplate != "" {
+			fannedOut = true
+			break
+		}
+	}
+	if !fannedOut {
+		return children
+	}
+	kept := children[:0]
+	for _, c := range children {
+		if c.Detector == "idor" && c.EndpointTemplate == "" {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
 }
 
 // newEndpointLeaf builds one Pending leaf for resolveEndpointFacts —

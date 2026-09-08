@@ -426,11 +426,36 @@ func resolveFieldSuggestions(ctx context.Context, result *recon.ReconResult, fb 
 		out = append(out, s)
 	}
 	for _, m := range misses {
+		// LT-91: an idor endpoint_template "miss" (>1 recon candidate, no way
+		// to pick one) is no longer a miss when the decision engine already
+		// fanned out a per-candidate idor leaf for each — every candidate is
+		// being enumerated on its own leaf, so there is nothing for a human or
+		// I4 to resolve. Suppress the escalation rather than raise a
+		// misleading "pick one and re-run".
+		if m.Detector == "idor" && m.Field == "endpoint_template" && treeHasEndpointDrivenIdorLeaf(tree) {
+			continue
+		}
 		if fs := resolveOneFieldMiss(ctx, fb, fbErr, tree, m.Detector, m.Field, m.Candidates, escalations); fs != nil {
 			out = append(out, *fs)
 		}
 	}
 	return out
+}
+
+// treeHasEndpointDrivenIdorLeaf reports whether tree carries at least one
+// idor leaf that already has its own EndpointTemplate (registry's LT-91
+// per-candidate fan-out) — meaning idor's endpoint field needs no further
+// resolution.
+func treeHasEndpointDrivenIdorLeaf(tree *agenttask.PlanTree) bool {
+	if tree == nil {
+		return false
+	}
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if leaf.Detector == "idor" && leaf.EndpointTemplate != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyFieldSuggestion writes a deterministic (non-LLM) recon-derived field
