@@ -4,7 +4,7 @@
 
 Open enhancement items and unresolved review findings, organized by category rather than by when they were raised. Direction: HackerFive is expanding beyond HackerOne-program scanning, so categories here stay useful for detection/reporting work generally. Narrative-style research and decision write-ups live in [discussions.md](discussions.md); this doc is the open-items backlog.
 
-**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-88 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
+**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-88 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
 
 ## Near-term batch — "do now" (raised across the 2026-09-07 linkpop / shop.app / ALSCO runs)
 
@@ -412,6 +412,290 @@ DokuWiki is current (`2026-07-14c "Mort"`); `soporte.nettix.com.pe` throwing
   to report real dispatch progress. **→ Scan-Engine Request Efficiency /
   Phase 9 detector-perf backlog; not demo-blocking (LT-97 sidesteps it).**
 
+### Re-run 2026-09-08 (Step 0 inventory) — seed-host subdomain-enum starvation
+
+- **LT-101 — a `www.<domain>` seed target starves Wave 1 subdomain
+  enumeration; a 39-host surface collapsed to 1.** `hackerfive recon -t
+  https://www.nettix.com.pe --scope '*.nettix.com.pe' --recon-depth full`
+  returned **3 host rows (all `www.` / apex), 10 endpoints, 11 tech facts** —
+  versus the 2026-09-08 earlier round's 24 hosts. Cause: Wave 1 runs
+  `subfinder -d <seedhost>` with the seed host verbatim, so it enumerated
+  subdomains *of* `www.nettix.com.pe` (there are none) instead of the
+  registrable domain `nettix.com.pe`. `subfinder -d nettix.com.pe` run by
+  hand immediately returned **39 names** — `erp` / `ixn` (Dolibarr),
+  `wiki`, `soporte`, `guacamole01`, `nagios`, `cloud01/02`, `gateway`,
+  `mail` / `correo`, plus ~20 app-shaped hosts (`bridgestoneweb`,
+  `chasqui0N`, `polimundo0N`, `sinchi0N`, `gtu0N`, `es01`, `web01-03`,
+  `is-consulting01/02`, `firmas`, …). The apex *was* later derived (Wave 1
+  WHOIS + a `www`→apex redirect both recorded `nettix.com.pe` as a host) but
+  **after** subfinder had already run, so it never fed enumeration. Naabu on
+  the apex did surface port **10000 (Webmin)** and **2000** alongside
+  22/80/443/mail — a surface the `www`-only view hid. **Fix:** before Wave 1,
+  reduce every seed host to its registrable domain (public-suffix list — Go
+  `golang.org/x/net/publicsuffix` is already an indirect dep via `net/http`
+  cookiejar, confirm footprint) and enumerate *that*; keep the original seed
+  host in the probe set. Also: when `--scope` carries `*.<domain>` and the
+  seed is `www.<domain>` or a bare host under it, warn if subfinder returns
+  0 names (it almost always should return ≥1 for a real domain). **→ recon
+  correctness; demo-blocking for the Step 0 inventory — worked around this
+  round by re-seeding at the apex, fix proper in [Phase 8](17-implementation-plan-ph8.md)
+  Step 6 / recon backlog.**
+
+### Apex re-run 2026-09-08 (Step 0 inventory) — 24 hosts, and 5 findings confirmed by hand
+
+`hackerfive recon -t https://nettix.com.pe --scope '*.nettix.com.pe'
+--recon-depth full` → **24 hosts, 66 endpoints, 66 tech facts**. Confirmed
+actionable surface (all read-only GET, owned-target authorization):
+
+| # | Finding | Host(s) | Evidence | Detector status |
+| --- | --- | --- | --- | --- |
+| A | **WordPress REST user enumeration** (CWE-200) | `www.nettix.com.pe` (`x-wp-total: 3`, `admin`/`arodriguez`/`mandrade`), `soporte.nettix.com.pe` (`x-wp-total: 6`, `agarcia` +5) | `GET /wp-json/wp/v2/users/` → 200 `application/json`, real user array | ✅ **`checkWPUserEnum` (PR #2)** — fires on both hosts |
+| B | **Dolibarr ERP 23.0.3 exposed to the internet, outdated** | `erp.nettix.com.pe`, `ixn.nettix.com.pe` | login title `Login @ 23.0.3`; `<meta name="author" content="Dolibarr Development Team">`; `/api/index.php/status` → 200 (login-gated). 23.0.3 < 24.0.0 → CVE-2026-81728 (HIGH 8.6, CSV/XLSX-import SQLi); 23.0.3 < 23.0.4 → CVE-2026-85401 (LOW 2.1, public exploit). *(Earlier "CVE-2026-85401 critical / CVE-2026-19350 / dol_eval RCE" was wrong — NVD-verified 2026-09-08: 85401 is LOW; 19350 not a Dolibarr CVE; the dol_eval RCEs CVE-2026-22666/23500 were fixed in 23.0.2/23.0.0, before 23.0.3.)* | ✅ **`checkDolibarrOutdated` (Step 3, this branch)** — medium finding, fires on both hosts |
+| C | **Nextcloud `status.php` unauthenticated version disclosure** (CWE-200) | `cloud01.nettix.com.pe`, `cloud02.nettix.com.pe` | `GET /status.php` → 200 `{"version":"28.0.5.1","versionstring":"28.0.5","productname":"Nextcloud",…}` no auth | ✅ **`checkNextcloudStatus` (Step 4, this branch)** — `misconfig-nextcloud-status-disclosure` low, always-on when the JSON shape matches |
+| D | **Nextcloud 28.0.5 outdated** (major 28 EOL; maintained 32/33/34, current 34.0.3) | `cloud01`, `cloud02` | versionstring from (C) | ✅ **`checkNextcloudStatus` (Step 4)** — `misconfig-nextcloud-outdated` medium: EOL-major note + 4 NVD-verified sub-28.0.13 CVEs (CVE-2025-47791, CVE-2024-52523/52518/52517, all medium) |
+| E | **phpMyAdmin exposed to the internet** | `chasqui03.nettix.com.pe` (title "Arminet") | `GET /` → 303 to the pma login; `phpMyAdmin` fingerprint | ✅ **`checkPhpMyAdmin` (Step 4)** — `misconfig-phpmyadmin-exposed` medium; probes `/`, `/phpmyadmin/`, `/pma/`, gated on the `pma_username`+`pma_password` form-field pair |
+
+Additional surface not hand-verified this round: **Webmin on :10000** (ns1 /
+web01 / web02 / sinchi01 / firmas / mail / www — behind HTTP Basic, login page
+usually leaks the version), **Apache Guacamole** (`guacamole01`, hostname hint +
+:8443 — LT-9 `hostnameProductHints` should dispatch a `guacamole` leaf), a
+webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
+"Mort" — ruled out). Out-of-scope redirects correctly flagged on
+`chasqui01`→altira.cloud and `ns2`/`ns6`/`gateway`/`sinchi03`→alespinosa.mx
+(LT-64).
+
+**Demo-blockers this run surfaced:**
+
+- **LT-102 ✅ done 2026-09-08.** `classifyAppSurface` (`pkg/recon/aggregate.go`)
+  no longer lets a single host-scoped `UniformResponseFact` force the whole
+  multi-host result to `none`: it counts distinct hosts that served a real
+  application (`endpointShowsRealApp` — a crawled non-asset route, or a 2xx
+  with a non-generic page title; `isGenericPageTitle` filters stock
+  server/landing/challenge pages), and when any host *other* than the walled
+  one qualifies it classifies on the live-endpoint scale (`thin`, or `full`
+  at >3 real-app hosts) with the wall noted in the reason instead of
+  `none`. Single-target recon (every prior live round) is unchanged — no
+  other real-app host ⇒ still `none`. Tests:
+  `TestClassifyAppSurface` (LT-102 cases). Original:
+  **`app_surface` verdict came back `none` ("every recon probe hit a
+  waf-block wall — recon is blind from this vantage") for a 24-host /
+  66-endpoint / 66-tech-fact result that fingerprinted WordPress, Dolibarr,
+  Nextcloud, phpMyAdmin and DokuWiki with real page titles and katana-crawled
+  real Nextcloud/Dolibarr routes.** The earlier 2026-09-08 round on the same
+  target reported `app_surface: full`. `classifyAppSurface` aggregates
+  per-host Wave-3 canary outcomes and tipped to `none` because a majority of
+  hosts are 401-walled (the Webmin/Basic-auth hosts) or catch-all-200
+  (Dolibarr/DokuWiki/mail login pages) — it does not weight the hosts that
+  plainly served distinct real content. **This is LT-68/LT-82 at the aggregate
+  level, and it is demo-blocking: `app_surface: none` suppresses the plan
+  (LT-68), so `plan`/the Web UI Launch against this recon file produces an
+  empty tree.** Fix: `classifyAppSurface` must not return `none` when ≥N hosts
+  each show distinct real content — a non-error `<title>` differing across
+  hosts, a katana-crawled non-asset app route, or a confidently fingerprinted
+  CMS/product. Contributing: LT-38's deferred "scale `waveTimeout` by host
+  count" — wave-2 naabu and wave-3 katana both hit the flat 60 s cap with 24
+  hosts, so each host got a rushed, ambiguous probe. **→ recon correctness;
+  demo-blocking.**
+- **LT-103 ✅ done 2026-09-08.** `recordUniformResponse` (`pkg/recon/crawl.go`)
+  now also drops a `catchall` verdict — not `waf-block` — when
+  `crawlRoutesRefuteCatchall` finds ≥2 distinct non-asset routes that
+  **katana itself extracted and followed** (`Source` contains `katana`,
+  2xx/3xx, path below root, not a static asset) on the host. A storage
+  bucket / SPA shell has no internal links to distinct server-side routes for
+  a crawler to discover, so this stays clear of the model catch-all
+  (linkpop's bucket, whose 200s all came from recon's own fixed-path probe).
+  Complements LT-82's 404-among-200s test with a lower bar for the specific
+  "product login page renders widely but the app routes" shape. Emits an
+  `LT-103` suppression warning. Tests: `TestCrawlRoutesRefuteCatchall`.
+  **Verified live 2026-09-08** (apex re-run): `erp.nettix.com.pe`'s catchall
+  verdict was suppressed ("katana crawled 2 distinct non-asset route(s)…").
+  **Residual:** the sibling `ixn.nettix.com.pe` (identical Dolibarr) was *not*
+  suppressed that run because katana — sharing a flat 60 s wave cap across 24
+  hosts (LT-38, still deferred) — crawled 0 routes on it; an earlier run with
+  more katana budget had crawled 3. So LT-103's correctness depends on katana
+  actually reaching the host, which the flat cap doesn't guarantee on a large
+  estate. A vantage-independent fix — recognise that the uniform "one page"
+  is itself a product login page (title `Login @ <version>`, a known
+  `<meta name="author">`, a product-specific asset path) and treat that as a
+  *login wall*, not a catch-all, in `pkg/uniformwall` — is the real answer
+  and is filed toward LT-38 / a `uniformwall` follow-up. For a **focused**
+  scan (the demo path: 2–6 named hosts, not a 24-host sweep) katana is not
+  starved and LT-103 fires for both Dolibarr hosts.
+  Original: **Dolibarr (`erp`/`ixn`) and DokuWiki (`wiki`) each flagged
+  `uniform SPA/catch-all … no real routing to map` (LT-30 / D6 / LT-43)
+  while katana simultaneously crawled distinct real routes on them**
+  (`erp`/`ixn`: `/index.php`, `/viewimage.php`, `/core/js/lib_head.js.php`,
+  `/api`). A CMS whose *login page* renders for many unauthenticated paths is
+  not a catch-all bucket. LT-82's `crawlEvidenceRefutesWall` suppresses a
+  `catchall`/`waf-block` verdict when the host has ≥5 distinct endpoints
+  spanning a 404 among 2xx — it evidently isn't firing here (too few distinct
+  wave-2/3 endpoints per host after the 60 s cap, or it doesn't cover the
+  Wave-3-canary `catchall` path). **Demo-relevant:** the D6 short-circuit
+  (LT-59) would make `scan` skip the template corpus for `erp`/`ixn`, killing
+  the finding-B path. Fix: extend `crawlEvidenceRefutesWall` to the Wave-3
+  canary `catchall` verdict and lower its distinct-endpoint threshold when a
+  CMS is fingerprinted on the host. **→ recon correctness; demo-relevant.**
+- **Step 3 (version→CVE, native Dolibarr) ✅ done 2026-09-08** — finding B.
+  `pkg/detectors/misconfig`: new always-on `checkDolibarrOutdated` — GET `/`,
+  gate on the exact `<meta name="author" content="Dolibarr Development Team">`
+  tag, parse the version from the login `<title>`'s upstream-deliberate
+  ` @ <version>` suffix (`login.tpl.php`), fall back to the `&version=` on any
+  themed CSS/JS URL, then AND it against a curated NVD-verified
+  `DolibarrCVEs []VersionCVERule` table (`rules.go`) via a local
+  `versionLessThan` (no semver dep — same hand-rolled precedent as
+  `pkg/template/dsl`). Finding `misconfig-dolibarr-outdated`, severity =
+  highest matched CVSS band capped at `high` (never `critical` on a
+  version-only match), confidence `high`. 23.0.3 → medium, cites
+  CVE-2026-81728 + CVE-2026-85401; a 22.x install → high (adds
+  CVE-2026-23500 9.4). Same LT-98-immune shape as `checkWPUserEnum`. Tests:
+  6 cases in `tests/unit/detector_misconfig_test.go` (`TestMisconfigDolibarr_*`).
+  `DolibarrLatestStable` const carries a refresh-date note (24.0.1, checked
+  2026-09-08). Step 5 later lifted `DolibarrCVEs` into the shared
+  `KnownVulnerableVersions` table (see below).
+- **Step 4 (native Nextcloud + phpMyAdmin) ✅ done 2026-09-08** — findings C, D, E.
+  `pkg/detectors/misconfig`, two more always-on checks:
+  - `checkNextcloudStatus` — GET `/status.php`; AND-gate on the
+    `installed`/`version`/`versionstring`/`productname` key set
+    (`nextcloudStatusMarkers`). Always emits `misconfig-nextcloud-status-disclosure`
+    (low, CWE-200). Then, if the parsed `versionstring` is an EOL major
+    (`< nextcloudOldestMaintainedMajor`, 32) **or** below any `NextcloudCVEs`
+    row, also emits `misconfig-nextcloud-outdated` (medium; severity bumps to
+    high only on a matched CVSS ≥ 9.0 — none in the 28-line). `NextcloudCVEs`
+    is 4 NVD-verified rows (fixes in 28.0.11–28.0.13, all medium). Consts
+    `NextcloudLatestStable` (34.0.3) / `nextcloudOldestMaintainedMajor` carry
+    a 2026-09-08 refresh note.
+  - `checkPhpMyAdmin` — probes `/`, `/phpmyadmin/`, `/pma/` (root first: the
+    live host `chasqui03` mounts pma at `/`); AND-gate on the
+    `pma_username`+`pma_password` login-form field pair (unchanged across
+    pma 5.x), baseline-page guard, best-effort `?v=` version from an asset
+    URL. Emits `misconfig-phpmyadmin-exposed` (medium). Not an `ExposedPaths`
+    row because that table has no root-probe semantics and the pair-gate
+    needs an AND.
+  - Shared helper `majorOf`; `firstSubmatchString`/`versionLessThan` reused
+    from Step 3. Tests: 6 cases (`TestMisconfigNextcloudStatus_*`,
+    `TestMisconfigPhpMyAdmin_*`). Full gate green.
+- **Step 5 (generic cross-product version→CVE table + phpMyAdmin/Webmin) ✅ done 2026-09-08.**
+  `pkg/detectors/misconfig`:
+  - `DolibarrCVEs` + `NextcloudCVEs` collapsed into one
+    `KnownVulnerableVersions []VersionCVERule` table; `VersionCVERule` gained a
+    `Product` field (discriminator; `Product*` name consts). Two shared
+    helpers in `detector.go`: `matchKnownCVEs(product, detectedVersion)`
+    (filters the table by product, returns matched rows + the version-only
+    severity band — medium, → high on a matched CVSS ≥ 9.0, never critical)
+    and `formatCVEDetails` (the `"CVE-x (CVSS n.n, fixed in v[, public
+    exploit]): summary"` rendering). `checkDolibarrOutdated` /
+    `checkNextcloudStatus` refactored onto them — identical findings/evidence,
+    ~60 fewer lines.
+  - `checkPhpMyAdmin` now also emits `misconfig-phpmyadmin-outdated` when the
+    `?v=` asset version is below a `KnownVulnerableVersions` phpMyAdmin row.
+    Rows: CVE-2025-24530 + CVE-2025-24529 (both PMASA-2025, fixed 5.2.2,
+    medium/CVSS 6.4, NVD-verified 2026-09-08). `PhpMyAdminLatestStable` =
+    5.2.3. The live `chasqui03` 5.2.1 login page now yields exposure **+**
+    outdated.
+  - New always-on `checkWebmin` — GET `/`, hard gate on the
+    `Server: MiniServ` header (the bespoke server behind Webmin/Usermin/
+    Virtualmin, nothing else), confirmed by `session_login.cgi` in the body,
+    version from the `MiniServ/<ver>` token. Emits
+    `misconfig-webmin-login-exposed` (medium — a root-priv admin panel on the
+    open internet) and, below a fix line, `misconfig-webmin-outdated`. One
+    NVD-verified row: CVE-2026-56020 (miniserv.pl SSL-client-cert DN spoof /
+    auth bypass, fixed 2.202, critical/CVSS v4 9.2 → outdated finding is
+    high). Two other 2026 Webmin XSS/file-disclosure CVEs deliberately
+    omitted — secondary sources disagree on the fix version (`2.641` vs
+    `2.202`); flagged, not guessed. `WebminLatestStable` = 2.202.
+  - Negative control: `TestMisconfigNativeChecks_DokuWikiNegativeControl` —
+    a DokuWiki root (`wiki.nettix.com.pe`; release names "Mort"/"Igor", no
+    dotted version) plus 404 for every product probe path → zero product
+    findings. Tests: `TestMisconfigPhpMyAdmin_{Outdated_Hit,Current_ExposedOnly}`,
+    `TestMisconfigWebmin_{Exposed_Hit,Current_ExposedOnly,NotMiniServ_NoFinding}`,
+    the DokuWiki control. Full gate green (`build`/`vet`/`test -race`/
+    `golangci-lint` 0 issues).
+  - **Follow-up:** `checkWebmin` adds a 4th GET `/` per run (also done by
+    `checkDolibarrOutdated`, `checkCommentLeaks`, `checkMissingHeaders`) —
+    a root-response cache shared across the misconfig checks would remove all
+    the duplication. Logged, not demo-blocking.
+- **LT-104 — `wiki.nettix.com.pe/{api,graphql,swagger/v1/swagger.json}`
+  recorded as `wave3-common-path-probe` endpoints (status 200) on a host
+  recon *also* flagged catch-all** — LT-66's per-endpoint bucket-catch-all
+  cleanup confirmed still open, live. These are false endpoints (DokuWiki
+  serving its index for every path). Fix per LT-66 tail: when
+  `UniformResponse.Kind == "catchall"`, drop that host's
+  `wave3-common-path-probe` endpoints unless the body hash differs across ≥2
+  probed paths.
+- **LT-105 — `WordPress:7.1` tech fact on `www.nettix.com.pe`.** WordPress
+  core is 6.x; "7.1" is a misparse (a plugin / Block-Editor asset version
+  bleeding into the core product fact — cf. LT-21's cache-hash-as-version).
+  A wrong core version poisons any affected-version CVE gating (P0-1b / LT-7 /
+  Phase 8 Step 5) — it must be shape-validated / sourced from
+  `/wp-includes/version.php`-adjacent signals, not an httpx `-tech-detect`
+  guess. **→ recon fingerprint correctness.**
+
+### Capability-gap review (2026-09-08, demo-prep) — recon depth / param surface
+
+Three recon-completeness gaps raised while reviewing what would widen *real
+actionable* findings on nettix and future targets. Priorities are relative to
+the general roadmap, **not** the 2026-09-10 nettix demo — nettix is WordPress +
+Dolibarr (server-rendered), so none of these three change the demo finding set;
+they matter for the modern-SPA / API targets that dominated the four prior live
+rounds.
+
+- **LT-99 — no headless / JS-rendered crawl; katana's default pass misses
+  `fetch()`-driven API calls.** Live-confirmed against crAPI (Step E,
+  2026-09-08): non-headless katana on crAPI's React root found **4 endpoints /
+  0 IDOR candidates**, versus 40 routes from the ingested OpenAPI spec — the
+  entire XHR/`fetch` API surface of a SPA is invisible to a link-following
+  crawl. This is **LT-8's still-open tail** ("the opt-in headless/JS-rendered
+  katana mode"), now with a concrete yield measurement. Direction is settled:
+  opt-in `katana -hl` (headless Chromium — already installed in WSL,
+  `~/.cache/ms-playwright`), gated behind `--recon-depth full` or an explicit
+  `--headless-crawl` flag so the request cost and browser dependency are
+  opt-in; **not** a second crawler. Pairs with LT-89 (`--openapi-spec`
+  ingest already covers the case where a spec exists; headless crawl is the
+  fallback when it doesn't). **→ Scheduled 2026-09-08 as [Phase 8](17-implementation-plan-ph8.md)
+  Step 6's third tranche (6c)** — promoted from this backlog to a real step
+  (Design + Files + Verification + DoD line) on the strength of the crAPI
+  yield measurement; supersedes LT-8's open tail. Post-demo; real, high
+  general value, zero nettix-demo value.
+- **LT-100 — no hidden-parameter mining (Arjun-style).** HackerFive discovers
+  parameters only from what recon literally observes (crawled query strings,
+  spec `parameters`, JS-extracted names); a param that the app honours but
+  never advertises — the classic source of reflected-XSS / LFI / SSRF / IDOR
+  on a real target — is never found. No Go-native equivalent exists, so this
+  is a **first-party addition on top of the existing rate-limited
+  `httpclient`**, not a new dependency: a curated candidate-name wordlist
+  (start small — a few hundred high-signal names: `id`, `user`, `file`,
+  `url`, `redirect`, `debug`, `admin`, `callback`, `path`, `template`, …),
+  chunked many-per-request with binary-search narrowing on a hit, and a
+  response-diff oracle (reflection of the sent token, status-class change,
+  body-length bucket shift, param-count echo in a validation error). Feeds
+  the existing `idor` / `ssrf` / redirect leaves and the Phase 9 injection
+  detectors directly. **Risks to design against:** response-diffing is noisy
+  (must stay inside the <5%-FP target — require ≥2 corroborating signals
+  before emitting), and the request volume interacts with LT-98's shared
+  rate-limiter (budget it like content-discovery: `--recon-depth full` only,
+  hard request cap per host). Pairs with LT-83 (numeric query-param ID
+  candidates), LT-96 (body-param SSRF). **→ Scheduled 2026-09-08 as
+  [Phase 8](17-implementation-plan-ph8.md) Step 6's third tranche (6c)** —
+  promoted from this backlog to a real step (Design + Files + Verification +
+  DoD line), and the "Explicitly out of scope" parameter-fuzzing note narrowed
+  to distinguish this first-party diff-oracle pass from ffuf-as-a-tool (still
+  out). Its *active* consumption pairs with [Phase 9](18-implementation-plan-ph9.md)
+  Step 4. Post-demo; arguably higher long-term actionable-finding value than
+  LT-99. No nettix-demo value (the interesting params on WP/Dolibarr are
+  auth-gated).
+- **ffuf-style multi-position fuzzing — reaffirmed out of scope** (was Phase 8
+  Step 6's out-of-scope note; restated here so it isn't re-evaluated blind).
+  Real capability gap, but deliberately deferred: (1) content discovery is
+  already handled by riding `httpx -path` with a curated embedded wordlist
+  (no second traffic-generating tool); (2) parameter discovery is better
+  served first-party by LT-100's targeted diff-oracle than by a generic
+  multi-thousand-request `FUZZ` sweep; (3) the request volume of true
+  multi-position fuzzing (`FUZZ` in path × header × param simultaneously,
+  large wordlists) does not reconcile with the shared `--rate-limit` bucket
+  or LT-98's per-target starvation. **→ Parked** (see the Parked section);
+  un-parks only if a live engagement shows a concrete surface that LT-100 +
+  `httpx -path` provably can't reach.
+
 ## Scan-Engine Request Efficiency
 
 Design-review follow-on to LT-18 (2026-09-06), which closed causes (a)–(d) of "a scan spends its wall-clock on work unrelated to the target". These two are the remaining cut: the executor re-issues *identical* HTTP requests it has no reason to. Both scheduled [Phase 7](16-implementation-plan-ph7.md) Step 4 (new item **D5**) — they share one `pkg/template/nuclei` plumbing pass and one correctness-carve-out review.
@@ -474,6 +758,7 @@ measurement. Not scheduled into any phase; each entry names what would un-park i
 - **Template signing.** Premature while every template is project-authored or pinned-upstream. Un-parks when a community repo starts accepting outside template submissions. Not in [Phase 7](16-implementation-plan-ph7.md)'s ecosystem step as scoped (that's a staging dir + human promotion, no signing).
 - **DOM-based XSS via Chromedp.** Passive/reflected template XSS covers the bulk at far lower cost; Chromedp adds a dependency + a sandboxing burden, and [Phase 8](17-implementation-plan-ph8.md) / [Phase 9](18-implementation-plan-ph9.md) explicitly keep it out (first-party DOM-XSS validation stays its own sandboxed item). Un-parks when [Phase 7](16-implementation-plan-ph7.md) Step 7 / [Phase 9](18-implementation-plan-ph9.md) Step 4 eval numbers show reflected-XSS live yield justifies the cost.
 - **Playwright/Caido-style richer recon signal** (JS-rendered DOM crawl + traffic analysis as a passive recon wave). Largely overlaps [Phase 8](17-implementation-plan-ph8.md) Step 3 (JS static analysis) + Step 6 (katana JS-rendered crawl). Un-parks when those land and a concrete residual delta (full request/response capture, real browser automation) is worth sizing.
+- **ffuf-style multi-position fuzzing as its own tool.** Reaffirmed out of scope 2026-09-08 (detail in the "Capability-gap review" above): content discovery already rides `httpx -path`; parameter discovery is better served first-party by LT-100's diff-oracle; and true multi-position `FUZZ` volume doesn't reconcile with the shared rate limiter / LT-98. Un-parks only if a live engagement surfaces something LT-100 + `httpx -path` provably cannot reach.
 - **Baseline-mode account provisioning guidance** for a real bounty/VDP target — only lab-target-specific steps exist ([20-setup-testing-targets.md](20-setup-testing-targets.md)). Un-parks when a real engagement needs it — write the guidance from that engagement.
 - **Self-hosted `interactsh-server`.** The public-server default (retry-hardened, `pkg/oob`) covers owned-site scanning. Un-parks when a real third-party engagement needs a private OOB server (operational, not code).
 

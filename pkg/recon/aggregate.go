@@ -2,6 +2,7 @@ package recon
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -205,22 +206,55 @@ func (a *aggregator) finalize() *ReconResult {
 // (LT-68) from facts already collected. Deterministic and conservative: it
 // only says "none" when a wall verdict is set or nothing served real
 // content at all.
+//
+// LT-102: a UniformResponseFact is host-scoped (it names one host). On a
+// multi-host recon result it must not, by itself, condemn the whole result
+// to "none" — the four prior live rounds were all single walled hosts, but
+// against a real estate of 20+ subdomains one WAF/catch-all host is normal
+// while other hosts serve real applications. So the wall verdict is only
+// honoured as "recon is blind" when no *other* host mapped a real
+// application surface; otherwise the result is classified on the same
+// live-endpoint scale as a wall-free run, with the wall noted in the reason.
 func classifyAppSurface(endpoints []EndpointFact, tech []TechFact, uniform *UniformResponseFact) *AppSurfaceFact {
-	if uniform != nil {
-		return &AppSurfaceFact{
-			Verdict: "none",
-			Reason:  fmt.Sprintf("every recon probe hit a %s wall — recon is blind from this vantage", uniform.Kind),
-		}
-	}
 	live2xx, redirects := 0, 0
+	realAppHosts := map[string]bool{}
 	for _, ep := range endpoints {
 		switch {
 		case ep.StatusCode >= 200 && ep.StatusCode < 300:
 			live2xx++
+			if endpointShowsRealApp(ep) {
+				if h := endpointHostNorm(ep.URL); h != "" {
+					realAppHosts[h] = true
+				}
+			}
 		case ep.StatusCode >= 300 && ep.StatusCode < 400:
 			redirects++
 		}
 	}
+
+	if uniform != nil {
+		blindReason := fmt.Sprintf("every recon probe hit a %s wall — recon is blind from this vantage", uniform.Kind)
+		blind := true
+		for h := range realAppHosts {
+			if h != NormalizeHost(uniform.Host) {
+				blind = false
+				break
+			}
+		}
+		if blind {
+			return &AppSurfaceFact{Verdict: "none", Reason: blindReason}
+		}
+		verdict := "thin"
+		if len(realAppHosts) > 3 {
+			verdict = "full"
+		}
+		return &AppSurfaceFact{
+			Verdict: verdict,
+			Reason: fmt.Sprintf("%d host(s) mapped a real application surface (a %s wall on %s notwithstanding)",
+				len(realAppHosts), uniform.Kind, uniform.Host),
+		}
+	}
+
 	switch {
 	case live2xx == 0 && len(tech) == 0:
 		reason := "no endpoint served a 2xx response and no technology was fingerprinted"
@@ -235,4 +269,57 @@ func classifyAppSurface(endpoints []EndpointFact, tech []TechFact, uniform *Unif
 	default:
 		return &AppSurfaceFact{Verdict: "full", Reason: fmt.Sprintf("%d endpoint(s) served real content", live2xx)}
 	}
+}
+
+// endpointShowsRealApp reports whether a 2xx EndpointFact is evidence its
+// host runs an actual application — not a default server page, a
+// challenge/error page, or a bare asset. Used only by classifyAppSurface's
+// LT-102 multi-host guard, so it errs toward "yes": a crawled non-asset
+// route, or any non-generic page title, is enough.
+func endpointShowsRealApp(ep EndpointFact) bool {
+	if ep.StatusCode < 200 || ep.StatusCode >= 300 {
+		return false
+	}
+	if p := endpointPathOf(ep.URL); p != "" && p != "/" && !IsStaticAssetPath(p) {
+		return true
+	}
+	t := strings.TrimSpace(ep.Title)
+	return t != "" && !isGenericPageTitle(t)
+}
+
+// isGenericPageTitle matches the small set of page titles that mean "reachable
+// but not an application" — a stock web-server landing page or a
+// WAF/auth/error interstitial. Substring, case-insensitive.
+func isGenericPageTitle(title string) bool {
+	lt := strings.ToLower(title)
+	for _, s := range []string{
+		"401 authorization required", "403 forbidden", "404 not found",
+		"400 bad request", "access denied", "attention required",
+		"just a moment", "welcome to nginx", "apache http server test page",
+		"apache2 ubuntu default page", "test page for the", "it works!",
+		"site not found", "default web site page",
+	} {
+		if strings.Contains(lt, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointHostNorm is NormalizeHost of a URL's hostname ("" if unparseable).
+func endpointHostNorm(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	return NormalizeHost(u.Hostname())
+}
+
+// endpointPathOf returns a URL's path ("" if unparseable).
+func endpointPathOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Path
 }

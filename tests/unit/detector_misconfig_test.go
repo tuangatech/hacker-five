@@ -744,6 +744,389 @@ func TestMisconfigWPUserEnum_HTMLNotJSON_NoFinding(t *testing.T) {
 	assert.Empty(t, withPrefix(findings, "misconfig-wordpress-user-enumeration"))
 }
 
-// wpUsersJSONArray is a trimmed-down but structurally real
-// /wp-json/wp/v2/users/ response body — a JSON array of user objects, each
-// carrying id/name/slug. The slug is the accounts
+// dolibarrLoginHTML is a trimmed-but-structurally-real Dolibarr login page:
+// the author <meta> top_htmlhead() always prints, the " @ <version>" the
+// login template deliberately appends to <title> (login.tpl.php), and one
+// themed asset URL carrying "&amp;version=<DOL_VERSION>". Two %s: the title
+// version and the asset version (usually identical; kept separate so a test
+// can exercise the asset-URL fallback alone).
+const dolibarrLoginHTML = `<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<meta name="author" content="Dolibarr Development Team">
+<title>Login @ %s</title>
+<link rel="stylesheet" type="text/css" href="/theme/eldy/style.css.php?lang=es&amp;theme=eldy&amp;version=%s&amp;revision=0">
+</head><body><form id="login" method="POST"><input name="username"></form></body></html>`
+
+func runDolibarrRoot(t *testing.T, titleVer, assetVer string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, dolibarrLoginHTML, titleVer, assetVer)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigDolibarr_Outdated_Hit: erp/ixn.nettix.com.pe run Dolibarr
+// 23.0.3, which is < 24.0.0 (CVE-2026-81728) and < 23.0.4 (CVE-2026-85401)
+// but not the two older RCEs already fixed by 23.0.2 — so exactly two CVEs
+// match and, with no CVSS >= 9.0 among them, the finding is medium.
+func TestMisconfigDolibarr_Outdated_Hit(t *testing.T) {
+	got := withPrefix(runDolibarrRoot(t, "23.0.3", "23.0.3"), "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1)
+	assert.Equal(t, "misconfig", got[0].Type)
+	assert.Equal(t, "medium", got[0].Severity)
+	assert.Equal(t, "high", got[0].Confidence)
+	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
+	assert.Contains(t, got[0].Evidence["cves"], "CVE-2026-81728")
+	assert.Contains(t, got[0].Evidence["cves"], "CVE-2026-85401")
+	assert.NotContains(t, got[0].Evidence["cves"], "CVE-2026-22666")
+	assert.NotContains(t, got[0].Evidence["cves"], "CVE-2026-23500")
+}
+
+// TestMisconfigDolibarr_OldMajor_HighSeverity: a 22.0.1 install is behind
+// every row in the table, including the 9.4-CVSS ODT command injection, so
+// all four CVEs match and the finding escalates to high.
+func TestMisconfigDolibarr_OldMajor_HighSeverity(t *testing.T) {
+	got := withPrefix(runDolibarrRoot(t, "22.0.1", "22.0.1"), "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1)
+	assert.Equal(t, "high", got[0].Severity)
+	for _, cve := range []string{"CVE-2026-81728", "CVE-2026-85401", "CVE-2026-22666", "CVE-2026-23500"} {
+		assert.Contains(t, got[0].Evidence["cves"], cve)
+	}
+}
+
+// TestMisconfigDolibarr_Current_NoFinding: the latest stable release matches
+// no row — nothing to report.
+func TestMisconfigDolibarr_Current_NoFinding(t *testing.T) {
+	assert.Empty(t, withPrefix(runDolibarrRoot(t, "24.0.1", "24.0.1"), "misconfig-dolibarr-outdated"))
+}
+
+// TestMisconfigDolibarr_AssetVersionFallback_Hit: a skin whose <title> has no
+// " @ <version>" suffix still discloses the version in every themed asset
+// URL — the check must fall back to that.
+func TestMisconfigDolibarr_AssetVersionFallback_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!doctype html><html><head>` +
+				`<meta name="author" content="Dolibarr Development Team">` +
+				`<title>Iniciar sesión</title>` +
+				`<link rel="stylesheet" href="/theme/eldy/style.css.php?theme=eldy&amp;version=23.0.3&amp;revision=1">` +
+				`</head><body>x</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	got := withPrefix(findings, "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1)
+	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
+}
+
+// TestMisconfigDolibarr_NotDolibarr_NoFinding: a non-Dolibarr page that
+// happens to carry " @ 23.0.3" in its title must not match — the author
+// <meta> gate is mandatory.
+func TestMisconfigDolibarr_NotDolibarr_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!doctype html><html><head><title>Build @ 23.0.3</title></head><body>x</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-dolibarr-outdated"))
+}
+
+// TestMisconfigDolibarr_VersionNotDisclosed_NoFinding: confirmed Dolibarr
+// (author <meta> present) but neither the title nor an asset URL carries a
+// version — the check declines rather than guessing.
+func TestMisconfigDolibarr_VersionNotDisclosed_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!doctype html><html><head>` +
+				`<meta name="author" content="Dolibarr Development Team">` +
+				`<title>Iniciar sesión</title></head><body>x</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-dolibarr-outdated"))
+}
+
+// nextcloudStatusJSON is the exact key set status.php emits (nextcloud/server
+// builds the array literally). %[1]s is the versionstring, reused for the
+// 4-segment "version".
+const nextcloudStatusJSON = `{"installed":true,"maintenance":false,"needsDbUpgrade":false,` +
+	`"version":"%[1]s.1","versionstring":"%[1]s","edition":"","productname":"Nextcloud","extendedSupport":false}`
+
+func runNextcloudStatus(t *testing.T, versionstring string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.NextcloudStatusPath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, nextcloudStatusJSON, versionstring)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigNextcloudStatus_DisclosureAndOutdated: cloud01/cloud02 run
+// 28.0.5 — an EOL major that is also below every row in NextcloudCVEs, so
+// both the always-on disclosure finding and the outdated finding fire.
+func TestMisconfigNextcloudStatus_DisclosureAndOutdated(t *testing.T) {
+	findings := runNextcloudStatus(t, "28.0.5")
+
+	disc := withPrefix(findings, "misconfig-nextcloud-status-disclosure")
+	require.Len(t, disc, 1)
+	assert.Equal(t, "low", disc[0].Severity)
+	assert.Equal(t, "28.0.5", disc[0].Evidence["versionstring"])
+
+	old := withPrefix(findings, "misconfig-nextcloud-outdated")
+	require.Len(t, old, 1)
+	assert.Equal(t, "medium", old[0].Severity)
+	assert.Equal(t, "high", old[0].Confidence)
+	assert.Contains(t, old[0].Description, "end-of-life")
+	for _, cve := range []string{"CVE-2025-47791", "CVE-2024-52523", "CVE-2024-52518", "CVE-2024-52517"} {
+		assert.Contains(t, old[0].Evidence["cves"], cve)
+	}
+}
+
+// TestMisconfigNextcloudStatus_Current_DisclosureOnly: the current stable
+// still leaks its build over /status.php (low), but there is nothing
+// "outdated" to report.
+func TestMisconfigNextcloudStatus_Current_DisclosureOnly(t *testing.T) {
+	findings := runNextcloudStatus(t, "34.0.3")
+	assert.Len(t, withPrefix(findings, "misconfig-nextcloud-status-disclosure"), 1)
+	assert.Empty(t, withPrefix(findings, "misconfig-nextcloud-outdated"))
+}
+
+// TestMisconfigNextcloudStatus_NotNextcloud_NoFinding: a 200 JSON body that
+// isn't status.php's key set must not match.
+func TestMisconfigNextcloudStatus_NotNextcloud_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.NextcloudStatusPath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok","uptime":123}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-nextcloud-status-disclosure"))
+	assert.Empty(t, withPrefix(findings, "misconfig-nextcloud-outdated"))
+}
+
+const pmaLoginHTML = `<!doctype html><html><head><title>phpMyAdmin</title>` +
+	`<link rel="stylesheet" href="./phpmyadmin.css.php?v=5.2.1&nocache=1">` +
+	`</head><body><form method="post" action="index.php">` +
+	`<input type="text" name="pma_username" id="input_username">` +
+	`<input type="password" name="pma_password" id="input_password">` +
+	`</form></body></html>`
+
+// TestMisconfigPhpMyAdmin_RootMounted_Hit: chasqui03.nettix.com.pe serves
+// phpMyAdmin straight off the site root.
+func TestMisconfigPhpMyAdmin_RootMounted_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(pmaLoginHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	got := withPrefix(findings, "misconfig-phpmyadmin-exposed")
+	require.Len(t, got, 1)
+	assert.Equal(t, "medium", got[0].Severity)
+	assert.Equal(t, "5.2.1", got[0].Evidence["version"])
+}
+
+// TestMisconfigPhpMyAdmin_Subpath_Hit: the conventional /phpmyadmin/ mount,
+// with the site root serving something else entirely.
+func TestMisconfigPhpMyAdmin_Subpath_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/phpmyadmin/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(pmaLoginHTML))
+		case "/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><body>company site</body></html>`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	got := withPrefix(findings, "misconfig-phpmyadmin-exposed")
+	require.Len(t, got, 1)
+	assert.Equal(t, "/phpmyadmin/", got[0].Evidence["path"])
+}
+
+// TestMisconfigPhpMyAdmin_GenericLogin_NoFinding: another product's login
+// form (no pma_username/pma_password pair) must not match.
+func TestMisconfigPhpMyAdmin_GenericLogin_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><form><input name="username"><input name="password" type="password"></form></body></html>`))
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-phpmyadmin-exposed"))
+}
+
+// pmaLoginHTMLVer templates pmaLoginHTML's "?v=" asset version so a test can
+// pick which phpMyAdmin release the login page claims. One %s.
+const pmaLoginHTMLVer = `<!doctype html><html><head><title>phpMyAdmin</title>` +
+	`<link rel="stylesheet" href="./phpmyadmin.css.php?v=%s&nocache=1">` +
+	`</head><body><form method="post" action="index.php">` +
+	`<input type="text" name="pma_username" id="input_username">` +
+	`<input type="password" name="pma_password" id="input_password">` +
+	`</form></body></html>`
+
+func runPhpMyAdminRoot(t *testing.T, assetVer string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, pmaLoginHTMLVer, assetVer)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigPhpMyAdmin_Outdated_Hit: the 5.2.1 login page chasqui03 serves
+// is below the 5.2.2 fix line of both PMASA-2025 XSS CVEs, so the exposure
+// finding is joined by a version-only "outdated" finding (medium — neither
+// CVE scores >= 9.0).
+func TestMisconfigPhpMyAdmin_Outdated_Hit(t *testing.T) {
+	findings := runPhpMyAdminRoot(t, "5.2.1")
+	require.Len(t, withPrefix(findings, "misconfig-phpmyadmin-exposed"), 1)
+
+	out := withPrefix(findings, "misconfig-phpmyadmin-outdated")
+	require.Len(t, out, 1)
+	assert.Equal(t, "medium", out[0].Severity)
+	assert.Equal(t, "high", out[0].Confidence)
+	assert.Equal(t, "5.2.1", out[0].Evidence["version"])
+	assert.Contains(t, out[0].Evidence["cves"], "CVE-2025-24530")
+	assert.Contains(t, out[0].Evidence["cves"], "CVE-2025-24529")
+}
+
+// TestMisconfigPhpMyAdmin_Current_ExposedOnly: a current-release login page is
+// still an exposure finding, but there is nothing outdated to report.
+func TestMisconfigPhpMyAdmin_Current_ExposedOnly(t *testing.T) {
+	findings := runPhpMyAdminRoot(t, "5.2.3")
+	assert.Len(t, withPrefix(findings, "misconfig-phpmyadmin-exposed"), 1)
+	assert.Empty(t, withPrefix(findings, "misconfig-phpmyadmin-outdated"))
+}
+
+// webminLoginHTML is a trimmed Webmin session login page — both the legacy
+// and authentic-theme templates post the form to session_login.cgi with
+// name="user"/name="pass" fields.
+const webminLoginHTML = `<!doctype html><html><head><title>Login to Webmin</title></head>` +
+	`<body onload="document.forms[0].user.focus()">` +
+	`<form action="/session_login.cgi" method="post">` +
+	`<input type="hidden" name="page" value="/">` +
+	`<input name="user" size="20"><input type="password" name="pass" size="20">` +
+	`<input type="submit" value="Sign in"></form></body></html>`
+
+func runWebminRoot(t *testing.T, serverHeader string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Server", serverHeader)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(webminLoginHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigWebmin_Exposed_Hit: a MiniServ/2.111 login page is both an
+// exposure finding and, being below the 2.202 fix line of the critical
+// CVE-2026-56020 miniserv.pl auth bypass (CVSS 9.2), an outdated finding that
+// escalates to high.
+func TestMisconfigWebmin_Exposed_Hit(t *testing.T) {
+	findings := runWebminRoot(t, "MiniServ/2.111")
+
+	exp := withPrefix(findings, "misconfig-webmin-login-exposed")
+	require.Len(t, exp, 1)
+	assert.Equal(t, "medium", exp[0].Severity)
+	assert.Equal(t, "high", exp[0].Confidence)
+	assert.Equal(t, "2.111", exp[0].Evidence["version"])
+
+	out := withPrefix(findings, "misconfig-webmin-outdated")
+	require.Len(t, out, 1)
+	assert.Equal(t, "high", out[0].Severity)
+	assert.Contains(t, out[0].Evidence["cves"], "CVE-2026-56020")
+}
+
+// TestMisconfigWebmin_Current_ExposedOnly: the current release is still a
+// root panel on the open internet (exposure finding), with nothing outdated.
+func TestMisconfigWebmin_Current_ExposedOnly(t *testing.T) {
+	findings := runWebminRoot(t, "MiniServ/2.202")
+	assert.Len(t, withPrefix(findings, "misconfig-webmin-login-exposed"), 1)
+	assert.Empty(t, withPrefix(findings, "misconfig-webmin-outdated"))
+}
+
+// TestMisconfigWebmin_NotMiniServ_NoFinding: the session_login.cgi marker in
+// the body is not enough without the MiniServ Server header.
+func TestMisconfigWebmin_NotMiniServ_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Server", "Apache/2.4.58")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(webminLoginHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-webmin-login-exposed"))
+	assert.Empty(t, withPrefix(findings, "misconfig-webmin-outdated"))
+}
+
+// TestMisconfigNativeChecks_DokuWikiNegativeControl: wiki.nettix.com.pe runs
+// DokuWiki (release names "Mort"/"Igor", never a dotted version). None of the
+// four native version→CVE checks fingerprint DokuWiki, so a DokuWiki root
+// plus a 404 for every product-specific probe path must produce no
+// product finding at all — the explicit false-positive guard for Step 5's
+// shared KnownVulnerableVersions table.
+func TestMisconfigNativeChecks_DokuWikiNegativeControl(t *testing.T) {
+	const dokuwikiHTML = `<!doctype html><html lang="en"><head>` +
+		`<meta name="generator" content="DokuWiki">` +
+		`<title>start [nettix wiki]</title>` +
+		`<link rel="stylesheet" href="/lib/exe/css.php?t=dokuwiki&tseed=abc123">` +
+		`</head><body><form action="/doku.php" method="post">` +
+		`<input type="text" name="u"><input type="password" name="p"></form></body></html>`
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Server", "Apache")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(dokuwikiHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	for _, prefix := range []string{
+		"misconfig-dolibarr-outdated",
+		"misconfig-nextcloud-status-disclosure",
+		"misconfig-nextcloud-outdated",
+		"misconfig-phpmyadmin-exposed",
+		"misconfig-phpmyadmin-outdated",
+		"misconfig-webmin-login-exposed",
+		"misconfig-webmin-outdated",
+		"misconfig-wordpress-user-enumeration",
+	} {
+		assert.Empty(t, withPrefix(findings, prefix), "DokuWiki root must not match %s", prefix)
+	}
+}
