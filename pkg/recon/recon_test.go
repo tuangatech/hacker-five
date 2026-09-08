@@ -396,6 +396,36 @@ func TestWithWaveTimeout_WarningNamesConfiguredCap(t *testing.T) {
 	assert.NotContains(t, joined, "1m0s")
 }
 
+// TestRunWave1_DropsMalformedSubfinderHosts guards LT-112: a passive source
+// that emits an FTP-banner-prefixed value ("220-...") must not carry it into
+// the candidate set, and the drop must be visible in Warnings rather than
+// silently poisoning the httpx batch.
+func TestRunWave1_DropsMalformedSubfinderHosts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+
+	fake := func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
+		if name == "subfinder" {
+			return []byte(
+				`{"host":"220-sinchi01.nettix.com.pe"}` + "\n" +
+					`{"host":"good.nettix.com.pe"}` + "\n"), nil
+		}
+		return nil, nil
+	}
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthPassive)
+	require.NoError(t, err)
+
+	joined := strings.Join(result.Warnings, " | ")
+	assert.Contains(t, joined, "LT-112")
+	assert.Contains(t, joined, "220-sinchi01.nettix.com.pe", "the dropped value should be shown in the warning")
+
+	for _, h := range result.Hosts {
+		assert.NotEqual(t, "220-sinchi01.nettix.com.pe", h.Host, "the malformed host must never reach the result")
+	}
+}
+
 func TestRun_MissingBinaries_DegradesToWarningsNotFailure(t *testing.T) {
 	fn := func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
 		return nil, &errBinaryMissing{name: name}

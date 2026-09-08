@@ -347,6 +347,14 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 			}
 		}
 	}
+	// LT-112 (docs/follow-up.md): httpx exits 0 with no output both when
+	// every host is genuinely down and when it rejected the input outright
+	// (one malformed line in an `-l`/stdin batch does the latter silently).
+	// A non-timeout empty result for a non-empty host list is worth a
+	// warning, not a silent "nothing is alive".
+	if len(hostFacts) == 0 && len(hosts) > 0 && !isWaveTimeout(err) {
+		agg.addWarning("wave2: httpx returned no live host for %d input(s) — either none responded or httpx rejected the batch (LT-112)", len(hosts))
+	}
 	return urls, hostFacts
 }
 
