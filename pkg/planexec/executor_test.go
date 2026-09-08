@@ -647,6 +647,65 @@ func TestRunPlan_LeafEndpointTemplate_RunsWithoutSeedOrLLM(t *testing.T) {
 	}
 }
 
+// TestRunPlan_LeafProtectedPaths_RunsWithoutBaseCfgPreFill covers LT-94: an
+// endpoint-driven authbypass leaf that carries its own ProtectedPaths on the
+// PlanNode passes the pre-dispatch gate and probes them — no baseCfg
+// pre-fill by the caller, no SeedFn, no LLM.
+func TestRunPlan_LeafProtectedPaths_RunsWithoutBaseCfgPreFill(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK) // 200 with no auth -> a missing-auth finding
+	}))
+	defer srv.Close()
+
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "ab", Target: srv.URL, Detector: "authbypass", Status: agenttask.StatusPending,
+			ProtectedPaths: []string{"/admin/settings", "/api/private"}},
+		{ID: "ab-bare", Target: srv.URL, Detector: "authbypass", Status: agenttask.StatusPending},
+	}}}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 200, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	findings, _, skipped, err := RunPlan(context.Background(), tree, baseCfg, nil, ExecOptions{DetConcurrency: 1, LLMConcurrency: 1})
+	if err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+
+	bareSkipped, carriedSkipped := false, false
+	for _, s := range skipped {
+		if strings.HasPrefix(s, "ab-bare:") {
+			bareSkipped = true
+		}
+		if strings.HasPrefix(s, "ab:") {
+			carriedSkipped = true
+		}
+	}
+	if !bareSkipped {
+		t.Fatalf("the authbypass leaf with no protected paths anywhere must still be skipped; got %v", skipped)
+	}
+	if carriedSkipped {
+		t.Fatalf("the leaf carrying its own ProtectedPaths must run, not skip; got %v", skipped)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	hitAdmin := false
+	for _, p := range paths {
+		if p == "/admin/settings" {
+			hitAdmin = true
+		}
+	}
+	if !hitAdmin {
+		t.Fatalf("expected authbypass to probe /admin/settings; saw %v", paths)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected a missing-auth finding from the 200-without-auth endpoint")
+	}
+}
+
 // TestRunPlan_HigherPriorityDispatchedFirst: with DetConcurrency 1 the pool
 // runs leaves in submit order, which C7a sorts by descending Priority.
 func TestRunPlan_HigherPriorityDispatchedFirst(t *testing.T) {

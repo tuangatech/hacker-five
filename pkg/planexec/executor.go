@@ -345,10 +345,34 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 // doesn't. Every other leaf/detector falls through to the baseCfg check
 // unchanged.
 func missingRequiredFieldForLeaf(leaf *agenttask.PlanNode, cfg scanner.Config) string {
-	if leaf.Detector == "idor" && leaf.EndpointTemplate != "" {
-		cfg.EndpointTemplate = leaf.EndpointTemplate
-	}
+	applyLeafReconFields(&cfg, leaf, nil)
 	return missingRequiredField(leaf.Detector, cfg)
+}
+
+// applyLeafReconFields copies the recon-derived required-field values a
+// registry endpoint-driven leaf carries (LT-91 idor EndpointTemplate, LT-94
+// authbypass ProtectedPaths / ssrf SSRFParams) into any still-blank cfg
+// field. An explicit flag, a baseCfg auto-fill, or a C7a seed all win. When
+// notify is non-nil a line is logged for each field actually filled.
+func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify func(string)) {
+	if leaf.EndpointTemplate != "" && cfg.EndpointTemplate == "" {
+		cfg.EndpointTemplate = leaf.EndpointTemplate
+		if notify != nil {
+			notify(fmt.Sprintf("idor: enumerating recon-derived endpoint %s (LT-91)", leaf.EndpointTemplate))
+		}
+	}
+	if len(leaf.ProtectedPaths) > 0 && len(cfg.ProtectedPaths) == 0 {
+		cfg.ProtectedPaths = append([]string(nil), leaf.ProtectedPaths...)
+		if notify != nil {
+			notify(fmt.Sprintf("authbypass: probing %d recon-derived protected path(s) (LT-94)", len(leaf.ProtectedPaths)))
+		}
+	}
+	if len(leaf.SSRFParams) > 0 && len(cfg.SSRFParams) == 0 {
+		cfg.SSRFParams = append([]string(nil), leaf.SSRFParams...)
+		if notify != nil {
+			notify(fmt.Sprintf("ssrf: probing recon-derived param(s) %s (LT-94)", strings.Join(leaf.SSRFParams, ", ")))
+		}
+	}
 }
 
 func missingRequiredField(detector string, cfg scanner.Config) string {
@@ -410,18 +434,17 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		}
 	}
 
-	// LT-91: an endpoint-driven idor leaf carries its own {{id}} template on
-	// the PlanNode (registry.resolveEndpointFacts' per-candidate fan-out).
-	// Fill a still-blank config field from it — an explicit --endpoint, a
-	// recon/I4 auto-fill on baseCfg, or a C7a seed all still win. Logged,
-	// never silent; the value is a recon-derived path on the already-approved
-	// host, inside the approved blast radius.
-	if leaf.EndpointTemplate != "" && cfg.EndpointTemplate == "" {
-		cfg.EndpointTemplate = leaf.EndpointTemplate
+	// LT-91 / LT-94: an endpoint-driven idor/authbypass/ssrf leaf carries its
+	// recon-derived required field(s) on the PlanNode
+	// (registry.resolveEndpointFacts). Fill any still-blank config field from
+	// them — an explicit flag, a recon/I4 auto-fill on baseCfg, or a C7a seed
+	// all still win. Logged, never silent; the values are recon-derived paths
+	// on the already-approved host, inside the approved blast radius.
+	applyLeafReconFields(&cfg, leaf, func(m string) {
 		if opts.Notify != nil {
-			opts.Notify(leaf.Target, fmt.Sprintf("idor: enumerating recon-derived endpoint %s (LT-91)", leaf.EndpointTemplate))
+			opts.Notify(leaf.Target, m)
 		}
-	}
+	})
 
 	validateOpts := scanner.ValidateOptions{
 		SkipEndpointRequired:       true,

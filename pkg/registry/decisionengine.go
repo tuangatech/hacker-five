@@ -1109,22 +1109,44 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 		}
 		resolveAPISpecFact(host, result.APISpec, templateIndex, &leafIdx, addLeaf)
 		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
-			// LT-91: a fanned-out idor leaf carries its own EndpointTemplate, so
-			// two of them on one host are distinct checks — fold the template
-			// into the dedup key so they don't collapse to one. Every other
-			// endpoint-driven leaf still keys on (target, detector).
+			// LT-91 / LT-94: an endpoint-driven idor/authbypass/ssrf leaf
+			// carries its own recon-derived required field(s) and must not
+			// collapse into the bare tech-capability leaf of the same
+			// (target, detector) that resolveTechFact emitted earlier — that
+			// bare leaf has no field and only ever reaches execution to be
+			// skipped. Give each a distinct key (per-{{id}} for idor's
+			// fan-out); dropBareCapabilityLeavesSupersededByEndpointDriven
+			// then removes the now-redundant bare leaf.
 			key := pendingDedupKey(leaf.Target, leaf.Detector)
-			if leaf.EndpointTemplate != "" {
+			switch {
+			case leaf.EndpointTemplate != "":
 				key += "\x00" + leaf.EndpointTemplate
+			case len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0:
+				key += "\x00endpoint-driven"
 			}
 			addLeaf(leaf, key)
 		}
 		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf, leafContexts)
 		resolveHostnameHints(host, templateIndex, &leafIdx, addLeaf)
 		resolveLiveHostBaseline(host, result.Endpoints, &leafIdx, addLeaf)
-		hostNode.Children = dropBareIdorLeafWhenFannedOut(hostNode.Children)
+		hostNode.Children = dropBareCapabilityLeavesSupersededByEndpointDriven(hostNode.Children)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
+		}
+		// LT-93 (docs/follow-up.md): every resolve* helper keys/matches on the
+		// bare hostname, but a leaf's Target is what the executor hands the
+		// scanner engine as the request base — a bare "host" has no scheme or
+		// port, so idor/authbypass/ssrf built "host/path" and every request
+		// failed (the crAPI Step E round: 0 findings, ~7s per leaf). Upgrade
+		// each dispatchable leaf to the real scheme://host[:port] recon
+		// observed, now that the per-host dedup keys — computed above from the
+		// bare host — are all settled. The host/class node IDs and the
+		// structural node Targets stay keyed on the bare host (ClassNodeID,
+		// tree.Find, webui rendering all depend on that); only leaves are ever
+		// handed to the executor.
+		baseURL := reconHostBaseURL(host, result)
+		for _, leaf := range hostNode.Children {
+			leaf.Target = baseURL
 		}
 		// C7a (doc16 Phase 7 Step 3): stamp each leaf's dispatch priority,
 		// then fold the flat leaf list into per-vuln-class intermediate
@@ -1318,12 +1340,20 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 		}
 	}
 	if protected, _, _ := recon.SuggestAuthBypassPathsFromRecon(hostResult); len(protected) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "authbypass", endpointConf,
-			fmt.Sprintf("recon observed %d endpoint(s) returning 401/403 on this host (e.g. %s)", len(protected), protected[0]), leafIdx))
+		leaf := newEndpointLeaf(host, "authbypass", endpointConf,
+			fmt.Sprintf("recon observed %d endpoint(s) returning 401/403 on this host (e.g. %s)", len(protected), protected[0]), leafIdx)
+		// LT-94: carry the derived paths on the leaf so planexec.runLeaf can
+		// fill a blank config — the plan→execute path (webui Plan Preview, a
+		// bare RunPlan caller) otherwise skipped this leaf for a field recon
+		// had already derived. The MCP path pre-fills baseCfg and is unaffected.
+		leaf.ProtectedPaths = protected
+		leaves = append(leaves, leaf)
 	}
 	if params := recon.SuggestSSRFParamsFromRecon(hostResult); len(params) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "ssrf", endpointConf,
-			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx))
+		leaf := newEndpointLeaf(host, "ssrf", endpointConf,
+			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx)
+		leaf.SSRFParams = params
+		leaves = append(leaves, leaf)
 	}
 	for _, ep := range hostEndpoints {
 		p := endpointURLPath(ep.URL)
@@ -1403,27 +1433,33 @@ func firstRedirectFlowEndpoint(endpoints []recon.EndpointFact) (string, bool) {
 	return "", false
 }
 
-// dropBareIdorLeafWhenFannedOut removes the bare capability idor leaf a
-// TechFact rule emits (Detector "idor", no EndpointTemplate) when
-// resolveEndpointFacts has already fanned out one or more endpoint-driven
-// idor leaves for the same host (LT-91). The bare leaf only ever reaches
-// execution to be skipped for a missing --endpoint, so once a runnable
-// per-candidate leaf exists it is pure noise. A host with a tech-matched
-// idor capability but zero recon endpoint candidates keeps its bare leaf.
-func dropBareIdorLeafWhenFannedOut(children []*agenttask.PlanNode) []*agenttask.PlanNode {
-	fannedOut := false
+// leafCarriesReconField reports whether leaf is an endpoint-driven
+// idor/authbypass/ssrf leaf (LT-91/LT-94) — it carries the recon-derived
+// required field on the PlanNode, so it is directly runnable.
+func leafCarriesReconField(leaf *agenttask.PlanNode) bool {
+	return leaf.EndpointTemplate != "" || len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0
+}
+
+// dropBareCapabilityLeavesSupersededByEndpointDriven removes the bare
+// capability idor/authbypass/ssrf leaf a TechFact rule emits (Detector set,
+// no recon field) for a host where resolveEndpointFacts already emitted an
+// endpoint-driven leaf of the same detector (LT-91/LT-94). The bare leaf
+// only ever reaches execution to be skipped for its missing required field,
+// so once a runnable leaf exists it is pure noise. A host with a
+// tech-matched capability but zero recon candidates keeps its bare leaf.
+func dropBareCapabilityLeavesSupersededByEndpointDriven(children []*agenttask.PlanNode) []*agenttask.PlanNode {
+	superseded := map[string]bool{}
 	for _, c := range children {
-		if c.Detector == "idor" && c.EndpointTemplate != "" {
-			fannedOut = true
-			break
+		if c.Detector != "" && leafCarriesReconField(c) {
+			superseded[c.Detector] = true
 		}
 	}
-	if !fannedOut {
+	if len(superseded) == 0 {
 		return children
 	}
 	kept := children[:0]
 	for _, c := range children {
-		if c.Detector == "idor" && c.EndpointTemplate == "" {
+		if superseded[c.Detector] && !leafCarriesReconField(c) {
 			continue
 		}
 		kept = append(kept, c)
@@ -1454,6 +1490,63 @@ func endpointHostname(rawURL string) string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// reconHostBaseURL returns the scheme://authority (host, plus :port when
+// non-default) recon actually observed for host, for use as a leaf's request
+// base (LT-93). Preference order: a probed endpoint URL on this host (it
+// carries the real scheme + port), then result.Target / APISpec.URL when
+// they name this host, then a port-list heuristic, then an https:// fallback
+// (a real engagement target is https far more often than not; a bare host
+// with no recon scheme signal was never reachable before this anyway).
+func reconHostBaseURL(host string, result *recon.ReconResult) string {
+	authorityFromURL := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return ""
+		}
+		if u.Hostname() != host {
+			return ""
+		}
+		return u.Scheme + "://" + u.Host
+	}
+	if result != nil {
+		for _, ep := range result.Endpoints {
+			if b := authorityFromURL(ep.URL); b != "" {
+				return b
+			}
+		}
+		if b := authorityFromURL(result.Target); b != "" {
+			return b
+		}
+		if result.APISpec != nil {
+			if b := authorityFromURL(result.APISpec.URL); b != "" {
+				return b
+			}
+		}
+		for _, hf := range result.Hosts {
+			if hf.Host != host {
+				continue
+			}
+			var httpPort int
+			for _, p := range hf.Ports {
+				switch p.Port {
+				case 443, 8443:
+					return "https://" + host
+				case 80:
+					return "http://" + host
+				case 8080, 8000, 8888:
+					if httpPort == 0 {
+						httpPort = p.Port
+					}
+				}
+			}
+			if httpPort != 0 {
+				return fmt.Sprintf("http://%s:%d", host, httpPort)
+			}
+		}
+	}
+	return "https://" + host
 }
 
 // endpointURLPath returns rawURL's path (+query, if any), falling back to

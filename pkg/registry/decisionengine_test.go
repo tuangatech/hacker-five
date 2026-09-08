@@ -45,7 +45,7 @@ func TestResolve_MatchedTechRule_ProducesPendingLeaf(t *testing.T) {
 	require.NotNil(t, leaf, "expected a misconfig leaf for a PHP tech fact")
 	assert.Equal(t, agenttask.StatusPending, leaf.Status)
 	assert.Equal(t, agenttask.ConfidenceMedium, leaf.Confidence)
-	assert.Equal(t, "example.test", leaf.Target)
+	assert.Equal(t, "http://example.test", leaf.Target, "LT-93: a leaf's Target is the scheme://host recon observed, not the bare hostname")
 }
 
 // TestResolve_GroupsLeavesUnderVulnClassNodes covers C7a (doc16 Phase 7
@@ -371,6 +371,96 @@ func TestResolve_IdorCapabilityOnly_KeepsBareLeaf(t *testing.T) {
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "idor" })
 	require.NotNil(t, leaf, "the bare tech-capability idor leaf stays when there is no endpoint candidate to fan out")
 	assert.Empty(t, leaf.EndpointTemplate)
+}
+
+// TestResolve_LeafTarget_CarriesSchemeAndPort covers LT-93: a leaf's Target
+// is the scheme://host[:port] recon observed (from a probed endpoint URL),
+// not the bare hostname — the executor hands it straight to the scanner
+// engine as a request base, so a bare host produced "host/path" and every
+// request failed.
+func TestResolve_LeafTarget_CarriesSchemeAndPort(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://127.0.0.1:8888",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://127.0.0.1:8888/workshop/api/shop/orders/{order_id}", Method: "GET", Source: "api-spec", Confidence: "low"},
+			{URL: "http://127.0.0.1:8888/identity/api/v2/user/dashboard", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	for _, leaf := range hostLeaves(t, tree, "127.0.0.1") {
+		assert.Equal(t, "http://127.0.0.1:8888", leaf.Target,
+			"every dispatchable leaf's Target is the observed scheme://host:port, leaf %s", leaf.ID)
+	}
+}
+
+func TestReconHostBaseURL(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+		res  *recon.ReconResult
+		want string
+	}{
+		{
+			name: "from a probed endpoint URL (scheme + non-default port)",
+			host: "127.0.0.1",
+			res:  &recon.ReconResult{Endpoints: []recon.EndpointFact{{URL: "http://127.0.0.1:8888/a"}}},
+			want: "http://127.0.0.1:8888",
+		},
+		{
+			name: "from result.Target when no endpoint names the host",
+			host: "example.test",
+			res:  &recon.ReconResult{Target: "https://example.test"},
+			want: "https://example.test",
+		},
+		{
+			name: "from the port list — 443 wins as https",
+			host: "svc.example",
+			res:  &recon.ReconResult{Hosts: []recon.HostFact{{Host: "svc.example", Ports: []recon.PortFact{{Port: 22}, {Port: 443}}}}},
+			want: "https://svc.example",
+		},
+		{
+			name: "from the port list — bare 8080 keeps its port",
+			host: "svc.example",
+			res:  &recon.ReconResult{Hosts: []recon.HostFact{{Host: "svc.example", Ports: []recon.PortFact{{Port: 8080}}}}},
+			want: "http://svc.example:8080",
+		},
+		{
+			name: "no signal at all — https fallback",
+			host: "lonely.example",
+			res:  &recon.ReconResult{},
+			want: "https://lonely.example",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, reconHostBaseURL(tc.host, tc.res))
+		})
+	}
+}
+
+// TestResolve_EndpointDrivenAuthbypassLeaf_CarriesProtectedPaths covers
+// LT-94: the endpoint-driven authbypass leaf stashes the recon-derived
+// protected paths on the PlanNode so the plan→execute path is self-sufficient
+// without the caller pre-filling baseCfg.
+func TestResolve_EndpointDrivenAuthbypassLeaf_CarriesProtectedPaths(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/identity/api/v2/user/dashboard", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+			{URL: "http://api.example.test/community/api/v2/community/home", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "api.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "authbypass" })
+	require.NotNil(t, leaf)
+	assert.ElementsMatch(t, []string{
+		"/community/api/v2/community/home",
+		"/identity/api/v2/user/dashboard",
+	}, leaf.ProtectedPaths, "the leaf carries the recon-derived protected paths")
 }
 
 func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {
