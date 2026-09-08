@@ -981,3 +981,152 @@ func TestMisconfigPhpMyAdmin_GenericLogin_NoFinding(t *testing.T) {
 	})
 	assert.Empty(t, withPrefix(findings, "misconfig-phpmyadmin-exposed"))
 }
+
+// pmaLoginHTMLVer templates pmaLoginHTML's "?v=" asset version so a test can
+// pick which phpMyAdmin release the login page claims. One %s.
+const pmaLoginHTMLVer = `<!doctype html><html><head><title>phpMyAdmin</title>` +
+	`<link rel="stylesheet" href="./phpmyadmin.css.php?v=%s&nocache=1">` +
+	`</head><body><form method="post" action="index.php">` +
+	`<input type="text" name="pma_username" id="input_username">` +
+	`<input type="password" name="pma_password" id="input_password">` +
+	`</form></body></html>`
+
+func runPhpMyAdminRoot(t *testing.T, assetVer string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, pmaLoginHTMLVer, assetVer)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigPhpMyAdmin_Outdated_Hit: the 5.2.1 login page chasqui03 serves
+// is below the 5.2.2 fix line of both PMASA-2025 XSS CVEs, so the exposure
+// finding is joined by a version-only "outdated" finding (medium — neither
+// CVE scores >= 9.0).
+func TestMisconfigPhpMyAdmin_Outdated_Hit(t *testing.T) {
+	findings := runPhpMyAdminRoot(t, "5.2.1")
+	require.Len(t, withPrefix(findings, "misconfig-phpmyadmin-exposed"), 1)
+
+	out := withPrefix(findings, "misconfig-phpmyadmin-outdated")
+	require.Len(t, out, 1)
+	assert.Equal(t, "medium", out[0].Severity)
+	assert.Equal(t, "high", out[0].Confidence)
+	assert.Equal(t, "5.2.1", out[0].Evidence["version"])
+	assert.Contains(t, out[0].Evidence["cves"], "CVE-2025-24530")
+	assert.Contains(t, out[0].Evidence["cves"], "CVE-2025-24529")
+}
+
+// TestMisconfigPhpMyAdmin_Current_ExposedOnly: a current-release login page is
+// still an exposure finding, but there is nothing outdated to report.
+func TestMisconfigPhpMyAdmin_Current_ExposedOnly(t *testing.T) {
+	findings := runPhpMyAdminRoot(t, "5.2.3")
+	assert.Len(t, withPrefix(findings, "misconfig-phpmyadmin-exposed"), 1)
+	assert.Empty(t, withPrefix(findings, "misconfig-phpmyadmin-outdated"))
+}
+
+// webminLoginHTML is a trimmed Webmin session login page — both the legacy
+// and authentic-theme templates post the form to session_login.cgi with
+// name="user"/name="pass" fields.
+const webminLoginHTML = `<!doctype html><html><head><title>Login to Webmin</title></head>` +
+	`<body onload="document.forms[0].user.focus()">` +
+	`<form action="/session_login.cgi" method="post">` +
+	`<input type="hidden" name="page" value="/">` +
+	`<input name="user" size="20"><input type="password" name="pass" size="20">` +
+	`<input type="submit" value="Sign in"></form></body></html>`
+
+func runWebminRoot(t *testing.T, serverHeader string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Server", serverHeader)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(webminLoginHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigWebmin_Exposed_Hit: a MiniServ/2.111 login page is both an
+// exposure finding and, being below the 2.202 fix line of the critical
+// CVE-2026-56020 miniserv.pl auth bypass (CVSS 9.2), an outdated finding that
+// escalates to high.
+func TestMisconfigWebmin_Exposed_Hit(t *testing.T) {
+	findings := runWebminRoot(t, "MiniServ/2.111")
+
+	exp := withPrefix(findings, "misconfig-webmin-login-exposed")
+	require.Len(t, exp, 1)
+	assert.Equal(t, "medium", exp[0].Severity)
+	assert.Equal(t, "high", exp[0].Confidence)
+	assert.Equal(t, "2.111", exp[0].Evidence["version"])
+
+	out := withPrefix(findings, "misconfig-webmin-outdated")
+	require.Len(t, out, 1)
+	assert.Equal(t, "high", out[0].Severity)
+	assert.Contains(t, out[0].Evidence["cves"], "CVE-2026-56020")
+}
+
+// TestMisconfigWebmin_Current_ExposedOnly: the current release is still a
+// root panel on the open internet (exposure finding), with nothing outdated.
+func TestMisconfigWebmin_Current_ExposedOnly(t *testing.T) {
+	findings := runWebminRoot(t, "MiniServ/2.202")
+	assert.Len(t, withPrefix(findings, "misconfig-webmin-login-exposed"), 1)
+	assert.Empty(t, withPrefix(findings, "misconfig-webmin-outdated"))
+}
+
+// TestMisconfigWebmin_NotMiniServ_NoFinding: the session_login.cgi marker in
+// the body is not enough without the MiniServ Server header.
+func TestMisconfigWebmin_NotMiniServ_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Server", "Apache/2.4.58")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(webminLoginHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-webmin-login-exposed"))
+	assert.Empty(t, withPrefix(findings, "misconfig-webmin-outdated"))
+}
+
+// TestMisconfigNativeChecks_DokuWikiNegativeControl: wiki.nettix.com.pe runs
+// DokuWiki (release names "Mort"/"Igor", never a dotted version). None of the
+// four native version→CVE checks fingerprint DokuWiki, so a DokuWiki root
+// plus a 404 for every product-specific probe path must produce no
+// product finding at all — the explicit false-positive guard for Step 5's
+// shared KnownVulnerableVersions table.
+func TestMisconfigNativeChecks_DokuWikiNegativeControl(t *testing.T) {
+	const dokuwikiHTML = `<!doctype html><html lang="en"><head>` +
+		`<meta name="generator" content="DokuWiki">` +
+		`<title>start [nettix wiki]</title>` +
+		`<link rel="stylesheet" href="/lib/exe/css.php?t=dokuwiki&tseed=abc123">` +
+		`</head><body><form action="/doku.php" method="post">` +
+		`<input type="text" name="u"><input type="password" name="p"></form></body></html>`
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Server", "Apache")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(dokuwikiHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	for _, prefix := range []string{
+		"misconfig-dolibarr-outdated",
+		"misconfig-nextcloud-status-disclosure",
+		"misconfig-nextcloud-outdated",
+		"misconfig-phpmyadmin-exposed",
+		"misconfig-phpmyadmin-outdated",
+		"misconfig-webmin-login-exposed",
+		"misconfig-webmin-outdated",
+		"misconfig-wordpress-user-enumeration",
+	} {
+		assert.Empty(t, withPrefix(findings, prefix), "DokuWiki root must not match %s", prefix)
+	}
+}

@@ -550,8 +550,8 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   CVE-2026-23500 9.4). Same LT-98-immune shape as `checkWPUserEnum`. Tests:
   6 cases in `tests/unit/detector_misconfig_test.go` (`TestMisconfigDolibarr_*`).
   `DolibarrLatestStable` const carries a refresh-date note (24.0.1, checked
-  2026-09-08). Step 5 (stretch) will lift `VersionCVERule` into a generic
-  cross-product table + add phpMyAdmin/Webmin rows.
+  2026-09-08). Step 5 later lifted `DolibarrCVEs` into the shared
+  `KnownVulnerableVersions` table (see below).
 - **Step 4 (native Nextcloud + phpMyAdmin) ✅ done 2026-09-08** — findings C, D, E.
   `pkg/detectors/misconfig`, two more always-on checks:
   - `checkNextcloudStatus` — GET `/status.php`; AND-gate on the
@@ -574,6 +574,46 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   - Shared helper `majorOf`; `firstSubmatchString`/`versionLessThan` reused
     from Step 3. Tests: 6 cases (`TestMisconfigNextcloudStatus_*`,
     `TestMisconfigPhpMyAdmin_*`). Full gate green.
+- **Step 5 (generic cross-product version→CVE table + phpMyAdmin/Webmin) ✅ done 2026-09-08.**
+  `pkg/detectors/misconfig`:
+  - `DolibarrCVEs` + `NextcloudCVEs` collapsed into one
+    `KnownVulnerableVersions []VersionCVERule` table; `VersionCVERule` gained a
+    `Product` field (discriminator; `Product*` name consts). Two shared
+    helpers in `detector.go`: `matchKnownCVEs(product, detectedVersion)`
+    (filters the table by product, returns matched rows + the version-only
+    severity band — medium, → high on a matched CVSS ≥ 9.0, never critical)
+    and `formatCVEDetails` (the `"CVE-x (CVSS n.n, fixed in v[, public
+    exploit]): summary"` rendering). `checkDolibarrOutdated` /
+    `checkNextcloudStatus` refactored onto them — identical findings/evidence,
+    ~60 fewer lines.
+  - `checkPhpMyAdmin` now also emits `misconfig-phpmyadmin-outdated` when the
+    `?v=` asset version is below a `KnownVulnerableVersions` phpMyAdmin row.
+    Rows: CVE-2025-24530 + CVE-2025-24529 (both PMASA-2025, fixed 5.2.2,
+    medium/CVSS 6.4, NVD-verified 2026-09-08). `PhpMyAdminLatestStable` =
+    5.2.3. The live `chasqui03` 5.2.1 login page now yields exposure **+**
+    outdated.
+  - New always-on `checkWebmin` — GET `/`, hard gate on the
+    `Server: MiniServ` header (the bespoke server behind Webmin/Usermin/
+    Virtualmin, nothing else), confirmed by `session_login.cgi` in the body,
+    version from the `MiniServ/<ver>` token. Emits
+    `misconfig-webmin-login-exposed` (medium — a root-priv admin panel on the
+    open internet) and, below a fix line, `misconfig-webmin-outdated`. One
+    NVD-verified row: CVE-2026-56020 (miniserv.pl SSL-client-cert DN spoof /
+    auth bypass, fixed 2.202, critical/CVSS v4 9.2 → outdated finding is
+    high). Two other 2026 Webmin XSS/file-disclosure CVEs deliberately
+    omitted — secondary sources disagree on the fix version (`2.641` vs
+    `2.202`); flagged, not guessed. `WebminLatestStable` = 2.202.
+  - Negative control: `TestMisconfigNativeChecks_DokuWikiNegativeControl` —
+    a DokuWiki root (`wiki.nettix.com.pe`; release names "Mort"/"Igor", no
+    dotted version) plus 404 for every product probe path → zero product
+    findings. Tests: `TestMisconfigPhpMyAdmin_{Outdated_Hit,Current_ExposedOnly}`,
+    `TestMisconfigWebmin_{Exposed_Hit,Current_ExposedOnly,NotMiniServ_NoFinding}`,
+    the DokuWiki control. Full gate green (`build`/`vet`/`test -race`/
+    `golangci-lint` 0 issues).
+  - **Follow-up:** `checkWebmin` adds a 4th GET `/` per run (also done by
+    `checkDolibarrOutdated`, `checkCommentLeaks`, `checkMissingHeaders`) —
+    a root-response cache shared across the misconfig checks would remove all
+    the duplication. Logged, not demo-blocking.
 - **LT-104 — `wiki.nettix.com.pe/{api,graphql,swagger/v1/swagger.json}`
   recorded as `wave3-common-path-probe` endpoints (status 200) on a host
   recon *also* flagged catch-all** — LT-66's per-endpoint bucket-catch-all

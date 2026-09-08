@@ -211,6 +211,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		d.checkDolibarrOutdated,
 		d.checkNextcloudStatus,
 		d.checkPhpMyAdmin,
+		d.checkWebmin,
 	}
 	for _, check := range checks {
 		if ctx.Err() != nil {
@@ -675,10 +676,11 @@ var dolibarrTitleVersionRe = regexp.MustCompile(`@ (?:Doli[A-Za-z]+ )?(\d+\.\d+\
 var dolibarrAssetVersionRe = regexp.MustCompile(`[?&](?:amp;)?version=(\d+\.\d+\.\d+)`)
 
 // checkDolibarrOutdated flags a Dolibarr install whose self-reported version
-// falls in the affected range of one or more published CVEs (DolibarrCVEs).
-// It mirrors checkWPUserEnum's shape — one fixed request, a hard "is this the
-// product" gate (the author <meta>), a version taken from the app's own
-// output, and an AND against a curated table — so it stays immune to the
+// falls in the affected range of one or more published CVEs (the Dolibarr
+// rows of KnownVulnerableVersions). It mirrors checkWPUserEnum's shape — one
+// fixed request, a hard "is this the product" gate (the author <meta>), a
+// version taken from the app's own output, and an AND against a curated
+// table — so it stays immune to the
 // tag-scoped-corpus time budget that can skip the equivalent nuclei CVE
 // templates (docs/follow-up.md, LT-98). No version parsed ⇒ no finding: the
 // check never guesses a version it could not read.
@@ -702,35 +704,11 @@ func (d *Detector) checkDolibarrOutdated(ctx context.Context, target, host, auth
 		return nil, nil // confirmed Dolibarr, but this response did not disclose a version
 	}
 
-	var matched []VersionCVERule
-	for _, rule := range DolibarrCVEs {
-		if less, ok := versionLessThan(version, rule.FixedIn); ok && less {
-			matched = append(matched, rule)
-		}
-	}
+	matched, severity := matchKnownCVEs(ProductDolibarr, version)
 	if len(matched) == 0 {
 		return nil, nil // a current-enough release — nothing to report
 	}
-
-	// Version-only match: report at the highest matched CVSS band but never
-	// escalate past "high" without an actual working exploit against this
-	// host — the finding's claim is "runs an affected version", not "is
-	// exploitable unauthenticated right now".
-	severity := "medium"
-	ids := make([]string, 0, len(matched))
-	details := make([]string, 0, len(matched))
-	for _, m := range matched {
-		ids = append(ids, m.CVE)
-		exploit := ""
-		if m.ExploitPublic {
-			exploit = ", public exploit"
-		}
-		details = append(details, fmt.Sprintf("%s (CVSS %.1f, fixed in %s%s): %s",
-			m.CVE, m.CVSS, m.FixedIn, exploit, m.Summary))
-		if m.CVSS >= 9.0 {
-			severity = "high"
-		}
-	}
+	ids, details := formatCVEDetails(matched)
 
 	desc := fmt.Sprintf(
 		"Dolibarr %s is running here (version read from the login page); it trails the current stable release %s and falls within the affected range of %d published CVE(s): %s. An authenticated or admin-level foothold turns the higher-severity entries into remote code execution or SQL injection.",
@@ -808,15 +786,59 @@ func splitVersionInts(v string) ([]int, bool) {
 	return out, true
 }
 
+// matchKnownCVEs returns every KnownVulnerableVersions row for product whose
+// FixedIn release is strictly newer than detectedVersion, plus the finding
+// severity that band implies: "medium" for any version-only match, bumped to
+// "high" once a matched CVE scores CVSS >= 9.0. It never returns "critical" —
+// the finding asserts "this host runs an affected version", not "it is
+// exploitable unauthenticated right now". A detectedVersion that isn't plain
+// dotted integers matches nothing (versionLessThan's ok=false path), so the
+// caller reports no CVE rather than risk a bogus comparison.
+func matchKnownCVEs(product, detectedVersion string) (matched []VersionCVERule, severity string) {
+	severity = "medium"
+	for _, rule := range KnownVulnerableVersions {
+		if rule.Product != product {
+			continue
+		}
+		if less, ok := versionLessThan(detectedVersion, rule.FixedIn); ok && less {
+			matched = append(matched, rule)
+			if rule.CVSS >= 9.0 {
+				severity = "high"
+			}
+		}
+	}
+	return matched, severity
+}
+
+// formatCVEDetails renders matched rows for a Finding: ids is the bare CVE
+// list (for the "cves" evidence entry), details is one
+// "CVE-x (CVSS n.n, fixed in v[, public exploit]): summary" line each (joined
+// with "; " into the description).
+func formatCVEDetails(matched []VersionCVERule) (ids, details []string) {
+	ids = make([]string, 0, len(matched))
+	details = make([]string, 0, len(matched))
+	for _, m := range matched {
+		ids = append(ids, m.CVE)
+		exploit := ""
+		if m.ExploitPublic {
+			exploit = ", public exploit"
+		}
+		details = append(details, fmt.Sprintf("%s (CVSS %.1f, fixed in %s%s): %s",
+			m.CVE, m.CVSS, m.FixedIn, exploit, m.Summary))
+	}
+	return ids, details
+}
+
 var nextcloudVersionstringRe = regexp.MustCompile(`"versionstring"\s*:\s*"([^"]{1,40})"`)
 var nextcloudProductnameRe = regexp.MustCompile(`"productname"\s*:\s*"([^"]{1,60})"`)
 
 // checkNextcloudStatus flags Nextcloud's unauthenticated /status.php: always
 // an information-disclosure finding (the exact build, no auth — CWE-200), and
 // additionally an "outdated" finding when the disclosed versionstring is
-// either an end-of-life major or below the fix line of one of NextcloudCVEs.
-// Same shape as checkWPUserEnum/checkDolibarrOutdated — fixed path, an
-// AND-of-JSON-keys product gate, version taken from the app's own output.
+// either an end-of-life major or below the fix line of one of the Nextcloud
+// rows of KnownVulnerableVersions. Same shape as
+// checkWPUserEnum/checkDolibarrOutdated — fixed path, an AND-of-JSON-keys
+// product gate, version taken from the app's own output.
 func (d *Detector) checkNextcloudStatus(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, NextcloudStatusPath, authToken, nil, nil)
 	if err != nil {
@@ -872,34 +894,20 @@ func (d *Detector) checkNextcloudStatus(ctx context.Context, target, host, authT
 		return findings, nil // build disclosed but not parseable — can't judge "outdated"
 	}
 
-	var matched []VersionCVERule
-	for _, rule := range NextcloudCVEs {
-		if less, ok := versionLessThan(version, rule.FixedIn); ok && less {
-			matched = append(matched, rule)
-		}
-	}
+	matched, severity := matchKnownCVEs(ProductNextcloud, version)
 	major, majorOK := majorOf(version)
 	eol := majorOK && major < nextcloudOldestMaintainedMajor
 	if !eol && len(matched) == 0 {
 		return findings, nil // a maintained, current-enough release
 	}
 
-	severity := "medium"
 	reasons := make([]string, 0, 2)
 	if eol {
 		reasons = append(reasons, fmt.Sprintf("major %d is end-of-life (maintained majors are %d and newer; current stable %s) and receives no security fixes",
 			major, nextcloudOldestMaintainedMajor, NextcloudLatestStable))
 	}
-	ids := make([]string, 0, len(matched))
+	ids, details := formatCVEDetails(matched)
 	if len(matched) > 0 {
-		details := make([]string, 0, len(matched))
-		for _, m := range matched {
-			ids = append(ids, m.CVE)
-			details = append(details, fmt.Sprintf("%s (CVSS %.1f, fixed in %s): %s", m.CVE, m.CVSS, m.FixedIn, m.Summary))
-			if m.CVSS >= 9.0 {
-				severity = "high"
-			}
-		}
 		reasons = append(reasons, fmt.Sprintf("it is below the fix line of %d published CVE(s): %s", len(matched), strings.Join(details, "; ")))
 	}
 
@@ -926,7 +934,11 @@ var phpMyAdminVersionRe = regexp.MustCompile(`[?&]v=(\d+\.\d+\.\d+)`)
 // standing target for credential brute force, session attacks and
 // phpMyAdmin's own CVE history, none of which a login page facing the public
 // internet should be exposed to. It walks PhpMyAdminProbePaths and stops at
-// the first response carrying both phpMyAdminLoginMarkers.
+// the first response carrying both phpMyAdminLoginMarkers. When that response
+// also discloses a version (the "?v=" cache-buster on a bundled asset URL)
+// that falls below a KnownVulnerableVersions fix line, a second
+// "misconfig-phpmyadmin-outdated" finding is emitted alongside the exposure
+// one — same version-only severity discipline as checkDolibarrOutdated.
 func (d *Detector) checkPhpMyAdmin(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	for _, path := range PhpMyAdminProbePaths {
 		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
@@ -957,7 +969,7 @@ func (d *Detector) checkPhpMyAdmin(ctx context.Context, target, host, authToken 
 		if version != "" {
 			ev["version"] = version
 		}
-		return []detectors.Finding{{
+		findings := []detectors.Finding{{
 			ID:         "misconfig-phpmyadmin-exposed",
 			Type:       "misconfig",
 			Severity:   "medium",
@@ -967,7 +979,31 @@ func (d *Detector) checkPhpMyAdmin(ctx context.Context, target, host, authToken 
 				"a phpMyAdmin login page is served at %s with no network restriction%s — internet-facing phpMyAdmin is a persistent target for credential brute force, session fixation and phpMyAdmin's own steady stream of CVEs, and should sit behind a VPN or IP allow-list.",
 				path, verClause),
 			Evidence: ev,
-		}}, nil
+		}}
+
+		if matched, severity := matchKnownCVEs(ProductPhpMyAdmin, version); len(matched) > 0 {
+			ids, details := formatCVEDetails(matched)
+			outEv := map[string]string{
+				"path":          path,
+				"version":       version,
+				"latest_stable": PhpMyAdminLatestStable,
+				"cves":          strings.Join(ids, ", "),
+				"request":       detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+				"response":      detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+			}
+			findings = append(findings, detectors.Finding{
+				ID:         "misconfig-phpmyadmin-outdated",
+				Type:       "misconfig",
+				Severity:   severity,
+				Confidence: "high",
+				Target:     req.URL.String(),
+				Description: fmt.Sprintf(
+					"the phpMyAdmin login page at %s discloses version %s (from a bundled-asset URL); it trails the current stable release %s and falls within the affected range of %d published CVE(s): %s.",
+					path, version, PhpMyAdminLatestStable, len(matched), strings.Join(details, "; ")),
+				Evidence: outEv,
+			})
+		}
+		return findings, nil
 	}
 	return nil, nil
 }
@@ -980,6 +1016,89 @@ func majorOf(v string) (int, bool) {
 		return 0, false
 	}
 	return seg[0], true
+}
+
+// webminServerVersionRe pulls the version out of a "MiniServ/2.111" Server
+// header (two- or three-segment). Case-insensitive so "miniserv/..." matches
+// too.
+var webminServerVersionRe = regexp.MustCompile(`(?i)MiniServ/(\d+\.\d+(?:\.\d+)?)`)
+
+// checkWebmin flags an internet-reachable Webmin / MiniServ admin login. The
+// hard gate is the "Server: MiniServ" header — the bespoke HTTP server behind
+// Webmin, Usermin and Virtualmin, and nothing else — confirmed by the login
+// form's session_login.cgi post target in the body. A MiniServ admin panel on
+// the public internet is itself the finding (misconfig-webmin-login-exposed,
+// medium); when the Server header also carries a version below a
+// KnownVulnerableVersions fix line, a second misconfig-webmin-outdated finding
+// is emitted. Same one-request, product-gated, table-driven shape as the other
+// native version checks — no version parsed ⇒ no CVE finding.
+func (d *Detector) checkWebmin(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "/", authToken, nil, nil)
+	if err != nil {
+		return nil, nil
+	}
+	server := resp.Header.Get("Server")
+	if !strings.Contains(strings.ToLower(server), strings.ToLower(WebminServerToken)) {
+		return nil, nil // not MiniServ — not Webmin
+	}
+	if !bytes.Contains(body, []byte(webminLoginMarker)) {
+		return nil, nil // MiniServ, but this response isn't the unauthenticated login page
+	}
+	if d.looksLikeBaselinePage(resp.StatusCode, body, "/") {
+		return nil, nil
+	}
+
+	version := firstSubmatchString(webminServerVersionRe, []byte(server))
+	verClause := ""
+	if version != "" {
+		verClause = fmt.Sprintf(" (MiniServ/%s)", version)
+	}
+	ev := map[string]string{
+		"server":   server,
+		"status":   fmt.Sprintf("%d", resp.StatusCode),
+		"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+		"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+	}
+	if version != "" {
+		ev["version"] = version
+	}
+	findings := []detectors.Finding{{
+		ID:         "misconfig-webmin-login-exposed",
+		Type:       "misconfig",
+		Severity:   "medium",
+		Confidence: "high",
+		Target:     req.URL.String(),
+		Description: fmt.Sprintf(
+			"a Webmin/MiniServ admin login is served here%s with no network restriction — Webmin's HTTP server has a recurring history of unauthenticated and pre-auth CVEs, and a root-privileged system-administration panel should sit behind a VPN or IP allow-list, never on the open internet.",
+			verClause),
+		Evidence: ev,
+	}}
+
+	matched, severity := matchKnownCVEs(ProductWebmin, version)
+	if len(matched) == 0 {
+		return findings, nil
+	}
+	ids, details := formatCVEDetails(matched)
+	outEv := map[string]string{
+		"server":        server,
+		"version":       version,
+		"latest_stable": WebminLatestStable,
+		"cves":          strings.Join(ids, ", "),
+		"request":       detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+		"response":      detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+	}
+	findings = append(findings, detectors.Finding{
+		ID:         "misconfig-webmin-outdated",
+		Type:       "misconfig",
+		Severity:   severity,
+		Confidence: "high",
+		Target:     req.URL.String(),
+		Description: fmt.Sprintf(
+			"Webmin %s is running here (from the MiniServ Server header); it trails the current stable release %s and falls within the affected range of %d published CVE(s): %s.",
+			version, WebminLatestStable, len(matched), strings.Join(details, "; ")),
+		Evidence: outEv,
+	})
+	return findings, nil
 }
 
 // baselineCredUsername/Password are a definitely-wrong credential pair sent
