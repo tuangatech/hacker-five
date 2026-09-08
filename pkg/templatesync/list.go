@@ -82,6 +82,64 @@ func List(dirs, sourceLabels, tags []string) (entries []Entry, rejected int, err
 	return entries, rejected, nil
 }
 
+// LoadByIDs is List narrowed to a small, explicit set of template IDs — F4
+// (docs/follow-up.md LT-71). It uses nuclei.LoadDirByIDs' id:-peek fast path
+// (parse only the wanted files, not the whole ~9,500-file corpus) for the
+// nuclei format and a normal full load for native (a few dozen bundled
+// files, no corpus cost). ids == nil / empty returns nothing. Unlike List
+// it takes no tags argument: the caller has already resolved its tag/leaf
+// set down to concrete IDs. The returned entries carry the same shape List
+// produces, so a caller can treat the two interchangeably.
+func LoadByIDs(dirs, sourceLabels []string, ids []string) (entries []Entry, err error) {
+	if len(dirs) != len(sourceLabels) {
+		return nil, fmt.Errorf("templatesync: LoadByIDs got %d dirs but %d sourceLabels", len(dirs), len(sourceLabels))
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			want[id] = true
+		}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+
+	for i, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		source := sourceLabels[i]
+
+		nt, _ := nuclei.LoadDirByIDs(dir, want)
+		for _, t := range nt {
+			entries = append(entries, Entry{
+				ID:       t.ID,
+				Name:     t.Info.Name,
+				Format:   "nuclei",
+				Severity: t.Info.Severity,
+				Tags:     splitTags(t.Info.Tags),
+				Source:   source,
+			})
+		}
+
+		vt, _ := native.LoadDirDetailed(dir)
+		for _, t := range vt {
+			if !want[t.ID] {
+				continue
+			}
+			entries = append(entries, Entry{
+				ID:       t.ID,
+				Name:     t.Info.Name,
+				Format:   "native",
+				Severity: t.Info.Severity,
+				Tags:     t.Tags,
+				Source:   source,
+			})
+		}
+	}
+	return entries, nil
+}
+
 // countRejectedByBothFormats returns how many distinct paths appear in both
 // nErrs and vErrs — a file neither loader could parse, i.e. a genuine
 // problem rather than simply "written in the other format."

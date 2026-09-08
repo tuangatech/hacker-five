@@ -45,8 +45,19 @@ func isRequestTimeout(err error) bool {
 // fetches both once (see passive.go — robots.txt for the policy signal,
 // sitemap.xml parsed for <loc> hints in LT-39) and a second GET here only
 // produced a duplicate EndpointFact (docs/follow-up.md R-c, LT-39).
+//
+// The spec paths past the first two are LT-40(c) (docs/follow-up.md): the
+// 2026-09-07 crAPI live run showed real frameworks publish their OpenAPI
+// document at a framework-convention path, not /swagger.json — springdoc
+// (Spring Boot) at /v3/api-docs and /v2/api-docs, FastAPI at /openapi.json,
+// ASP.NET/Swashbuckle at /swagger/v1/swagger.json. Each still passes
+// through the same LT-30 canary + structured-Content-Type gate below before
+// anything is recorded, so a SPA shell served at one of them costs one GET
+// and nothing else.
 var commonPaths = []string{
-	"/api", "/graphql", "/swagger.json", "/.well-known/openapi.json",
+	"/api", "/graphql",
+	"/swagger.json", "/.well-known/openapi.json",
+	"/openapi.json", "/v3/api-docs", "/v2/api-docs", "/api-docs", "/swagger/v1/swagger.json",
 }
 
 // reconCanaryPath is a path guaranteed not to be a real resource on any
@@ -141,6 +152,11 @@ func isStructuredSpecContentType(ct string) bool {
 var specPaths = map[string]string{
 	"/swagger.json":             "openapi",
 	"/.well-known/openapi.json": "openapi",
+	"/openapi.json":             "openapi",
+	"/v3/api-docs":              "openapi",
+	"/v2/api-docs":              "openapi",
+	"/api-docs":                 "openapi",
+	"/swagger/v1/swagger.json":  "openapi",
 }
 
 // authBoundaryKeywords are lowercase substrings whose presence in a page
@@ -435,8 +451,9 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 			// into endpoint candidates instead of only noting the spec exists —
 			// a "{param}" path becomes an idor candidate, a documented query
 			// key an ssrf one, feeding resolveEndpointFacts like any other
-			// observed endpoint. JSON only this pass; a YAML body parses to
-			// nothing here and is left as the presence-only APISpecFact.
+			// observed endpoint. JSON and YAML spec bodies are both walked
+			// (LT-40(b)); a body that parses as neither stays the
+			// presence-only APISpecFact.
 			if specEPs, truncated := walkOpenAPISpec(reqURL, specBody); len(specEPs) > 0 {
 				for _, ef := range specEPs {
 					agg.addEndpoint(ef)

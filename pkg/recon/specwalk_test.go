@@ -74,6 +74,50 @@ func TestWalkOpenAPISpec_NotASpec(t *testing.T) {
 	assert.Nil(t, facts)
 }
 
+// TestWalkOpenAPISpec_YAMLBody covers LT-40(b): a YAML-serialised OpenAPI
+// document (springdoc's /v3/api-docs.yaml, most hand-written specs) walks to
+// the same EndpointFacts as its JSON equivalent.
+func TestWalkOpenAPISpec_YAMLBody(t *testing.T) {
+	body := []byte(`openapi: 3.0.1
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /users/{id}:
+    get:
+      parameters:
+        - name: id
+          in: path
+  /search:
+    get:
+      parameters:
+        - name: q
+          in: query
+        - name: url
+          in: query
+`)
+	facts, truncated := walkOpenAPISpec("https://target.example/v3/api-docs", body)
+	assert.False(t, truncated)
+
+	got := map[string]string{}
+	for _, f := range facts {
+		got[f.URL] = f.Method
+		assert.Equal(t, "api-spec", f.Source)
+		assert.Equal(t, ConfidenceLow, f.Confidence)
+	}
+	assert.Equal(t, "GET", got["https://target.example/v1/users/{id}"])
+	assert.Equal(t, "GET", got["https://target.example/v1/search?q=&url="])
+}
+
+// TestWalkOpenAPISpec_YAMLNotASpec: a YAML scalar / sequence body, and a
+// YAML mapping with no version key, all walk to nothing.
+func TestWalkOpenAPISpec_YAMLNotASpec(t *testing.T) {
+	facts, _ := walkOpenAPISpec("https://x/api-docs", []byte("- one\n- two\n"))
+	assert.Nil(t, facts, "a top-level YAML sequence is not a spec document")
+
+	facts, _ = walkOpenAPISpec("https://x/api-docs", []byte("foo: bar\npaths:\n  /a: {}\n"))
+	assert.Nil(t, facts, "a YAML mapping with no swagger/openapi key is not an OpenAPI document")
+}
+
 // TestWalkOpenAPISpec_Truncates: a spec with more paths than the cap yields
 // exactly maxSpecEndpoints facts and flags truncation.
 func TestWalkOpenAPISpec_Truncates(t *testing.T) {
@@ -142,4 +186,36 @@ func TestProbeCommonPaths_WalksOpenAPISpec(t *testing.T) {
 
 	joined := strings.Join(agg.warnings, " | ")
 	assert.Contains(t, joined, "LT-40")
+}
+
+// TestProbeCommonPaths_WalksSpecAtFrameworkPath covers LT-40(c): a spec
+// served only at a framework-convention path (springdoc's /v3/api-docs,
+// here as YAML) is still probed, recorded, and walked.
+func TestProbeCommonPaths_WalksSpecAtFrameworkPath(t *testing.T) {
+	spec := "openapi: 3.0.0\nservers:\n  - url: /v1\npaths:\n  /widgets/{widgetId}:\n    get: {}\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v3/api-docs" {
+			w.Header().Set("Content-Type", "application/yaml")
+			_, _ = io.WriteString(w, spec)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	agg := &aggregator{target: srv.URL}
+	r := New(newTestClient())
+	r.probeCommonPaths(context.Background(), agg, srv.URL)
+
+	require.NotNil(t, agg.apiSpec)
+	assert.Equal(t, srv.URL+"/v3/api-docs", agg.apiSpec.URL)
+
+	var specEP *EndpointFact
+	for i := range agg.endpoints {
+		if agg.endpoints[i].Source == "api-spec" {
+			specEP = &agg.endpoints[i]
+		}
+	}
+	require.NotNil(t, specEP, "the spec's own route must be walked into an api-spec EndpointFact")
+	assert.Equal(t, srv.URL+"/v1/widgets/{widgetId}", specEP.URL)
 }

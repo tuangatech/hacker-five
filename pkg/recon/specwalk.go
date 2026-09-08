@@ -1,11 +1,14 @@
 package recon
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // maxSpecBodyBytes bounds how much of a discovered OpenAPI/Swagger document
@@ -36,6 +39,33 @@ type specParam struct {
 	In   string `json:"in"`
 }
 
+// specBodyToJSON returns body as JSON bytes: unchanged when it already is
+// JSON (an object/array head), else the result of a YAML decode re-marshalled
+// to JSON (LT-40(b), docs/follow-up.md — springdoc and many hand-written
+// specs are served as YAML). yaml.v3 decodes a mapping into
+// map[string]interface{}, which json.Marshal then handles directly; a body
+// that is neither valid JSON nor valid YAML, or a YAML scalar/sequence that
+// can't represent a spec object, yields ok=false and the caller treats the
+// document as unwalkable (still recorded as a presence-only APISpecFact
+// upstream).
+func specBodyToJSON(body []byte) (jsonBody []byte, ok bool) {
+	if head := bytes.TrimLeft(body, " \t\r\n"); len(head) > 0 && (head[0] == '{' || head[0] == '[') {
+		return body, true
+	}
+	var doc any
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return nil, false
+	}
+	if _, isMap := doc.(map[string]any); !isMap {
+		return nil, false // a spec document is a mapping at the top level
+	}
+	j, err := json.Marshal(doc)
+	if err != nil {
+		return nil, false
+	}
+	return j, true
+}
+
 // walkOpenAPISpec parses a fetched OpenAPI 2.0 / 3.x document into
 // EndpointFacts — the richest single source of an API's real route and
 // parameter surface there is (LT-40, docs/follow-up.md). The caller
@@ -50,11 +80,17 @@ type specParam struct {
 // spec's documented object routes become idor candidates without the walker
 // fabricating a concrete id. Documented query parameters are appended
 // keyless ("?q=&url=") — enough for SuggestSSRFParamsFromRecon's name-based
-// match; their values are not invented. Only OpenAPI JSON is handled this
-// pass; a YAML spec is still recorded as an APISpecFact upstream but not
-// walked (tracked in follow-up.md).
+// match; their values are not invented. Both JSON and YAML spec bodies are
+// handled (LT-40(b), docs/follow-up.md): a YAML document is normalised to
+// JSON once up front (specBodyToJSON) and walked by the identical code
+// path — the caller's structured-Content-Type gate already only lets a
+// genuine spec body reach here.
 func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncated bool) {
 	if len(body) == 0 {
+		return nil, false
+	}
+	jsonBody, ok := specBodyToJSON(body)
+	if !ok {
 		return nil, false
 	}
 	var doc struct {
@@ -66,7 +102,7 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 		} `json:"servers"`
 		Paths map[string]json.RawMessage `json:"paths"`
 	}
-	if err := json.Unmarshal(body, &doc); err != nil {
+	if err := json.Unmarshal(jsonBody, &doc); err != nil {
 		return nil, false
 	}
 	if doc.Swagger == "" && doc.OpenAPI == "" {

@@ -1,6 +1,7 @@
 package templatesync
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -164,4 +165,62 @@ func TestList_EmptyDirSkipped(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 	assert.Equal(t, 0, rejected)
+}
+
+// TestLoadByIDs_ReturnsOnlyRequested is F4 (LT-71): LoadByIDs resolves a
+// small explicit ID set across both formats without a full corpus parse,
+// and yields the same Entry shape List does for those IDs.
+func TestLoadByIDs_ReturnsOnlyRequested(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 30; i++ {
+		writeFile(t, dir, fmt.Sprintf("n%02d.yaml", i), fmt.Sprintf(`
+id: nuclei-%02d
+info:
+  name: Nuclei %02d
+  severity: info
+  tags: alpha
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: word
+        words: ["ok"]
+`, i, i))
+	}
+	writeFile(t, dir, "native.yaml", `
+id: native-pick
+info:
+  name: Native pick
+  severity: low
+tags:
+  - beta
+requests:
+  - path: "{{BaseURL}}/"
+    matchers:
+      - type: word
+        words: ["ok"]
+`)
+
+	entries, err := LoadByIDs([]string{dir}, []string{"synced"}, []string{"nuclei-05", "native-pick", "does-not-exist"})
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.ID] = e.Format
+		assert.Equal(t, "synced", e.Source)
+	}
+	assert.Equal(t, "nuclei", got["nuclei-05"])
+	assert.Equal(t, "native", got["native-pick"])
+}
+
+func TestLoadByIDs_EmptyIDs(t *testing.T) {
+	entries, err := LoadByIDs([]string{t.TempDir()}, []string{"synced"}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestLoadByIDs_MismatchedLengths(t *testing.T) {
+	_, err := LoadByIDs([]string{t.TempDir(), t.TempDir()}, []string{"one"}, []string{"x"})
+	require.Error(t, err)
 }

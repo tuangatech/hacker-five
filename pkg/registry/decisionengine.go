@@ -312,9 +312,9 @@ var nonActionableTech = map[string]bool{
 	// "matched no registry capability" recon-followup leaf (and LLM-fallback
 	// bait). The companion "don't attribute a Cloudflare/CDN fact absent
 	// from the host's own response headers" half is Phase 8 Step 6 (LT-65).
-	"cdnjs":                  true,
-	"jsdelivr":               true,
-	"unpkg":                  true,
+	"cdnjs":                   true,
+	"jsdelivr":                true,
+	"unpkg":                   true,
 	"google hosted libraries": true,
 	// "Basic" is httpx/fingerprint reporting a WWW-Authenticate: Basic realm,
 	// not a product — left in, its normalized "basic" word matched a sizable
@@ -1089,8 +1089,13 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 			seen[key] = true
 			hostNode.Children = append(hostNode.Children, leaf)
 		}
+		// F3 (LT-67, docs/follow-up.md): does recon show this host serving
+		// app-generated content? A response-body secret/exposure template has
+		// nothing to grep against a static error page or a bucket/SPA
+		// catch-all shell — computed once per host, consumed in resolveTechFact.
+		hostDynamic := hostServesDynamicContent(host, result)
 		for _, fact := range byHost[host] {
-			for _, leaf := range resolveTechFact(host, fact, templateIndex, result.Endpoints, &leafIdx, leafContexts) {
+			for _, leaf := range resolveTechFact(host, fact, templateIndex, result.Endpoints, hostDynamic, &leafIdx, leafContexts) {
 				addLeaf(leaf, leafDedupKey(fact, leaf))
 			}
 		}
@@ -1151,7 +1156,7 @@ func unresolvedDedupKey(target, techName string) string {
 	return "unresolved\x00" + target + "\x00" + NormalizeTechName(techName)
 }
 
-func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, leafIdx *int, leafContexts map[string]LeafContext) []*agenttask.PlanNode {
+func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, hostDynamic bool, leafIdx *int, leafContexts map[string]LeafContext) []*agenttask.PlanNode {
 	if nonActionableTech[NormalizeTechName(fact.Name)] {
 		return nil // transport/posture/hosting-brand fact — nothing to dispatch, not even an unresolved leaf (P0-5)
 	}
@@ -1172,6 +1177,14 @@ func resolveTechFact(host string, fact recon.TechFact, templateIndex []templates
 	}
 
 	for _, entry := range matchTemplateTags(fact.Name, templateIndex) {
+		// F3 (LT-67, docs/follow-up.md): a response-body secret/exposure
+		// template (the shopify-*-token / aws-access-key-value family) is
+		// structurally pointless against a host recon shows serving no
+		// app-generated content — drop the leaf rather than fire a body grep
+		// at a static shell. Every other template family is unaffected.
+		if !hostDynamic && isBodyGrepSecretTemplate(entry) {
+			continue
+		}
 		leaves = append(leaves, &agenttask.PlanNode{
 			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
 			Target:     host,
@@ -1406,6 +1419,79 @@ func endpointsForHost(host string, endpoints []recon.EndpointFact) []recon.Endpo
 		}
 	}
 	return matched
+}
+
+// secretLeakTags / exposureTags identify a response-body secret grep in the
+// synced corpus: an entry carrying at least one tag from each set is the
+// shopify-*-token / aws-access-key-value / google-api-key family (~114
+// entries, all `part: body` regex matchers for a leaked credential). The two
+// sets are kept narrow so isBodyGrepSecretTemplate stays high-precision —
+// F3 (LT-67) only ever suppresses a leaf it is confident is one of these.
+var secretLeakTags = map[string]bool{
+	"token": true, "tokens": true, "secret": true, "secrets": true,
+	"api-key": true, "apikey": true, "credential": true, "credentials": true, "keys": true,
+}
+
+var exposureTags = map[string]bool{
+	"exposure": true, "exposures": true, "disclosure": true, "disclosures": true,
+}
+
+// isBodyGrepSecretTemplate reports whether entry is a response-body
+// secret/exposure grep — see secretLeakTags. F3 (LT-67, docs/follow-up.md).
+func isBodyGrepSecretTemplate(entry templatesync.Entry) bool {
+	var hasSecret, hasExposure bool
+	for _, raw := range entry.Tags {
+		switch t := strings.ToLower(strings.TrimSpace(raw)); {
+		case secretLeakTags[t]:
+			hasSecret = true
+		case exposureTags[t]:
+			hasExposure = true
+		}
+	}
+	return hasSecret && hasExposure
+}
+
+// dynamicContentBodyFloor is the 2xx response-body size (bytes) below which
+// a page is treated as a static shell / error stub rather than
+// app-generated markup, for F3's response-grep-secret gate (LT-67).
+// linkpop's noise case was a 746-byte SPA 404; a real rendered page clears
+// 1 KiB comfortably. A page above the floor is given the benefit of the
+// doubt (leaf still emitted), preserving the <5%-false-positive discipline
+// LT-67 calls out.
+const dynamicContentBodyFloor = 1024
+
+// hostServesDynamicContent reports whether recon saw evidence that host
+// serves app-generated content — the gate F3 (LT-67) puts in front of a
+// response-body secret/exposure template leaf. Deliberately biased toward
+// "yes": it returns false only on a positive static/walled signal — a
+// recorded catch-all wall on this host, recon's own AppSurface "none"
+// verdict, or every measured 2xx body on the host sitting below
+// dynamicContentBodyFloor. A missing/`nil` ReconResult, or any doubt,
+// yields true so the leaf still runs.
+func hostServesDynamicContent(host string, result *recon.ReconResult) bool {
+	if result == nil {
+		return true
+	}
+	if u := result.UniformResponse; u != nil && u.Kind == "catchall" && (u.Host == "" || u.Host == host) {
+		return false
+	}
+	if result.AppSurface != nil && result.AppSurface.Verdict == "none" {
+		return false
+	}
+	measured, dynamic := 0, 0
+	for _, ep := range endpointsForHost(host, result.Endpoints) {
+		if ep.StatusCode < 200 || ep.StatusCode >= 300 || ep.BodyLen <= 0 {
+			continue // non-2xx, or body length not measured — no evidence either way
+		}
+		measured++
+		if ep.BodyLen >= dynamicContentBodyFloor {
+			dynamic++
+		}
+	}
+	if measured > 0 && dynamic == 0 {
+		return false // every measured 2xx body on this host is a sub-floor shell
+	}
+	return true
 }
 
 // resolvePortFacts is P1-2's port-driven pass (docs/follow-up.md): one

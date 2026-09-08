@@ -249,6 +249,60 @@ func TestResolve_TemplateTagMatch_ProducesLeafWithTemplateIDAsDetector(t *testin
 	assert.Equal(t, agenttask.StatusPending, leaf.Status)
 }
 
+// F3 (LT-67, docs/follow-up.md): a response-body secret/exposure template
+// is dropped for a host recon shows serving no app-generated content, while
+// every other template family for the same tech is kept.
+func TestResolve_BodyGrepSecretTemplate_SuppressedOnStaticHost(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "shopify-app-secret", Tags: []string{"shopify", "token", "exposure", "vuln"}},
+		{ID: "shopify-detect", Tags: []string{"shopify", "detect", "tech"}},
+	}
+	base := func() *recon.ReconResult {
+		return &recon.ReconResult{
+			Target:    "http://example.test",
+			TechStack: []recon.TechFact{{Name: "Shopify", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+		}
+	}
+
+	// catch-all wall on the host -> secret grep suppressed, control kept.
+	walled := base()
+	walled.UniformResponse = &recon.UniformResponseFact{Host: "example.test", Kind: "catchall"}
+	tree, _ := Resolve(walled, index)
+	assert.Nil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }),
+		"a body-grep secret template must not be planned against a catch-all host")
+	assert.NotNil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-detect" }),
+		"a non-secret template for the same tech is unaffected")
+
+	// AppSurface "none" -> same suppression.
+	noApp := base()
+	noApp.AppSurface = &recon.AppSurfaceFact{Verdict: "none", Reason: "nothing served real content"}
+	tree, _ = Resolve(noApp, index)
+	assert.Nil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }))
+
+	// only sub-floor 2xx bodies on the host -> suppression.
+	tiny := base()
+	tiny.Endpoints = []recon.EndpointFact{{URL: "http://example.test/", Method: "GET", StatusCode: 200, BodyLen: 700, Source: "wave3-common-path-probe"}}
+	tree, _ = Resolve(tiny, index)
+	assert.Nil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }))
+}
+
+// F3: the same secret template is kept when recon shows real app content —
+// the gate is a targeted suppressor, not a blanket drop (LT-67's <5%-FP
+// "err toward emitting" note).
+func TestResolve_BodyGrepSecretTemplate_KeptOnDynamicHost(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "shopify-app-secret", Tags: []string{"shopify", "token", "exposure", "vuln"}},
+	}
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "Shopify", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+		Endpoints: []recon.EndpointFact{{URL: "http://example.test/", Method: "GET", StatusCode: 200, BodyLen: 8192, Source: "wave3-common-path-probe"}},
+	}
+	tree, _ := Resolve(result, index)
+	assert.NotNil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }),
+		"a body-grep secret template is planned normally against a host serving real content")
+}
+
 func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {
 	var index []templatesync.Entry
 	for i := 0; i < maxTemplateLeavesPerTech+10; i++ {

@@ -423,7 +423,9 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		// (the same synced+bundled directories the whole plan uses) —
 		// narrowing to just this one template happens by exact id: match at
 		// load time (Config.TemplateID), not by pointing at a different
-		// directory.
+		// directory. Since F4 (LT-71) the engine's loadTemplates takes an
+		// id:-peek fast path for a TemplateID-only narrow, so this no longer
+		// pays a full ~9,500-file parse to run one named template.
 		cfg.Detector = ""
 		cfg.TemplateID = leaf.Detector
 		validateOpts.SkipDetectorRequired = true
