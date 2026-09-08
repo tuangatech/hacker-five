@@ -45,7 +45,7 @@ func TestResolve_MatchedTechRule_ProducesPendingLeaf(t *testing.T) {
 	require.NotNil(t, leaf, "expected a misconfig leaf for a PHP tech fact")
 	assert.Equal(t, agenttask.StatusPending, leaf.Status)
 	assert.Equal(t, agenttask.ConfidenceMedium, leaf.Confidence)
-	assert.Equal(t, "example.test", leaf.Target)
+	assert.Equal(t, "http://example.test", leaf.Target, "LT-93: a leaf's Target is the scheme://host recon observed, not the bare hostname")
 }
 
 // TestResolve_GroupsLeavesUnderVulnClassNodes covers C7a (doc16 Phase 7
@@ -247,6 +247,220 @@ func TestResolve_TemplateTagMatch_ProducesLeafWithTemplateIDAsDetector(t *testin
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "niche-stack-default-creds" })
 	require.NotNil(t, leaf, "expected a leaf whose Detector is the matched template's ID")
 	assert.Equal(t, agenttask.StatusPending, leaf.Status)
+}
+
+// F3 (LT-67, docs/follow-up.md): a response-body secret/exposure template
+// is dropped for a host recon shows serving no app-generated content, while
+// every other template family for the same tech is kept.
+func TestResolve_BodyGrepSecretTemplate_SuppressedOnStaticHost(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "shopify-app-secret", Tags: []string{"shopify", "token", "exposure", "vuln"}},
+		{ID: "shopify-detect", Tags: []string{"shopify", "detect", "tech"}},
+	}
+	base := func() *recon.ReconResult {
+		return &recon.ReconResult{
+			Target:    "http://example.test",
+			TechStack: []recon.TechFact{{Name: "Shopify", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+		}
+	}
+
+	// catch-all wall on the host -> secret grep suppressed, control kept.
+	walled := base()
+	walled.UniformResponse = &recon.UniformResponseFact{Host: "example.test", Kind: "catchall"}
+	tree, _ := Resolve(walled, index)
+	assert.Nil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }),
+		"a body-grep secret template must not be planned against a catch-all host")
+	assert.NotNil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-detect" }),
+		"a non-secret template for the same tech is unaffected")
+
+	// AppSurface "none" -> same suppression.
+	noApp := base()
+	noApp.AppSurface = &recon.AppSurfaceFact{Verdict: "none", Reason: "nothing served real content"}
+	tree, _ = Resolve(noApp, index)
+	assert.Nil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }))
+
+	// only sub-floor 2xx bodies on the host -> suppression.
+	tiny := base()
+	tiny.Endpoints = []recon.EndpointFact{{URL: "http://example.test/", Method: "GET", StatusCode: 200, BodyLen: 700, Source: "wave3-common-path-probe"}}
+	tree, _ = Resolve(tiny, index)
+	assert.Nil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }))
+}
+
+// F3: the same secret template is kept when recon shows real app content —
+// the gate is a targeted suppressor, not a blanket drop (LT-67's <5%-FP
+// "err toward emitting" note).
+func TestResolve_BodyGrepSecretTemplate_KeptOnDynamicHost(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "shopify-app-secret", Tags: []string{"shopify", "token", "exposure", "vuln"}},
+	}
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "Shopify", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+		Endpoints: []recon.EndpointFact{{URL: "http://example.test/", Method: "GET", StatusCode: 200, BodyLen: 8192, Source: "wave3-common-path-probe"}},
+	}
+	tree, _ := Resolve(result, index)
+	assert.NotNil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }),
+		"a body-grep secret template is planned normally against a host serving real content")
+}
+
+// TestResolve_SpecAuthRequiredRoute_ProducesAuthbypassLeaf covers LT-90: a
+// parameterless api-spec route the OpenAPI doc marks auth-required flows
+// through SuggestAuthBypassPathsFromRecon into an authbypass leaf.
+func TestResolve_SpecAuthRequiredRoute_ProducesAuthbypassLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/identity/api/v2/user/dashboard", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+			{URL: "http://api.example.test/identity/api/v2/vehicle/{vehicleId}/location", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "api.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "authbypass" })
+	require.NotNil(t, leaf, "a spec-declared auth-required route must yield an authbypass leaf")
+}
+
+// TestResolve_IdorEndpointCandidates_FanOutPerCandidate covers LT-91: every
+// distinct ID-shaped recon endpoint becomes its own idor leaf carrying that
+// {{id}} template, and the bare tech-capability idor leaf is dropped once a
+// runnable per-candidate leaf exists.
+func TestResolve_IdorEndpointCandidates_FanOutPerCandidate(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		// OpenResty matches the "idor" capability rule -> a bare idor leaf; the
+		// three spec routes below each yield one endpoint-driven idor leaf.
+		TechStack: []recon.TechFact{{Name: "OpenResty", Host: "api.example.test", Source: "httpx-tech-detect", Confidence: "medium"}},
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/workshop/api/shop/orders/{order_id}", Method: "GET", Source: "api-spec", Confidence: "low"},
+			{URL: "http://api.example.test/identity/api/v2/user/videos/{video_id}", Method: "GET", Source: "api-spec", Confidence: "low"},
+			{URL: "http://api.example.test/community/api/v2/community/posts/{postId}", Method: "GET", Source: "api-spec", Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	var idorLeaves []*agenttask.PlanNode
+	for _, leaf := range hostLeaves(t, tree, "api.example.test") {
+		if leaf.Detector == "idor" {
+			idorLeaves = append(idorLeaves, leaf)
+		}
+	}
+	require.Len(t, idorLeaves, 3, "one idor leaf per ID-shaped endpoint candidate, bare capability leaf dropped")
+	got := map[string]bool{}
+	for _, leaf := range idorLeaves {
+		assert.NotEmpty(t, leaf.EndpointTemplate, "each fanned-out idor leaf carries its own {{id}} template")
+		got[leaf.EndpointTemplate] = true
+	}
+	assert.True(t, got["/workshop/api/shop/orders/{{id}}"])
+	assert.True(t, got["/identity/api/v2/user/videos/{{id}}"])
+	assert.True(t, got["/community/api/v2/community/posts/{{id}}"])
+}
+
+// TestResolve_IdorCapabilityOnly_KeepsBareLeaf: a host with a tech-matched
+// idor capability but zero ID-shaped recon endpoints keeps its single bare
+// idor leaf (nothing to fan out).
+func TestResolve_IdorCapabilityOnly_KeepsBareLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		TechStack: []recon.TechFact{{Name: "OpenResty", Host: "example.test", Source: "httpx-tech-detect", Confidence: "medium"}},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "idor" })
+	require.NotNil(t, leaf, "the bare tech-capability idor leaf stays when there is no endpoint candidate to fan out")
+	assert.Empty(t, leaf.EndpointTemplate)
+}
+
+// TestResolve_LeafTarget_CarriesSchemeAndPort covers LT-93: a leaf's Target
+// is the scheme://host[:port] recon observed (from a probed endpoint URL),
+// not the bare hostname — the executor hands it straight to the scanner
+// engine as a request base, so a bare host produced "host/path" and every
+// request failed.
+func TestResolve_LeafTarget_CarriesSchemeAndPort(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://127.0.0.1:8888",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://127.0.0.1:8888/workshop/api/shop/orders/{order_id}", Method: "GET", Source: "api-spec", Confidence: "low"},
+			{URL: "http://127.0.0.1:8888/identity/api/v2/user/dashboard", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	for _, leaf := range hostLeaves(t, tree, "127.0.0.1") {
+		assert.Equal(t, "http://127.0.0.1:8888", leaf.Target,
+			"every dispatchable leaf's Target is the observed scheme://host:port, leaf %s", leaf.ID)
+	}
+}
+
+func TestReconHostBaseURL(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+		res  *recon.ReconResult
+		want string
+	}{
+		{
+			name: "from a probed endpoint URL (scheme + non-default port)",
+			host: "127.0.0.1",
+			res:  &recon.ReconResult{Endpoints: []recon.EndpointFact{{URL: "http://127.0.0.1:8888/a"}}},
+			want: "http://127.0.0.1:8888",
+		},
+		{
+			name: "from result.Target when no endpoint names the host",
+			host: "example.test",
+			res:  &recon.ReconResult{Target: "https://example.test"},
+			want: "https://example.test",
+		},
+		{
+			name: "from the port list — 443 wins as https",
+			host: "svc.example",
+			res:  &recon.ReconResult{Hosts: []recon.HostFact{{Host: "svc.example", Ports: []recon.PortFact{{Port: 22}, {Port: 443}}}}},
+			want: "https://svc.example",
+		},
+		{
+			name: "from the port list — bare 8080 keeps its port",
+			host: "svc.example",
+			res:  &recon.ReconResult{Hosts: []recon.HostFact{{Host: "svc.example", Ports: []recon.PortFact{{Port: 8080}}}}},
+			want: "http://svc.example:8080",
+		},
+		{
+			name: "no signal at all — https fallback",
+			host: "lonely.example",
+			res:  &recon.ReconResult{},
+			want: "https://lonely.example",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, reconHostBaseURL(tc.host, tc.res))
+		})
+	}
+}
+
+// TestResolve_EndpointDrivenAuthbypassLeaf_CarriesProtectedPaths covers
+// LT-94: the endpoint-driven authbypass leaf stashes the recon-derived
+// protected paths on the PlanNode so the plan→execute path is self-sufficient
+// without the caller pre-filling baseCfg.
+func TestResolve_EndpointDrivenAuthbypassLeaf_CarriesProtectedPaths(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/identity/api/v2/user/dashboard", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+			{URL: "http://api.example.test/community/api/v2/community/home", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "api.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "authbypass" })
+	require.NotNil(t, leaf)
+	assert.ElementsMatch(t, []string{
+		"/community/api/v2/community/home",
+		"/identity/api/v2/user/dashboard",
+	}, leaf.ProtectedPaths, "the leaf carries the recon-derived protected paths")
 }
 
 func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {

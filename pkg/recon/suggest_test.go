@@ -215,6 +215,26 @@ func TestSuggestAuthBypassPathsFromRecon(t *testing.T) {
 	assertStringSlice(t, "logout", logout, wantLogout)
 }
 
+// TestSuggestAuthBypassPathsFromRecon_SpecDeclaredAuth covers LT-90: a
+// parameterless api-spec route the OpenAPI doc marks auth-required becomes a
+// protected-path candidate; a {param} route does not (no id to invent), and
+// a spec route the doc leaves open does not.
+func TestSuggestAuthBypassPathsFromRecon_SpecDeclaredAuth(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://api.example.com/identity/api/v2/user/dashboard", Source: "api-spec", AuthRequired: true},
+		{URL: "https://api.example.com/identity/api/v2/vehicle/{vehicleId}/location", Source: "api-spec", AuthRequired: true},
+		{URL: "https://api.example.com/identity/api/auth/login", Source: "api-spec", AuthRequired: false},
+		{URL: "https://api.example.com/community/api/v2/community/home", Source: "api-spec", AuthRequired: true},
+	}}
+
+	protected, _, _ := SuggestAuthBypassPathsFromRecon(result)
+
+	assertStringSlice(t, "protected", protected, []string{
+		"/community/api/v2/community/home",
+		"/identity/api/v2/user/dashboard",
+	})
+}
+
 func TestSuggestAuthBypassPathsFromRecon_NilResult(t *testing.T) {
 	protected, login, logout := SuggestAuthBypassPathsFromRecon(nil)
 	if protected != nil || login != nil || logout != nil {

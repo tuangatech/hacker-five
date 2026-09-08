@@ -73,6 +73,8 @@ type Recon struct {
 	run         runFunc
 	progress    func(wave, status string)
 	headers     map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
+
+	openAPISpecRefs []string // operator-supplied OpenAPI docs to walk into api-spec EndpointFacts (LT-89)
 }
 
 // Option configures a Recon at construction time.
@@ -116,6 +118,19 @@ func WithCrawlDepth(d int) Option {
 		if d >= 1 {
 			r.crawlDepth = d
 		}
+	}
+}
+
+// WithOpenAPISpecs registers one or more operator-supplied OpenAPI/Swagger
+// documents (a local file path or an http(s) URL each) to walk into
+// api-spec EndpointFacts during Run — LT-89 (docs/follow-up.md). For the
+// common case where the real spec is on disk or behind auth and so an
+// unauthenticated recon never finds it served, this feeds the same
+// walkOpenAPISpec path Wave 3's probeCommonPaths uses. Empty slice is a
+// no-op. See IngestOpenAPISpecs for the walk/scope semantics.
+func WithOpenAPISpecs(refs []string) Option {
+	return func(r *Recon) {
+		r.openAPISpecRefs = append(r.openAPISpecRefs, refs...)
 	}
 }
 
@@ -246,6 +261,27 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 	passiveHosts := r.runWave1(ctx, agg, domain)
 	inScope := r.filterScope(agg, passiveHosts)
 	r.progress("wave1", "done")
+
+	// LT-89 (docs/follow-up.md): fold any operator-supplied OpenAPI document
+	// into api-spec EndpointFacts here — same walkOpenAPISpec path Wave 3's
+	// probeCommonPaths uses for a spec it finds served, for the common case
+	// where the real doc is on disk or behind auth. Independent of the wave
+	// depth: a spec feed is useful even for a passive run.
+	if len(r.openAPISpecRefs) > 0 {
+		ing := IngestOpenAPISpecs(ctx, r.client, r.scope, r.headers, r.openAPISpecRefs, target)
+		for _, ef := range ing.Endpoints {
+			agg.addEndpoint(ef)
+		}
+		if ing.APISpec != nil {
+			agg.addAPISpec(*ing.APISpec)
+		}
+		for _, h := range ing.OutOfScope {
+			agg.addOutOfScope(h)
+		}
+		for _, w := range ing.Warnings {
+			agg.addWarning("%s", w)
+		}
+	}
 
 	if depth == DepthPassive {
 		return agg.finalize(), nil

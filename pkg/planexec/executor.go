@@ -203,7 +203,7 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 		// detectors. Every other detector, and the no-SeedFn path, keep the
 		// pre-dispatch gate exactly as before.
 		if opts.SeedFn == nil || !seedFillableDetector[leaf.Detector] {
-			if reason := missingRequiredField(leaf.Detector, baseCfg); reason != "" {
+			if reason := missingRequiredFieldForLeaf(leaf, baseCfg); reason != "" {
 				skipped = append(skipped, fmt.Sprintf("%s: skipped — %s (same skip-and-explain posture as pkg/webui's fillReconFields)", leaf.ID, reason))
 				continue
 			}
@@ -337,6 +337,44 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 // are exactly the two things recon/I4 must never supply on their own
 // (CLAUDE.md's write-safety rule), so this only ever narrows what already
 // requires a human, it never relaxes it.
+// missingRequiredFieldForLeaf is missingRequiredField with LT-91's per-leaf
+// override: an endpoint-driven idor leaf carries its own EndpointTemplate on
+// the PlanNode (set by registry.resolveEndpointFacts' fan-out), which
+// runLeaf copies into the config just before dispatch — so the gate must
+// treat that leaf as already having its required field even though baseCfg
+// doesn't. Every other leaf/detector falls through to the baseCfg check
+// unchanged.
+func missingRequiredFieldForLeaf(leaf *agenttask.PlanNode, cfg scanner.Config) string {
+	applyLeafReconFields(&cfg, leaf, nil)
+	return missingRequiredField(leaf.Detector, cfg)
+}
+
+// applyLeafReconFields copies the recon-derived required-field values a
+// registry endpoint-driven leaf carries (LT-91 idor EndpointTemplate, LT-94
+// authbypass ProtectedPaths / ssrf SSRFParams) into any still-blank cfg
+// field. An explicit flag, a baseCfg auto-fill, or a C7a seed all win. When
+// notify is non-nil a line is logged for each field actually filled.
+func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify func(string)) {
+	if leaf.EndpointTemplate != "" && cfg.EndpointTemplate == "" {
+		cfg.EndpointTemplate = leaf.EndpointTemplate
+		if notify != nil {
+			notify(fmt.Sprintf("idor: enumerating recon-derived endpoint %s (LT-91)", leaf.EndpointTemplate))
+		}
+	}
+	if len(leaf.ProtectedPaths) > 0 && len(cfg.ProtectedPaths) == 0 {
+		cfg.ProtectedPaths = append([]string(nil), leaf.ProtectedPaths...)
+		if notify != nil {
+			notify(fmt.Sprintf("authbypass: probing %d recon-derived protected path(s) (LT-94)", len(leaf.ProtectedPaths)))
+		}
+	}
+	if len(leaf.SSRFParams) > 0 && len(cfg.SSRFParams) == 0 {
+		cfg.SSRFParams = append([]string(nil), leaf.SSRFParams...)
+		if notify != nil {
+			notify(fmt.Sprintf("ssrf: probing recon-derived param(s) %s (LT-94)", strings.Join(leaf.SSRFParams, ", ")))
+		}
+	}
+}
+
 func missingRequiredField(detector string, cfg scanner.Config) string {
 	switch detector {
 	case "idor":
@@ -396,6 +434,18 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		}
 	}
 
+	// LT-91 / LT-94: an endpoint-driven idor/authbypass/ssrf leaf carries its
+	// recon-derived required field(s) on the PlanNode
+	// (registry.resolveEndpointFacts). Fill any still-blank config field from
+	// them — an explicit flag, a recon/I4 auto-fill on baseCfg, or a C7a seed
+	// all still win. Logged, never silent; the values are recon-derived paths
+	// on the already-approved host, inside the approved blast radius.
+	applyLeafReconFields(&cfg, leaf, func(m string) {
+		if opts.Notify != nil {
+			opts.Notify(leaf.Target, m)
+		}
+	})
+
 	validateOpts := scanner.ValidateOptions{
 		SkipEndpointRequired:       true,
 		SkipProtectedPathsRequired: true,
@@ -423,7 +473,9 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		// (the same synced+bundled directories the whole plan uses) —
 		// narrowing to just this one template happens by exact id: match at
 		// load time (Config.TemplateID), not by pointing at a different
-		// directory.
+		// directory. Since F4 (LT-71) the engine's loadTemplates takes an
+		// id:-peek fast path for a TemplateID-only narrow, so this no longer
+		// pays a full ~9,500-file parse to run one named template.
 		cfg.Detector = ""
 		cfg.TemplateID = leaf.Detector
 		validateOpts.SkipDetectorRequired = true

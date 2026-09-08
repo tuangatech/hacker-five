@@ -78,12 +78,83 @@ func LoadDirDetailed(dir string) (templates []*Template, errs []LoadError) {
 	return templates, errs
 }
 
+// LoadDirByIDs is LoadDirDetailed narrowed to templates whose id: is in
+// want — F4 (docs/follow-up.md LT-71). It still walks the whole tree (a
+// cheap readdir), but only fully parses + validates a file whose id:,
+// cheaply peeked from the head of the file, is one of the requested IDs.
+// For a plan dispatching a handful of named template leaves this turns a
+// ~9,500-file parse into a ~10-file one, with a result identical to
+// LoadDirDetailed followed by an exact-id filter: a caller that can't
+// account for every requested ID in the result should fall back to the full
+// load (a template whose id: sits outside the peeked head is far outside
+// nuclei convention, but the fallback keeps the narrowing a pure
+// optimisation). want == nil / empty returns nothing.
+func LoadDirByIDs(dir string, want map[string]bool) (templates []*Template, errs []LoadError) {
+	if len(want) == 0 {
+		return nil, nil
+	}
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if ext := filepath.Ext(path); ext != ".yaml" && ext != ".yml" {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			errs = append(errs, LoadError{Path: path, Err: fmt.Errorf("reading file: %w", rerr)})
+			return nil
+		}
+		if id := peekTemplateID(data); id == "" || !want[id] {
+			return nil
+		}
+		tmpl, lerr := loadFileData(data, dir)
+		if lerr != nil {
+			errs = append(errs, LoadError{Path: path, Err: lerr})
+			return nil
+		}
+		templates = append(templates, tmpl)
+		return nil
+	})
+	return templates, errs
+}
+
+// templateIDPeekPattern pulls the id: value from the head of a nuclei
+// template without a full YAML parse — id: is the conventional first
+// top-level key of every nuclei template (upstream's template guidelines
+// make it mandatory and first). Anchored to column 0 so an indented "id:"
+// inside info: or a matcher can't match.
+var templateIDPeekPattern = regexp.MustCompile(`(?m)^id:[ \t]*["']?([A-Za-z0-9_.\-]+)`)
+
+// templateIDPeekBytes bounds how much of a file's head peekTemplateID
+// scans — id: is line 1 in practice; 4 KiB is generous slack for a leading
+// comment block.
+const templateIDPeekBytes = 4096
+
+// peekTemplateID returns the template's declared id: from a bounded head of
+// the file, or "" if it isn't there (the caller then just skips the file in
+// the fast path).
+func peekTemplateID(data []byte) string {
+	if len(data) > templateIDPeekBytes {
+		data = data[:templateIDPeekBytes]
+	}
+	if m := templateIDPeekPattern.FindSubmatch(data); m != nil {
+		return string(m[1])
+	}
+	return ""
+}
+
 func loadFile(path, sourceDir string) (*Template, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
+	return loadFileData(data, sourceDir)
+}
 
+// loadFileData is loadFile's parse/validate half, split out so LoadDirByIDs
+// can reuse the bytes it already read for the id: peek.
+func loadFileData(data []byte, sourceDir string) (*Template, error) {
 	if err := checkDisallowedBlocks(data); err != nil {
 		return nil, err
 	}

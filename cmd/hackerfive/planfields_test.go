@@ -53,6 +53,30 @@ func TestPlanFieldSuggestions_MissWithoutLLMAssist_AdvisoryOnly(t *testing.T) {
 	assert.Equal(t, float64(0), tree.SpendSoFar(), "no model call, no spend")
 }
 
+// LT-91: when the tree already carries per-candidate idor leaves (each with
+// its own EndpointTemplate), idor's ">1 endpoint candidate" is no longer a
+// miss — no escalate-to-human note is emitted for it.
+func TestPlanFieldSuggestions_IdorFannedOut_NoEscalation(t *testing.T) {
+	r := reconWith(
+		recon.EndpointFact{URL: "https://example.com/orders/{id}", Source: "api-spec"},
+		recon.EndpointFact{URL: "https://example.com/users/{id}", Source: "api-spec"},
+	)
+	tree := treeWith() // build the leaves by hand so each carries a template
+	tree.Root.Children = []*agenttask.PlanNode{
+		{ID: "i1", Target: "https://example.com", Detector: "idor", EndpointTemplate: "/orders/{{id}}"},
+		{ID: "i2", Target: "https://example.com", Detector: "idor", EndpointTemplate: "/users/{{id}}"},
+	}
+	var stderr bytes.Buffer
+
+	sugs := planFieldSuggestions(context.Background(), r, tree, false, nil, nil, &stderr)
+
+	for _, s := range sugs {
+		if s.Detector == "idor" && s.Field == "endpoint_template" {
+			t.Fatalf("expected no idor endpoint_template suggestion once the tree fanned out; got %+v", s)
+		}
+	}
+}
+
 func TestPlanFieldSuggestions_DeterministicAutoFill(t *testing.T) {
 	r := reconWith(recon.EndpointFact{URL: "https://example.com/api/report?report_id=482"})
 	tree := treeWith("idor")

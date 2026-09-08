@@ -481,6 +481,14 @@ func (e *Engine) warnIfWritesUngated() {
 // --templates path silently loading zero templates would otherwise be
 // invisible.
 func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
+	// F4 (docs/follow-up.md LT-71): when the corpus is narrowed purely to an
+	// exact template id: (a specific-template plan leaf, pkg/planexec), skip
+	// parsing the ~9,500 files that can't match it — nuclei.LoadDirByIDs
+	// peeks each file's id: and only fully loads the wanted one. Not taken
+	// when a tag scope is also active: a tag filter has to evaluate every
+	// template's tags: block, so the whole corpus must be parsed anyway.
+	fastIDs := e.fastLoadNucleiIDs()
+
 	var (
 		nucleiTemplates []*nuclei.Template
 		nativeTemplates []*native.Template
@@ -490,7 +498,15 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		if dir == "" {
 			continue
 		}
-		nt, nErrs := nuclei.LoadDirDetailed(dir)
+		var (
+			nt    []*nuclei.Template
+			nErrs []nuclei.LoadError
+		)
+		if fastIDs != nil {
+			nt, nErrs = nuclei.LoadDirByIDs(dir, fastIDs)
+		} else {
+			nt, nErrs = nuclei.LoadDirDetailed(dir)
+		}
 		nucleiTemplates = append(nucleiTemplates, nt...)
 
 		vt, vErrs := native.LoadDirDetailed(dir)
@@ -502,6 +518,23 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		// pkg/templatesync.List's countRejectedByBothFormats, the same fix
 		// applied there for the Web UI's template count.
 		rejected = append(rejected, rejectedByBothFormats(nErrs, vErrs)...)
+	}
+	// If the id: peek missed a requested template (never seen on the real
+	// nuclei corpus, but the fast path must not be able to change results),
+	// fall back to a full parse so the filters below see everything.
+	if fastIDs != nil && !nucleiIDsCovered(nucleiTemplates, nativeTemplates, fastIDs) {
+		e.warnf("info", "fast template load did not account for every requested id — reloading the full corpus (F4)")
+		nucleiTemplates, nativeTemplates, rejected = nil, nil, nil
+		for _, dir := range e.cfg.TemplatePaths {
+			if dir == "" {
+				continue
+			}
+			nt, nErrs := nuclei.LoadDirDetailed(dir)
+			nucleiTemplates = append(nucleiTemplates, nt...)
+			vt, vErrs := native.LoadDirDetailed(dir)
+			nativeTemplates = append(nativeTemplates, vt...)
+			rejected = append(rejected, rejectedByBothFormats(nErrs, vErrs)...)
+		}
 	}
 	// Drop tooling/data files that share the .yml/.yaml extension with real
 	// templates but were never meant to be one (doc15 Step 6d) — they land in
@@ -552,6 +585,43 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
 		len(nucleiTemplates), len(nativeTemplates), len(rejected), filtered)
 	return nucleiTemplates, nativeTemplates
+}
+
+// fastLoadNucleiIDs returns the exact-id set loadTemplates should parse
+// instead of the whole nuclei corpus (F4 / LT-71), or nil when the fast
+// path doesn't apply: it's only safe when the load is narrowed purely by
+// Config.TemplateID and not also by an explicit or derived tag scope (a tag
+// filter must see every template's tags: block, so the full parse is
+// unavoidable there).
+func (e *Engine) fastLoadNucleiIDs() map[string]bool {
+	if e.cfg.TemplateID == "" {
+		return nil
+	}
+	if len(e.cfg.Tags) > 0 || (len(e.cfg.DerivedTags) > 0 && !e.cfg.AllTemplates) {
+		return nil
+	}
+	return map[string]bool{e.cfg.TemplateID: true}
+}
+
+// nucleiIDsCovered reports whether every id in want was accounted for by a
+// fast (id:-peek) load — either as a loaded nuclei template or a
+// fully-loaded native one. A miss means the id: peek didn't find a file it
+// should have, so loadTemplates falls back to the full parse and the
+// narrowing stays a pure optimisation.
+func nucleiIDsCovered(nt []*nuclei.Template, vt []*native.Template, want map[string]bool) bool {
+	got := make(map[string]bool, len(nt)+len(vt))
+	for _, t := range nt {
+		got[t.ID] = true
+	}
+	for _, t := range vt {
+		got[t.ID] = true
+	}
+	for id := range want {
+		if !got[id] {
+			return false
+		}
+	}
+	return true
 }
 
 // rejectedTemplate is one file rejected by both template-format loaders —

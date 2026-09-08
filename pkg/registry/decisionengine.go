@@ -24,6 +24,14 @@ import (
 // leafDedupKey, so in practice this is a per-(host, template) ceiling.
 const maxTemplateLeavesPerTech = 8
 
+// maxEndpointDrivenIdorLeaves caps how many per-candidate idor leaves
+// resolveEndpointFacts fans out from SuggestIDOREndpointCandidates (LT-91),
+// so a large OpenAPI spec with dozens of {{id}} routes can't balloon the
+// tokenless-probe count. Mirrors recon.maxSpecAuthProtectedPaths' role for
+// authbypass. SuggestIDOREndpointCandidates already returns candidates in a
+// stable order, so the truncation is deterministic.
+const maxEndpointDrivenIdorLeaves = 12
+
 // minTemplateLeafScore is the relevance floor a scored template entry must
 // clear before it becomes its own leaf (LT-48, docs/follow-up.md).
 // scoreTemplateForTech gives a primary product-tag hit a base of 100 and a
@@ -312,9 +320,9 @@ var nonActionableTech = map[string]bool{
 	// "matched no registry capability" recon-followup leaf (and LLM-fallback
 	// bait). The companion "don't attribute a Cloudflare/CDN fact absent
 	// from the host's own response headers" half is Phase 8 Step 6 (LT-65).
-	"cdnjs":                  true,
-	"jsdelivr":               true,
-	"unpkg":                  true,
+	"cdnjs":                   true,
+	"jsdelivr":                true,
+	"unpkg":                   true,
 	"google hosted libraries": true,
 	// "Basic" is httpx/fingerprint reporting a WWW-Authenticate: Basic realm,
 	// not a product — left in, its normalized "basic" word matched a sizable
@@ -1089,20 +1097,56 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 			seen[key] = true
 			hostNode.Children = append(hostNode.Children, leaf)
 		}
+		// F3 (LT-67, docs/follow-up.md): does recon show this host serving
+		// app-generated content? A response-body secret/exposure template has
+		// nothing to grep against a static error page or a bucket/SPA
+		// catch-all shell — computed once per host, consumed in resolveTechFact.
+		hostDynamic := hostServesDynamicContent(host, result)
 		for _, fact := range byHost[host] {
-			for _, leaf := range resolveTechFact(host, fact, templateIndex, result.Endpoints, &leafIdx, leafContexts) {
+			for _, leaf := range resolveTechFact(host, fact, templateIndex, result.Endpoints, hostDynamic, &leafIdx, leafContexts) {
 				addLeaf(leaf, leafDedupKey(fact, leaf))
 			}
 		}
 		resolveAPISpecFact(host, result.APISpec, templateIndex, &leafIdx, addLeaf)
 		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
-			addLeaf(leaf, pendingDedupKey(leaf.Target, leaf.Detector))
+			// LT-91 / LT-94: an endpoint-driven idor/authbypass/ssrf leaf
+			// carries its own recon-derived required field(s) and must not
+			// collapse into the bare tech-capability leaf of the same
+			// (target, detector) that resolveTechFact emitted earlier — that
+			// bare leaf has no field and only ever reaches execution to be
+			// skipped. Give each a distinct key (per-{{id}} for idor's
+			// fan-out); dropBareCapabilityLeavesSupersededByEndpointDriven
+			// then removes the now-redundant bare leaf.
+			key := pendingDedupKey(leaf.Target, leaf.Detector)
+			switch {
+			case leaf.EndpointTemplate != "":
+				key += "\x00" + leaf.EndpointTemplate
+			case len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0:
+				key += "\x00endpoint-driven"
+			}
+			addLeaf(leaf, key)
 		}
 		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf, leafContexts)
 		resolveHostnameHints(host, templateIndex, &leafIdx, addLeaf)
 		resolveLiveHostBaseline(host, result.Endpoints, &leafIdx, addLeaf)
+		hostNode.Children = dropBareCapabilityLeavesSupersededByEndpointDriven(hostNode.Children)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
+		}
+		// LT-93 (docs/follow-up.md): every resolve* helper keys/matches on the
+		// bare hostname, but a leaf's Target is what the executor hands the
+		// scanner engine as the request base — a bare "host" has no scheme or
+		// port, so idor/authbypass/ssrf built "host/path" and every request
+		// failed (the crAPI Step E round: 0 findings, ~7s per leaf). Upgrade
+		// each dispatchable leaf to the real scheme://host[:port] recon
+		// observed, now that the per-host dedup keys — computed above from the
+		// bare host — are all settled. The host/class node IDs and the
+		// structural node Targets stay keyed on the bare host (ClassNodeID,
+		// tree.Find, webui rendering all depend on that); only leaves are ever
+		// handed to the executor.
+		baseURL := reconHostBaseURL(host, result)
+		for _, leaf := range hostNode.Children {
+			leaf.Target = baseURL
 		}
 		// C7a (doc16 Phase 7 Step 3): stamp each leaf's dispatch priority,
 		// then fold the flat leaf list into per-vuln-class intermediate
@@ -1151,7 +1195,7 @@ func unresolvedDedupKey(target, techName string) string {
 	return "unresolved\x00" + target + "\x00" + NormalizeTechName(techName)
 }
 
-func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, leafIdx *int, leafContexts map[string]LeafContext) []*agenttask.PlanNode {
+func resolveTechFact(host string, fact recon.TechFact, templateIndex []templatesync.Entry, endpoints []recon.EndpointFact, hostDynamic bool, leafIdx *int, leafContexts map[string]LeafContext) []*agenttask.PlanNode {
 	if nonActionableTech[NormalizeTechName(fact.Name)] {
 		return nil // transport/posture/hosting-brand fact — nothing to dispatch, not even an unresolved leaf (P0-5)
 	}
@@ -1172,6 +1216,14 @@ func resolveTechFact(host string, fact recon.TechFact, templateIndex []templates
 	}
 
 	for _, entry := range matchTemplateTags(fact.Name, templateIndex) {
+		// F3 (LT-67, docs/follow-up.md): a response-body secret/exposure
+		// template (the shopify-*-token / aws-access-key-value family) is
+		// structurally pointless against a host recon shows serving no
+		// app-generated content — drop the leaf rather than fire a body grep
+		// at a static shell. Every other template family is unaffected.
+		if !hostDynamic && isBodyGrepSecretTemplate(entry) {
+			continue
+		}
 		leaves = append(leaves, &agenttask.PlanNode{
 			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
 			Target:     host,
@@ -1268,16 +1320,40 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 	endpointConf := apiRouteConfidence(hostEndpoints)
 
 	if candidates := recon.SuggestIDOREndpointCandidates(hostResult); len(candidates) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "idor", endpointConf,
-			fmt.Sprintf("recon observed %d ID-shaped endpoint candidate(s) on this host (e.g. %s)", len(candidates), candidates[0]), leafIdx))
+		// LT-91 (docs/follow-up.md): fan out one idor leaf per {{id}}-templated
+		// candidate rather than a single leaf whose one EndpointTemplate a
+		// downstream field-suggestion pass then has to pick from N (a genuine
+		// "ambiguous miss" that escalates to a human / LLM and, absent one,
+		// drops idor entirely — the gap the crAPI live round surfaced). Each
+		// candidate is an independent cheap enumerate-1..N run, exactly like
+		// authbypass probing every ProtectedPaths entry; the leaf carries its
+		// own EndpointTemplate and planexec.runLeaf copies it into the config.
+		// Bounded so a large spec can't balloon the tokenless-probe count.
+		if len(candidates) > maxEndpointDrivenIdorLeaves {
+			candidates = candidates[:maxEndpointDrivenIdorLeaves]
+		}
+		for _, cand := range candidates {
+			leaf := newEndpointLeaf(host, "idor", endpointConf,
+				fmt.Sprintf("recon derived the ID-shaped endpoint %s on this host — enumerating its {{id}}", cand), leafIdx)
+			leaf.EndpointTemplate = cand
+			leaves = append(leaves, leaf)
+		}
 	}
 	if protected, _, _ := recon.SuggestAuthBypassPathsFromRecon(hostResult); len(protected) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "authbypass", endpointConf,
-			fmt.Sprintf("recon observed %d endpoint(s) returning 401/403 on this host (e.g. %s)", len(protected), protected[0]), leafIdx))
+		leaf := newEndpointLeaf(host, "authbypass", endpointConf,
+			fmt.Sprintf("recon observed %d endpoint(s) returning 401/403 on this host (e.g. %s)", len(protected), protected[0]), leafIdx)
+		// LT-94: carry the derived paths on the leaf so planexec.runLeaf can
+		// fill a blank config — the plan→execute path (webui Plan Preview, a
+		// bare RunPlan caller) otherwise skipped this leaf for a field recon
+		// had already derived. The MCP path pre-fills baseCfg and is unaffected.
+		leaf.ProtectedPaths = protected
+		leaves = append(leaves, leaf)
 	}
 	if params := recon.SuggestSSRFParamsFromRecon(hostResult); len(params) > 0 {
-		leaves = append(leaves, newEndpointLeaf(host, "ssrf", endpointConf,
-			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx))
+		leaf := newEndpointLeaf(host, "ssrf", endpointConf,
+			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx)
+		leaf.SSRFParams = params
+		leaves = append(leaves, leaf)
 	}
 	for _, ep := range hostEndpoints {
 		p := endpointURLPath(ep.URL)
@@ -1357,6 +1433,40 @@ func firstRedirectFlowEndpoint(endpoints []recon.EndpointFact) (string, bool) {
 	return "", false
 }
 
+// leafCarriesReconField reports whether leaf is an endpoint-driven
+// idor/authbypass/ssrf leaf (LT-91/LT-94) — it carries the recon-derived
+// required field on the PlanNode, so it is directly runnable.
+func leafCarriesReconField(leaf *agenttask.PlanNode) bool {
+	return leaf.EndpointTemplate != "" || len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0
+}
+
+// dropBareCapabilityLeavesSupersededByEndpointDriven removes the bare
+// capability idor/authbypass/ssrf leaf a TechFact rule emits (Detector set,
+// no recon field) for a host where resolveEndpointFacts already emitted an
+// endpoint-driven leaf of the same detector (LT-91/LT-94). The bare leaf
+// only ever reaches execution to be skipped for its missing required field,
+// so once a runnable leaf exists it is pure noise. A host with a
+// tech-matched capability but zero recon candidates keeps its bare leaf.
+func dropBareCapabilityLeavesSupersededByEndpointDriven(children []*agenttask.PlanNode) []*agenttask.PlanNode {
+	superseded := map[string]bool{}
+	for _, c := range children {
+		if c.Detector != "" && leafCarriesReconField(c) {
+			superseded[c.Detector] = true
+		}
+	}
+	if len(superseded) == 0 {
+		return children
+	}
+	kept := children[:0]
+	for _, c := range children {
+		if superseded[c.Detector] && !leafCarriesReconField(c) {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
+}
+
 // newEndpointLeaf builds one Pending leaf for resolveEndpointFacts —
 // factored out since every one of its cases shares the same shape, unlike
 // resolveTechFact's leaves which additionally carry a source TechFact.
@@ -1380,6 +1490,63 @@ func endpointHostname(rawURL string) string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// reconHostBaseURL returns the scheme://authority (host, plus :port when
+// non-default) recon actually observed for host, for use as a leaf's request
+// base (LT-93). Preference order: a probed endpoint URL on this host (it
+// carries the real scheme + port), then result.Target / APISpec.URL when
+// they name this host, then a port-list heuristic, then an https:// fallback
+// (a real engagement target is https far more often than not; a bare host
+// with no recon scheme signal was never reachable before this anyway).
+func reconHostBaseURL(host string, result *recon.ReconResult) string {
+	authorityFromURL := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return ""
+		}
+		if u.Hostname() != host {
+			return ""
+		}
+		return u.Scheme + "://" + u.Host
+	}
+	if result != nil {
+		for _, ep := range result.Endpoints {
+			if b := authorityFromURL(ep.URL); b != "" {
+				return b
+			}
+		}
+		if b := authorityFromURL(result.Target); b != "" {
+			return b
+		}
+		if result.APISpec != nil {
+			if b := authorityFromURL(result.APISpec.URL); b != "" {
+				return b
+			}
+		}
+		for _, hf := range result.Hosts {
+			if hf.Host != host {
+				continue
+			}
+			var httpPort int
+			for _, p := range hf.Ports {
+				switch p.Port {
+				case 443, 8443:
+					return "https://" + host
+				case 80:
+					return "http://" + host
+				case 8080, 8000, 8888:
+					if httpPort == 0 {
+						httpPort = p.Port
+					}
+				}
+			}
+			if httpPort != 0 {
+				return fmt.Sprintf("http://%s:%d", host, httpPort)
+			}
+		}
+	}
+	return "https://" + host
 }
 
 // endpointURLPath returns rawURL's path (+query, if any), falling back to
@@ -1406,6 +1573,79 @@ func endpointsForHost(host string, endpoints []recon.EndpointFact) []recon.Endpo
 		}
 	}
 	return matched
+}
+
+// secretLeakTags / exposureTags identify a response-body secret grep in the
+// synced corpus: an entry carrying at least one tag from each set is the
+// shopify-*-token / aws-access-key-value / google-api-key family (~114
+// entries, all `part: body` regex matchers for a leaked credential). The two
+// sets are kept narrow so isBodyGrepSecretTemplate stays high-precision —
+// F3 (LT-67) only ever suppresses a leaf it is confident is one of these.
+var secretLeakTags = map[string]bool{
+	"token": true, "tokens": true, "secret": true, "secrets": true,
+	"api-key": true, "apikey": true, "credential": true, "credentials": true, "keys": true,
+}
+
+var exposureTags = map[string]bool{
+	"exposure": true, "exposures": true, "disclosure": true, "disclosures": true,
+}
+
+// isBodyGrepSecretTemplate reports whether entry is a response-body
+// secret/exposure grep — see secretLeakTags. F3 (LT-67, docs/follow-up.md).
+func isBodyGrepSecretTemplate(entry templatesync.Entry) bool {
+	var hasSecret, hasExposure bool
+	for _, raw := range entry.Tags {
+		switch t := strings.ToLower(strings.TrimSpace(raw)); {
+		case secretLeakTags[t]:
+			hasSecret = true
+		case exposureTags[t]:
+			hasExposure = true
+		}
+	}
+	return hasSecret && hasExposure
+}
+
+// dynamicContentBodyFloor is the 2xx response-body size (bytes) below which
+// a page is treated as a static shell / error stub rather than
+// app-generated markup, for F3's response-grep-secret gate (LT-67).
+// linkpop's noise case was a 746-byte SPA 404; a real rendered page clears
+// 1 KiB comfortably. A page above the floor is given the benefit of the
+// doubt (leaf still emitted), preserving the <5%-false-positive discipline
+// LT-67 calls out.
+const dynamicContentBodyFloor = 1024
+
+// hostServesDynamicContent reports whether recon saw evidence that host
+// serves app-generated content — the gate F3 (LT-67) puts in front of a
+// response-body secret/exposure template leaf. Deliberately biased toward
+// "yes": it returns false only on a positive static/walled signal — a
+// recorded catch-all wall on this host, recon's own AppSurface "none"
+// verdict, or every measured 2xx body on the host sitting below
+// dynamicContentBodyFloor. A missing/`nil` ReconResult, or any doubt,
+// yields true so the leaf still runs.
+func hostServesDynamicContent(host string, result *recon.ReconResult) bool {
+	if result == nil {
+		return true
+	}
+	if u := result.UniformResponse; u != nil && u.Kind == "catchall" && (u.Host == "" || u.Host == host) {
+		return false
+	}
+	if result.AppSurface != nil && result.AppSurface.Verdict == "none" {
+		return false
+	}
+	measured, dynamic := 0, 0
+	for _, ep := range endpointsForHost(host, result.Endpoints) {
+		if ep.StatusCode < 200 || ep.StatusCode >= 300 || ep.BodyLen <= 0 {
+			continue // non-2xx, or body length not measured — no evidence either way
+		}
+		measured++
+		if ep.BodyLen >= dynamicContentBodyFloor {
+			dynamic++
+		}
+	}
+	if measured > 0 && dynamic == 0 {
+		return false // every measured 2xx body on this host is a sub-floor shell
+	}
+	return true
 }
 
 // resolvePortFacts is P1-2's port-driven pass (docs/follow-up.md): one

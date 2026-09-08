@@ -377,6 +377,77 @@ http:
 	assert.False(t, haveUnwanted, "a template sharing the same tag but a different id: must not fire")
 }
 
+// TestEngineRun_TemplateID_FastLoadSkipsCorpusParse is F4 (LT-71): a
+// TemplateID-only narrow parses just that one template, not the whole
+// directory — asserted via loadTemplates' own "loaded N nuclei-compatible"
+// log line — while producing the same finding as a full load + filter.
+func TestEngineRun_TemplateID_FastLoadSkipsCorpusParse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("hello-from-target"))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wanted.yaml"), []byte(`
+id: wanted-check
+info:
+  name: Wanted check
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: word
+        words:
+          - "hello-from-target"
+`), 0o644))
+	for i := 0; i < 40; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("noise%02d.yaml", i)), []byte(fmt.Sprintf(`
+id: noise-%02d
+info:
+  name: Noise %02d
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: status
+        status:
+          - 200
+`, i, i)), 0o644))
+	}
+
+	cfg := scanner.Config{
+		Targets:       []string{server.URL},
+		TemplatePaths: []string{dir},
+		TemplateID:    "wanted-check",
+		Concurrency:   5,
+		RateLimit:     50,
+		Timeout:       5 * time.Second,
+	}
+	require.NoError(t, cfg.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true}))
+
+	var loadedLine string
+	findings, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		if strings.Contains(msg, "nuclei-compatible") {
+			loadedLine = msg
+		}
+	}).Run(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, loadedLine, "loaded 1 nuclei-compatible", "the id: fast path must parse only the wanted template, not all 41 files")
+
+	var haveWanted bool
+	for _, f := range findings {
+		if f.ID == "nuclei-wanted-check-0" {
+			haveWanted = true
+		}
+	}
+	assert.True(t, haveWanted)
+}
+
 func TestEngineRun_MultipleTargets(t *testing.T) {
 	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 	t.Cleanup(server1.Close)

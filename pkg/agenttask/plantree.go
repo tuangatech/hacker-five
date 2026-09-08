@@ -144,6 +144,25 @@ type PlanNode struct {
 	Status     PlanNodeStatus `json:"status,omitempty"`
 	Confidence Confidence     `json:"confidence,omitempty"`
 	Priority   int            `json:"priority,omitempty"` // dispatch ordering — higher runs first (C7a); 0 = unset
+	// EndpointTemplate is set only on an endpoint-driven idor leaf the
+	// decision engine fanned out from a recon candidate (LT-91,
+	// docs/follow-up.md): one leaf per {{id}}-templated path, so a spec/crawl
+	// that yields several ID-shaped routes scans every one — the same "all
+	// candidates are usable" treatment authbypass's ProtectedPaths already
+	// gets — instead of collapsing to a single ambiguous field miss. Empty on
+	// every other leaf; planexec.runLeaf copies a non-empty value into a
+	// blank scanner.Config.EndpointTemplate just before dispatch.
+	EndpointTemplate string `json:"endpoint_template,omitempty"`
+	// ProtectedPaths / SSRFParams are the recon-derived required-field values
+	// for an endpoint-driven authbypass / ssrf leaf (LT-94, docs/follow-up.md),
+	// set by registry.resolveEndpointFacts from the same Suggest*FromRecon
+	// calls that emit the leaf. planexec.runLeaf copies them into a blank
+	// scanner.Config just before dispatch, so the plan→execute path is
+	// self-sufficient without the caller pre-filling baseCfg (the webui Plan
+	// Preview / a bare planexec.RunPlan caller otherwise skipped the leaf for
+	// a "missing" field recon had already derived). Empty on every other leaf.
+	ProtectedPaths []string `json:"protected_paths,omitempty"`
+	SSRFParams     []string `json:"ssrf_params,omitempty"`
 	// Attempts/SpendUSD accrue per-leaf across LLM-fallback resolution
 	// passes (H4, doc16 Phase 7 Step 4) — incremented by
 	// PlanTree.RecordLeafAttempt, read by ShouldEscalate. Both 0 on a leaf

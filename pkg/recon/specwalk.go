@@ -1,11 +1,14 @@
 package recon
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // maxSpecBodyBytes bounds how much of a discovered OpenAPI/Swagger document
@@ -36,6 +39,33 @@ type specParam struct {
 	In   string `json:"in"`
 }
 
+// specBodyToJSON returns body as JSON bytes: unchanged when it already is
+// JSON (an object/array head), else the result of a YAML decode re-marshalled
+// to JSON (LT-40(b), docs/follow-up.md — springdoc and many hand-written
+// specs are served as YAML). yaml.v3 decodes a mapping into
+// map[string]interface{}, which json.Marshal then handles directly; a body
+// that is neither valid JSON nor valid YAML, or a YAML scalar/sequence that
+// can't represent a spec object, yields ok=false and the caller treats the
+// document as unwalkable (still recorded as a presence-only APISpecFact
+// upstream).
+func specBodyToJSON(body []byte) (jsonBody []byte, ok bool) {
+	if head := bytes.TrimLeft(body, " \t\r\n"); len(head) > 0 && (head[0] == '{' || head[0] == '[') {
+		return body, true
+	}
+	var doc any
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return nil, false
+	}
+	if _, isMap := doc.(map[string]any); !isMap {
+		return nil, false // a spec document is a mapping at the top level
+	}
+	j, err := json.Marshal(doc)
+	if err != nil {
+		return nil, false
+	}
+	return j, true
+}
+
 // walkOpenAPISpec parses a fetched OpenAPI 2.0 / 3.x document into
 // EndpointFacts — the richest single source of an API's real route and
 // parameter surface there is (LT-40, docs/follow-up.md). The caller
@@ -50,11 +80,17 @@ type specParam struct {
 // spec's documented object routes become idor candidates without the walker
 // fabricating a concrete id. Documented query parameters are appended
 // keyless ("?q=&url=") — enough for SuggestSSRFParamsFromRecon's name-based
-// match; their values are not invented. Only OpenAPI JSON is handled this
-// pass; a YAML spec is still recorded as an APISpecFact upstream but not
-// walked (tracked in follow-up.md).
+// match; their values are not invented. Both JSON and YAML spec bodies are
+// handled (LT-40(b), docs/follow-up.md): a YAML document is normalised to
+// JSON once up front (specBodyToJSON) and walked by the identical code
+// path — the caller's structured-Content-Type gate already only lets a
+// genuine spec body reach here.
 func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncated bool) {
 	if len(body) == 0 {
+		return nil, false
+	}
+	jsonBody, ok := specBodyToJSON(body)
+	if !ok {
 		return nil, false
 	}
 	var doc struct {
@@ -64,9 +100,10 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 		Servers  []struct {
 			URL string `json:"url"`
 		} `json:"servers"`
-		Paths map[string]json.RawMessage `json:"paths"`
+		Security []map[string]json.RawMessage `json:"security"` // document-level default auth requirement (LT-90)
+		Paths    map[string]json.RawMessage   `json:"paths"`
 	}
-	if err := json.Unmarshal(body, &doc); err != nil {
+	if err := json.Unmarshal(jsonBody, &doc); err != nil {
 		return nil, false
 	}
 	if doc.Swagger == "" && doc.OpenAPI == "" {
@@ -104,12 +141,14 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 	}
 	sort.Strings(rawPaths)
 
+	docRequiresAuth := securityListRequiresAuth(doc.Security)
+
 	seen := map[string]bool{}
 	for _, p := range rawPaths {
 		if !strings.HasPrefix(p, "/") {
 			continue // a relative or server-templated path — skip
 		}
-		method, queryKeys := walkPathItem(doc.Paths[p])
+		method, queryKeys, authRequired := walkPathItem(doc.Paths[p], docRequiresAuth)
 		full := prefix + p
 		if !strings.HasPrefix(full, "/") {
 			full = "/" + full
@@ -132,24 +171,28 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 			break
 		}
 		facts = append(facts, EndpointFact{
-			URL:        full,
-			Method:     method,
-			Source:     "api-spec",
-			Confidence: ConfidenceLow,
+			URL:          full,
+			Method:       method,
+			Source:       "api-spec",
+			Confidence:   ConfidenceLow,
+			AuthRequired: authRequired,
 		})
 	}
 	return facts, truncated
 }
 
-// walkPathItem pulls the representative method and the set of documented
-// query-parameter names out of one path-item object. The method is GET when
+// walkPathItem pulls the representative method, the set of documented
+// query-parameter names, and whether the representative operation requires
+// authentication (LT-90) out of one path-item object. The method is GET when
 // the path documents one, else the first documented operation
 // alphabetically (deterministic); it falls back to GET for a path-item that
-// is all $ref/parameters and no operation.
-func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
+// is all $ref/parameters and no operation. docRequiresAuth is the
+// document-level default, used unless the operation declares its own
+// `security`.
+func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, queryKeys []string, authRequired bool) {
 	var item map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &item); err != nil {
-		return http.MethodGet, nil
+		return http.MethodGet, nil, docRequiresAuth
 	}
 
 	qk := map[string]bool{}
@@ -168,6 +211,7 @@ func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
 		collect(pl) // path-level parameters, shared by every operation
 	}
 
+	ops := map[string]json.RawMessage{}
 	var methods []string
 	for k, v := range item {
 		up := strings.ToUpper(k)
@@ -175,6 +219,7 @@ func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
 			continue
 		}
 		methods = append(methods, up)
+		ops[up] = v
 		var op struct {
 			Parameters json.RawMessage `json:"parameters"`
 		}
@@ -194,8 +239,44 @@ func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
 			}
 		}
 	}
+
+	// LT-90: an operation-level `security` overrides the document default;
+	// an explicit `security: []` is a deliberate opt-out and also overrides.
+	authRequired = docRequiresAuth
+	if declared, requires := operationSecurity(ops[method]); declared {
+		authRequired = requires
+	}
+
 	for k := range qk {
 		queryKeys = append(queryKeys, k)
 	}
-	return method, queryKeys
+	return method, queryKeys, authRequired
+}
+
+// operationSecurity reports whether an operation object declares a `security`
+// key at all, and if so whether it mandates auth. `security: []` counts as
+// declared-but-not-required (an explicit opt-out from the doc default).
+func operationSecurity(rawOp json.RawMessage) (declared, requires bool) {
+	if len(rawOp) == 0 {
+		return false, false
+	}
+	var op struct {
+		Security *[]map[string]json.RawMessage `json:"security"`
+	}
+	if json.Unmarshal(rawOp, &op) != nil || op.Security == nil {
+		return false, false
+	}
+	return true, securityListRequiresAuth(*op.Security)
+}
+
+// securityListRequiresAuth reports whether an OpenAPI `security` requirement
+// list actually mandates auth: at least one entry naming at least one
+// scheme. An empty list, or a list of only empty objects, does not.
+func securityListRequiresAuth(list []map[string]json.RawMessage) bool {
+	for _, entry := range list {
+		if len(entry) > 0 {
+			return true
+		}
+	}
+	return false
 }

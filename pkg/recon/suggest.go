@@ -5,9 +5,17 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
+
+// maxSpecAuthProtectedPaths caps how many spec-declared auth-required routes
+// (LT-90) SuggestAuthBypassPathsFromRecon contributes to the protected set —
+// each one becomes a tokenless GET in authbypass's checkMissingAuth, and a
+// large spec shouldn't turn that into hundreds of requests. Observed
+// 401/403 paths are never capped; only the spec-derived tail is.
+const maxSpecAuthProtectedPaths = 30
 
 // numericIDPattern/uuidPattern match a full path segment or query value that
 // looks like a database ID — anchored so "v2" or "api123abc" never match, the
@@ -312,6 +320,8 @@ func SuggestAuthBypassPathsFromRecon(result *ReconResult) (protected, login, log
 	}
 
 	seenProtected, seenLogin, seenLogout := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	var specProtected []string
+	seenSpec := map[string]bool{}
 	for _, ep := range result.Endpoints {
 		path := endpointPath(ep.URL)
 		if path == "" || looksLikeStaticAssetOrJunk(path) {
@@ -324,6 +334,15 @@ func SuggestAuthBypassPathsFromRecon(result *ReconResult) (protected, login, log
 				seenProtected[path] = true
 				protected = append(protected, path)
 			}
+		case ep.Source == "api-spec" && ep.AuthRequired && !strings.Contains(path, "{"):
+			// LT-90: the OpenAPI doc says this route needs auth. A
+			// parameterless route is a direct "should reject me" probe for
+			// checkMissingAuth; a {param} route has no id to invent, so it's
+			// left to the idor path.
+			if !seenSpec[path] {
+				seenSpec[path] = true
+				specProtected = append(specProtected, path)
+			}
 		case ep.Source == "wave3-auth-boundary-heuristic" || strings.Contains(lower, "login") || strings.Contains(lower, "signin"):
 			if !seenLogin[path] {
 				seenLogin[path] = true
@@ -334,6 +353,20 @@ func SuggestAuthBypassPathsFromRecon(result *ReconResult) (protected, login, log
 				seenLogout[path] = true
 				logout = append(logout, path)
 			}
+		}
+	}
+	// LT-90: append the spec-declared auth routes after any observed 401/403
+	// ones, sorted for determinism and capped so a large spec can't balloon
+	// the tokenless-probe count. A path already recorded from an observed
+	// 401/403 is skipped (that status is the stronger signal).
+	sort.Strings(specProtected)
+	if len(specProtected) > maxSpecAuthProtectedPaths {
+		specProtected = specProtected[:maxSpecAuthProtectedPaths]
+	}
+	for _, p := range specProtected {
+		if !seenProtected[p] {
+			seenProtected[p] = true
+			protected = append(protected, p)
 		}
 	}
 	return protected, login, logout

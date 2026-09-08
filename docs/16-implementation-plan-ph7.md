@@ -17,8 +17,8 @@
 3. ✅ **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ✅ 2026-09-07 (`ph7-step3a`), C7 ✅ 2026-09-07 (`ph7-step3b`)
 4. ✅ **Live log injection + concurrency ceilings + redundant-request elimination** (Week 53) — D6 ✅ 2026-09-07 (`ph7-step4a`), D5 ✅ 2026-09-07 (`ph7-step4b`), C4 + D1 + H4 ✅ 2026-09-07 (`ph7-step4c`)
 5. ⬜ **OWASP Agentic Top 10 mapping** (D4) — **interim pass now** against shipped Phase 5-7 code; the **full re-walk is deferred** to the [Phase 9](18-implementation-plan-ph9.md) window (it must cover the agent-enumeration + active-injection surface Phase 9 Steps 3-4 add). See Sequencing note in the step.
-6. ⬜ **Template ecosystem & triage support** — **split 2026-09-07**:
-   - **6a** (near-term "do now") — **F3** (content-gate response-grep secret templates, LT-67) + **F4** (narrow corpus load for a small leaf set, LT-71). Detection-quality + performance; small, independent.
+6. 🟡 **Template ecosystem & triage support** — **split 2026-09-07**:
+   - **6a** ✅ **done 2026-09-07** — **F3** (content-gate response-grep secret templates, LT-67) + **F4** (narrow corpus load for a small leaf set, LT-71). Detection-quality + performance; small, independent.
    - **6b** (deferred to the [Phase 9](18-implementation-plan-ph9.md) window, folded into that phase's Step 5) — **E2** (`templates/proposed/` staging), **F1** (triage-assist annotations), **F2** (structured feedback capture). No agent draft/annotation consumer exists yet, and E2 gates on D4's supply-chain rows.
 7. ⬜ **`v0.7.0` consolidation + release** (Week 56) — cut on **batch-readiness**, *not* gated on Step 5's full re-walk or Step 6b.
 
@@ -273,9 +273,28 @@ Every row in the table above is checked against real code (a file path and line,
 
 ## Step 6: Template Ecosystem & Triage Support — split 2026-09-07 into 6a (near-term) / 6b (Phase 9 window)
 
-**6a — F3 + F4, near-term "do now" (Tier 1).** Detection-quality (F3) and
-performance (F4); both small, independent, and unblocked. Their design + files +
-verification are below.
+**6a — F3 + F4 — ✅ done 2026-09-07.** Detection-quality (F3) and performance (F4);
+both landed together with the LT-40 (b)/(c) spec-walker tail. Build / `go vet` /
+`go test -race` / `golangci-lint` all clean. What shipped:
+- **F3 (LT-67)** — `pkg/registry/decisionengine.go`: `isBodyGrepSecretTemplate`
+  (a `token`/`secret`/`api-key`/`credential` tag **and** an `exposure`/`disclosure`
+  tag — the shopify-`*`-token / aws-access-key-value family, ~114 corpus entries)
+  gated by `hostServesDynamicContent(host, result)` in `resolveTechFact`. Returns
+  false — leaf dropped — only on a positive static/walled signal: a recorded
+  catch-all wall on the host, recon's `AppSurface: none`, or every measured 2xx
+  body on the host below `dynamicContentBodyFloor` (1 KiB). Biased toward emitting.
+- **F4 (LT-71)** — `nuclei.LoadDirByIDs` (id:-peek fast path, `peekTemplateID`
+  column-0-anchored, 4 KiB head) + `templatesync.LoadByIDs` (cross-format wrapper).
+  `scanner.Engine.loadTemplates` takes it for a `TemplateID`-only narrow with no
+  tag scope (`fastLoadNucleiIDs`), falling back to a full parse if the peek misses
+  a requested id (`nucleiIDsCovered`) so it's a pure optimisation. `pkg/planexec`'s
+  specific-template leaves get it for free. Still open: the pure-`--tags` scan path
+  (no plan) — needs a guaranteed-fresh index; low value vs. the plan-executor win.
+- Tests: `TestResolve_BodyGrepSecretTemplate_{SuppressedOnStaticHost,KeptOnDynamicHost}`,
+  `TestLoadDirByIDs_*`, `TestEngineRun_TemplateID_FastLoadSkipsCorpusParse`,
+  `TestLoadByIDs_*`.
+
+The original design + files + verification are below.
 
 **6b — E1 / E2 / F1 / F2, deferred to the [Phase 9](18-implementation-plan-ph9.md)
 window** (folded into that phase's Step 5). E1 is already a no-op (moved to Phase 5;
@@ -385,8 +404,8 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [x] Redundant per-target HTTP eliminated (D5 / [follow-up.md](follow-up.md) LT-54 + LT-55) — 2026-09-07 (`ph7-step4b`): `pkg/template/nuclei/respcache.go`'s `respCache` serves a repeat GET/HEAD `(method, URL, Host, header-fp, body)` from a 512-entry FIFO cache in `tryPath` — timing (`req.usesTiming`)/`interactsh_`/`pathCorrelated`/`payloads:`/non-GET-HEAD/`raw:` all carved out; `knownDeadSkip` fires no request for a lone matcher-only `path:` template a `--recon-file` marks 404 when the scan carries no `--header` (recon's posture), still firing it when a credential is present; the shared rate limiter is still the only throughput cap
 - [x] Uniform response wall handled (D6 / [follow-up.md](follow-up.md) LT-43(2) + LT-58 + LT-59 + LT-62) — 2026-09-07 (`ph7-step4a`): `pkg/uniformwall.Classify` runs in recon Wave 3 and records `ReconResult.UniformResponse`; `scanner.Engine` skips `runTemplates` for a `Config.UniformWallHosts` match (unless `--scan-uniform-anyway`/`--all-templates`), emitting one `misconfig-waf-blocked`/`misconfig-uniform-catchall`; `reconShowsAdminSurface` keeps `panel` behind a WAF wall only for a path-discriminating signal; recon warns and `plan` prints the blocked-probe-ratio note
 - [ ] **Interim** OWASP Agentic Top 10 pass (D4) against currently-shipped Phase 5-7 code (file/line cited), each row mitigated-with-a-cite or accepted-residual — the **full re-walk** (incl. Phase 9 Steps 3-4's new surface) is [Phase 9](18-implementation-plan-ph9.md) Step 5
-- [ ] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content, decoy false-positive rate measured (Step 6a / F3 / [follow-up.md](follow-up.md) LT-67)
-- [ ] A specific-template leaf or a small explicit `--tags` set loads only its own templates, not the full corpus, with an empty before/after finding-set diff (Step 6a / F4 / [follow-up.md](follow-up.md) LT-71)
+- [x] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content (Step 6a / F3 / [follow-up.md](follow-up.md) LT-67) — 2026-09-07: `isBodyGrepSecretTemplate` ∧ `hostServesDynamicContent`, biased toward emitting; unit-tested on catch-all / `AppSurface:none` / sub-floor-body hosts vs. a real-content host
+- [x] A specific-template leaf loads only its own template via `nuclei.LoadDirByIDs`' id:-peek fast path, not the full corpus, with an empty before/after finding-set diff (Step 6a / F4 / [follow-up.md](follow-up.md) LT-71) — 2026-09-07; falls back to a full parse on a peek miss so it can't change results. Pure-`--tags`-scan (no plan) still full-loads — follow-on
 - [ ] Agent-driven false-positive/false-negative rate is measured live against all four lab targets, tracked separately from detector-level rate, with full cost accounting recorded
 - [ ] `authbypass_crapi_test.go`/`authbypass_vapi_test.go` land as reproducible tests against the compose stack, and the crAPI credentialed recon → plan → approve → scan → export round trip is live-verified (moved from Phase 6 Step 5)
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
