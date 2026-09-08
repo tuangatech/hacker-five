@@ -653,3 +653,97 @@ func TestMisconfigDisallowedMethod_500_StillFlagged(t *testing.T) {
 	got := withPrefix(findings, "misconfig-method-")
 	assert.Len(t, got, len(misconfig.DisallowedMethods), "a 500 for every disallowed method must still be flagged, one finding per method")
 }
+
+// wpUsersJSONArray is a trimmed-down but structurally real
+// /wp-json/wp/v2/users/ response body — a JSON array of user objects, each
+// carrying id/name/slug. The slug is the account's wp-login.php username.
+const wpUsersJSONArray = `[{"id":557,"name":"Arturo Rodriguez","url":"","description":"","link":"https://site.test/author/arodriguez","slug":"arodriguez","meta":[]},` +
+	`{"id":12,"name":"Editor Uno","url":"","description":"","link":"https://site.test/author/editor1","slug":"editor1","meta":[]}]`
+
+// TestMisconfigWPUserEnum_Hit: a default WordPress install serves the full
+// author list unauthenticated at /wp-json/wp/v2/users/ — valid login names
+// for credential attacks (CWE-200).
+func TestMisconfigWPUserEnum_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.WPUserEnumPath {
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(wpUsersJSONArray))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-wordpress-user-enumeration")
+	require.Len(t, got, 1)
+	assert.Equal(t, "misconfig", got[0].Type)
+	assert.Equal(t, "medium", got[0].Severity)
+	assert.Equal(t, "high", got[0].Confidence)
+	assert.Contains(t, got[0].Evidence["usernames"], "arodriguez")
+	assert.Contains(t, got[0].Evidence["usernames"], "editor1")
+}
+
+// TestMisconfigWPUserEnum_LockedDown_NoFinding: WordPress >= 4.7.1 with the
+// endpoint restricted answers 200 + JSON but with an error *object* that has
+// no "slug" — the AND on wpUserObjectMarkers must keep that secure response
+// from being flagged.
+func TestMisconfigWPUserEnum_LockedDown_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.WPUserEnumPath {
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"code":"rest_user_cannot_view","message":"Sorry, you are not allowed to list users.","data":{"status":401}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-wordpress-user-enumeration"),
+		"a locked-down endpoint's rest_user_cannot_view response must not be flagged")
+}
+
+// TestMisconfigWPUserEnum_401_NoFinding: the endpoint behind auth (401) is
+// not a listing.
+func TestMisconfigWPUserEnum_401_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.WPUserEnumPath {
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"rest_not_logged_in","data":{"status":401}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-wordpress-user-enumeration"))
+}
+
+// TestMisconfigWPUserEnum_EmptyArray_NoFinding: a site with no public
+// authors returns "[]" — structurally an array but nothing disclosed.
+func TestMisconfigWPUserEnum_EmptyArray_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.WPUserEnumPath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-wordpress-user-enumeration"))
+}
+
+// TestMisconfigWPUserEnum_HTMLNotJSON_NoFinding: a catch-all that returns
+// the site's HTML home page for the unknown REST path (no JSON content
+// type) must not match, even though WP HTML can contain the words
+// id/name/slug.
+func TestMisconfigWPUserEnum_HTMLNotJSON_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body>"id": "name": "slug": just words in markup</body></html>`))
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-wordpress-user-enumeration"))
+}
+
+// wpUsersJSONArray is a trimmed-down but structurally real
+// /wp-json/wp/v2/users/ response body — a JSON array of user objects, each
+// carrying id/name/slug. The slug is the accounts
