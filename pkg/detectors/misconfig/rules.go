@@ -130,6 +130,51 @@ var DolibarrCVEs = []VersionCVERule{
 		Summary: "OS command injection via ODT-to-PDF conversion (authenticated admin RCE)"},
 }
 
+// NextcloudStatusPath is Nextcloud/ownCloud's unauthenticated monitoring
+// endpoint. status.php in nextcloud/server builds a JSON object with
+// installed/version/versionstring/productname — meant for uptime checks, but
+// it hands any unauthenticated caller the exact build. Nextcloud's own
+// hardening guide recommends restricting it.
+const NextcloudStatusPath = "/status.php"
+
+// nextcloudStatusMarkers are the JSON keys status.php always emits (the array
+// is built literally with these in every supported release). All required
+// (AND) so an unrelated 200 JSON body cannot match.
+var nextcloudStatusMarkers = []string{`"installed":`, `"version":`, `"versionstring":`, `"productname":`}
+
+// NextcloudLatestStable and nextcloudOldestMaintainedMajor bound the
+// "outdated" judgement — Nextcloud maintains three majors (N, N-1, N-2).
+// Checked against github.com/nextcloud/server/releases on 2026-09-08: latest
+// 34.0.3, maintained majors 32/33/34. Refresh when the release line advances.
+const NextcloudLatestStable = "34.0.3"
+const nextcloudOldestMaintainedMajor = 32
+
+// NextcloudCVEs — see VersionCVERule. Every entry NVD-verified 2026-09-08
+// with a community-server fix version in the 28.x line, so "detected <
+// FixedIn" correctly covers the 28.0.5 seen live on cloud01/cloud02.
+var NextcloudCVEs = []VersionCVERule{
+	{CVE: "CVE-2025-47791", FixedIn: "28.0.13", Severity: "medium", CVSS: 4.3,
+		Summary: "an unprotected share-recipient verify endpoint could proxy requests to another server"},
+	{CVE: "CVE-2024-52523", FixedIn: "28.0.12", Severity: "medium", CVSS: 4.6,
+		Summary: "external-storage credentials returned to the frontend in plain text to any session holder"},
+	{CVE: "CVE-2024-52518", FixedIn: "28.0.12", Severity: "medium", CVSS: 4.4,
+		Summary: "external storages could be created/changed/deleted without password confirmation"},
+	{CVE: "CVE-2024-52517", FixedIn: "28.0.11", Severity: "medium", CVSS: 4.6,
+		Summary: "stored Global credentials returned by the API in plain text"},
+}
+
+// PhpMyAdminProbePaths are where an internet-facing phpMyAdmin login most
+// often sits — the site root (a dedicated DB-admin vhost) first, then the two
+// conventional sub-mounts. checkPhpMyAdmin stops at the first that serves the
+// login form.
+var PhpMyAdminProbePaths = []string{"/", "/phpmyadmin/", "/pma/"}
+
+// phpMyAdminLoginMarkers are the two login-form field names phpMyAdmin has
+// used unchanged for its whole 5.x line (templates/login/form.twig). Both
+// required (AND) — together they are specific enough that no non-phpMyAdmin
+// page realistically carries them.
+var phpMyAdminLoginMarkers = []string{"pma_username", "pma_password"}
+
 // DirListingPaths are common subpaths worth a directory-listing probe,
 // beyond just target root ("" is included so misconfig.Detector finds a
 // root listing on its own, without depending on

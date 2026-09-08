@@ -451,9 +451,9 @@ actionable surface (all read-only GET, owned-target authorization):
 | --- | --- | --- | --- | --- |
 | A | **WordPress REST user enumeration** (CWE-200) | `www.nettix.com.pe` (`x-wp-total: 3`, `admin`/`arodriguez`/`mandrade`), `soporte.nettix.com.pe` (`x-wp-total: 6`, `agarcia` +5) | `GET /wp-json/wp/v2/users/` → 200 `application/json`, real user array | ✅ **`checkWPUserEnum` (PR #2)** — fires on both hosts |
 | B | **Dolibarr ERP 23.0.3 exposed to the internet, outdated** | `erp.nettix.com.pe`, `ixn.nettix.com.pe` | login title `Login @ 23.0.3`; `<meta name="author" content="Dolibarr Development Team">`; `/api/index.php/status` → 200 (login-gated). 23.0.3 < 24.0.0 → CVE-2026-81728 (HIGH 8.6, CSV/XLSX-import SQLi); 23.0.3 < 23.0.4 → CVE-2026-85401 (LOW 2.1, public exploit). *(Earlier "CVE-2026-85401 critical / CVE-2026-19350 / dol_eval RCE" was wrong — NVD-verified 2026-09-08: 85401 is LOW; 19350 not a Dolibarr CVE; the dol_eval RCEs CVE-2026-22666/23500 were fixed in 23.0.2/23.0.0, before 23.0.3.)* | ✅ **`checkDolibarrOutdated` (Step 3, this branch)** — medium finding, fires on both hosts |
-| C | **Nextcloud `status.php` unauthenticated version disclosure** (CWE-200) | `cloud01.nettix.com.pe`, `cloud02.nettix.com.pe` | `GET /status.php` → 200 `{"version":"28.0.5.1","versionstring":"28.0.5","productname":"Nextcloud",…}` no auth | ❌ needs a **native `checkNextcloudStatus` check** (WP-user-enum-shaped: fixed path + fixed JSON shape) |
-| D | **Nextcloud 28.0.5 outdated** (28.x EOL; current 30.x) | `cloud01`, `cloud02` | version from (C) | ❌ needs **version→CVE correlation** (Step 1), fed by (C)'s extracted version |
-| E | **phpMyAdmin exposed to the internet** | `chasqui03.nettix.com.pe` (title "Arminet") | `GET /` → 303 to the pma login; `phpMyAdmin` fingerprint | 🟡 misconfig-class; `checkExposedPaths` has no pma rule — small add |
+| C | **Nextcloud `status.php` unauthenticated version disclosure** (CWE-200) | `cloud01.nettix.com.pe`, `cloud02.nettix.com.pe` | `GET /status.php` → 200 `{"version":"28.0.5.1","versionstring":"28.0.5","productname":"Nextcloud",…}` no auth | ✅ **`checkNextcloudStatus` (Step 4, this branch)** — `misconfig-nextcloud-status-disclosure` low, always-on when the JSON shape matches |
+| D | **Nextcloud 28.0.5 outdated** (major 28 EOL; maintained 32/33/34, current 34.0.3) | `cloud01`, `cloud02` | versionstring from (C) | ✅ **`checkNextcloudStatus` (Step 4)** — `misconfig-nextcloud-outdated` medium: EOL-major note + 4 NVD-verified sub-28.0.13 CVEs (CVE-2025-47791, CVE-2024-52523/52518/52517, all medium) |
+| E | **phpMyAdmin exposed to the internet** | `chasqui03.nettix.com.pe` (title "Arminet") | `GET /` → 303 to the pma login; `phpMyAdmin` fingerprint | ✅ **`checkPhpMyAdmin` (Step 4)** — `misconfig-phpmyadmin-exposed` medium; probes `/`, `/phpmyadmin/`, `/pma/`, gated on the `pma_username`+`pma_password` form-field pair |
 
 Additional surface not hand-verified this round: **Webmin on :10000** (ns1 /
 web01 / web02 / sinchi01 / firmas / mail / www — behind HTTP Basic, login page
@@ -552,6 +552,28 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   `DolibarrLatestStable` const carries a refresh-date note (24.0.1, checked
   2026-09-08). Step 5 (stretch) will lift `VersionCVERule` into a generic
   cross-product table + add phpMyAdmin/Webmin rows.
+- **Step 4 (native Nextcloud + phpMyAdmin) ✅ done 2026-09-08** — findings C, D, E.
+  `pkg/detectors/misconfig`, two more always-on checks:
+  - `checkNextcloudStatus` — GET `/status.php`; AND-gate on the
+    `installed`/`version`/`versionstring`/`productname` key set
+    (`nextcloudStatusMarkers`). Always emits `misconfig-nextcloud-status-disclosure`
+    (low, CWE-200). Then, if the parsed `versionstring` is an EOL major
+    (`< nextcloudOldestMaintainedMajor`, 32) **or** below any `NextcloudCVEs`
+    row, also emits `misconfig-nextcloud-outdated` (medium; severity bumps to
+    high only on a matched CVSS ≥ 9.0 — none in the 28-line). `NextcloudCVEs`
+    is 4 NVD-verified rows (fixes in 28.0.11–28.0.13, all medium). Consts
+    `NextcloudLatestStable` (34.0.3) / `nextcloudOldestMaintainedMajor` carry
+    a 2026-09-08 refresh note.
+  - `checkPhpMyAdmin` — probes `/`, `/phpmyadmin/`, `/pma/` (root first: the
+    live host `chasqui03` mounts pma at `/`); AND-gate on the
+    `pma_username`+`pma_password` login-form field pair (unchanged across
+    pma 5.x), baseline-page guard, best-effort `?v=` version from an asset
+    URL. Emits `misconfig-phpmyadmin-exposed` (medium). Not an `ExposedPaths`
+    row because that table has no root-probe semantics and the pair-gate
+    needs an AND.
+  - Shared helper `majorOf`; `firstSubmatchString`/`versionLessThan` reused
+    from Step 3. Tests: 6 cases (`TestMisconfigNextcloudStatus_*`,
+    `TestMisconfigPhpMyAdmin_*`). Full gate green.
 - **LT-104 — `wiki.nettix.com.pe/{api,graphql,swagger/v1/swagger.json}`
   recorded as `wave3-common-path-probe` endpoints (status 200) on a host
   recon *also* flagged catch-all** — LT-66's per-endpoint bucket-catch-all

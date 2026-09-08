@@ -862,3 +862,122 @@ func TestMisconfigDolibarr_VersionNotDisclosed_NoFinding(t *testing.T) {
 	})
 	assert.Empty(t, withPrefix(findings, "misconfig-dolibarr-outdated"))
 }
+
+// nextcloudStatusJSON is the exact key set status.php emits (nextcloud/server
+// builds the array literally). %[1]s is the versionstring, reused for the
+// 4-segment "version".
+const nextcloudStatusJSON = `{"installed":true,"maintenance":false,"needsDbUpgrade":false,` +
+	`"version":"%[1]s.1","versionstring":"%[1]s","edition":"","productname":"Nextcloud","extendedSupport":false}`
+
+func runNextcloudStatus(t *testing.T, versionstring string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.NextcloudStatusPath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, nextcloudStatusJSON, versionstring)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigNextcloudStatus_DisclosureAndOutdated: cloud01/cloud02 run
+// 28.0.5 — an EOL major that is also below every row in NextcloudCVEs, so
+// both the always-on disclosure finding and the outdated finding fire.
+func TestMisconfigNextcloudStatus_DisclosureAndOutdated(t *testing.T) {
+	findings := runNextcloudStatus(t, "28.0.5")
+
+	disc := withPrefix(findings, "misconfig-nextcloud-status-disclosure")
+	require.Len(t, disc, 1)
+	assert.Equal(t, "low", disc[0].Severity)
+	assert.Equal(t, "28.0.5", disc[0].Evidence["versionstring"])
+
+	old := withPrefix(findings, "misconfig-nextcloud-outdated")
+	require.Len(t, old, 1)
+	assert.Equal(t, "medium", old[0].Severity)
+	assert.Equal(t, "high", old[0].Confidence)
+	assert.Contains(t, old[0].Description, "end-of-life")
+	for _, cve := range []string{"CVE-2025-47791", "CVE-2024-52523", "CVE-2024-52518", "CVE-2024-52517"} {
+		assert.Contains(t, old[0].Evidence["cves"], cve)
+	}
+}
+
+// TestMisconfigNextcloudStatus_Current_DisclosureOnly: the current stable
+// still leaks its build over /status.php (low), but there is nothing
+// "outdated" to report.
+func TestMisconfigNextcloudStatus_Current_DisclosureOnly(t *testing.T) {
+	findings := runNextcloudStatus(t, "34.0.3")
+	assert.Len(t, withPrefix(findings, "misconfig-nextcloud-status-disclosure"), 1)
+	assert.Empty(t, withPrefix(findings, "misconfig-nextcloud-outdated"))
+}
+
+// TestMisconfigNextcloudStatus_NotNextcloud_NoFinding: a 200 JSON body that
+// isn't status.php's key set must not match.
+func TestMisconfigNextcloudStatus_NotNextcloud_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == misconfig.NextcloudStatusPath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok","uptime":123}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-nextcloud-status-disclosure"))
+	assert.Empty(t, withPrefix(findings, "misconfig-nextcloud-outdated"))
+}
+
+const pmaLoginHTML = `<!doctype html><html><head><title>phpMyAdmin</title>` +
+	`<link rel="stylesheet" href="./phpmyadmin.css.php?v=5.2.1&nocache=1">` +
+	`</head><body><form method="post" action="index.php">` +
+	`<input type="text" name="pma_username" id="input_username">` +
+	`<input type="password" name="pma_password" id="input_password">` +
+	`</form></body></html>`
+
+// TestMisconfigPhpMyAdmin_RootMounted_Hit: chasqui03.nettix.com.pe serves
+// phpMyAdmin straight off the site root.
+func TestMisconfigPhpMyAdmin_RootMounted_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(pmaLoginHTML))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	got := withPrefix(findings, "misconfig-phpmyadmin-exposed")
+	require.Len(t, got, 1)
+	assert.Equal(t, "medium", got[0].Severity)
+	assert.Equal(t, "5.2.1", got[0].Evidence["version"])
+}
+
+// TestMisconfigPhpMyAdmin_Subpath_Hit: the conventional /phpmyadmin/ mount,
+// with the site root serving something else entirely.
+func TestMisconfigPhpMyAdmin_Subpath_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/phpmyadmin/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(pmaLoginHTML))
+		case "/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><body>company site</body></html>`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	got := withPrefix(findings, "misconfig-phpmyadmin-exposed")
+	require.Len(t, got, 1)
+	assert.Equal(t, "/phpmyadmin/", got[0].Evidence["path"])
+}
+
+// TestMisconfigPhpMyAdmin_GenericLogin_NoFinding: another product's login
+// form (no pma_username/pma_password pair) must not match.
+func TestMisconfigPhpMyAdmin_GenericLogin_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><form><input name="username"><input name="password" type="password"></form></body></html>`))
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-phpmyadmin-exposed"))
+}

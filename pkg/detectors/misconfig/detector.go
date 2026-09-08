@@ -209,6 +209,8 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		d.checkDefaultCreds,
 		d.checkWPUserEnum,
 		d.checkDolibarrOutdated,
+		d.checkNextcloudStatus,
+		d.checkPhpMyAdmin,
 	}
 	for _, check := range checks {
 		if ctx.Err() != nil {
@@ -804,6 +806,180 @@ func splitVersionInts(v string) ([]int, bool) {
 		out = append(out, n)
 	}
 	return out, true
+}
+
+var nextcloudVersionstringRe = regexp.MustCompile(`"versionstring"\s*:\s*"([^"]{1,40})"`)
+var nextcloudProductnameRe = regexp.MustCompile(`"productname"\s*:\s*"([^"]{1,60})"`)
+
+// checkNextcloudStatus flags Nextcloud's unauthenticated /status.php: always
+// an information-disclosure finding (the exact build, no auth — CWE-200), and
+// additionally an "outdated" finding when the disclosed versionstring is
+// either an end-of-life major or below the fix line of one of NextcloudCVEs.
+// Same shape as checkWPUserEnum/checkDolibarrOutdated — fixed path, an
+// AND-of-JSON-keys product gate, version taken from the app's own output.
+func (d *Detector) checkNextcloudStatus(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, NextcloudStatusPath, authToken, nil, nil)
+	if err != nil {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/json") {
+		return nil, nil
+	}
+	if !containsAll(body, nextcloudStatusMarkers) {
+		return nil, nil
+	}
+	if d.looksLikeBaselinePage(resp.StatusCode, body, NextcloudStatusPath) {
+		return nil, nil
+	}
+
+	product := firstSubmatchString(nextcloudProductnameRe, body)
+	if product == "" {
+		product = "Nextcloud"
+	}
+	version := firstSubmatchString(nextcloudVersionstringRe, body)
+
+	evidence := func() map[string]string {
+		return map[string]string{
+			"path":          NextcloudStatusPath,
+			"status":        fmt.Sprintf("%d", resp.StatusCode),
+			"productname":   product,
+			"versionstring": version,
+			"request":       detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+			"response":      detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+		}
+	}
+
+	verClause := ""
+	if version != "" {
+		verClause = fmt.Sprintf(" (%s %s)", product, version)
+	}
+	findings := []detectors.Finding{{
+		ID:         "misconfig-nextcloud-status-disclosure",
+		Type:       "misconfig",
+		Severity:   "low",
+		Confidence: "high",
+		Target:     req.URL.String(),
+		Description: fmt.Sprintf(
+			"%s serves /status.php without authentication, disclosing the exact build%s. Nextcloud's hardening guide recommends restricting this endpoint — the version it leaks lets an attacker line this instance up against published advisories.",
+			product, verClause),
+		Evidence: evidence(),
+	}}
+
+	if version == "" {
+		return findings, nil // build disclosed but not parseable — can't judge "outdated"
+	}
+
+	var matched []VersionCVERule
+	for _, rule := range NextcloudCVEs {
+		if less, ok := versionLessThan(version, rule.FixedIn); ok && less {
+			matched = append(matched, rule)
+		}
+	}
+	major, majorOK := majorOf(version)
+	eol := majorOK && major < nextcloudOldestMaintainedMajor
+	if !eol && len(matched) == 0 {
+		return findings, nil // a maintained, current-enough release
+	}
+
+	severity := "medium"
+	reasons := make([]string, 0, 2)
+	if eol {
+		reasons = append(reasons, fmt.Sprintf("major %d is end-of-life (maintained majors are %d and newer; current stable %s) and receives no security fixes",
+			major, nextcloudOldestMaintainedMajor, NextcloudLatestStable))
+	}
+	ids := make([]string, 0, len(matched))
+	if len(matched) > 0 {
+		details := make([]string, 0, len(matched))
+		for _, m := range matched {
+			ids = append(ids, m.CVE)
+			details = append(details, fmt.Sprintf("%s (CVSS %.1f, fixed in %s): %s", m.CVE, m.CVSS, m.FixedIn, m.Summary))
+			if m.CVSS >= 9.0 {
+				severity = "high"
+			}
+		}
+		reasons = append(reasons, fmt.Sprintf("it is below the fix line of %d published CVE(s): %s", len(matched), strings.Join(details, "; ")))
+	}
+
+	ev := evidence()
+	ev["latest_stable"] = NextcloudLatestStable
+	if len(ids) > 0 {
+		ev["cves"] = strings.Join(ids, ", ")
+	}
+	findings = append(findings, detectors.Finding{
+		ID:          "misconfig-nextcloud-outdated",
+		Type:        "misconfig",
+		Severity:    severity,
+		Confidence:  "high",
+		Target:      req.URL.String(),
+		Description: fmt.Sprintf("%s %s is running here (from /status.php): %s.", product, version, strings.Join(reasons, "; and ")),
+		Evidence:    ev,
+	})
+	return findings, nil
+}
+
+var phpMyAdminVersionRe = regexp.MustCompile(`[?&]v=(\d+\.\d+\.\d+)`)
+
+// checkPhpMyAdmin flags an internet-reachable phpMyAdmin login page — a
+// standing target for credential brute force, session attacks and
+// phpMyAdmin's own CVE history, none of which a login page facing the public
+// internet should be exposed to. It walks PhpMyAdminProbePaths and stops at
+// the first response carrying both phpMyAdminLoginMarkers.
+func (d *Detector) checkPhpMyAdmin(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	for _, path := range PhpMyAdminProbePaths {
+		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
+		if err != nil {
+			continue
+		}
+		if notServedStatus(resp.StatusCode) {
+			continue
+		}
+		if !containsAll(body, phpMyAdminLoginMarkers) {
+			continue
+		}
+		if d.looksLikeBaselinePage(resp.StatusCode, body, path) {
+			continue
+		}
+
+		version := firstSubmatchString(phpMyAdminVersionRe, body)
+		verClause := ""
+		if version != "" {
+			verClause = fmt.Sprintf(" (version %s, from an asset URL)", version)
+		}
+		ev := map[string]string{
+			"path":     path,
+			"status":   fmt.Sprintf("%d", resp.StatusCode),
+			"request":  detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+			"response": detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+		}
+		if version != "" {
+			ev["version"] = version
+		}
+		return []detectors.Finding{{
+			ID:         "misconfig-phpmyadmin-exposed",
+			Type:       "misconfig",
+			Severity:   "medium",
+			Confidence: "high",
+			Target:     req.URL.String(),
+			Description: fmt.Sprintf(
+				"a phpMyAdmin login page is served at %s with no network restriction%s — internet-facing phpMyAdmin is a persistent target for credential brute force, session fixation and phpMyAdmin's own steady stream of CVEs, and should sit behind a VPN or IP allow-list.",
+				path, verClause),
+			Evidence: ev,
+		}}, nil
+	}
+	return nil, nil
+}
+
+// majorOf returns the leading integer segment of a dotted version, or ok=false
+// when v is not dot-separated integers.
+func majorOf(v string) (int, bool) {
+	seg, ok := splitVersionInts(v)
+	if !ok || len(seg) == 0 {
+		return 0, false
+	}
+	return seg[0], true
 }
 
 // baselineCredUsername/Password are a definitely-wrong credential pair sent
