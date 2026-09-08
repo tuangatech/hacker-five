@@ -705,9 +705,14 @@ func (d *Detector) checkWPUserEnum(ctx context.Context, target, host, authToken 
 	if !containsAll(body, wpUserObjectMarkers) {
 		return nil, nil
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, WPUserEnumPath) {
-		return nil, nil
-	}
+	// No looksLikeBaselinePage / looksLikeCatchAllServed guard here: the
+	// checks above are a hard product signature (200 + JSON content type + a
+	// JSON array carrying every wpUserObjectMarkers key) that a WAF block
+	// page or a soft-404 catch-all cannot satisfy. Adding the guard only
+	// created false negatives — a Dolibarr/Nextcloud/WordPress host that
+	// serves its real app for every path (its own login/redirect behaviour)
+	// had its confirmed-product finding suppressed because the canary probe
+	// landed on that same real page (LT-113, live on erp/ixn.nettix.com.pe).
 
 	var slugs []string
 	seen := map[string]bool{}
@@ -772,9 +777,12 @@ func (d *Detector) checkDolibarrOutdated(ctx context.Context, target, host, auth
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(DolibarrAuthorMeta)) {
 		return nil, nil // root not served, or not Dolibarr
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, "/") {
-		return nil, nil // a WAF/interstitial serving one page for everything
-	}
+	// No baseline/catch-all guard: DolibarrAuthorMeta plus a parsed version
+	// is a hard product signature no WAF/interstitial page carries. Dolibarr
+	// itself redirects every unauthenticated path to the login page, so the
+	// canary probe lands on the very page this check reads — guarding on it
+	// suppressed the finding on a real, outdated, internet-facing instance
+	// (LT-113, live on erp/ixn.nettix.com.pe).
 
 	version := firstSubmatchString(dolibarrTitleVersionRe, body)
 	if version == "" {
@@ -933,9 +941,10 @@ func (d *Detector) checkNextcloudStatus(ctx context.Context, target, host, authT
 	if !containsAll(body, nextcloudStatusMarkers) {
 		return nil, nil
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, NextcloudStatusPath) {
-		return nil, nil
-	}
+	// No baseline/catch-all guard — see checkWPUserEnum: the JSON-key
+	// product gate above is not something a generic catch-all page returns,
+	// and the guard only produced false negatives on hosts that serve a real
+	// app for every path (LT-113).
 
 	product := firstSubmatchString(nextcloudProductnameRe, body)
 	if product == "" {
@@ -1031,9 +1040,9 @@ func (d *Detector) checkPhpMyAdmin(ctx context.Context, target, host, authToken 
 		if !containsAll(body, phpMyAdminLoginMarkers) {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, path) {
-			continue
-		}
+		// No baseline/catch-all guard — see checkWPUserEnum: phpMyAdminLoginMarkers
+		// is a hard product gate, and the guard only cost real findings on
+		// hosts that serve one real page for every path (LT-113).
 
 		version := firstSubmatchString(phpMyAdminVersionRe, body)
 		verClause := ""
@@ -1124,9 +1133,9 @@ func (d *Detector) checkWebmin(ctx context.Context, target, host, authToken stri
 	if !bytes.Contains(body, []byte(webminLoginMarker)) {
 		return nil, nil // MiniServ, but this response isn't the unauthenticated login page
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, "/") {
-		return nil, nil
-	}
+	// No baseline/catch-all guard — see checkWPUserEnum: the "Server:
+	// MiniServ" header plus the login marker is a hard product gate no
+	// generic catch-all carries (LT-113).
 
 	version := firstSubmatchString(webminServerVersionRe, []byte(server))
 	verClause := ""

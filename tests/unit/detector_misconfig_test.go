@@ -918,6 +918,26 @@ func TestMisconfigDolibarr_ProductCheckRunsBeforeHostErrorBreaker(t *testing.T) 
 	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
 }
 
+// TestMisconfigDolibarr_OutdatedFires_WhenEveryPathIsTheLoginPage locks in
+// the second half of LT-113, found live on erp/ixn.nettix.com.pe: Dolibarr
+// redirects every unauthenticated path to its login page, so the canary
+// probe lands on the very page checkDolibarrOutdated reads. The old
+// looksLikeBaselinePage guard then suppressed the finding on a real,
+// outdated, internet-facing instance. The hard DolibarrAuthorMeta + version
+// gate makes that guard both redundant and harmful, so it is gone.
+func TestMisconfigDolibarr_OutdatedFires_WhenEveryPathIsTheLoginPage(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		// Every path — the two canaries included — gets the Dolibarr login page.
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, dolibarrLoginHTML, "23.0.3", "23.0.3")
+	})
+
+	got := withPrefix(findings, "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1, "a confirmed outdated Dolibarr must still be reported when it serves its login page for every path")
+	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
+}
+
 // TestMisconfigDolibarr_NotDolibarr_NoFinding: a non-Dolibarr page that
 // happens to carry " @ 23.0.3" in its title must not match — the author
 // <meta> gate is mandatory.
