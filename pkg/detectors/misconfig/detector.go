@@ -198,7 +198,31 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		})
 	}
 
-	checks := []func(context.Context, string, string, string) ([]detectors.Finding, error){
+	type check func(context.Context, string, string, string) ([]detectors.Finding, error)
+
+	// Product-fingerprint checks are each one to a few requests and each
+	// identifies a specific outdated product plus its known CVEs — the
+	// highest-value output this detector produces. They run first, and are
+	// deliberately NOT gated by the host-error breaker below. Ordered last (as
+	// they were before LT-113), a burst of connection errors from the heavier
+	// probe checks — checkDisallowedMethods fires PUT/DELETE/PATCH plus a
+	// comparison GET; checkDefaultCreds POSTs ~10 login attempts — would push
+	// the host past hosterrors.DefaultThreshold, ShouldSkip would trip, the
+	// loop would `break`, and a cleanly-fingerprinted Dolibarr / Nextcloud /
+	// phpMyAdmin / Webmin host would silently produce nothing (observed live
+	// on erp/ixn.nettix.com.pe, docs/follow-up.md LT-113). A per-target
+	// context deadline still stops them.
+	priorityChecks := []check{
+		d.checkWPUserEnum,
+		d.checkDolibarrOutdated,
+		d.checkNextcloudStatus,
+		d.checkPhpMyAdmin,
+		d.checkWebmin,
+	}
+	// Standard checks are the broader probes (many requests each). They keep
+	// the host-error breaker: once a host has failed DefaultThreshold requests
+	// in a row, continuing to probe it is both pointless and impolite.
+	standardChecks := []check{
 		d.checkExposedPaths,
 		d.checkDirListing,
 		d.checkCommentLeaks,
@@ -207,24 +231,36 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		d.checkCORS,
 		d.checkVerboseErrors,
 		d.checkDefaultCreds,
-		d.checkWPUserEnum,
-		d.checkDolibarrOutdated,
-		d.checkNextcloudStatus,
-		d.checkPhpMyAdmin,
-		d.checkWebmin,
 	}
-	for _, check := range checks {
+
+	// run one check, folding its result into findings. A non-nil error is
+	// non-fatal: no built-in check returns one today, and if one ever starts
+	// to, that is a fault in that single check — skip its results and keep
+	// going, rather than forfeiting every remaining check for this target as
+	// the pre-LT-113 loop did (`return findings, err`). Genuine context
+	// cancellation is caught by the ctx.Err() guards at the call sites.
+	run := func(c check) {
+		fs, err := c(ctx, target, host, authToken)
+		if err != nil {
+			return
+		}
+		findings = append(findings, fs...)
+	}
+
+	for _, c := range priorityChecks {
+		if ctx.Err() != nil {
+			return findings, ctx.Err()
+		}
+		run(c)
+	}
+	for _, c := range standardChecks {
 		if ctx.Err() != nil {
 			return findings, ctx.Err()
 		}
 		if d.hostErrors.ShouldSkip(host) {
 			break
 		}
-		fs, err := check(ctx, target, host, authToken)
-		if err != nil {
-			return findings, err
-		}
-		findings = append(findings, fs...)
+		run(c)
 	}
 	return findings, nil
 }

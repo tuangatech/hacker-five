@@ -829,6 +829,43 @@ func TestMisconfigDolibarr_AssetVersionFallback_Hit(t *testing.T) {
 	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
 }
 
+// TestMisconfigDolibarr_ProductCheckRunsBeforeHostErrorBreaker locks in
+// LT-113 (docs/follow-up.md): every non-root request drops the connection,
+// which trips the consecutive-host-error breaker within checkExposedPaths —
+// the first standard check. Before LT-113 the product-fingerprint checks
+// were ordered last, so the breaker's loop `break` reached them first and a
+// cleanly-fingerprinted outdated Dolibarr host (erp/ixn.nettix.com.pe live)
+// produced nothing at all. They now run first and are not breaker-gated, so
+// the outdated-Dolibarr finding survives regardless of how the broader
+// probes fare against a hostile host.
+func TestMisconfigDolibarr_ProductCheckRunsBeforeHostErrorBreaker(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, dolibarrLoginHTML, "23.0.3", "23.0.3")
+			return
+		}
+		// Any other path (the canary probe, exposed-path rules, login
+		// probes, unusual verbs, ...) gets its TCP connection yanked — a
+		// transport error, which is what RecordError counts toward the
+		// breaker.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	})
+
+	got := withPrefix(findings, "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1, "the outdated-Dolibarr finding must survive a host that trips the error breaker on every other request")
+	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
+}
+
 // TestMisconfigDolibarr_NotDolibarr_NoFinding: a non-Dolibarr page that
 // happens to carry " @ 23.0.3" in its title must not match — the author
 // <meta> gate is mandatory.
