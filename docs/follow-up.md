@@ -31,7 +31,7 @@ entry below carries the detail.
   - **LT-79** — `--max-target-duration` (default 15 m, 0 = off): per-target `context.WithTimeout` around detector + template dispatch; on expiry, records `scan-partial-time-budget`. `pkg/scanner/budget.go`.
   - **LT-70** — `leafPriority` returns `agenttask.PriorityDeadEnd` (1) for a `StatusUnresolved` / detector-less leaf, below every dispatchable class. Test: `TestResolve_UnresolvedLeaf_DeadEndPriority`.
 
-**Routed to a phase step instead** (detail + marker on each entry): LT-64, LT-65, LT-83, LT-84b, LT-86b, LT-76, LT-77 → [Phase 8](17-implementation-plan-ph8.md) Step 6 (first tranche done 2026-09-07) · LT-40, LT-61 → Phase 8 Step 6 (second tranche done 2026-09-07; LT-40 (b)/(c) tail done 2026-09-07 with the Step 6a batch) · LT-78 → [Phase 9](18-implementation-plan-ph9.md) Step 3 · LT-87 → [Phase 9](18-implementation-plan-ph9.md) Step 4 · LT-67, LT-71 → [Phase 7](16-implementation-plan-ph7.md) Step 6a (F3/F4, ✅ done 2026-09-07) · LT-89 (spec-ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf Target lost scheme/port) + LT-94 (RunPlan not self-sufficient for authbypass/ssrf fields) → [Phase 8](17-implementation-plan-ph8.md) Step 6, ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds). LT-92 (BFLA vs. token-reuse), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection) open. **Phase 8 was split 2026-09-07** — its Steps 4/7/8/9 (OOB blind-RCE, template-format gaps, AI-agent surface, WAF + native injection detectors) moved to [Phase 9](18-implementation-plan-ph9.md); see [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) § "Execution order" for the single cross-phase backlog.
+**Routed to a phase step instead** (detail + marker on each entry): LT-64, LT-65, LT-83, LT-84b, LT-86b, LT-76, LT-77 → [Phase 8](17-implementation-plan-ph8.md) Step 6 (first tranche done 2026-09-07) · LT-40, LT-61 → Phase 8 Step 6 (second tranche done 2026-09-07; LT-40 (b)/(c) tail done 2026-09-07 with the Step 6a batch) · LT-78 → [Phase 9](18-implementation-plan-ph9.md) Step 3 · LT-87 → [Phase 9](18-implementation-plan-ph9.md) Step 4 · LT-67, LT-71 → [Phase 7](16-implementation-plan-ph7.md) Step 6a (F3/F4, ✅ done 2026-09-07) · LT-107 (coverage-gap ledger) + LT-108 (`hackerfive suggest`) → [Phase 7](16-implementation-plan-ph7.md) Step 8 (added 2026-09-08; ⬜ not started; LT-109/LT-110 are the still-unscheduled rungs 3–5 of that ladder) · LT-89 (spec-ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf Target lost scheme/port) + LT-94 (RunPlan not self-sufficient for authbypass/ssrf fields) → [Phase 8](17-implementation-plan-ph8.md) Step 6, ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds). LT-92 (BFLA vs. token-reuse), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection) open. **Phase 8 was split 2026-09-07** — its Steps 4/7/8/9 (OOB blind-RCE, template-format gaps, AI-agent surface, WAF + native injection detectors) moved to [Phase 9](18-implementation-plan-ph9.md); see [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) § "Execution order" for the single cross-phase backlog.
 
 ## Security & Scope Hardening
 
@@ -388,29 +388,88 @@ DokuWiki is current (`2026-07-14c "Mort"`); `soporte.nettix.com.pe` throwing
   Verified live: native-only scan (`--templates <empty>`) of
   `www.nettix.com.pe` produces it in 15 s. **→ demo prep; broadens misconfig
   coverage per CLAUDE.md detection philosophy.**
-- **LT-98 — the tag-scoped corpus scan is too slow to rely on against a
-  real multi-host target.** Root of LT-97's workaround. Two compounding
-  causes: (a) template **load** of the ~9.6k-file synced corpus is minutes
-  of wall-clock before the first request (a bare `scan … --tags wp,wordpress`
-  against a non-resolving host had not printed the "loaded N templates" line
-  after 3 min); (b) at dispatch, one shared `--rate-limit` token bucket is
-  split across every in-flight target, and broad tags barely narrow the
-  loaded set — `--recon-file` auto-adds `wordpress`/`nginx`/`php`, and even
-  a hand-picked `--tags wp,wordpress` still loads 1656 templates,
-  `--tags dolibarr,panel` 1592 (the `panel` tag alone is ~1.5k) — so
-  per-target coverage in the `--max-target-duration` window
-  is a tiny fraction of the corpus, effectively random in which templates it
-  reaches (file-iteration order puts `http/cves/**` first, `http/vulnerabilities/**`
-  last). Also: the `scan-partial-time-budget` message's "roughly N of 5343
-  templates started" prints `len(tf)` — the **findings** count, not templates
-  started — so it always reads 0–2 and understates coverage
-  (`pkg/scanner/budget.go` / `engine.go` `runTemplates` returns findings, not
-  a dispatch counter). Directions: cache the parsed corpus across runs (or a
-  fast on-disk index keyed by tag); give each target its own rate-limit
-  share, or scan one target at a time when the corpus is large; iterate
-  detection/`vulnerabilities` templates before the CVE bulk; fix the counter
-  to report real dispatch progress. **→ Scan-Engine Request Efficiency /
-  Phase 9 detector-perf backlog; not demo-blocking (LT-97 sidesteps it).**
+- **LT-98 — the tag-scoped corpus scan reaches only a random slice of its
+  templates inside the per-target time budget (dispatch half — cheap, split
+  from the old LT-98 on 2026-09-08).** Root of LT-97's workaround. At
+  dispatch, `filepath.WalkDir`'s lexical order puts `http/cves/**` first and
+  `http/vulnerabilities/**` (the detection templates) last, so when
+  `--max-target-duration` fires mid-corpus the templates that got skipped are
+  the useful ones. And the `scan-partial-time-budget` message's "roughly N of
+  5343 templates started" prints `len(tf)` — the **findings** count, not a
+  dispatch count (`pkg/scanner/budget.go` / `engine.go` `runTemplates`
+  returns findings) — so it always reads 0–2 and understates coverage.
+  **Fix (contained, do now):** (1) thread a real atomic dispatch counter
+  through `runTemplates` into `timeBudgetFinding`; (2) sort the loaded
+  template slice by a category-priority key
+  (`technologies`/`vulnerabilities`/`misconfiguration` before `cves/**`)
+  before fan-out. Dispatch-order + reporting only — no correctness change.
+  The corpus *load* cost and the shared rate-limit bucket are **LT-106**.
+  **→ demo-prep candidate (pending the baseline run); not demo-blocking
+  (LT-97 sidesteps it).**
+- **LT-106 — corpus-load performance: parsed-corpus cache + on-disk tag
+  index + per-target rate share (the expensive half of the old LT-98, split
+  out 2026-09-08).** Template **load** of the ~9.6k-file synced corpus is
+  minutes of wall-clock before the first request (a bare
+  `scan … --tags wp,wordpress` against a non-resolving host had not printed
+  "loaded N templates" after 3 min), and a tag filter still has to parse
+  every file to read its `tags:` block — so narrowing speeds up dispatch, not
+  loading. At runtime one shared `--rate-limit` token bucket is split across
+  every in-flight target, and broad tags barely narrow (`--tags wp,wordpress`
+  → 1656 templates, `--tags dolibarr,panel` → 1592, `panel` alone ~1.5k).
+  **Needs a design pass** — the options are a list, not a chosen approach: a
+  parsed-corpus cache keyed by the pinned corpus commit hash; a generated
+  on-disk tag→file index (extend the existing `templates/index.json`); a
+  per-target rate-limit share, or scan-one-target-at-a-time when the loaded
+  set is large. **→ Phase 8/9 scan-engine-perf backlog; post-demo; not
+  demo-blocking.**
+- **LT-107 — coverage-gap ledger (deterministic, no LLM).** After a
+  recon+scan, emit a structured record per `(host, fingerprinted
+  product/version)` that no loaded template tag and no native detector
+  matched — the concrete artifact that makes the native-vs-template decision
+  data-driven instead of a judgement call, and the trigger input LT-108 (and
+  doc90 I4) consume. Draws on the capability registry (`pkg/registry`, I1),
+  the decision engine's `TechFact`→tag match (I3), and the loaded template
+  set. Pure read over data that already exists post-scan; standalone-useful
+  for a human operator. **→ thin slice of doc90 Group E/I; near-term.**
+- **LT-108 — `hackerfive suggest <scan-output>` (one stateless frontier
+  call).** Takes LT-107's ledger + the scan's findings and returns a
+  structured, printed-only list of proposed next actions — templates to draft
+  (→ `templates-proposed/`, the existing rung-0 pipeline), second-pass leaves to run
+  (I3 + `hostnameProductHints`), recon to redo (LT-99/LT-100/LT-101), triage
+  groupings. **No auto-apply, no re-scan** — the operator reads it and acts.
+  doc90 Decision 5's shape (stateless, per-decision-point, schema-in/out, one
+  frontier-tier call) at minimal scope, and the missing "re-plan from
+  results" half of the end-of-scan loop — everything downstream (draft →
+  `proposed/` → human promote → re-run) already ships (v0.6.0 + Phase 7).
+  Bounded by the existing per-plan spend ceiling (H5). **→ near-term; builds
+  on LT-107.** Now [Phase 7](16-implementation-plan-ph7.md) **Step 8** (with
+  LT-107).
+- **LT-109 — `hackerfive templates promote <name>` + a webui "review proposed
+  templates" panel (rung 3 of the end-of-scan ladder).** Today an I4-drafted
+  template lands in `templates-proposed/` (a sibling of `templates/`, on no
+  loader's path — `pkg/llmfallback/resolve.go` `writeProposedTemplate`) and the
+  only way to promote it is a manual `mv` into `templates/`. This item is the
+  explicit one-action promotion: a CLI command and a webui panel that lists
+  each `templates-proposed/` draft with its source leaf / ledger row, the
+  rejection-pipeline result, and a diff, then moves it on an operator click.
+  Formalises E2's optional "`templates promote` command if worth building"
+  line. **Still human-gated — no auto-promote.** **→ after LT-108; not
+  scheduled into a phase step yet (rungs 3–5 are named-not-built in doc16
+  Step 8).**
+- **LT-110 — webui "Apply and Run" (rungs 4–5: the closed loop).** Takes the
+  operator's selected LT-108 suggestions and executes the mechanical ones:
+  draft the named templates into `templates-proposed/`, queue the second-pass
+  I3 + `hostnameProductHints` leaves, then present the lot at the **existing
+  Plan Preview approve/reject gate** (C5). On approval, launch a **fresh
+  scoped scan Job** through the normal launch path — never an in-place edit of
+  the finished job. The new job's own LT-107 ledger can feed LT-108 again,
+  bounded by the per-plan spend ceiling (H5) and a hard max-iteration cap;
+  every iteration re-crosses the approve gate. This is the item the user's
+  "if user clicks 'Apply and Run', HackerFive generates new templates + does
+  the other suggested things + scans another round" describes. **Needs a
+  design pass** (job-lineage model, iteration cap, how a promoted-this-round
+  template is scoped to just the re-scan). **→ after LT-109; Phase 8/9 window;
+  not demo-blocking.**
 
 ### Re-run 2026-09-08 (Step 0 inventory) — seed-host subdomain-enum starvation
 

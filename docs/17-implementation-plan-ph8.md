@@ -64,6 +64,8 @@ release steps as terminal gates of their phase. Current order:
 **Tier 1 — near-term "do now" (small, independent, precision / quality / perf):**
 - [Phase 7](16-implementation-plan-ph7.md) **Step 6a** — F3 (LT-67, content-gate response-grep secret templates) + F4 (LT-71, narrow-load fast path for a small leaf set).
 - **Step 6 tail** — LT-40's spec-probe-path widening + YAML spec bodies ✅ done 2026-09-07 (with the Phase 7 Step 6a batch, same file, same LT-30 gate); opportunistically the LT-6 weak-HSTS skip-list entry and LT-66's per-endpoint bucket-catch-all cleanup still open.
+- [Phase 7](16-implementation-plan-ph7.md) **Step 8 — LT-107** coverage-gap ledger (deterministic, no LLM). Pure read over post-scan data; standalone-useful for a human operator and the trigger input for LT-108. Fully independent.
+- [Phase 7](16-implementation-plan-ph7.md) **Step 8 — LT-108** `hackerfive suggest` (one stateless frontier call, print-only, H5-capped) — **Tier 1/2 boundary**: it consumes LT-107's ledger, so it follows it. No auto-apply / re-scan (that's LT-109/LT-110, unscheduled).
 
 **Tier 2 — Phase 8 (breadth & precision; each near self-contained, dependencies already satisfied):**
 1. **Step 1** — TCP + `netservice` detector. Biggest single new class, live-confirmed on a real target (LT-23). Fully independent.

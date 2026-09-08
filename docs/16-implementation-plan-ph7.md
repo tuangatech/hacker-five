@@ -21,6 +21,7 @@
    - **6a** ✅ **done 2026-09-07** — **F3** (content-gate response-grep secret templates, LT-67) + **F4** (narrow corpus load for a small leaf set, LT-71). Detection-quality + performance; small, independent.
    - **6b** (deferred to the [Phase 9](18-implementation-plan-ph9.md) window, folded into that phase's Step 5) — **E2** (`templates/proposed/` staging), **F1** (triage-assist annotations), **F2** (structured feedback capture). No agent draft/annotation consumer exists yet, and E2 gates on D4's supply-chain rows.
 7. ⬜ **`v0.7.0` consolidation + release** (Week 56) — cut on **batch-readiness**, *not* gated on Step 5's full re-walk or Step 6b.
+8. ⬜ **End-of-scan re-plan loop** (LT-107 + LT-108) — deterministic coverage-gap ledger + a single-call `hackerfive suggest` (print-only, no auto-apply). Added 2026-09-08; not a `v0.7.0` blocker, folds into `v0.7.0` or `v0.8.0` on batch-readiness. Rungs 3–5 of the ladder (LT-109/LT-110) stay in [follow-up.md](follow-up.md).
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-15.)
 
@@ -311,7 +312,7 @@ continuity; the forward plan and DoD lines move to
 
 **E1 — generated `templates/index.json` — moved to Phase 5 (doc14 R9), not this step's job anymore.** Originally scheduled here, but doc14's decision engine (Group I, added 2026-08-30) needs this index to match template tags against a fingerprinted target *in Phase 5*, well before this phase exists — generating it here would leave Phase 5/6's decision engine and `templates.search` MCP tool with nothing to query. Noted here so a reader of this doc's history understands the move, not just finds it silently missing; nothing left for this step to do on E1 beyond confirming it's still current by this point.
 
-**E2 — agent-proposed templates land in `templates/proposed/`**, never directly in a trusted path (`./templates/` or the synced directory). A future "agent drafts a new detection template based on what it observed" capability — not built in this phase, but the staging convention is: any such template is written only to `templates/proposed/`, requires explicit human promotion (a file move, or a `hackerfive templates promote <name>` command if that turns out to be worth building) before it's ever loaded into a real scan.
+**E2 — agent-proposed templates land in a staging directory**, never directly in a trusted path (`./templates/` or the synced directory). A future "agent drafts a new detection template based on what it observed" capability — not built in this phase, but the staging convention is: any such template is written only there, requires explicit human promotion (a file move, or a `hackerfive templates promote <name>` command if that turns out to be worth building — that's LT-109) before it's ever loaded into a real scan. **As built (`pkg/llmfallback` I4, since 2026-08-30) the directory is `templates-proposed/`, a deliberate *sibling* of `templates/`, not `templates/proposed/`** — every existing loader walks `./templates/` recursively, so a `templates/proposed/` subdir would be silently swept into the live corpus the moment a draft landed. This design text's earlier `templates/proposed/` spelling (below and in the ASI04 row) predates that implementation; the sibling path is the real one.
 
 **F1 — triage-assist mode on the existing `Exporter` output.** A mode that annotates exported findings with the agent's own triage notes (severity-context, likely false-positive flags) as a clearly-labeled *additional* field, never altering the underlying deterministic `Finding.Severity`/`Confidence` — consistent with this phase's repeated theme of agent output being additive/advisory, never authoritative over detector-set fields.
 
@@ -385,6 +386,102 @@ crAPI stack, which is the same concern as the auth-bypass tests above).
 ### Verification
 The benchmark actually runs against all four lab targets with a real agent session, and the resulting fp/fn numbers (and their delta from Phase 5 Step 1's detector-only baseline) are recorded honestly — met, or not met with a stated reason, same "revise down with reasoning, don't pad" discipline every prior phase's real numbers followed (doc11's XSS/SQLi shortfall, doc13's own Phase 4 metrics).
 
+---
+
+## Step 8: End-of-scan re-plan loop — coverage-gap ledger + `suggest` ([follow-up.md](follow-up.md) LT-107, LT-108) — ⬜ not yet implemented
+
+> **Ships on batch-readiness, not step order.** Listed after Step 7's `v0.7.0`
+> gate because it is not a `v0.7.0` blocker; it folds into `v0.7.0` if green
+> before that batch closes, otherwise `v0.8.0`. Same convention as Step 6b / the
+> D4 full re-walk. In [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md)
+> § "Execution order": **LT-107 is Tier 1**, LT-108 is Tier 1/2 boundary (it
+> consumes the ledger). This is doc90 Group E/I at minimal scope.
+
+### Design
+
+This step builds the first two rungs of the "end-of-scan → propose → (later)
+apply → re-scan" loop the user has asked for. The loop is a **five-rung ladder**;
+only rungs 1–2 are in scope here. Rungs 3–5 are named, not built, and each gets
+its own [follow-up.md](follow-up.md) item so the deferral is tracked, not
+silently dropped.
+
+| Rung | Item | What it does | Human gate |
+|---|---|---|---|
+| 0 ✅ | I4 draft → `templates-proposed/` | mid-plan, per uncovered leaf; validated through the real `checkDisallowedBlocks` rejection pipeline (`pkg/llmfallback/resolve.go` `writeProposedTemplate` → a deliberate sibling of `templates/`, on no loader's path) | human file-move to promote |
+| **1** | **LT-107** coverage-gap ledger (deterministic, no LLM) | at end of a recon+scan, emit a structured record per `(host, fingerprinted product/version)` that **no loaded template tag and no native detector matched** — the concrete artifact that makes the native-vs-template decision data-driven, and the trigger input rung 2 (and doc90 I4) consume | none — read-only over data that already exists post-scan |
+| **2** | **LT-108** `hackerfive suggest <scan-output>` (one stateless frontier call) | takes the rung-1 ledger + the scan's findings, returns a **printed-only** structured list of proposed next actions | spend ceiling H5; **no auto-apply, no re-scan** |
+| 3 | **LT-109** (new) `hackerfive templates promote <name>` + a webui "review proposed templates" panel | turns a `templates-proposed/` draft into a loadable template via one explicit action (formalises E2's optional promotion command — the manual `mv` is the fallback today) | explicit human promote |
+| 4 | **LT-110** (new) webui "Apply and Run" | takes the operator's selected rung-2 suggestions → drafts the named templates into `templates-proposed/`, queues the second-pass leaves, presents them at the **existing Plan Preview approve/reject gate** (C5), and on approval launches a **fresh scoped scan Job** through the normal launch path — never an in-place mutation of a finished job | Plan Preview / elicitation; spend cap |
+| 5 | (folded into LT-110) the closed loop | rung 4's fresh job's own end-of-scan ledger feeds rung 2 again — bounded by the per-plan spend ceiling and a max-iteration cap | every iteration re-crosses the approve gate |
+
+**LT-107 — coverage-gap ledger.** A new post-scan pass (deterministic) that
+cross-references three things that already exist after any recon-fed scan:
+- the fingerprinted tech facts on `ReconResult` (product + version per host),
+- the capability registry (`pkg/registry`, I1) and the decision engine's
+  `TechFact`→tag match (I3) — did any of that product's tags resolve to a leaf?
+- the **loaded** template set for the job — was a template carrying a matching
+  tag actually loaded (survived narrow-by-tech / the time budget / the uniform-wall
+  skip)?
+A `(host, product, version)` triple where the answer to all of "native detector
+fired", "I3 produced a leaf", and "a tag-matching template was loaded" is *no*
+becomes one ledger row: `{host, product, version, reason: no-native|no-i3-leaf|template-not-loaded, source_fact}`.
+Standalone-useful for a human operator reading a scan result ("you fingerprinted
+Webmin 2.111 on `gateway` and nothing checked it"); it is also exactly the signal
+rung 2 needs. Emitted to the job's finding stream as an `info`-severity
+`coverage-gap-*` entry and to the CLI/JSON report.
+
+**LT-108 — `hackerfive suggest <scan-output>`.** One stateless frontier-tier call
+(doc90 Decision 5's shape: schema-in / schema-out, one call, no persistent agent),
+bounded by the existing per-plan spend ceiling (H5). Input: the rung-1 ledger +
+the scan's findings. Output: a printed, structured list — never applied. Action
+kinds the model may propose:
+- **templates to draft** for a ledger row nothing covers (→ `templates-proposed/`
+  via the rung-0 pipeline; *proposed*, not written, at this rung),
+- **second-pass leaves** to run — I3 + `hostnameProductHints` seeds from a
+  finding (disclosed admin path → an authbypass leaf; a version banner → a
+  targeted CVE template),
+- **recon to redo** with better parameters when the ledger shows a thin endpoint
+  surface (LT-99 headless crawl, LT-100 param-mining, LT-101 apex-seed fix),
+- **cross-host correlation** — the same product+version on N hosts → one grouped
+  finding plus "the other N−1 were not checked",
+- **triage / dedup groupings** for the report draft (already fenced by
+  `reporter.ValidateCitations`, C3).
+`--llm-assist`-gated on the CLI exactly like `plan`/`triage`; without it the
+command prints the deterministic ledger and stops (no model call). No
+`suggest`-initiated scan, no file write beyond the human reading stdout.
+
+**Invariants (carried from CLAUDE.md's detection-philosophy bullet + doc90
+Decisions 5–6, unchanged by this step):** every LLM call is spend/attempt-capped
+and sits behind a human gate before anything consequential runs; a drafted
+template never auto-loads (rung 0's sibling-dir guarantee); a re-scan (rung 4+)
+is a normal read-only enumeration Job through the approve gate, never an in-place
+edit of a finished job; nothing here touches HackerOne submission.
+
+**Explicitly out of scope for this step (named, deferred to LT-109/LT-110):**
+the promote command, the webui "review proposed" panel, the "Apply and Run"
+button, and any automated re-scan. This step stops at "the operator reads the
+printed suggestions and acts by hand" — the same stopping point `plan`'s
+field-suggestion misses and the "recon also suggests" log line already use.
+
+### Files (anticipated, confirm at implementation time)
+- `pkg/coveragegap/` (new) — `Ledger(job *Job | *scanner.Result, recon *recon.ReconResult, loaded []templatesync.Entry) []GapRow`; pure function over already-collected data, imports `recon` + `registry` + `templatesync` only.
+- `pkg/scanner/engine.go` — call the ledger pass after `runTemplates` when a recon result is present; emit `coverage-gap-*` info findings.
+- `cmd/hackerfive/suggest.go` (new) — `hackerfive suggest <scan.json> [--llm-assist]`; deterministic ledger print always, the frontier call only under `--llm-assist`, against the per-plan spend ceiling.
+- `pkg/llmfallback/suggest.go` (new) — `Suggest(ctx, ledger, findings) (Suggestions, cost, err)`; schema-validated in/out, one call, degrades to an empty list on a bad response (never a fabricated action).
+- `pkg/reporter/` — a `coverage_gaps` section in the JSON/CLI report.
+- `tests/unit/coveragegap_test.go`, `tests/unit/suggest_cmd_test.go`, `pkg/llmfallback/suggest_test.go`.
+
+### Verification
+LT-107: against a recon+scan fixture where a fingerprinted product's tags were
+narrowed out (or its templates never loaded under the time budget), the ledger
+has exactly the expected `(host, product, version, reason)` rows and no row for a
+product a native detector *did* cover. LT-108: with `--llm-assist` off, `suggest`
+prints the ledger and makes zero model calls; with it on, a stubbed frontier
+response yields a structured action list, a malformed response yields an empty
+list (not a guessed action), and the spend ceiling is respected. A full
+before/after on a fixed lab target: `suggest` changes nothing on disk and starts
+no scan.
+
 ## Definition of Done (Phase 7, Weeks 49-56)
 
 This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loop Ready" Definition of Done:
@@ -406,6 +503,8 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [ ] **Interim** OWASP Agentic Top 10 pass (D4) against currently-shipped Phase 5-7 code (file/line cited), each row mitigated-with-a-cite or accepted-residual — the **full re-walk** (incl. Phase 9 Steps 3-4's new surface) is [Phase 9](18-implementation-plan-ph9.md) Step 5
 - [x] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content (Step 6a / F3 / [follow-up.md](follow-up.md) LT-67) — 2026-09-07: `isBodyGrepSecretTemplate` ∧ `hostServesDynamicContent`, biased toward emitting; unit-tested on catch-all / `AppSurface:none` / sub-floor-body hosts vs. a real-content host
 - [x] A specific-template leaf loads only its own template via `nuclei.LoadDirByIDs`' id:-peek fast path, not the full corpus, with an empty before/after finding-set diff (Step 6a / F4 / [follow-up.md](follow-up.md) LT-71) — 2026-09-07; falls back to a full parse on a peek miss so it can't change results. Pure-`--tags`-scan (no plan) still full-loads — follow-on
+- [ ] Coverage-gap ledger (Step 8 / LT-107): a recon-fed scan emits one deterministic `coverage-gap-*` row per `(host, fingerprinted product/version)` that no native detector fired on, no I3 leaf covered, and no tag-matching template was loaded — no LLM
+- [ ] `hackerfive suggest <scan-output>` (Step 8 / LT-108): one stateless frontier call (H5-capped, `--llm-assist`-gated) takes the ledger + findings and prints a structured action list; no auto-apply, no re-scan, nothing written to disk. Rungs 3–5 (promote command, "Apply and Run", closed loop) are LT-109/LT-110, out of scope for this step
 - [ ] Agent-driven false-positive/false-negative rate is measured live against all four lab targets, tracked separately from detector-level rate, with full cost accounting recorded
 - [ ] `authbypass_crapi_test.go`/`authbypass_vapi_test.go` land as reproducible tests against the compose stack, and the crAPI credentialed recon → plan → approve → scan → export round trip is live-verified (moved from Phase 6 Step 5)
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean

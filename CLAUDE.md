@@ -38,6 +38,7 @@ The `/mnt/c` checkout, via `wsl.exe`, can now do the full live-testing loop itse
 - Favor collecting more signal from a target during recon over less, whenever it's read-only and in-scope — a thin recon pass starves every later step of what it could have worked with.
 - Treat everything recon collects as reusable downstream: a detector, template-selection, or reporting step should draw on the full available data set, not just the slice it gathers itself.
 - Actively look for connections across steps/tasks — e.g. correlating a fingerprinted technology with an endpoint discovered separately — since combined signal from multiple sources is usually worth more than any one source alone.
+- When reviewing scan/recon results, actively weigh whether an LLM step would add real value at a point deterministic logic genuinely can't cover — novel template authoring, ambiguous triage, correlating findings across hosts — and propose it when it would. But every such call must carry a spend/attempt cap and a human-approval gate before anything consequential runs ([docs/90-research-hackerbot.md](docs/90-research-hackerbot.md) Decisions 5–6). More LLM at the few genuine gaps, not everywhere.
 
 ## Rules
 
