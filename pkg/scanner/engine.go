@@ -311,17 +311,17 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 				e.emitFinding(f)
 				results = append(results, f)
 			} else {
-				tf := e.runTemplates(tctx, target, nucleiTemplates, nativeTemplates, nucleiExec, nativeExec, tmplConc)
+				tf, dispatched := e.runTemplates(tctx, target, nucleiTemplates, nativeTemplates, nucleiExec, nativeExec, tmplConc)
 				results = append(results, tf...)
 
 				// LT-74/LT-88: the throttle gave up on this target mid-corpus.
 				if reason := e.throttle.tripped(); reason != "" {
-					f := adaptiveAbortFinding(target, reason, len(tf), len(nucleiTemplates)+len(nativeTemplates))
+					f := adaptiveAbortFinding(target, reason, dispatched, len(nucleiTemplates)+len(nativeTemplates))
 					e.emitFinding(f)
 					results = append(results, f)
 				} else if tctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 					// LT-79: the per-target time budget fired (not a whole-scan cancel).
-					f := timeBudgetFinding(target, e.cfg.MaxTargetDuration, len(tf), len(nucleiTemplates)+len(nativeTemplates))
+					f := timeBudgetFinding(target, e.cfg.MaxTargetDuration, dispatched, len(nucleiTemplates)+len(nativeTemplates))
 					e.warnf("warn", "%s", f.Description)
 					e.emitFinding(f)
 					results = append(results, f)
@@ -346,9 +346,15 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 
 // runTemplates fires every loaded template (both formats) against one target
 // with up to conc running concurrently — the doc15 Step 6b inner fan-out on
-// top of Run's cross-target worker pool. It returns every finding produced and
-// also passes each to emitFinding as its batch lands, keeping the old
-// sequential loop's per-batch callback granularity.
+// top of Run's cross-target worker pool. It returns every finding produced
+// (and also passes each to emitFinding as its batch lands, keeping the old
+// sequential loop's per-batch callback granularity) plus the count of
+// templates that actually took a slot and launched — which is what the
+// --max-target-duration / adaptive-abort findings report as "started"
+// (LT-114: they previously reported the finding count, so a budget-truncated
+// run that found nothing always read "roughly 0 of N templates started").
+// Native templates dispatch ahead of nuclei ones; the nuclei slice is
+// expected pre-sorted into dispatch-priority order by loadTemplates.
 //
 // The shared httpclient rate limiter still caps aggregate req/s across every
 // worker here and every other in-flight target job, so conc only removes the
@@ -370,15 +376,16 @@ func (e *Engine) runTemplates(
 	nucleiExec *nuclei.Executor,
 	nativeExec *native.Executor,
 	conc int,
-) []detectors.Finding {
+) ([]detectors.Finding, int) {
 	if conc < 1 {
 		conc = 1
 	}
 	var (
-		mu       sync.Mutex
-		findings []detectors.Finding
-		wg       sync.WaitGroup
-		sem      = make(chan struct{}, conc)
+		mu         sync.Mutex
+		findings   []detectors.Finding
+		wg         sync.WaitGroup
+		sem        = make(chan struct{}, conc)
+		dispatched int // templates that took a slot and launched — the honest "started" count for timeBudgetFinding (LT-114)
 	)
 
 	// acquire takes a concurrency slot, or reports false if ctx ends first
@@ -414,26 +421,39 @@ func (e *Engine) runTemplates(
 		}
 	}
 
-	for _, tmpl := range nucleiTemplates {
-		if !acquire() {
-			break
-		}
-		tmpl := tmpl
-		wg.Add(1)
-		go fire(tmpl.ID, func() ([]detectors.Finding, error) { return nucleiExec.Run(ctx, target, tmpl) })
-	}
+	// Native templates dispatch first: they are HackerFive's own curated,
+	// high-precision set, and are far fewer than the synced nuclei corpus.
+	// Ordered after ~9.5k nuclei templates (as they were), a
+	// --max-target-duration budget or a shared --rate-limit spread thin
+	// across many concurrent targets could exhaust before any of them ran
+	// (LT-114, docs/follow-up.md).
 	for _, tmpl := range nativeTemplates {
 		if !acquire() {
 			break
 		}
 		tmpl := tmpl
+		dispatched++
 		wg.Add(1)
 		go fire(tmpl.ID, func() ([]detectors.Finding, error) {
 			return nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
 		})
 	}
+	// nucleiTemplates arrives from loadTemplates already ordered by dispatch
+	// priority (descending severity, CVEs last within a severity) rather than
+	// the loader's lexical-by-path order, which front-loaded http/cves/** and
+	// left the broadly-applicable misconfiguration/exposure checks for last
+	// (LT-98/LT-114).
+	for _, tmpl := range nucleiTemplates {
+		if !acquire() {
+			break
+		}
+		tmpl := tmpl
+		dispatched++
+		wg.Add(1)
+		go fire(tmpl.ID, func() ([]detectors.Finding, error) { return nucleiExec.Run(ctx, target, tmpl) })
+	}
 	wg.Wait()
-	return findings
+	return findings, dispatched
 }
 
 // loadScope returns e.cfg.Scope if the caller already supplied a pre-parsed
@@ -581,6 +601,13 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		e.warnf("warn", "loaded template(s) tagged %q with --concurrency %d (safe default: %d) — unlike other templates, a prompt-injection request can trigger a real, metered LLM call on the target's backend; consider a lower --concurrency",
 			promptInjectionTag, e.cfg.Concurrency, promptInjectionSafeConcurrency)
 	}
+
+	// LT-98/LT-114: dispatch the highest-value templates first, so a
+	// --max-target-duration budget or a thinly-shared --rate-limit that only
+	// admits part of the corpus does not spend itself on lexically-first
+	// http/cves/** for products the target does not run. One sort here, not
+	// once per target.
+	sortNucleiByDispatchPriority(nucleiTemplates)
 
 	e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
 		len(nucleiTemplates), len(nativeTemplates), len(rejected), filtered)
