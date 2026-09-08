@@ -118,6 +118,43 @@ func TestWalkOpenAPISpec_YAMLNotASpec(t *testing.T) {
 	assert.Nil(t, facts, "a YAML mapping with no swagger/openapi key is not an OpenAPI document")
 }
 
+// TestWalkOpenAPISpec_AuthRequired covers LT-90: a document-level `security`
+// default flows onto every route, an operation-level `security` overrides
+// it, and an explicit `security: []` opts a route back out.
+func TestWalkOpenAPISpec_AuthRequired(t *testing.T) {
+	body := []byte(`{
+	  "openapi": "3.0.1",
+	  "security": [{"bearerAuth": []}],
+	  "paths": {
+	    "/user/dashboard": {"get": {}},
+	    "/auth/login": {"post": {"security": []}},
+	    "/health": {"get": {"security": []}},
+	    "/admin/keys": {"get": {"security": [{"bearerAuth": []}]}}
+	  }
+	}`)
+	facts, _ := walkOpenAPISpec("https://api.example.com/openapi.json", body)
+
+	got := map[string]bool{}
+	for _, f := range facts {
+		got[f.URL] = f.AuthRequired
+	}
+	assert.True(t, got["https://api.example.com/user/dashboard"], "inherits the document-level security default")
+	assert.True(t, got["https://api.example.com/admin/keys"], "operation-level security requires auth")
+	assert.False(t, got["https://api.example.com/auth/login"], "security: [] opts a route out of the doc default")
+	assert.False(t, got["https://api.example.com/health"], "security: [] opts a route out of the doc default")
+}
+
+// TestWalkOpenAPISpec_NoSecurity: a spec with no security anywhere marks
+// nothing auth-required.
+func TestWalkOpenAPISpec_NoSecurity(t *testing.T) {
+	facts, _ := walkOpenAPISpec("https://x/openapi.json",
+		[]byte(`{"openapi":"3.0.0","paths":{"/a":{"get":{}},"/b":{"get":{}}}}`))
+	require.NotEmpty(t, facts)
+	for _, f := range facts {
+		assert.False(t, f.AuthRequired)
+	}
+}
+
 // TestWalkOpenAPISpec_Truncates: a spec with more paths than the cap yields
 // exactly maxSpecEndpoints facts and flags truncation.
 func TestWalkOpenAPISpec_Truncates(t *testing.T) {

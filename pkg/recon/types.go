@@ -80,6 +80,14 @@ type EndpointFact struct {
 	Source      string `json:"source"`
 	Confidence  string `json:"confidence"`
 
+	// AuthRequired is set (LT-90, docs/follow-up.md) only on a Source
+	// "api-spec" fact: the OpenAPI document declares this route needs
+	// authentication (operation-level `security`, else the document
+	// default). The decision engine turns a parameterless auth-required
+	// spec route into an authbypass "should reject me" candidate. Absent /
+	// false on every other fact and on a spec route the doc leaves open.
+	AuthRequired bool `json:"auth_required,omitempty"`
+
 	// RedirectChain / FinalURL are populated (LT-64, docs/follow-up.md) only
 	// when httpx followed a redirect whose final host differs from the
 	// probed host — a cross-host redirect. RedirectChain is one

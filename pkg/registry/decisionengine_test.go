@@ -303,6 +303,24 @@ func TestResolve_BodyGrepSecretTemplate_KeptOnDynamicHost(t *testing.T) {
 		"a body-grep secret template is planned normally against a host serving real content")
 }
 
+// TestResolve_SpecAuthRequiredRoute_ProducesAuthbypassLeaf covers LT-90: a
+// parameterless api-spec route the OpenAPI doc marks auth-required flows
+// through SuggestAuthBypassPathsFromRecon into an authbypass leaf.
+func TestResolve_SpecAuthRequiredRoute_ProducesAuthbypassLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/identity/api/v2/user/dashboard", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+			{URL: "http://api.example.test/identity/api/v2/vehicle/{vehicleId}/location", Method: "GET", Source: "api-spec", AuthRequired: true, Confidence: "low"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "api.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "authbypass" })
+	require.NotNil(t, leaf, "a spec-declared auth-required route must yield an authbypass leaf")
+}
+
 func TestResolve_TemplateTagMatch_CapsLeavesPerTech(t *testing.T) {
 	var index []templatesync.Entry
 	for i := 0; i < maxTemplateLeavesPerTech+10; i++ {

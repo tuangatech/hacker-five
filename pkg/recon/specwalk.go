@@ -100,7 +100,8 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 		Servers  []struct {
 			URL string `json:"url"`
 		} `json:"servers"`
-		Paths map[string]json.RawMessage `json:"paths"`
+		Security []map[string]json.RawMessage `json:"security"` // document-level default auth requirement (LT-90)
+		Paths    map[string]json.RawMessage   `json:"paths"`
 	}
 	if err := json.Unmarshal(jsonBody, &doc); err != nil {
 		return nil, false
@@ -140,12 +141,14 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 	}
 	sort.Strings(rawPaths)
 
+	docRequiresAuth := securityListRequiresAuth(doc.Security)
+
 	seen := map[string]bool{}
 	for _, p := range rawPaths {
 		if !strings.HasPrefix(p, "/") {
 			continue // a relative or server-templated path — skip
 		}
-		method, queryKeys := walkPathItem(doc.Paths[p])
+		method, queryKeys, authRequired := walkPathItem(doc.Paths[p], docRequiresAuth)
 		full := prefix + p
 		if !strings.HasPrefix(full, "/") {
 			full = "/" + full
@@ -168,24 +171,28 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 			break
 		}
 		facts = append(facts, EndpointFact{
-			URL:        full,
-			Method:     method,
-			Source:     "api-spec",
-			Confidence: ConfidenceLow,
+			URL:          full,
+			Method:       method,
+			Source:       "api-spec",
+			Confidence:   ConfidenceLow,
+			AuthRequired: authRequired,
 		})
 	}
 	return facts, truncated
 }
 
-// walkPathItem pulls the representative method and the set of documented
-// query-parameter names out of one path-item object. The method is GET when
+// walkPathItem pulls the representative method, the set of documented
+// query-parameter names, and whether the representative operation requires
+// authentication (LT-90) out of one path-item object. The method is GET when
 // the path documents one, else the first documented operation
 // alphabetically (deterministic); it falls back to GET for a path-item that
-// is all $ref/parameters and no operation.
-func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
+// is all $ref/parameters and no operation. docRequiresAuth is the
+// document-level default, used unless the operation declares its own
+// `security`.
+func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, queryKeys []string, authRequired bool) {
 	var item map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &item); err != nil {
-		return http.MethodGet, nil
+		return http.MethodGet, nil, docRequiresAuth
 	}
 
 	qk := map[string]bool{}
@@ -204,6 +211,7 @@ func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
 		collect(pl) // path-level parameters, shared by every operation
 	}
 
+	ops := map[string]json.RawMessage{}
 	var methods []string
 	for k, v := range item {
 		up := strings.ToUpper(k)
@@ -211,6 +219,7 @@ func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
 			continue
 		}
 		methods = append(methods, up)
+		ops[up] = v
 		var op struct {
 			Parameters json.RawMessage `json:"parameters"`
 		}
@@ -230,8 +239,44 @@ func walkPathItem(raw json.RawMessage) (method string, queryKeys []string) {
 			}
 		}
 	}
+
+	// LT-90: an operation-level `security` overrides the document default;
+	// an explicit `security: []` is a deliberate opt-out and also overrides.
+	authRequired = docRequiresAuth
+	if declared, requires := operationSecurity(ops[method]); declared {
+		authRequired = requires
+	}
+
 	for k := range qk {
 		queryKeys = append(queryKeys, k)
 	}
-	return method, queryKeys
+	return method, queryKeys, authRequired
+}
+
+// operationSecurity reports whether an operation object declares a `security`
+// key at all, and if so whether it mandates auth. `security: []` counts as
+// declared-but-not-required (an explicit opt-out from the doc default).
+func operationSecurity(rawOp json.RawMessage) (declared, requires bool) {
+	if len(rawOp) == 0 {
+		return false, false
+	}
+	var op struct {
+		Security *[]map[string]json.RawMessage `json:"security"`
+	}
+	if json.Unmarshal(rawOp, &op) != nil || op.Security == nil {
+		return false, false
+	}
+	return true, securityListRequiresAuth(*op.Security)
+}
+
+// securityListRequiresAuth reports whether an OpenAPI `security` requirement
+// list actually mandates auth: at least one entry naming at least one
+// scheme. An empty list, or a list of only empty objects, does not.
+func securityListRequiresAuth(list []map[string]json.RawMessage) bool {
+	for _, entry := range list {
+		if len(entry) > 0 {
+			return true
+		}
+	}
+	return false
 }
