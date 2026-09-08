@@ -248,6 +248,29 @@ func TestCrawlEvidenceRefutesWall(t *testing.T) {
 	}
 }
 
+// TestCrawlRoutesRefuteCatchall covers LT-103: a `catchall` verdict must be
+// dropped for a host where katana followed links to ≥2 distinct non-asset
+// routes — a bucket / SPA shell has no such internal links (the model
+// catch-all, linkpop, only ever produced 200s from recon's own fixed-path
+// probe, never a crawl).
+func TestCrawlRoutesRefuteCatchall(t *testing.T) {
+	agg := &aggregator{endpoints: []EndpointFact{
+		// erp.nettix.com.pe — Dolibarr: distinct crawled .php routes
+		{URL: "https://erp.nettix.com.pe/index.php", StatusCode: 200, Source: "katana-crawl"},
+		{URL: "https://erp.nettix.com.pe/viewimage.php", StatusCode: 200, Source: "katana-crawl"},
+		{URL: "https://erp.nettix.com.pe/core/js/lib_head.js.php", StatusCode: 200, Source: "katana-crawl"},
+		{URL: "https://erp.nettix.com.pe/theme/style.css", StatusCode: 200, Source: "katana-crawl"}, // asset — ignored
+		// bucket.example — 200s but all from recon's own fixed-path probe
+		{URL: "https://bucket.example/admin", StatusCode: 200, Source: "wave3-common-path-probe"},
+		{URL: "https://bucket.example/graphql", StatusCode: 200, Source: "wave3-common-path-probe"},
+		// thin.example — one crawled route only
+		{URL: "https://thin.example/login", StatusCode: 200, Source: "katana-crawl"},
+	}}
+	assert.GreaterOrEqual(t, crawlRoutesRefuteCatchall(agg, "erp.nettix.com.pe"), 2, "3 distinct crawled non-asset routes refute a catch-all")
+	assert.Equal(t, 0, crawlRoutesRefuteCatchall(agg, "bucket.example"), "recon's own fixed-path probes are not crawl evidence")
+	assert.Equal(t, 1, crawlRoutesRefuteCatchall(agg, "thin.example"), "one route is not enough to refute")
+}
+
 // TestHostEndpointEvidence_PicksHTTPXRoot covers the LT-72 / LT-86a
 // fallback: recordUniformResponse must be able to find a wave-2 httpx GET
 // of the root to use as its canary when its own probe errored.

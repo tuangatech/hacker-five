@@ -70,8 +70,20 @@ release steps as terminal gates of their phase. Current order:
 2. **Step 3** — JS static analysis + cloud-provider fingerprinting. Directly widens the thin idor/ssrf endpoint surface every live run has complained about; closes P1-5. Minor `resolveTechFact` merge overlap with Step 6 / LT-84.
 3. **Step 5** — affected-version (semver) gating. Removes a concrete false-positive class (LT-7); `staleCVEPenalty` is only a stopgap today. Minor `matchTemplateTags` merge overlap with Phase 7 F3.
 4. **Step 2** — TLS/SSL passive checks. Small, clean, fully independent.
-5. **Step 6 remainder** — bounded content discovery + embedded wordlist (needs a wordlist provenance/licence decision), opt-in headless katana, LT-63.
-6. **Step 10** — eval + `v0.8.0`.
+5. **Step 6 third tranche (6c)** — the two recon-surface items promoted from
+   [follow-up.md](follow-up.md) on 2026-09-08 because each has a measured
+   endpoint-yield gap, not just a hypothetical one:
+   - **LT-99** opt-in headless / JS-rendered katana (`--headless-crawl`). crAPI
+     Step E (2026-09-08): non-headless katana on the React root found 4
+     endpoints / 0 idor candidates vs. 40 routes from the ingested spec — the
+     whole XHR/`fetch` API surface of a SPA is invisible to a link crawl.
+   - **LT-100** first-party hidden-parameter mining (`--param-mining`) — a
+     curated candidate-name list + a multi-signal response-diff oracle over the
+     existing rate-limited `httpclient`. Distinct from the ffuf-tool approach
+     still ruled out below. Its *active* consumption (feeding native injection
+     probes) pairs with [Phase 9](18-implementation-plan-ph9.md) Step 4.
+6. **Step 6 remainder** — bounded content discovery + embedded wordlist (needs a wordlist provenance/licence decision), LT-63.
+7. **Step 10** — eval + `v0.8.0`.
 
 **Tier 3 — [Phase 9](18-implementation-plan-ph9.md) (depth & active; each needs a design pass, several want Tier-2 surface first):**
 7. Phase 9 **Step 1** — OOB blind-RCE verification.
@@ -102,10 +114,17 @@ constraint — whichever lands first, the second rebases onto it.
   dependency rule — not an open-ended XML feature.
 - **Large-wordlist directory/parameter brute-forcing as a default.** Step 6's content
   discovery is a small curated list, opt-in, `--recon-depth full` only, and rides
-  httpx's existing rate limit. A `directory-list-2.3-medium`-scale sweep, or
-  ffuf-style parameter fuzzing as its own traffic-generating tool, stays a separate
-  opt-in-only item — it collides with the DoS/brute-force exclusion nearly every
-  program carries and with the tool's rate-limited, read-only premise.
+  httpx's existing rate limit. A `directory-list-2.3-medium`-scale sweep stays a
+  separate opt-in-only item — it collides with the DoS/brute-force exclusion nearly
+  every program carries and with the tool's rate-limited, read-only premise.
+  **Not** excluded (scheduled as 6c / LT-100): first-party hidden-parameter mining
+  with a *curated* candidate list (hundreds, not tens of thousands), many-per-request
+  chunking, a corroboration-gated diff oracle, and a hard per-host request cap — it
+  is a targeted enumeration bounded like the content-discovery pass, not a
+  traffic-generating fuzzing tool. What stays out is **ffuf-as-a-tool**: a second
+  binary doing generic multi-position `FUZZ` at multi-thousand-request volume, which
+  [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) already found does
+  not reconcile with the shared `--rate-limit` bucket.
 
 ## Dependencies used in this plan
 
@@ -321,7 +340,7 @@ different versions) and confirm they now get *different* template lists.
 
 ---
 
-## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07 — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86
+## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07; third tranche (6c: LT-99, LT-100) scheduled 2026-09-08 — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86, LT-99, LT-100
 
 **🟡 First tranche landed 2026-09-07** (build / `go vet` / `go test -race` / `golangci-lint` all clean):
 
@@ -345,8 +364,55 @@ different versions) and confirm they now get *different* template lists.
 - **LT-93 (Step E) ✅ done 2026-09-08** (demo-blocking; surfaced by the Step E full-pipeline run). Decision-engine leaves carried a **bare hostname** as `Target`; the executor hands that to `scanner.Engine` as the request base, so `idor`/`authbypass`/`ssrf` built `"127.0.0.1/path"` (no scheme/port) and every request failed — the plan→execute path had never actually worked against a real host. `Resolve` now rewrites each dispatchable leaf's `Target` to the observed `scheme://host[:port]` (`reconHostBaseURL`: probed endpoint URL → `result.Target`/`APISpec.URL` → port heuristic → `https://` fallback); structural node IDs stay bare. Detail in [follow-up.md](follow-up.md) § "Step E — crAPI live round 2".
 - **LT-94 (Step E) ✅ done 2026-09-08.** `planexec.RunPlan` relied on the caller to pre-fill `baseCfg.ProtectedPaths`/`SSRFParams` from recon — the MCP `plan` tool does, the webui `executePlan` (Plan Preview → Approve) path does **not**, so its endpoint-driven `authbypass`/`ssrf` leaves were skipped. Symmetric with LT-91: `resolveEndpointFacts` stashes the derived paths/params on the leaf (`PlanNode.ProtectedPaths`/`SSRFParams`, additive), `planexec.applyLeafReconFields` fills a blank config pre-dispatch, and `dropBareCapabilityLeavesSupersededByEndpointDriven` removes the bare tech-capability leaf. Detail in [follow-up.md](follow-up.md) § "Step E".
 - Bounded content-discovery + embedded wordlist (`--content-discovery` — needs a vetted ~4-5k list with documented provenance/licence).
-- The opt-in headless/JS-rendered katana mode.
 - **LT-63** CT-log sibling-API discovery.
+- **LT-99 — opt-in headless / JS-rendered katana (scheduled 2026-09-08 as the
+  6c tranche).** katana's default crawl follows links only, so a SPA's
+  `fetch()`/XHR-built API surface is never seen. **Measured, not hypothetical:**
+  crAPI Step E (2026-09-08, [follow-up.md](follow-up.md) § "Step E") — non-headless
+  katana on crAPI's React web root produced **4 endpoints / 0 idor candidates**;
+  the same target's ingested OpenAPI spec produced 40 routes and 6 real BOLA idor
+  candidates. On a target that does *not* serve a spec (LT-89's fallback case),
+  a headless crawl is the only way to recover that surface. Direction is fixed:
+  katana's own headless mode (`-headless` / `-system-chrome` — Chromium is already
+  installed in the WSL test env, `~/.cache/ms-playwright`), behind an explicit
+  `--headless-crawl` flag, `--recon-depth full` only, with a per-host wall-clock
+  ceiling (the real cost LT-8 names). Output merges into the same Wave 3 endpoint
+  set, deduped like any other source. **Not** a second crawler, and it does **not**
+  relax the `headless:` template-rejection rule (that stays out, per the "Explicitly
+  out of scope" note above). Pairs with Step 3's JS static analysis (a rendered DOM
+  surfaces endpoints a static bundle scan can't). Supersedes LT-8's open tail.
+- **LT-100 — first-party hidden-parameter mining (scheduled 2026-09-08 as the
+  6c tranche).** HackerFive finds parameters only from what recon literally
+  observes (crawled query strings, spec `parameters`, JS-extracted names); a
+  parameter the app honours but never advertises — the classic source of
+  reflected-XSS / LFI / SSRF / IDOR — is never found. No Go-native Arjun
+  equivalent exists, so this is a **first-party addition over the existing
+  rate-limited `httpclient`**, not a new dependency or a second traffic tool:
+  - A **curated candidate-name list**, `go:embed`-ed — start deliberately small
+    (a few hundred high-signal names: `id`, `user`, `file`, `url`, `redirect`,
+    `debug`, `admin`, `callback`, `path`, `template`, `page`, `next`, …), a
+    larger list only via `--param-mining-wordlist <path>` (operator's stated
+    choice). Provenance/licence documented like the content-discovery list.
+  - **Many candidates per request**, with binary-search narrowing once a batch
+    shows an effect — keeps request count logarithmic in list size.
+  - A **corroboration-gated diff oracle**: a candidate is only emitted when ≥2
+    independent signals agree — reflection of the sent token in the body,
+    response status-class change, response-length bucket shift, or the param
+    name echoed in a validation-error body — measured against a per-endpoint
+    control request. This is the <5%-FP discipline; a single weak signal is
+    dropped.
+  - **Opt-in** (`--param-mining`), `--recon-depth full` only, `--scope`-gated,
+    with a **hard per-host request cap** so it can't starve the shared
+    `--rate-limit` bucket (same reconciliation constraint that gates content
+    discovery; interacts with LT-98).
+  - Hits fold into the Wave 3 endpoint set as
+    `EndpointFact{Source: "wave3-param-mining"}` with the discovered param
+    keyless on the URL (`/path?newparam=`), so `resolveEndpointFacts` /
+    `SuggestIDOREndpointCandidates` / `SuggestSSRFParamsFromRecon` pick them up
+    exactly like a documented-but-valueless spec query key (LT-40 path).
+  - Pairs with LT-83 (numeric query-param ID candidates) and LT-96 (body-param
+    SSRF); its *active* consumption — feeding the native `sqli`/`xss`/`lfi`
+    probes — is [Phase 9](18-implementation-plan-ph9.md) Step 4, sequenced after.
 - **LT-40 tail (b)/(c) ✅ done 2026-09-07** (with the Phase 7 Step 6a batch): the spec-probe path set now also covers `/openapi.json`, `/v3/api-docs`, `/v2/api-docs`, `/api-docs`, `/swagger/v1/swagger.json` (`commonPaths`/`specPaths` in crawl.go), and `walkOpenAPISpec` normalises a YAML body to JSON up front (`specBodyToJSON`: `yaml.Unmarshal`→`json.Marshal`) and walks it on the same path as JSON. Both stay under the existing LT-30 canary/content-type gate. GraphQL SDL/introspection (a) — needs a POST introspection query — stays deferred.
 
 ### Design
@@ -383,12 +449,22 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
   - Still `--scope`-gated (only Wave 1's scope-filtered hosts). Hits fold into the Wave 3
     endpoint set as `EndpointFact{Source: "wave3-content-discovery"}`, deduped like any
     other source.
-- **Optional JS-rendered crawl** — katana's own headless mode (`-headless`/`-system-chrome`),
-  behind an explicit opt-in flag, with a per-host timeout ceiling (the real cost LT-8
-  names — headless across many hosts is slow). Off by default; when on, its output
-  merges into the same Wave 3 endpoint set, deduped like any other source. Pairs
-  naturally with Step 3's JS static analysis — a rendered DOM surfaces
-  dynamically-built endpoints a static bundle scan can't.
+- **Optional JS-rendered crawl (LT-99, 6c tranche)** — katana's own headless mode
+  (`-headless`/`-system-chrome`), behind an explicit `--headless-crawl` flag, with a
+  per-host timeout ceiling (the real cost LT-8 names — headless across many hosts is
+  slow). Off by default; when on, its output merges into the same Wave 3 endpoint set,
+  deduped like any other source. Pairs naturally with Step 3's JS static analysis — a
+  rendered DOM surfaces dynamically-built endpoints a static bundle scan can't. The
+  full scheduled write-up, with the crAPI Step E yield measurement (4 vs. 40
+  endpoints), is in the "Still open in this step / LT-99" bullet above.
+- **First-party hidden-parameter mining (LT-100, 6c tranche)** — a curated
+  candidate-name list + a corroboration-gated response-diff oracle over the existing
+  rate-limited `httpclient`, behind `--param-mining`, `--recon-depth full` only, with
+  a hard per-host request cap. Finds parameters the app honours but never advertises
+  (reflected-XSS / LFI / SSRF / IDOR surface). Distinct from ffuf-as-a-tool (still
+  out of scope) — targeted enumeration bounded like content discovery, not generic
+  multi-position fuzzing. Full scheduled write-up in the "Still open in this step /
+  LT-100" bullet above.
 - **Parse a reachable OpenAPI/GraphQL spec into endpoints + parameters**
   ([follow-up.md](follow-up.md) LT-40). `recon.APISpecFact` is "presence only, never
   parsed" (`pkg/recon/types.go`) — on a target where `/swagger.json` is *real* the
@@ -490,7 +566,10 @@ path list, an OpenAPI/GraphQL document is JSON/YAML the stdlib already parses, a
 subfinder already carries a CT-log source; this is flag plumbing, an embedded wordlist,
 a spec walker, a known-CDN-ASN table, a timeout guard, and (LT-76/LT-77) a bounded
 endpoint probe reusing the existing recon HTTP client plus a redirect-parameter rule
-over the `redirect` corpus tag.
+over the `redirect` corpus tag. LT-99's headless crawl is a `runKatana` arg + a
+per-host deadline; LT-100's param mining is a `go:embed`-ed candidate list + a
+diff-oracle loop over the same rate-limited `httpclient` every other recon probe uses —
+neither adds a dependency.
 
 ### Files (anticipated, confirm at implementation time)
 - `pkg/recon/crawl.go` — `runKatana` takes depth + a headless bool + per-host timeout; a new `discoverContentPaths` shelling `httpx -path <wordlist>`, gated on the opt-in flag, folding hits into `agg` as `wave3-content-discovery` endpoints.
@@ -502,9 +581,13 @@ over the `redirect` corpus tag.
 - `pkg/recon/asn.go` (or the existing WHOIS/ASN file) — LT-61's known-CDN-ASN table + the "all resolved addrs in a CDN ASN ⇒ skip/shorten naabu, tag endpoints" gate in the Wave 2 port-scan path.
 - `pkg/recon/passive.go` / `crawl.go` — LT-63's CT-log sibling-API pass (subfinder `crtsh` source, `api.`/`gw.`/`mobile.` labels), scope-checked, `--recon-depth full` only.
 - `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
-- `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs (crawl depth, headless, content-discovery on/off + wordlist override).
-- `cmd/hackerfive/{recon,plan}.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_recon.go` — surface the flags/fields.
-- `tests/unit/crawl_test.go` — depth threaded through to the katana arg list; headless flag gated correctly; `httpx -path` present only when `--content-discovery` is set; a hit becomes a `wave3-content-discovery` `EndpointFact` and reaches `resolveEndpointFacts`.
+- `pkg/recon/crawl.go` — **LT-99**: `runKatana` gains a headless bool + a per-host `context.WithTimeout`; headless katana args (`-headless -no-incognito` / `-system-chrome`) added only when the flag is set; hits fold in as `wave3-headless-crawl` (or merge into the existing katana source), deduped.
+- `pkg/recon/parammine.go` (new) — **LT-100**: the candidate-name diff-oracle pass — many-per-request batching, binary-search narrowing, the ≥2-signal corroboration gate, the per-host request cap; emits `EndpointFact{Source: "wave3-param-mining"}` with the discovered key keyless on the URL.
+- `pkg/recon/wordlists/params.txt` (new, `go:embed`) — the curated default hidden-parameter candidate list (hundreds of high-signal names); header comment records provenance/licence; `--param-mining-wordlist` overrides.
+- `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs (crawl depth, headless, content-discovery on/off + wordlist override, param-mining on/off + wordlist override + request cap).
+- `cmd/hackerfive/{recon,plan}.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_recon.go` — surface the flags/fields (`--headless-crawl`, `--param-mining`, `--param-mining-wordlist`).
+- `tests/unit/crawl_test.go` — depth threaded through to the katana arg list; headless flag gated correctly (LT-99); `httpx -path` present only when `--content-discovery` is set; a hit becomes a `wave3-content-discovery` `EndpointFact` and reaches `resolveEndpointFacts`.
+- `tests/unit/parammine_test.go` (new) — **LT-100**: a fixture endpoint that reflects an undocumented `?debug=` yields exactly one discovered-param `EndpointFact`; one that reflects nothing yields none; a single weak signal (length shift only) is not enough; the per-host request cap is honoured; the discovered param reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`.
 
 ### Verification
 Unit: the katana arg list reflects the configured depth/headless; the httpx arg list
@@ -518,11 +601,20 @@ a recon fixture whose in-scope root 301s cross-host records `final_url` + a
 original target's plan. LT-83: a fixture with `?article=8` / `?article=12` crawled
 yields an `/?article={{id}}` idor candidate, not `/{{id}}`. LT-86: a fixture host that
 serves `/` but times out on `/.well-known/*` keeps its root endpoint in the result.
-Live: a depth-3 + headless run against a JS-heavy owned SPA yields materially more endpoints
-than the depth-2 static run; a `--content-discovery` run against an owned target with a
-known unlinked path (e.g. `/admin`, a dir index) discovers it only with the flag on, and
-the extra endpoints — from all sources — reach the plan tree's idor/authbypass
-candidate lists.
+**LT-99:** the katana arg list carries the headless flags only with `--headless-crawl`
+set, and a per-host deadline is applied; a fixture SPA served via a headless-capable
+stub yields a `fetch()`-built endpoint the non-headless pass misses. **LT-100:** a
+fixture endpoint that reflects an undocumented `?debug=` value yields exactly one
+discovered-param `EndpointFact` reaching `SuggestSSRFParamsFromRecon` /
+`SuggestIDOREndpointCandidates`; one that reflects nothing, or shifts only length,
+yields none; the per-host request cap halts the pass.
+Live: a depth-3 + `--headless-crawl` run against a JS-heavy owned SPA yields
+materially more endpoints than the depth-2 static run (target the crAPI-class gap —
+re-measure the 4-vs-40 number on an owned SPA); a `--content-discovery` run against an
+owned target with a known unlinked path (e.g. `/admin`, a dir index) discovers it only
+with the flag on; a `--param-mining` run against an owned endpoint with a known
+undocumented parameter surfaces it within the request cap; and the extra endpoints —
+from all sources — reach the plan tree's idor/authbypass candidate lists.
 
 ---
 
@@ -752,7 +844,10 @@ template-format, AI-agent-surface, and WAF/injection DoD lines moved to
 - [ ] Cloud-provider exposure facts (`aws`/`s3`/`gcp`) are extracted from headers / URL shapes and dispatch the corpus's cloud-exposure templates (P1-5 closed)
 - [ ] `templates/index.json` carries optional `AffectedRange` data; `matchTemplateTags` drops an out-of-affected-range CVE template when the `TechFact` version is known, and real multi-version Nginx hosts get different template lists (LT-7 closed)
 - [ ] An unversioned WordPress plugin/theme slug gets a `readme.txt`/`style.css` version probe (P1-3 leftover closed)
-- [ ] Crawl depth is configurable (default unchanged); an opt-in JS-rendered crawl merges into the Wave 3 endpoint set with a per-host timeout ceiling; an opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints (LT-8 closed)
+- [x] Crawl depth is configurable (default unchanged) — 2026-09-07, first tranche
+- [ ] **LT-99 (6c):** an opt-in JS-rendered crawl (`--headless-crawl`, `--recon-depth full` only) merges into the Wave 3 endpoint set with a per-host timeout ceiling; on an owned JS-heavy SPA it recovers `fetch()`/XHR-built endpoints the non-headless pass misses (re-measure the crAPI 4-vs-40 gap). Supersedes LT-8's open tail
+- [ ] An opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints
+- [ ] **LT-100 (6c):** an opt-in (`--param-mining`, `--recon-depth full` only) hidden-parameter pass over the rate-limited `httpclient` — curated `go:embed` candidate list, many-per-request batching, ≥2-signal corroboration gate, hard per-host request cap — emits a discovered undocumented parameter as a `wave3-param-mining` `EndpointFact` that reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`; its decoy-set false-positive rate is measured against the <5% target
 - [x] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed) — 2026-09-07, first tranche
 - [x] An endpoint-name → redirect-parameter-probe rule flags a `*/bounce` / OAuth / SSO / logout-shaped path into the `redirect`-tagged corpus check (LT-77 partial, first tranche); a first-party per-param off-origin-`Location` probe is [Phase 9](18-implementation-plan-ph9.md) Step 4
 - [x] Recon records `redirect_chain` / `final_url` and warns when an in-scope root redirects out of scope; a `TechFact`'s observed host is tracked and a cross-host (post-redirect / CDN-not-in-own-headers) fact does not seed the target's plan (LT-64 / LT-65 / LT-84b closed) — 2026-09-07, first tranche

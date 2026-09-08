@@ -23,6 +23,42 @@ func TestClassifyAppSurface(t *testing.T) {
 	assert.Equal(t, "thin", classifyAppSurface(nil, tech, nil).Verdict)
 	assert.Equal(t, "thin", classifyAppSurface(twoXX(2), nil, nil).Verdict)
 	assert.Equal(t, "full", classifyAppSurface(twoXX(9), tech, nil).Verdict)
+
+	// LT-102: a host-scoped uniform-wall verdict must not condemn a
+	// multi-host result where other hosts plainly served real applications.
+	realApp := func(host, title string) EndpointFact {
+		return EndpointFact{URL: "https://" + host + "/", StatusCode: 200, Title: title}
+	}
+	crawledRoute := func(host, path string) EndpointFact {
+		return EndpointFact{URL: "https://" + host + path, StatusCode: 200, Source: "katana-crawl"}
+	}
+	wall := &UniformResponseFact{Host: "erp.nettix.com.pe", Kind: "catchall"}
+
+	// Only the walled host has any content → still "none".
+	assert.Equal(t, "none", classifyAppSurface(
+		[]EndpointFact{realApp("erp.nettix.com.pe", "Login")}, nil, wall).Verdict)
+
+	// Two other hosts served real, titled applications → not blind; "thin".
+	got := classifyAppSurface([]EndpointFact{
+		realApp("www.nettix.com.pe", "Bienvenido a Nettix Perú |"),
+		realApp("cloud01.nettix.com.pe", "Login – Nextcloud"),
+	}, nil, wall)
+	assert.Equal(t, "thin", got.Verdict)
+	assert.Contains(t, got.Reason, "catchall wall on erp.nettix.com.pe")
+
+	// Four+ real-app hosts alongside the wall → "full".
+	assert.Equal(t, "full", classifyAppSurface([]EndpointFact{
+		realApp("www.nettix.com.pe", "Bienvenido a Nettix Perú |"),
+		realApp("soporte.nettix.com.pe", "Soporte Nettix"),
+		realApp("cloud01.nettix.com.pe", "Login – Nextcloud"),
+		realApp("cloud02.nettix.com.pe", "Login – Nextcloud"),
+		crawledRoute("wiki.nettix.com.pe", "/doku.php"),
+	}, nil, wall).Verdict)
+
+	// A generic server landing page / auth interstitial is not a "real app".
+	assert.False(t, endpointShowsRealApp(realApp("pe01.nettix.com.pe", "Welcome to nginx!")))
+	assert.False(t, endpointShowsRealApp(EndpointFact{URL: "https://x/", StatusCode: 200, Title: "401 Authorization Required"}))
+	assert.True(t, endpointShowsRealApp(crawledRoute("ixn.nettix.com.pe", "/viewimage.php")))
 }
 
 func TestAddTech_SameNameAndHost_MergesInsteadOfDuplicating(t *testing.T) {

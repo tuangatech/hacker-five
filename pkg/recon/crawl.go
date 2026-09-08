@@ -531,6 +531,12 @@ func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base
 		agg.addWarning("wave3: %s: a uniform-wall signal (%s) was suppressed — recon already mapped %d distinct endpoints across %d routed status codes on this host, which contradicts it (LT-82)", host, verdict, distinct, countRoutedStatuses(statuses))
 		return
 	}
+	if verdict == uniformwall.VerdictCatchall {
+		if n := crawlRoutesRefuteCatchall(agg, host); n >= 2 {
+			agg.addWarning("wave3: %s: a catch-all signal was suppressed — katana crawled %d distinct non-asset route(s) linked from this host's own pages, so it serves real interlinked content, not one generic page for every path (LT-103)", host, n)
+			return
+		}
+	}
 	effCanaryStatus := canary.status
 	if !canary.fetched && httpxRoot != nil {
 		effCanaryStatus = httpxRoot.StatusCode
@@ -627,6 +633,43 @@ func crawlEvidenceRefutesWall(distinct int, statuses map[int]bool) bool {
 		}
 	}
 	return has2xx && has404
+}
+
+// crawlRoutesRefuteCatchall counts the distinct non-asset routes katana
+// actually extracted-and-followed on host (Source containing "katana",
+// status 2xx/3xx, path below root and not a static asset). Two or more is
+// evidence the host serves real, interlinked application content — a
+// storage bucket or an SPA shell has no internal links to distinct
+// server-side routes for a crawler to discover, so it stays clear of the
+// model catch-all case (linkpop's bucket, whose 200s all came from recon's
+// own fixed-path probe, never from a crawl). Applied only to the `catchall`
+// verdict (LT-103) — a real WAF/auth wall (`waf-block`) can still front a
+// crawlable app, and that verdict is left to stand.
+func crawlRoutesRefuteCatchall(agg *aggregator, host string) int {
+	host = NormalizeHost(host)
+	seen := map[string]bool{}
+	for i := range agg.endpoints {
+		ep := &agg.endpoints[i]
+		if !strings.Contains(ep.Source, "katana") {
+			continue
+		}
+		if NormalizeHost(hostOnly(ep.URL)) != host {
+			continue
+		}
+		if ep.StatusCode != 0 && (ep.StatusCode < 200 || ep.StatusCode >= 400) {
+			continue
+		}
+		u, err := url.Parse(ep.URL)
+		if err != nil {
+			continue
+		}
+		p := u.Path
+		if p == "" || p == "/" || IsStaticAssetPath(p) {
+			continue
+		}
+		seen[p] = true
+	}
+	return len(seen)
 }
 
 // fetchRootObservation GETs base+"/" once for recordUniformResponse's
