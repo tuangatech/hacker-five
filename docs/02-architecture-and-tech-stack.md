@@ -2,7 +2,7 @@
 
 > Part of the [HackerFive documentation set](../README.md).
 
-## Design Principles in @02 Design Principles
+## Design Principles
 
 The hybrid direction the project commits to, stated once here rather than left implicit across doc90/doc14/doc15.
 
@@ -10,6 +10,10 @@ The hybrid direction the project commits to, stated once here rather than left i
 2. **LLM calls are stateless, per-`PlanTree`-leaf, tiered by model class — never a persistent agent.** A small local model handles cheap/frequent judgment; a frontier model via OpenRouter handles the rare expensive case (principally drafting a new template). Each call is one schema-in/schema-out function — no chat history, no long-lived agent process. This also bounds what leaves the machine: only the rare frontier call talks to a third party.
 3. **Reuse published designs from comparable open-source tools before inventing one.** HexStrike AI, Cyber-AutoAgent, and Strix were read as source for fingerprinting, decision-table, and skill patterns (doc90 Group I). Prior art is adapted, not re-derived — but still goes through this project's own scrutiny.
 4. **A capability is described once, in one registry entry — never re-explained per consumer.** The same entry that documents a detector/tool/template for a human in doc01 is the entry `tools.search`/`templates.search` serves to an LLM.
+5. **A later pass can only ever weaken a plan, never strengthen it.** The LLM fallback, the plausibility veto (`StatusVetoed`), and the cost/attempt escalation (`StatusEscalated`) may demote a leaf's confidence, drop it, or stop working it — none can add a leaf, raise a `Confidence`, or touch a detector-set `Finding` field. A confidently-wrong deterministic leaf gets caught, not amplified.
+6. **Recon signal is trust-tiered by how it was observed, not just what it says.** A fact seen on the target's own response outranks one seen past a cross-host redirect (withheld), a CDN brand absent from the host's own headers (dropped), or a total block wall (recorded, corpus short-circuited). Every fact carries where it came from; the decision engine weights it accordingly.
+7. **Every recon fact is reusable by every later step.** Recon collects broadly while it's read-only and in scope; the decision engine, template selection, and reporting all draw on the whole `ReconResult`, and cross-source combinations (a fingerprinted tech × a separately-found endpoint, a walked API spec → idor candidates) are worth more than any single fact.
+8. **Effort per target and per leaf is bounded; "still grinding, no new confidence" is a stop signal, not a reason to spend more.** Adaptive rate-halving on sustained 429/5xx, a per-target time budget, and a per-leaf attempt/spend ceiling each abort-and-escalate. Redundant round trips are cached away — the shared rate limiter stays the only throttle, concurrency is never widened to go faster.
 
 ## Technology Stack
 
@@ -254,10 +258,10 @@ Deferred until a trigger condition occurs, not on a fixed date.
 
 ## See also
 - [01-overview-and-strategy.md](01-overview-and-strategy.md) — the detectors this architecture supports (Capabilities at a Glance)
-- [03-development-roadmap.md](03-development-roadmap.md) — build order, Phases 1-8
+- [03-development-roadmap.md](03-development-roadmap.md) — build order, Phases 1-9
 - [12-implementation-plan-ph3.md](12-implementation-plan-ph3.md) — full Web UI and template-sync design
 - [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — recon / fingerprint / decision engine / `PlanTree` foundations (built)
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) / [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — MCP server, approval gate, `pkg/planexec`, hardening
-- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — detector/protocol coverage expansion (TCP, TLS, JS static analysis, OOB-RCE, semver gating)
+- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) / [18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) — detection-coverage expansion: breadth/precision (TCP, TLS, JS static analysis, semver gating) then depth/active (OOB-RCE, template-format gaps, AI-agent surface, WAF + injection detectors)
 - [90-research-hackerbot.md](90-research-hackerbot.md), [91-research-recon-phase.md](91-research-recon-phase.md) — the research behind the agent-integration design
 - [follow-up.md](follow-up.md) — the open backlog, including the decision-engine precision work and template-engine gaps referenced above
