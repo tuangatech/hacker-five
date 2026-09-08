@@ -687,7 +687,118 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   A wrong core version poisons any affected-version CVE gating (P0-1b / LT-7 /
   Phase 8 Step 5) — it must be shape-validated / sourced from
   `/wp-includes/version.php`-adjacent signals, not an httpx `-tech-detect`
-  guess. **→ recon fingerprint correctness.**
+  guess. **→ recon fingerprint correctness.** Re-confirmed live in the
+  2026-09-08 baseline run (below).
+
+### Baseline run 2026-09-08 (pre-implementation, apex-seeded) — engine multi-host findings
+
+Ran the current `main` (`10a1ddb`, PR #3 merged: LT-97 + Step 3/4/5 native
+checks) against `nettix.com.pe` end-to-end, before any new implementation, to
+establish what the tool produces today. **Result: the native product checks —
+the entire value-add of PR #2/#3 — do not fire against the live Dolibarr hosts,
+and the demo's headline finding (Dolibarr 23.0.3 outdated + CVEs on two
+internet-facing ERP hosts) is silently missed.** Four distinct defects, each
+demo-blocking on its own:
+
+- **LT-111 — `recon` wave time cap is a hard-coded 60 s const with no flag or
+  env override (`pkg/recon/recon.go:378 const waveTimeout = 60 * time.Second`);
+  it non-deterministically starves subdomain enumeration.** Apex-seeded
+  `recon -t https://nettix.com.pe --scope … --recon-depth full` returned **3
+  host rows** (www + apex). stderr: `wave1: subfinder: hit the 1m0s wave time
+  cap — results may be partial` and the same for `wave3: katana`. A hand-run
+  `subfinder -d nettix.com.pe` returns **40 names in ~44 s** — right at the cap,
+  so one run yields the 24-host surface the 2026-09-08 table above enumerates
+  and the next yields 3. Every downstream step then runs against 2 hosts.
+  `app_surface` came back `thin` ("2 endpoint(s) served real content") purely
+  because of the collapse. This is LT-38's deferred "scale `waveTimeout` by
+  host count" **plus** a plain operator override: a single-domain subfinder
+  seed with no host fan-out still loses the race, so auto-scaling alone won't
+  fix it. **Fix:** a `--wave-timeout` flag + `HACKERFIVE_RECON_WAVE_TIMEOUT`
+  env (default stays 60 s), and/or scale by in-scope host count as LT-38
+  sketched. **→ recon completeness; demo-blocking (demo target is nettix).**
+- **LT-112 — subfinder emits FTP-banner-prefixed hostnames (`220-sinchi01.nettix.com.pe`),
+  and one malformed line silently voids the entire httpx batch.** The hand-run
+  subfinder list contained `220-sinchi01.nettix.com.pe` / `220-sinchi03.nettix.com.pe`
+  — `220-` is an FTP multiline-greeting continuation prefix a subfinder source
+  leaked into the name and subfinder didn't sanitize. Feeding that list to
+  `httpx -l` produced **zero output** (exit 0, no error); removing the two bad
+  lines → 22 live hosts. Recon's own Wave-2 httpx invocation takes the same
+  file. **Fix:** (a) validate/strip host lines against a hostname charset before
+  use (drop or repair, don't pass through); (b) httpx-wave wrapper must not
+  treat "0 results" as success when the input had N lines and some were
+  rejected — log the rejects. **→ recon robustness; contributes to LT-111's
+  collapse.**
+- **LT-113 — the `misconfig` check loop forfeits every remaining check when the
+  host-error breaker trips, and the always-on product-fingerprint checks are
+  ordered last, so they are the first casualties.** `Detector.Run`
+  (`pkg/detectors/misconfig/detector.go:216-228`): the loop is
+  `for _, check := range checks { if d.hostErrors.ShouldSkip(host) { break }; fs, err := check(...); if err != nil { return findings, err } … }`.
+  `checkExposedPaths` / `checkDirListing` / `checkDisallowedMethods` (PUT/DELETE/PATCH
+  + a comparison GET each) / `checkDefaultCreds` run **before** `checkWPUserEnum`
+  (9th), `checkDolibarrOutdated` (10th), `checkNextcloudStatus` (11th),
+  `checkPhpMyAdmin` (12th), `checkWebmin` (13th). On `erp`/`ixn`
+  (nginx + Dolibarr 23.0.3, `<meta name="author" content="Dolibarr Development Team">`
+  + `<title>Login @ 23.0.3</title>` both confirmed by curl, root in 0.4 s) the
+  unusual-verb / default-cred bursts stall or feed 5 consecutive errors to
+  `hosterrors` (`DefaultThreshold = 5`), `ShouldSkip` trips, the loop `break`s,
+  and the Dolibarr/Nextcloud/phpMyAdmin/Webmin checks never run. **Reproduced
+  three ways:** the 8-host corpus scan (erp: 0 findings, ixn: generic headers
+  only); a native-only 6-host scan (`--tags __none__`, erp: 0, ixn: comment-leak
+  only); and **erp alone, native-only, `--rate-limit 20`, no contention → still
+  only 3 findings (comment-leak + 2 missing-header), nothing past check 4.**
+  `cloud02` (302 root, clean verb responses) is the only Dolibarr/Nextcloud-class
+  host that reached its product check — `misconfig-nextcloud-status-disclosure`
+  + `misconfig-nextcloud-outdated` (28.0.5, 4 CVEs) fired there and `cloud01`
+  (identical, 302 root) got 0. **This directly contradicts LT-97's "native
+  checks are immune to LT-98 corpus starvation" premise** — they share the
+  slice and the breaker. **Fix:** (1) run the cheap single-request product
+  checks *first*, before the multi-request `checkExposedPaths` /
+  `checkDirListing` / `checkDisallowedMethods` / `checkDefaultCreds`; (2) a
+  breaker `break` (or a check returning `err`) should not permanently forfeit
+  the 1-request always-on product checks — either exempt them or `continue`
+  past a check error instead of `return findings, err`; (3) the shared
+  root-response cache already logged under Step 5's follow-up removes most of
+  the pre-product request volume that trips the breaker. **→ detector
+  correctness; #1 demo-blocker.**
+- **LT-114 — a multi-target corpus scan dispatches ~0 templates per host inside
+  any sane per-target budget.** The 8-host `--detector misconfig` scan loaded
+  3745 templates then reported, for **every** target,
+  `stopped dispatching templates … after the --max-target-duration budget of
+  8m0s (roughly 0–3 of 3745 templates started)`. One useful corpus template
+  fired across all 8 hosts (`CVE-2023-5561`, WP user-enum, on `soporte`).
+  `--rate-limit 10` (default) shared across 8 concurrent targets ≈ 1.25 req/s
+  each, and `filepath.WalkDir` order puts `http/cves/**` first so the 0–3 that
+  do start are the least useful. This is LT-98 (dispatch order + the
+  `templates_started` counter still printing a findings count — evidence:
+  `templates_started = 2` in the `scan-partial-time-budget` evidence while
+  other hosts logged "roughly 3") and LT-106 (shared rate bucket, no per-target
+  share) combined, and it is **much worse in practice than "reaches a random
+  slice"** — against these hosts the corpus contributes essentially nothing, so
+  the run rests entirely on the native checks that LT-113 is also breaking.
+  **→ scan-engine throughput; demo-blocking for any >2-host scan. Raises the
+  priority of LT-98 (do-now half) and LT-106 (design half).**
+
+**Baseline finding inventory (what the tool actually produced, 8-host corpus
+run, 20 findings post-dedup):** `www.nettix.com.pe` — `misconfig-wordpress-user-enumeration`
+(✅ `checkWPUserEnum`; users `arodriguez`/`admin`/`mandrade`), `misconfig-exposed-path-admin`
+(medium; `/admin` is actually a 302 to wp-login — borderline), 2× missing-header,
+1× missing referrer-policy. `soporte.nettix.com.pe` — `nuclei-CVE-2023-5561`
+(WP user-enum via `?search=@`, the one corpus template that landed).
+`cloud02.nettix.com.pe` — `misconfig-nextcloud-status-disclosure` +
+`misconfig-nextcloud-outdated` (✅ `checkNextcloudStatus`; 28.0.5;
+CVE-2025-47791 + 3×CVE-2024-525xx), `.well-known/security.txt`. `ixn.nettix.com.pe`
+— comment-leak + 2× missing-header + 5× nuclei missing-security-headers +
+`scan-partial-time-budget`. `wiki.nettix.com.pe` (DokuWiki) —
+`misconfig-exposed-path-swagger-ui.html` **(FALSE POSITIVE** — `/swagger-ui.html`,
+`/this-path-does-not-exist-12345` and `/zzz.html` all return 200; DokuWiki
+catch-all, the scan-side face of **LT-104**; the native-only re-run instead
+produced `misconfig-exposed-path-debug` on the same host — the FP path is
+whichever `ExposedPaths` probe the catch-all happens to answer). `erp.nettix.com.pe`,
+`cloud01.nettix.com.pe`, `gateway.nettix.com.pe` — **0 findings each** (LT-113).
+**Missed vs. the hand-verified table above:** Dolibarr 23.0.3 outdated on
+`erp` + `ixn` (finding B — LT-113), Webmin on `gateway:10000` (recon never
+surfaced the port as a scan target — the target list was `:443`, a 301),
+phpMyAdmin on `chasqui03` (host never discovered — LT-111).
 
 ### Capability-gap review (2026-09-08, demo-prep) — recon depth / param surface
 
