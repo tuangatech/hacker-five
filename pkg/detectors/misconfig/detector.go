@@ -6,6 +6,7 @@
 package misconfig
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -206,6 +207,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		d.checkCORS,
 		d.checkVerboseErrors,
 		d.checkDefaultCreds,
+		d.checkWPUserEnum,
 	}
 	for _, check := range checks {
 		if ctx.Err() != nil {
@@ -592,6 +594,68 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 	return findings, nil
 }
 
+var wpUserSlugRe = regexp.MustCompile(`"slug"\s*:\s*"([^"]{1,80})"`)
+
+// checkWPUserEnum flags an unauthenticated WordPress REST user listing at
+// WPUserEnumPath. A finding requires all of: HTTP 200, a JSON content type,
+// a body that is a non-empty JSON array, and every wpUserObjectMarkers key
+// present — the combination that distinguishes a real user array from
+// WordPress's hardened "rest_user_cannot_view" response (which is also 200
+// JSON on some setups but is an object without "slug"). The disclosed slugs
+// are valid login names; see WPUserEnumPath's doc comment.
+func (d *Detector) checkWPUserEnum(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, WPUserEnumPath, authToken, nil, nil)
+	if err != nil {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil // 401/403 (locked down), 404 (not WordPress), 5xx — no listing
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/json") {
+		return nil, nil
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) < 3 || trimmed[0] != '[' {
+		return nil, nil // not a JSON array ("[]" is len 2 and also excluded)
+	}
+	if !containsAll(body, wpUserObjectMarkers) {
+		return nil, nil
+	}
+	if d.looksLikeBaselinePage(resp.StatusCode, body, WPUserEnumPath) {
+		return nil, nil
+	}
+
+	var slugs []string
+	seen := map[string]bool{}
+	for _, m := range wpUserSlugRe.FindAllSubmatch(body, -1) {
+		s := string(m[1])
+		if !seen[s] {
+			seen[s] = true
+			slugs = append(slugs, s)
+		}
+	}
+
+	desc := fmt.Sprintf("the WordPress REST API at %s returns the site's user list without authentication, disclosing valid login names usable for credential stuffing or password spraying against wp-login.php", WPUserEnumPath)
+	if len(slugs) > 0 {
+		desc = fmt.Sprintf("%s (%d account(s): %s)", desc, len(slugs), strings.Join(slugs, ", "))
+	}
+	return []detectors.Finding{{
+		ID:          "misconfig-wordpress-user-enumeration",
+		Type:        "misconfig",
+		Severity:    "medium",
+		Confidence:  "high",
+		Target:      req.URL.String(),
+		Description: desc,
+		Evidence: map[string]string{
+			"path":      WPUserEnumPath,
+			"status":    fmt.Sprintf("%d", resp.StatusCode),
+			"usernames": strings.Join(slugs, ", "),
+			"request":   detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+			"response":  detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+		},
+	}}, nil
+}
+
 // baselineCredUsername/Password are a definitely-wrong credential pair sent
 // once per unique LoginPath before any real DefaultCreds pair — see
 // loginProbeResult/loginSucceeded's doc comments for why: a bare Set-Cookie
@@ -867,6 +931,19 @@ func containsAny(body []byte, keywords []string) bool {
 		}
 	}
 	return false
+}
+
+// containsAll is containsAny's AND counterpart — every keyword must appear.
+// Used by checkWPUserEnum, whose matcher needs all of "id"/"slug"/"name"
+// present to tell a real user array from WordPress's hardened response.
+func containsAll(body []byte, keywords []string) bool {
+	s := string(body)
+	for _, kw := range keywords {
+		if !strings.Contains(s, kw) {
+			return false
+		}
+	}
+	return true
 }
 
 // containsAnyFold is containsAny's case-insensitive counterpart — needed for

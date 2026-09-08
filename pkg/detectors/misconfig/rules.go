@@ -66,6 +66,25 @@ var ExposedPaths = []PathRule{
 	{Path: "/.htpasswd", Keywords: []string{"$apr1$", "{SHA}", "$2y$", "$2a$", "$2b$"}, Severity: "high"},
 }
 
+// WPUserEnumPath is WordPress's REST route that lists every user who has
+// authored a post of a publicly-visible type. WordPress >= 4.7.1 limits the
+// listing to post types that opted into the REST API, but a default install
+// still serves the full author list unauthenticated — and each entry's
+// "slug" is that account's wp-login.php username, i.e. a ready-made target
+// list for credential stuffing / password spraying (CWE-200). checkWPUserEnum
+// probes it directly rather than leaving it to the nuclei wp-user-enum
+// template, which a tag-scoped corpus run can skip under the per-target time
+// budget (docs/follow-up.md).
+const WPUserEnumPath = "/wp-json/wp/v2/users/"
+
+// wpUserObjectMarkers are the JSON keys every element of a real
+// /wp-json/wp/v2/users/ array carries. All must be present (AND) — the
+// hardened response WordPress returns when the endpoint is locked down
+// ({"code":"rest_user_cannot_view",...,"data":{"status":401}}) is still a
+// 200 JSON body on some setups but has no "slug", so requiring "slug" keeps
+// that secure response from matching.
+var wpUserObjectMarkers = []string{`"id":`, `"slug":`, `"name":`}
+
 // DirListingPaths are common subpaths worth a directory-listing probe,
 // beyond just target root ("" is included so misconfig.Detector finds a
 // root listing on its own, without depending on

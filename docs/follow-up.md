@@ -4,7 +4,7 @@
 
 Open enhancement items and unresolved review findings, organized by category rather than by when they were raised. Direction: HackerFive is expanding beyond HackerOne-program scanning, so categories here stay useful for detection/reporting work generally. Narrative-style research and decision write-ups live in [discussions.md](discussions.md); this doc is the open-items backlog.
 
-**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-88 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
+**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-88 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
 
 ## Near-term batch — "do now" (raised across the 2026-09-07 linkpop / shop.app / ALSCO runs)
 
@@ -338,6 +338,79 @@ The whole loop, no manual per-leaf `scan`: `recon --openapi-spec` → `registry.
 - **LT-94 ✅ done 2026-09-08 (Step E).** `planexec.RunPlan` is not self-sufficient: it relies on the **caller** to have pre-filled `baseCfg.ProtectedPaths`/`SSRFParams` from recon. The MCP `plan` tool does (`resolveFieldSuggestions`); the **webui `executePlan` (Plan Preview → Approve)** path does **not** — it hands `job.ExecConfig()` straight to `RunPlan` — so its endpoint-driven `authbypass`/`ssrf` leaves were skipped for a "missing" field recon had already derived. Fix, symmetric with LT-91's idor field: `resolveEndpointFacts` stashes the derived paths/params on the leaf (`PlanNode.ProtectedPaths` / `PlanNode.SSRFParams`, additive/omitempty); `planexec`'s new `applyLeafReconFields` fills any blank `cfg` field from them just before dispatch (an explicit flag / baseCfg auto-fill / C7a seed still win). The endpoint-driven leaf now gets a distinct dedup key so it doesn't collapse into the bare tech-capability `authbypass` leaf, which `dropBareCapabilityLeavesSupersededByEndpointDriven` then removes. Verified: with `baseCfg` empty, the pipeline still produced all 8 alg:none criticals + BOLA. Known minor gap: `LoginPaths`/`LogoutPaths` (optional, detector has defaults) aren't carried on the leaf, so a bare-`baseCfg` run misses the login-path rate-limit signal — the MCP path still gets it. `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`. Tests: `TestResolve_EndpointDrivenAuthbypassLeaf_CarriesProtectedPaths`, `TestRunPlan_LeafProtectedPaths_RunsWithoutBaseCfgPreFill`. **→ Phase 8 Step 6; demo prep.**
 - **LT-95 — idor enumeration is int-only + query-param `{{id}}` needs a concrete seed.** `idor.SequentialIntStrategy` walks ints 1..100, so a UUID-keyed BOLA (crAPI's `/identity/api/v2/vehicle/{vehicleId}/location`) is unreachable, and a spec route whose id is an empty query param (`/workshop/api/mechanic/mechanic_report?report_id=`) never becomes a candidate. Options: a UUID/ULID strategy seeded from a value recon or the owner token observed; templating a documented-but-valueless query param as `?k={{id}}`; a "collect an id from the owner account first" step (the C7a seed hook already exists for finding→leaf). **→ Phase 8 Step 6 / detector backlog.**
 - **LT-96 — SSRF candidate detection is query-param-name only.** `SuggestSSRFParamsFromRecon` scans query-string keys against a URL-ish name list; crAPI's real SSRF (`/workshop/api/merchant/contact_mechanic`) takes the attacker URL in a **JSON body field** (`mechanic_api` / `repair_url`). Walk `requestBody` schema property names in `walkOpenAPISpec` and feed body-param candidates the same way; the `ssrf` detector would then need a body-injection mode alongside its query-param mode. **→ Phase 8 Step 6 / detector backlog.**
+
+## Live Testing — nettix.com.pe demo-prep (2026-09-08)
+
+Active recon + focused `misconfig` pass over the four owned demo domains
+(`*.andertone.com`, `*.aalberts.com`, `*.nettix.com.pe`, `*.aceautowreckers.com`;
+`.engagements/owned-sites/scope.txt` is the authorization) to pick the
+2026-09-10 Web-UI demo target and lock in ≥1 actionable finding.
+`nettix.com.pe` chosen — 24 hosts / 25 endpoints / 67 tech facts,
+`app_surface: full`, mostly un-CDN'd. `andertone.com`/`aalberts.com` thin
+(CDN + SSO), `aceautowreckers.com` fully Cloudflare-walled (every host 403).
+
+**Confirmed actionable finding (demo spine):** `www.nettix.com.pe` serves the
+full WordPress author list unauthenticated at `/wp-json/wp/v2/users/` — 200 +
+`application/json`, `X-Wp-Total: 3`, slugs `arodriguez` / **`admin`** /
+`mandrade` (the slug is the `wp-login.php` login name; `admin` still active).
+CWE-200, feeds credential stuffing / password spraying.
+
+Secondary (human version→CVE correlation): `erp.nettix.com.pe` +
+`ixn.nettix.com.pe` expose a **Dolibarr ERP/CRM 23.0.3** login to the
+internet, version leaked in page source (`?version=23.0.3` on every asset,
+`<meta name="author" content="Dolibarr Development Team">`). 23.0.3 is behind
+23.0.4+ and affected by CVE-2026-85401 (critical, Legacy File Manager access
+control, public exploit), CVE-2026-19350 (TakePOS auth bypass), and the
+dol_eval RCE family. HackerFive produces `dolibarr-panel` + version extraction
++ missing CSP/HSTS; installer is correctly locked (`install.lock`),
+`/documents/` not traversable — no FP. Ruled out: `wiki.nettix.com.pe`
+DokuWiki is current (`2026-07-14c "Mort"`); `soporte.nettix.com.pe` throwing
+502s.
+
+- **LT-97 ✅ done 2026-09-08.** The `misconfig` detector had no first-party
+  WordPress REST user-enumeration check — it was reachable only via the
+  nuclei `wp-user-enum` template, which a real-target corpus run reliably
+  **fails to reach**: against 5–10 live nettix hosts at `--rate-limit`
+  10–25, the shared limiter + `--max-target-duration` cap let the engine
+  dispatch "roughly 0–1 of 5343" templates per host in 6–8 min, so
+  `http/vulnerabilities/wordpress/wp-user-enum.yaml` never fired even with
+  `wordpress` in the tag scope. Fix: new `misconfig.checkWPUserEnum` (always
+  runs in the native pass, immune to the corpus starvation) — GET
+  `/wp-json/wp/v2/users/`, finding requires **all of** 200 + JSON
+  content-type + non-empty JSON array + `"id"`/`"slug"`/`"name"` all present
+  (the AND on `"slug"` rejects WordPress's hardened
+  `{"code":"rest_user_cannot_view",...}` response, which is 200 JSON but has
+  no slug) + not a `looksLikeBaselinePage` echo; emits
+  `misconfig-wordpress-user-enumeration` (medium/high) with the disclosed
+  slugs in `Evidence["usernames"]`. `pkg/detectors/misconfig/{rules,detector}.go`
+  (`WPUserEnumPath`, `wpUserObjectMarkers`, `containsAll`, `wpUserSlugRe`).
+  Tests: `TestMisconfigWPUserEnum_{Hit,LockedDown_NoFinding,401_NoFinding,EmptyArray_NoFinding,HTMLNotJSON_NoFinding}`.
+  Verified live: native-only scan (`--templates <empty>`) of
+  `www.nettix.com.pe` produces it in 15 s. **→ demo prep; broadens misconfig
+  coverage per CLAUDE.md detection philosophy.**
+- **LT-98 — the tag-scoped corpus scan is too slow to rely on against a
+  real multi-host target.** Root of LT-97's workaround. Two compounding
+  causes: (a) template **load** of the ~9.6k-file synced corpus is minutes
+  of wall-clock before the first request (a bare `scan … --tags wp,wordpress`
+  against a non-resolving host had not printed the "loaded N templates" line
+  after 3 min); (b) at dispatch, one shared `--rate-limit` token bucket is
+  split across every in-flight target, and broad tags barely narrow the
+  loaded set — `--recon-file` auto-adds `wordpress`/`nginx`/`php`, and even
+  a hand-picked `--tags wp,wordpress` still loads 1656 templates,
+  `--tags dolibarr,panel` 1592 (the `panel` tag alone is ~1.5k) — so
+  per-target coverage in the `--max-target-duration` window
+  is a tiny fraction of the corpus, effectively random in which templates it
+  reaches (file-iteration order puts `http/cves/**` first, `http/vulnerabilities/**`
+  last). Also: the `scan-partial-time-budget` message's "roughly N of 5343
+  templates started" prints `len(tf)` — the **findings** count, not templates
+  started — so it always reads 0–2 and understates coverage
+  (`pkg/scanner/budget.go` / `engine.go` `runTemplates` returns findings, not
+  a dispatch counter). Directions: cache the parsed corpus across runs (or a
+  fast on-disk index keyed by tag); give each target its own rate-limit
+  share, or scan one target at a time when the corpus is large; iterate
+  detection/`vulnerabilities` templates before the CVE bulk; fix the counter
+  to report real dispatch progress. **→ Scan-Engine Request Efficiency /
+  Phase 9 detector-perf backlog; not demo-blocking (LT-97 sidesteps it).**
 
 ## Scan-Engine Request Efficiency
 
