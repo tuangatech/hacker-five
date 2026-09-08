@@ -689,6 +689,22 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   `UniformResponse.Kind == "catchall"`, drop that host's
   `wave3-common-path-probe` endpoints unless the body hash differs across ≥2
   probed paths.
+  **Scan-side face resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):**
+  the same catch-all also produced a false `misconfig-exposed-path-swagger-ui.html`
+  in the baseline run. `misconfig.Detector` now probes a **second** unrelated
+  guaranteed-nonexistent path (`detectCatchAll`) and, when both canaries come
+  back 2xx with the same template shape, sets `baselineCatchAll`, emits one
+  `misconfig-soft-404-catchall` (info) note, and suppresses exposed-path /
+  dir-listing / verbose-error findings whose body is within an
+  adaptive-to-the-two-canaries' own per-path variance of that template
+  (`looksLikeCatchAllServed`). A genuinely distinct/larger resource on the
+  same host still surfaces. The single-canary `looksLikeBaselinePage` missed
+  this because DokuWiki renders the requested page name into the body, so its
+  one canary drifted from a real probe by the reflected-path text alone.
+  Tests: `TestMisconfigLT104_CatchAllSuppressesExposedPathFP`,
+  `TestMisconfigLT104_CatchAllStillSurfacesDistinctResource`. The **recon-side
+  face** (dropping the phantom `wave3-common-path-probe` endpoints on a
+  catch-all host — LT-66 tail) is still open.
 - **LT-105 — `WordPress:7.1` tech fact on `www.nettix.com.pe`.** WordPress
   core is 6.x; "7.1" is a misparse (a plugin / Block-Editor asset version
   bleeding into the core product fact — cf. LT-21's cache-hash-as-version).
@@ -745,6 +761,17 @@ demo-blocking on its own:
   treat "0 results" as success when the input had N lines and some were
   rejected — log the rejects. **→ recon robustness; contributes to LT-111's
   collapse.**
+  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):** new
+  `normalizeHostname` (`pkg/recon/hostname.go`) — lowercases, strips a
+  trailing FQDN dot and a leading `*.` wildcard label, validates LDH label
+  structure + an alphabetic TLD, and rejects a leading FTP/SMTP banner
+  prefix (`^\d{3}-`, the `220-` case, which is valid LDH so the charset
+  check alone misses it). `runWave1` funnels every subfinder/tlsx result
+  through it and emits one `wave1: dropped N malformed host name(s) … (LT-112)`
+  warning. `runHTTPX` now warns `wave2: httpx returned no live host for N
+  input(s) …` instead of silently treating an empty non-timeout result as
+  "nothing alive". Tests: `pkg/recon/hostname_test.go`,
+  `TestRunWave1_DropsMalformedSubfinderHosts`.
 - **LT-113 — the `misconfig` check loop forfeits every remaining check when the
   host-error breaker trips, and the always-on product-fingerprint checks are
   ordered last, so they are the first casualties.** `Detector.Run`

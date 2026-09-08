@@ -481,6 +481,58 @@ func TestMisconfigExposedPath_SPAEchoedPathFalsePositive_Suppressed(t *testing.T
 		`a 200 SPA catch-all that echoes the requested path (e.g. in a canonical-URL tag) must not false-positive just because the echoed text happens to satisfy a keyword rule like {Path: "/debug", Keywords: ["debug"]}`)
 }
 
+// dokuwikiCatchAll serves a DokuWiki-style "this topic does not exist yet"
+// page for EVERY path, with the requested page name rendered into the
+// <title>, an <h1>, and a "create this page" link — so each path's body is
+// a slightly different length, which defeats the single-canary
+// looksLikeBaselinePage length comparison. Two canaries compared to each
+// other still identify it as a catch-all.
+func dokuwikiCatchAll(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>%s [My Wiki]</title></head><body>
+<div class="page"><h1>%s</h1>
+<p>This topic does not exist yet. You can create it by using the Create this page button.</p>
+<a class="createbtn" href="/doku.php?id=%s&amp;do=edit">Create this page</a>
+%s</div></body></html>`, name, name, name, strings.Repeat("<p>nav filler line</p>", 40))
+}
+
+// TestMisconfigLT104_CatchAllSuppressesExposedPathFP: on wiki.nettix.com.pe
+// the baseline run produced a false misconfig-exposed-path-* finding because
+// every path — including /debug, whose body then contains the keyword
+// "debug" — returns 200 with a real page. Two-canary catch-all detection
+// (LT-104) now suppresses the exposed-path / dir-listing / verbose-error
+// family on such a host and records one misconfig-soft-404-catchall note.
+func TestMisconfigLT104_CatchAllSuppressesExposedPathFP(t *testing.T) {
+	findings := runMisconfig(t, dokuwikiCatchAll)
+
+	assert.Empty(t, withPrefix(findings, "misconfig-exposed-path-"),
+		"a confirmed soft-404 catch-all must not yield exposed-path findings from keywords its own template text satisfies")
+	assert.Empty(t, withPrefix(findings, "misconfig-verbose-error-"))
+	assert.Len(t, withPrefix(findings, "misconfig-soft-404-catchall"), 1,
+		"the catch-all itself must be reported once, so a suppressed run isn't silent")
+}
+
+// TestMisconfigLT104_CatchAllStillSurfacesDistinctResource: the suppression
+// is shape-based, not blanket — a genuinely distinct, substantially larger
+// resource served by the same catch-all host still produces its finding.
+func TestMisconfigLT104_CatchAllStillSurfacesDistinctResource(t *testing.T) {
+	realEnv := "APP_ENV=production\nDB_PASSWORD=s3cr3t\nAPP_KEY=base64:" + strings.Repeat("A", 4000)
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.env" && r.URL.RawQuery == "" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(realEnv))
+			return
+		}
+		dokuwikiCatchAll(w, r)
+	})
+
+	assert.Len(t, withPrefix(findings, "misconfig-soft-404-catchall"), 1)
+	assert.Len(t, withPrefix(findings, "misconfig-exposed-path-.env"), 1,
+		"a real .env far outside the catch-all template's per-path length variance must still be reported")
+}
+
 // TestMisconfigDefaultCreds_CookieOnEveryResponse_NotFlagged locks in the
 // other real live-found false positive from the same Meesho run: a
 // "critical" successful admin/admin login fired against what the evidence

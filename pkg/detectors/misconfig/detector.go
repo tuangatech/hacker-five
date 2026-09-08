@@ -48,6 +48,17 @@ const corsProbeOrigin = "https://hackerfive-cors-probe.invalid"
 // positives that a purely alphanumeric one correctly catches).
 const baselineCanaryPath = "/hackerfivebaselinecanary9f3c7a21"
 
+// baselineCanaryPath2 is a second guaranteed-nonexistent path, unrelated to
+// baselineCanaryPath, used by detectCatchAll. One canary can't tell a
+// per-path-varying catch-all (DokuWiki renders the requested page name into
+// a "create this topic" page, so every path yields a slightly different
+// body) apart from a real resource — its body legitimately differs from a
+// canary's by the reflected path alone. Two canaries compared to each other
+// can: if both nonexistent paths get the same template, a third path that
+// also gets it is the catch-all, not a find. Same alphanumeric-only
+// discipline as baselineCanaryPath (see its comment).
+const baselineCanaryPath2 = "/hackerfivecanarytwo5b1d84e0"
+
 // suspiciousBaselineStatuses are the status codes a guaranteed-nonexistent
 // canary path returning them actually suggests interception (a WAF/
 // bot-protection/auth layer), not the application's own routing. Used for
@@ -143,6 +154,17 @@ type Detector struct {
 	baselineBody             []byte
 	baselineRequestEvidence  string
 	baselineResponseEvidence string
+
+	// baselineCatchAll is set once by detectCatchAll when a second
+	// guaranteed-nonexistent path also returns 2xx with the same template
+	// shape as the first — i.e. the host serves a real page for any path
+	// (DokuWiki / SPA / soft-404 catch-all). checkExposedPaths /
+	// checkDirListing / checkVerboseErrors then require a probe body to
+	// differ from that template by more than the two canaries differ from
+	// each other before reporting (LT-104).
+	baselineCatchAll        bool
+	baselineCatchAllChecked bool
+	baselineBody2           []byte
 }
 
 // New constructs a Detector.
@@ -194,6 +216,25 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 				"baseline_status": fmt.Sprintf("%d", d.baselineStatus),
 				"request":         d.baselineRequestEvidence,
 				"response":        d.baselineResponseEvidence,
+			},
+		})
+	}
+
+	d.detectCatchAll(ctx, target, host, authToken)
+	if d.baselineCatchAll {
+		findings = append(findings, detectors.Finding{
+			ID:         "misconfig-soft-404-catchall",
+			Type:       "misconfig",
+			Severity:   "info",
+			Confidence: "medium",
+			Target:     target,
+			Description: fmt.Sprintf(
+				"two unrelated guaranteed-nonexistent paths (%s, %s) both returned status %d with a full page body — this host serves a catch-all/soft-404 for any path, so exposed-path, directory-listing and verbose-error checks below require a probe response to differ structurally from that template before reporting (LT-104)",
+				baselineCanaryPath, baselineCanaryPath2, d.baselineStatus),
+			Evidence: map[string]string{
+				"baseline_path":   baselineCanaryPath,
+				"baseline_path_2": baselineCanaryPath2,
+				"baseline_status": fmt.Sprintf("%d", d.baselineStatus),
 			},
 		})
 	}
@@ -278,7 +319,8 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 		if !containsAny(body, rule.Keywords) {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) {
+		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) ||
+			d.looksLikeCatchAllServed(resp.StatusCode, body, rule.Path) {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
@@ -317,7 +359,8 @@ func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken 
 		if !containsAnyFold(body, DirListingMarkers) {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, path) {
+		if d.looksLikeBaselinePage(resp.StatusCode, body, path) ||
+			d.looksLikeCatchAllServed(resp.StatusCode, body, path) {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
@@ -613,7 +656,8 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 		if !matched {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) {
+		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) ||
+			d.looksLikeCatchAllServed(resp.StatusCode, body, rule.Path) {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
@@ -1311,6 +1355,73 @@ func (d *Detector) looksLikeBaselinePage(status int, body []byte, path string) b
 		tolerance = 32
 	}
 	return diff <= tolerance
+}
+
+// detectCatchAll runs once per Run. probeBaseline has already fetched
+// baselineCanaryPath; if that came back 2xx, this fetches a second
+// unrelated guaranteed-nonexistent path and sets baselineCatchAll when it
+// is also 2xx, same status, and its path-adjusted body length is close to
+// the first's. That is the signature of a host serving a real page for any
+// path — which looksLikeBaselinePage alone can misjudge, because a template
+// that renders the requested path into the page (DokuWiki's "create this
+// topic" page) drifts a single canary's body away from a real probe's by
+// the reflected path text. Comparing two canaries to each other removes
+// that confound (LT-104).
+func (d *Detector) detectCatchAll(ctx context.Context, target, host, authToken string) {
+	if d.baselineCatchAllChecked {
+		return
+	}
+	d.baselineCatchAllChecked = true
+	if !d.baselineFetched || d.baselineStatus < 200 || d.baselineStatus >= 300 {
+		return // a 404 (or a 401/403 WAF wall, handled separately) is not a catch-all
+	}
+	_, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, baselineCanaryPath2, authToken, nil, nil)
+	if err != nil || resp.StatusCode != d.baselineStatus {
+		return
+	}
+	adj1 := bodyLengthExcluding(d.baselineBody, strings.Trim(baselineCanaryPath, "/"))
+	adj2 := bodyLengthExcluding(body, strings.Trim(baselineCanaryPath2, "/"))
+	tol := adj1 / 4
+	if tol < 256 {
+		tol = 256
+	}
+	if absInt(adj1-adj2) > tol {
+		return // the two nonexistent paths get materially different pages — not a plain catch-all
+	}
+	d.baselineBody2 = body
+	d.baselineCatchAll = true
+}
+
+// looksLikeCatchAllServed reports whether a 2xx probe body is just the
+// confirmed catch-all template with this path's name rendered into it,
+// rather than a distinct resource. Only meaningful once detectCatchAll has
+// set baselineCatchAll. The tolerance adapts to how much the two canaries
+// themselves differ per path: a genuine resource (a real Swagger UI, a real
+// directory index) sits many multiples of that variance away from the
+// template; the catch-all's own per-path text substitution does not
+// (LT-104).
+func (d *Detector) looksLikeCatchAllServed(status int, body []byte, path string) bool {
+	if !d.baselineCatchAll || status != d.baselineStatus {
+		return false
+	}
+	adj1 := bodyLengthExcluding(d.baselineBody, strings.Trim(baselineCanaryPath, "/"))
+	adj2 := bodyLengthExcluding(d.baselineBody2, strings.Trim(baselineCanaryPath2, "/"))
+	adjP := bodyLengthExcluding(body, strings.Trim(path, "/"))
+	tol := 3 * absInt(adj1-adj2)
+	if floor := adj1 / 8; tol < floor {
+		tol = floor
+	}
+	if tol < 512 {
+		tol = 512
+	}
+	return absInt(adjP-adj1) <= tol && absInt(adjP-adj2) <= tol
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // looksLikeInterceptedPage is looksLikeBaselinePage's stricter counterpart
