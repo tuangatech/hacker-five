@@ -208,6 +208,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		d.checkVerboseErrors,
 		d.checkDefaultCreds,
 		d.checkWPUserEnum,
+		d.checkDolibarrOutdated,
 	}
 	for _, check := range checks {
 		if ctx.Err() != nil {
@@ -654,6 +655,155 @@ func (d *Detector) checkWPUserEnum(ctx context.Context, target, host, authToken 
 			"response":  detectors.FormatResponse(resp.StatusCode, resp.Header, body),
 		},
 	}}, nil
+}
+
+// dolibarrTitleVersionRe pulls the true Dolibarr version out of the login
+// page's <title>, which upstream deliberately suffixes with " @ <version>"
+// for exactly this purpose — htdocs/core/tpl/login.tpl.php:
+// "We must keep the @, some tools use it to know it is login page and find
+// true dolibarr version." $titletruedolibarrversion there is bare
+// DOL_VERSION with no MAIN_HIDE_VERSION guard, so this is reliable when the
+// root URL lands on the login form.
+var dolibarrTitleVersionRe = regexp.MustCompile(`@ (?:Doli[A-Za-z]+ )?(\d+\.\d+\.\d+)`)
+
+// dolibarrAssetVersionRe is the fallback: every themed CSS/JS URL in a
+// Dolibarr <head> carries "&version=<DOL_VERSION>" (main.inc.php builds
+// $themeparam that way). Served markup HTML-entity-encodes the ampersands,
+// hence the optional "amp;".
+var dolibarrAssetVersionRe = regexp.MustCompile(`[?&](?:amp;)?version=(\d+\.\d+\.\d+)`)
+
+// checkDolibarrOutdated flags a Dolibarr install whose self-reported version
+// falls in the affected range of one or more published CVEs (DolibarrCVEs).
+// It mirrors checkWPUserEnum's shape — one fixed request, a hard "is this the
+// product" gate (the author <meta>), a version taken from the app's own
+// output, and an AND against a curated table — so it stays immune to the
+// tag-scoped-corpus time budget that can skip the equivalent nuclei CVE
+// templates (docs/follow-up.md, LT-98). No version parsed ⇒ no finding: the
+// check never guesses a version it could not read.
+func (d *Detector) checkDolibarrOutdated(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "/", authToken, nil, nil)
+	if err != nil {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(DolibarrAuthorMeta)) {
+		return nil, nil // root not served, or not Dolibarr
+	}
+	if d.looksLikeBaselinePage(resp.StatusCode, body, "/") {
+		return nil, nil // a WAF/interstitial serving one page for everything
+	}
+
+	version := firstSubmatchString(dolibarrTitleVersionRe, body)
+	if version == "" {
+		version = firstSubmatchString(dolibarrAssetVersionRe, body)
+	}
+	if version == "" {
+		return nil, nil // confirmed Dolibarr, but this response did not disclose a version
+	}
+
+	var matched []VersionCVERule
+	for _, rule := range DolibarrCVEs {
+		if less, ok := versionLessThan(version, rule.FixedIn); ok && less {
+			matched = append(matched, rule)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, nil // a current-enough release — nothing to report
+	}
+
+	// Version-only match: report at the highest matched CVSS band but never
+	// escalate past "high" without an actual working exploit against this
+	// host — the finding's claim is "runs an affected version", not "is
+	// exploitable unauthenticated right now".
+	severity := "medium"
+	ids := make([]string, 0, len(matched))
+	details := make([]string, 0, len(matched))
+	for _, m := range matched {
+		ids = append(ids, m.CVE)
+		exploit := ""
+		if m.ExploitPublic {
+			exploit = ", public exploit"
+		}
+		details = append(details, fmt.Sprintf("%s (CVSS %.1f, fixed in %s%s): %s",
+			m.CVE, m.CVSS, m.FixedIn, exploit, m.Summary))
+		if m.CVSS >= 9.0 {
+			severity = "high"
+		}
+	}
+
+	desc := fmt.Sprintf(
+		"Dolibarr %s is running here (version read from the login page); it trails the current stable release %s and falls within the affected range of %d published CVE(s): %s. An authenticated or admin-level foothold turns the higher-severity entries into remote code execution or SQL injection.",
+		version, DolibarrLatestStable, len(matched), strings.Join(details, "; "))
+
+	return []detectors.Finding{{
+		ID:          "misconfig-dolibarr-outdated",
+		Type:        "misconfig",
+		Severity:    severity,
+		Confidence:  "high",
+		Target:      req.URL.String(),
+		Description: desc,
+		Evidence: map[string]string{
+			"product":       "Dolibarr",
+			"version":       version,
+			"latest_stable": DolibarrLatestStable,
+			"cves":          strings.Join(ids, ", "),
+			"request":       detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+			"response":      detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+		},
+	}}, nil
+}
+
+// firstSubmatchString returns the first capture group of re against body, or
+// "" when there is no match.
+func firstSubmatchString(re *regexp.Regexp, body []byte) string {
+	m := re.FindSubmatch(body)
+	if len(m) < 2 {
+		return ""
+	}
+	return string(m[1])
+}
+
+// versionLessThan reports whether dotted-numeric version a sorts before b,
+// comparing segment by segment with a missing trailing segment treated as 0.
+// ok is false when either side is not plain dot-separated integers — the
+// caller then declines to match rather than risk a bogus comparison. Same
+// hand-rolled-comparator precedent as pkg/template/dsl (no semver dependency
+// pulled in for four table rows).
+func versionLessThan(a, b string) (less bool, ok bool) {
+	as, aok := splitVersionInts(a)
+	bs, bok := splitVersionInts(b)
+	if !aok || !bok {
+		return false, false
+	}
+	n := len(as)
+	if len(bs) > n {
+		n = len(bs)
+	}
+	for i := 0; i < n; i++ {
+		var av, bv int
+		if i < len(as) {
+			av = as[i]
+		}
+		if i < len(bs) {
+			bv = bs[i]
+		}
+		if av != bv {
+			return av < bv, true
+		}
+	}
+	return false, true
+}
+
+func splitVersionInts(v string) ([]int, bool) {
+	parts := strings.Split(strings.TrimSpace(v), ".")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
 }
 
 // baselineCredUsername/Password are a definitely-wrong credential pair sent

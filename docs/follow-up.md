@@ -450,7 +450,7 @@ actionable surface (all read-only GET, owned-target authorization):
 | # | Finding | Host(s) | Evidence | Detector status |
 | --- | --- | --- | --- | --- |
 | A | **WordPress REST user enumeration** (CWE-200) | `www.nettix.com.pe` (`x-wp-total: 3`, `admin`/`arodriguez`/`mandrade`), `soporte.nettix.com.pe` (`x-wp-total: 6`, `agarcia` +5) | `GET /wp-json/wp/v2/users/` → 200 `application/json`, real user array | ✅ **`checkWPUserEnum` (PR #2)** — fires on both hosts |
-| B | **Dolibarr ERP 23.0.3 exposed to the internet, outdated** | `erp.nettix.com.pe`, `ixn.nettix.com.pe` | login title `Login @ 23.0.3`; `<meta name="author" content="Dolibarr Development Team">`; `/api/index.php/status` → 200 (login-gated). 23.0.3 < 23.0.4 → CVE-2026-85401 (critical, public exploit), CVE-2026-19350, dol_eval RCE family | ❌ needs **version→CVE correlation** (Step 1 / LT-7 native half) |
+| B | **Dolibarr ERP 23.0.3 exposed to the internet, outdated** | `erp.nettix.com.pe`, `ixn.nettix.com.pe` | login title `Login @ 23.0.3`; `<meta name="author" content="Dolibarr Development Team">`; `/api/index.php/status` → 200 (login-gated). 23.0.3 < 24.0.0 → CVE-2026-81728 (HIGH 8.6, CSV/XLSX-import SQLi); 23.0.3 < 23.0.4 → CVE-2026-85401 (LOW 2.1, public exploit). *(Earlier "CVE-2026-85401 critical / CVE-2026-19350 / dol_eval RCE" was wrong — NVD-verified 2026-09-08: 85401 is LOW; 19350 not a Dolibarr CVE; the dol_eval RCEs CVE-2026-22666/23500 were fixed in 23.0.2/23.0.0, before 23.0.3.)* | ✅ **`checkDolibarrOutdated` (Step 3, this branch)** — medium finding, fires on both hosts |
 | C | **Nextcloud `status.php` unauthenticated version disclosure** (CWE-200) | `cloud01.nettix.com.pe`, `cloud02.nettix.com.pe` | `GET /status.php` → 200 `{"version":"28.0.5.1","versionstring":"28.0.5","productname":"Nextcloud",…}` no auth | ❌ needs a **native `checkNextcloudStatus` check** (WP-user-enum-shaped: fixed path + fixed JSON shape) |
 | D | **Nextcloud 28.0.5 outdated** (28.x EOL; current 30.x) | `cloud01`, `cloud02` | version from (C) | ❌ needs **version→CVE correlation** (Step 1), fed by (C)'s extracted version |
 | E | **phpMyAdmin exposed to the internet** | `chasqui03.nettix.com.pe` (title "Arminet") | `GET /` → 303 to the pma login; `phpMyAdmin` fingerprint | 🟡 misconfig-class; `checkExposedPaths` has no pma rule — small add |
@@ -535,6 +535,23 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   the finding-B path. Fix: extend `crawlEvidenceRefutesWall` to the Wave-3
   canary `catchall` verdict and lower its distinct-endpoint threshold when a
   CMS is fingerprinted on the host. **→ recon correctness; demo-relevant.**
+- **Step 3 (version→CVE, native Dolibarr) ✅ done 2026-09-08** — finding B.
+  `pkg/detectors/misconfig`: new always-on `checkDolibarrOutdated` — GET `/`,
+  gate on the exact `<meta name="author" content="Dolibarr Development Team">`
+  tag, parse the version from the login `<title>`'s upstream-deliberate
+  ` @ <version>` suffix (`login.tpl.php`), fall back to the `&version=` on any
+  themed CSS/JS URL, then AND it against a curated NVD-verified
+  `DolibarrCVEs []VersionCVERule` table (`rules.go`) via a local
+  `versionLessThan` (no semver dep — same hand-rolled precedent as
+  `pkg/template/dsl`). Finding `misconfig-dolibarr-outdated`, severity =
+  highest matched CVSS band capped at `high` (never `critical` on a
+  version-only match), confidence `high`. 23.0.3 → medium, cites
+  CVE-2026-81728 + CVE-2026-85401; a 22.x install → high (adds
+  CVE-2026-23500 9.4). Same LT-98-immune shape as `checkWPUserEnum`. Tests:
+  6 cases in `tests/unit/detector_misconfig_test.go` (`TestMisconfigDolibarr_*`).
+  `DolibarrLatestStable` const carries a refresh-date note (24.0.1, checked
+  2026-09-08). Step 5 (stretch) will lift `VersionCVERule` into a generic
+  cross-product table + add phpMyAdmin/Webmin rows.
 - **LT-104 — `wiki.nettix.com.pe/{api,graphql,swagger/v1/swagger.json}`
   recorded as `wave3-common-path-probe` endpoints (status 200) on a host
   recon *also* flagged catch-all** — LT-66's per-endpoint bucket-catch-all

@@ -85,6 +85,51 @@ const WPUserEnumPath = "/wp-json/wp/v2/users/"
 // that secure response from matching.
 var wpUserObjectMarkers = []string{`"id":`, `"slug":`, `"name":`}
 
+// DolibarrAuthorMeta is the exact <meta> tag Dolibarr's top_htmlhead() emits
+// on every rendered page (htdocs/main.inc.php) — including the
+// unauthenticated login page. checkDolibarrOutdated uses it as the hard "this
+// really is Dolibarr" gate before trusting any version string parsed out of
+// the same response.
+const DolibarrAuthorMeta = `<meta name="author" content="Dolibarr Development Team">`
+
+// DolibarrLatestStable is the newest stable Dolibarr release, quoted only in
+// checkDolibarrOutdated's human-readable description (the CVE match itself is
+// driven by DolibarrCVEs, not by this). Refresh when the upstream stable
+// line advances — checked against github.com/Dolibarr/dolibarr/releases on
+// 2026-09-08: 24.0.1 (2026-09-07), with 23.0.4 the last of the 23.x line.
+const DolibarrLatestStable = "24.0.1"
+
+// VersionCVERule maps "any release of a product earlier than FixedIn" to one
+// published CVE. checkDolibarrOutdated walks a table of these against the
+// version it parses from the app's own output. Every entry's affected range
+// is verified against NVD — no guessed CVEs (CLAUDE.md's <5% false-positive
+// bar); Severity/CVSS are the NVD CVSS v4 base values.
+type VersionCVERule struct {
+	CVE           string
+	FixedIn       string // first release NOT affected; the rule fires when detected < FixedIn
+	Severity      string // NVD CVSS v4 base severity, lowercased
+	CVSS          float64
+	ExploitPublic bool
+	Summary       string
+}
+
+// DolibarrCVEs is the curated affected-version table for Dolibarr ERP/CRM.
+// Ordered newest-fix-first for readable evidence only; matching is
+// order-independent. FixedIn uses the single first-unaffected release per
+// CVE — for the two entries phrased upstream as "up to 21.0.4/22.0.5/23.0.3"
+// this means an old-major install (21.x/22.x) also matches the 23.0.4 fix
+// line, which is correct: it needs the upgrade regardless.
+var DolibarrCVEs = []VersionCVERule{
+	{CVE: "CVE-2026-81728", FixedIn: "24.0.0", Severity: "high", CVSS: 8.6,
+		Summary: "SQL injection in the CSV/XLSX import wizard (authenticated, low-privilege)"},
+	{CVE: "CVE-2026-85401", FixedIn: "23.0.4", Severity: "low", CVSS: 2.1, ExploitPublic: true,
+		Summary: "Legacy File Manager improper access control (public exploit available)"},
+	{CVE: "CVE-2026-22666", FixedIn: "23.0.2", Severity: "high", CVSS: 8.6,
+		Summary: "authenticated RCE via dol_eval_standard() PHP dynamic-callable bypass"},
+	{CVE: "CVE-2026-23500", FixedIn: "23.0.0", Severity: "critical", CVSS: 9.4,
+		Summary: "OS command injection via ODT-to-PDF conversion (authenticated admin RCE)"},
+}
+
 // DirListingPaths are common subpaths worth a directory-listing probe,
 // beyond just target root ("" is included so misconfig.Detector finds a
 // root listing on its own, without depending on

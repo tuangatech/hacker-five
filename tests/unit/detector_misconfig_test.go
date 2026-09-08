@@ -744,6 +744,121 @@ func TestMisconfigWPUserEnum_HTMLNotJSON_NoFinding(t *testing.T) {
 	assert.Empty(t, withPrefix(findings, "misconfig-wordpress-user-enumeration"))
 }
 
-// wpUsersJSONArray is a trimmed-down but structurally real
-// /wp-json/wp/v2/users/ response body — a JSON array of user objects, each
-// carrying id/name/slug. The slug is the accounts
+// dolibarrLoginHTML is a trimmed-but-structurally-real Dolibarr login page:
+// the author <meta> top_htmlhead() always prints, the " @ <version>" the
+// login template deliberately appends to <title> (login.tpl.php), and one
+// themed asset URL carrying "&amp;version=<DOL_VERSION>". Two %s: the title
+// version and the asset version (usually identical; kept separate so a test
+// can exercise the asset-URL fallback alone).
+const dolibarrLoginHTML = `<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<meta name="author" content="Dolibarr Development Team">
+<title>Login @ %s</title>
+<link rel="stylesheet" type="text/css" href="/theme/eldy/style.css.php?lang=es&amp;theme=eldy&amp;version=%s&amp;revision=0">
+</head><body><form id="login" method="POST"><input name="username"></form></body></html>`
+
+func runDolibarrRoot(t *testing.T, titleVer, assetVer string) []detectors.Finding {
+	t.Helper()
+	return runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, dolibarrLoginHTML, titleVer, assetVer)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+}
+
+// TestMisconfigDolibarr_Outdated_Hit: erp/ixn.nettix.com.pe run Dolibarr
+// 23.0.3, which is < 24.0.0 (CVE-2026-81728) and < 23.0.4 (CVE-2026-85401)
+// but not the two older RCEs already fixed by 23.0.2 — so exactly two CVEs
+// match and, with no CVSS >= 9.0 among them, the finding is medium.
+func TestMisconfigDolibarr_Outdated_Hit(t *testing.T) {
+	got := withPrefix(runDolibarrRoot(t, "23.0.3", "23.0.3"), "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1)
+	assert.Equal(t, "misconfig", got[0].Type)
+	assert.Equal(t, "medium", got[0].Severity)
+	assert.Equal(t, "high", got[0].Confidence)
+	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
+	assert.Contains(t, got[0].Evidence["cves"], "CVE-2026-81728")
+	assert.Contains(t, got[0].Evidence["cves"], "CVE-2026-85401")
+	assert.NotContains(t, got[0].Evidence["cves"], "CVE-2026-22666")
+	assert.NotContains(t, got[0].Evidence["cves"], "CVE-2026-23500")
+}
+
+// TestMisconfigDolibarr_OldMajor_HighSeverity: a 22.0.1 install is behind
+// every row in the table, including the 9.4-CVSS ODT command injection, so
+// all four CVEs match and the finding escalates to high.
+func TestMisconfigDolibarr_OldMajor_HighSeverity(t *testing.T) {
+	got := withPrefix(runDolibarrRoot(t, "22.0.1", "22.0.1"), "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1)
+	assert.Equal(t, "high", got[0].Severity)
+	for _, cve := range []string{"CVE-2026-81728", "CVE-2026-85401", "CVE-2026-22666", "CVE-2026-23500"} {
+		assert.Contains(t, got[0].Evidence["cves"], cve)
+	}
+}
+
+// TestMisconfigDolibarr_Current_NoFinding: the latest stable release matches
+// no row — nothing to report.
+func TestMisconfigDolibarr_Current_NoFinding(t *testing.T) {
+	assert.Empty(t, withPrefix(runDolibarrRoot(t, "24.0.1", "24.0.1"), "misconfig-dolibarr-outdated"))
+}
+
+// TestMisconfigDolibarr_AssetVersionFallback_Hit: a skin whose <title> has no
+// " @ <version>" suffix still discloses the version in every themed asset
+// URL — the check must fall back to that.
+func TestMisconfigDolibarr_AssetVersionFallback_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!doctype html><html><head>` +
+				`<meta name="author" content="Dolibarr Development Team">` +
+				`<title>Iniciar sesión</title>` +
+				`<link rel="stylesheet" href="/theme/eldy/style.css.php?theme=eldy&amp;version=23.0.3&amp;revision=1">` +
+				`</head><body>x</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	got := withPrefix(findings, "misconfig-dolibarr-outdated")
+	require.Len(t, got, 1)
+	assert.Equal(t, "23.0.3", got[0].Evidence["version"])
+}
+
+// TestMisconfigDolibarr_NotDolibarr_NoFinding: a non-Dolibarr page that
+// happens to carry " @ 23.0.3" in its title must not match — the author
+// <meta> gate is mandatory.
+func TestMisconfigDolibarr_NotDolibarr_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!doctype html><html><head><title>Build @ 23.0.3</title></head><body>x</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-dolibarr-outdated"))
+}
+
+// TestMisconfigDolibarr_VersionNotDisclosed_NoFinding: confirmed Dolibarr
+// (author <meta> present) but neither the title nor an asset URL carries a
+// version — the check declines rather than guessing.
+func TestMisconfigDolibarr_VersionNotDisclosed_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!doctype html><html><head>` +
+				`<meta name="author" content="Dolibarr Development Team">` +
+				`<title>Iniciar sesión</title></head><body>x</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	assert.Empty(t, withPrefix(findings, "misconfig-dolibarr-outdated"))
+}
