@@ -449,7 +449,7 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 ---
 
-### Phase 8: Detection Coverage Expansion (Weeks 57-64) — v0.8.0
+### Phase 8: Detection Coverage — Breadth & Precision (Weeks 57-64) — v0.8.0
 
 **Goal:** Widen *what HackerFive can detect*, against the agent pipeline Phases 5-7
 built and hardened (both of which explicitly scoped detector expansion out). Schedules
@@ -457,6 +457,16 @@ built and hardened (both of which explicitly scoped detector expansion out). Sch
 LT-8 / LT-23 live-testing findings. Full design in
 [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md). Read/enumerate-only
 throughout — banner-grab and passive inspection, never command execution.
+
+**Split 2026-09-07.** Originally one 10-step phase. This phase keeps the
+**breadth + precision** work (TCP/TLS, JS-static, semver gating, richer crawl —
+each near self-contained). The **depth + active** work — OOB blind-RCE,
+template-format gaps, AI-agent surface, WAF-aware + native injection detectors —
+moved to **[Phase 9](18-implementation-plan-ph9.md)** (each needs its own design
+pass, several want this phase's surface-widening first). The single cross-phase
+ordered backlog lives in
+[17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) § "Execution order".
+Version tags are cut on batch-readiness, not step number.
 
 #### Weeks 57-58: TCP protocol support + network-service exposure detector — ⬜ not started
 - [ ] `tcp:` templates load and run (bounded connect/probe/banner-match); `code:`-carrying `tcp:` still rejected
@@ -469,31 +479,55 @@ throughout — banner-grab and passive inspection, never command execution.
 - [ ] Served-JS endpoint extraction folded into `ReconResult.Endpoints` (`Source: "js-static"`), widening the idor/ssrf candidate surface
 - [ ] High-signal hardcoded-secret detection as `misconfig` findings, decoy-set false-positive rate measured
 
-#### Week 62: OOB blind-RCE verification — ⬜ not started
-- [ ] Callback-only RCE proof via `pkg/oob`, never an attacker-meaningful command; no real public OOB server in code/tests
-
-#### Week 63: Version gating + richer crawl — ⬜ not started
+#### Week 63: Version gating + richer crawl — 🟡 Step 6 partly landed 2026-09-07
 - [ ] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b)
-- [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8)
-- [ ] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); endpoint-name → redirect-parameter-probe rule for `*/bounce`/OAuth/SSO/logout paths (LT-77); redirect-chain fidelity + per-host tech-fact attribution (LT-64/LT-65/LT-84b); numeric-query-param ID candidates (LT-83); per-path-timeout vs host-down breaker (LT-86)
+- [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8) — `--crawl-depth` done; headless + content-discovery open
+- [x] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); redirect-flow rule for `*/bounce`/OAuth/SSO/logout paths (LT-77 partial); redirect-chain fidelity + per-host tech-fact attribution (LT-64/LT-65/LT-84b); numeric-query-param ID candidates (LT-83); per-path-timeout vs host-down breaker (LT-86); OpenAPI-JSON spec walker (LT-40); known-CDN-ASN naabu skip (LT-61) — 2026-09-07
+- [ ] Bounded content-discovery + embedded wordlist; opt-in headless katana; CT-log sibling-API discovery (LT-63); LT-40 tail (widen spec-probe paths, YAML bodies)
 
-#### Week 64: Template-format gaps + AI-agent surface + WAF-aware / injection detectors + release — ⬜ not started
-- [ ] `xpath` matcher/extractor (dependency footprint verified first) or explicitly descoped; `flow:` cross-block `_N` indexing or explicitly descoped
-- [ ] AI-agent surface (`llms.txt`/`SKILL.md`/MCP): passive recon fact + read-only detector (manifest injection-marker scan, unauthenticated MCP `tools/list`, no `tools/call`) (closes LT-78)
-- [ ] WAF-detect recon fact + `403`-is-signal mutation retry + first-party `sqli`/`xss`/`lfi`/`uploadbypass` detectors, parameter-aware & read-only, decoy FP rate measured (closes LT-87)
+#### Week 64: Eval + release — ⬜ not started
 - [ ] New-detector yield + any new false-positive mode measured against all lab targets, tracked against the <5% target
-- [ ] Release **v0.8.0**
+- [ ] Release **v0.8.0** (cut on batch-readiness; does not wait on Phase 9)
 
 **Phase 8 Success Metrics:**
-- [ ] TCP/TLS/JS-static/OOB-RCE detectors all live-verified against lab targets, read-only confirmed
+- [ ] TCP/TLS/JS-static detectors all live-verified against lab targets, read-only confirmed
 - [ ] LT-7 closed: real multi-version Nginx hosts get different template lists
-- [ ] Detection Coverage table's "Add" rows moved to "✅ shipped" with measured yield, still within the <5% false-positive target
+- [ ] Detection Coverage table's "Add" rows for this phase moved to "✅ shipped" with measured yield, still within the <5% false-positive target
+
+---
+
+### Phase 9: Detection Coverage — Depth & Active (Weeks 65-70) — v0.9.0
+
+**Goal:** The depth half of the detection-coverage expansion — the areas that each
+need their own design pass and want Phase 8's surface-widening first. Full design in
+[18-implementation-plan-ph9.md](18-implementation-plan-ph9.md). Same read/enumerate-only
+boundary: an OOB, injection, or WAF-bypass payload's only effect is to reach the app.
+
+#### Week 65: OOB blind-RCE verification — ⬜ not started
+- [ ] Callback-only RCE proof via `pkg/oob`, never an attacker-meaningful command; no real public OOB server in code/tests
+
+#### Weeks 66-67: Remaining template-format gaps — ⬜ not started
+- [ ] `xpath` matcher/extractor (dependency footprint verified first) or explicitly descoped; `flow:` cross-block `_N` indexing or explicitly descoped; `substr`/`date_time`/`generate_jwt` DSL; `flow:` script constructs or explicitly descoped
+
+#### Week 68: AI-agent surface modeling — ⬜ not started
+- [ ] `llms.txt`/`SKILL.md`/MCP: passive recon fact + read-only detector (manifest injection-marker scan, unauthenticated MCP `tools/list`, never `tools/call`) (closes LT-78)
+
+#### Weeks 69-70: WAF-aware probing + active injection / upload-bypass detectors + trust hardening + release — ⬜ not started
+- [ ] WAF-detect recon fact + `403`-is-signal mutation retry + first-party `sqli`/`xss`/`lfi`/`uploadbypass` detectors, parameter-aware & read-only, decoy FP rate measured (closes LT-87)
+- [ ] Full OWASP Agentic Top 10 re-walk against shipped Phase 5-9 code (Ph7 D4); `templates/proposed/` isolation (Ph7 E2); triage-assist annotations + structured feedback capture (Ph7 F1/F2)
+- [ ] New-detector yield + any new false-positive mode measured against all lab targets, tracked against the <5% target
+- [ ] Release **v0.9.0**
+
+**Phase 9 Success Metrics:**
+- [ ] OOB-RCE + native `sqli`/`xss`/`lfi`/`uploadbypass` detectors live-verified against lab targets, read-only confirmed
+- [ ] LT-78 / LT-87 closed; all ASI rows re-walked against real Phase 5-9 code
+- [ ] Detection Coverage table's remaining "Add" rows moved to "✅ shipped" with measured yield, still within the <5% false-positive target
 
 ---
 
 ## Versioning note
 
-`v0.1.0` → `v0.2.0` → `v0.3.0` → `v0.4.0` → `v0.5.0` → `v0.6.0` → `v0.7.0` → `v0.8.0` track feature phases (1 through 8) in order. **`v1.0.0` is deliberately not tied to a phase or a week** — it marks real-world trust, not feature completeness, and is gated on actually using the tool against real, authorized targets and finding real issues with it, not on shipping a checklist of detectors. See [Milestone 8](#milestone-8-v100--real-world-validation-no-fixed-week) below. This mirrors doc05's "Tool Maturity" prerequisites (which already gate HackerOne program eligibility on validated false-positive rate and documentation, not a version number) and is consistent with how mature scanners in this space (e.g. Nuclei) treat 1.0 as a stability/trust signal rather than a feature-count milestone.
+`v0.1.0` → … → `v0.6.0` → `v0.7.0` → `v0.8.0` → `v0.9.0` track feature phases (1 through 9) in order — with the caveat that a phase is a planning bucket, not a release contract: since 2026-09-07 the `v0.x.0` tags are cut when a coherent batch of work is done and green, not when a numbered step count is reached (Phase 8's split into breadth/precision + [Phase 9](18-implementation-plan-ph9.md) depth/active is the first case). **`v1.0.0` is deliberately not tied to a phase or a week** — it marks real-world trust, not feature completeness, and is gated on actually using the tool against real, authorized targets and finding real issues with it, not on shipping a checklist of detectors. See [Milestone 8](#milestone-8-v100--real-world-validation-no-fixed-week) below. This mirrors doc05's "Tool Maturity" prerequisites (which already gate HackerOne program eligibility on validated false-positive rate and documentation, not a version number) and is consistent with how mature scanners in this space (e.g. Nuclei) treat 1.0 as a stability/trust signal rather than a feature-count milestone.
 
 ## Timeline & Milestones
 
@@ -601,7 +635,8 @@ Community growth (contributors, stars, template submissions, bounty income) is a
 - [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — file-by-file build plan for Phase 5 (Weeks 33-40, recon & orchestration foundations)
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — file-by-file build plan for Phase 6 (Weeks 41-48, MCP server & approval gate)
 - [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — file-by-file build plan for Phase 7 (Weeks 49-56, agent hardening/ecosystem/trust)
-- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — file-by-file build plan for Phase 8 (Weeks 57-64, detection coverage expansion)
+- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — file-by-file build plan for Phase 8 (Weeks 57-64, detection coverage — breadth & precision); its § "Execution order" is the single cross-phase backlog
+- [18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) — file-by-file build plan for Phase 9 (Weeks 65-70, detection coverage — depth & active: OOB blind-RCE, template-format gaps, AI-agent surface, WAF + native injection detectors)
 - [90-research-hackerbot.md](90-research-hackerbot.md) — the research and backlog Phases 6-7 schedule
 - [91-research-recon-phase.md](91-research-recon-phase.md) — the recon research Phase 5 schedules
 - [22-authorized-targets.md](22-authorized-targets.md) — the vetted real-target registry Milestone 8's real-world validation draws from

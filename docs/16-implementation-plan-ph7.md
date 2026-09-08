@@ -16,11 +16,22 @@
 2. ✅ **Approval & compliance rounding** (Week 50) — B2, B3, B4 all done 2026-09-06
 3. ✅ **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ✅ 2026-09-07 (`ph7-step3a`), C7 ✅ 2026-09-07 (`ph7-step3b`)
 4. ✅ **Live log injection + concurrency ceilings + redundant-request elimination** (Week 53) — D6 ✅ 2026-09-07 (`ph7-step4a`), D5 ✅ 2026-09-07 (`ph7-step4b`), C4 + D1 + H4 ✅ 2026-09-07 (`ph7-step4c`)
-5. ⬜ **OWASP Agentic Top 10 mapping** (Week 54)
-6. ⬜ **Template ecosystem & triage support** (Week 55) — plus F3 (content-gate response-grep secret templates, LT-67) and F4 (narrow corpus load for a small leaf set, LT-71)
-7. ⬜ **Eval maturity + release** (Week 56) — `v0.7.0`
+5. ⬜ **OWASP Agentic Top 10 mapping** (D4) — **interim pass now** against shipped Phase 5-7 code; the **full re-walk is deferred** to the [Phase 9](18-implementation-plan-ph9.md) window (it must cover the agent-enumeration + active-injection surface Phase 9 Steps 3-4 add). See Sequencing note in the step.
+6. ⬜ **Template ecosystem & triage support** — **split 2026-09-07**:
+   - **6a** (near-term "do now") — **F3** (content-gate response-grep secret templates, LT-67) + **F4** (narrow corpus load for a small leaf set, LT-71). Detection-quality + performance; small, independent.
+   - **6b** (deferred to the [Phase 9](18-implementation-plan-ph9.md) window, folded into that phase's Step 5) — **E2** (`templates/proposed/` staging), **F1** (triage-assist annotations), **F2** (structured feedback capture). No agent draft/annotation consumer exists yet, and E2 gates on D4's supply-chain rows.
+7. ⬜ **`v0.7.0` consolidation + release** (Week 56) — cut on **batch-readiness**, *not* gated on Step 5's full re-walk or Step 6b.
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-15.)
+
+**Execution order.** The remaining Phase 7 + [Phase 8](17-implementation-plan-ph8.md)
++ [Phase 9](18-implementation-plan-ph9.md) open work is sequenced as **one backlog**,
+ordered by (value × independence), with each phase's eval/release step as its
+terminal gate — the full ordered list lives in
+[17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) § "Execution order".
+Phase 7's place in it: **Step 6a is Tier 1 (do now)**; Step 5's interim pass is
+Tier 1; Step 5's full re-walk and Step 6b are Tier 3 (Phase 9 window). Version tags
+are cut on batch-readiness, not step number.
 
 **Partial landing 2026-09-06 (`post-demo-batch` branch), after the demo dry-run:** the self-contained items from Steps 1–3 —
 - **A4** ✅ `hackerfive templates list --json` (`{"templates": [...], "rejected": N}`, `templatesync.Entry` shape).
@@ -218,6 +229,23 @@
 
 ## Step 5: OWASP Agentic Top 10 Mapping (Week 54) — ⬜ not yet implemented
 
+> **Sequencing (2026-09-07).** Split into two passes:
+> - **Interim pass — do now (Tier 1).** Walk the ASI01-ASI10 table against the
+>   *currently shipped* Phase 5-7 code, cheaply (the design-level table already
+>   exists in [90-research-hackerbot.md](90-research-hackerbot.md) §3). Records each
+>   row as mitigated-with-a-cite or accepted-residual today, so a `v0.7.0` release
+>   does not go out with agent features and no security self-assessment at all.
+> - **Full re-walk — deferred to the [Phase 9](18-implementation-plan-ph9.md)
+>   window (that phase's Step 5).** [Phase 9](18-implementation-plan-ph9.md) Step 3
+>   (AI-agent-surface detector — an unauthenticated MCP `tools/list` enumeration)
+>   and Step 4 (native active-injection detectors + WAF-bypass retry) each add
+>   agent-reachable and active surface that changes the ASI02 / ASI04 / ASI05 /
+>   ASI10 rows materially. Doing the definitive mapping before that surface exists
+>   just means re-doing it.
+>
+> The table and verification below are the *full re-walk*; the interim pass is a
+> lighter version of the same, scoped to what's shipped.
+
 ### Design
 
 **D4.** OWASP published a peer-reviewed Top 10 for agentic applications in December 2025 (ASI01-ASI10). Doc90 §3 Group D already sketches HackerFive-specific mitigations for each risk against the *design*; this step re-walks that same table against the *actual shipped Phase 5-7 code* and records the result — mitigated (cite the file/mechanism), or explicitly accepted as residual risk with a stated reason — matching this project's own "revise down with reasoning, don't pad" discipline. **This pass must also cover the decision engine and tiered LLM fallback added 2026-08-30 (doc90 Decision 5/6, Group I)** — new surface that didn't exist when Group D was first drafted, called out specifically in ASI04/ASI05 below. Concretely, confirm or correct each row doc90 already drafted:
@@ -243,9 +271,24 @@ Every row in the table above is checked against real code (a file path and line,
 
 ---
 
-## Step 6: Template Ecosystem & Triage Support (Week 55) — ⬜ not yet implemented
+## Step 6: Template Ecosystem & Triage Support — split 2026-09-07 into 6a (near-term) / 6b (Phase 9 window)
+
+**6a — F3 + F4, near-term "do now" (Tier 1).** Detection-quality (F3) and
+performance (F4); both small, independent, and unblocked. Their design + files +
+verification are below.
+
+**6b — E1 / E2 / F1 / F2, deferred to the [Phase 9](18-implementation-plan-ph9.md)
+window** (folded into that phase's Step 5). E1 is already a no-op (moved to Phase 5;
+kept as a history note). E2/F1/F2 are agent-output plumbing with no consumer until
+an agent actually drafts templates / annotates findings, and E2's isolation
+guarantee is confirmed against real code exactly when D4's supply-chain rows
+(ASI04/ASI05) are re-walked — i.e. in Phase 9. Their design text stays below for
+continuity; the forward plan and DoD lines move to
+[18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) Step 5.
 
 ### Design
+
+#### 6b (deferred — see [Phase 9](18-implementation-plan-ph9.md) Step 5)
 
 **E1 — generated `templates/index.json` — moved to Phase 5 (doc14 R9), not this step's job anymore.** Originally scheduled here, but doc14's decision engine (Group I, added 2026-08-30) needs this index to match template tags against a fingerprinted target *in Phase 5*, well before this phase exists — generating it here would leave Phase 5/6's decision engine and `templates.search` MCP tool with nothing to query. Noted here so a reader of this doc's history understands the move, not just finds it silently missing; nothing left for this step to do on E1 beyond confirming it's still current by this point.
 
@@ -253,27 +296,52 @@ Every row in the table above is checked against real code (a file path and line,
 
 **F1 — triage-assist mode on the existing `Exporter` output.** A mode that annotates exported findings with the agent's own triage notes (severity-context, likely false-positive flags) as a clearly-labeled *additional* field, never altering the underlying deterministic `Finding.Severity`/`Confidence` — consistent with this phase's repeated theme of agent output being additive/advisory, never authoritative over detector-set fields.
 
-**F2 — structured feedback capture.** When a human overrides or dismisses an agent-surfaced finding/triage note during review, capture that decision in a structured, queryable form (not just "the user closed the tab") — useful raw material for Step 7's eval-maturity work and any future tuning of the coordinator's own prioritization logic.
+**F2 — structured feedback capture.** When a human overrides or dismisses an agent-surfaced finding/triage note during review, capture that decision in a structured, queryable form (not just "the user closed the tab") — useful raw material for the eval-maturity work and any future tuning of the coordinator's own prioritization logic.
+
+#### 6a (near-term — do now)
 
 **F3 — gate response-grep secret/exposure templates on real app content ([follow-up.md](follow-up.md) LT-67).** The `shopify-*` / generic secret-scanning templates grep a response body for leaked credentials; against a static error page or a storage-bucket 404 shell (linkpop's 746-byte SPA, 2026-09-07) that is structurally impossible, yet `registry.Resolve` still emits and `planexec` still fires those leaves — 8 of them on linkpop. Add a minimum-dynamic-content gate to template selection: a response-grep secret/exposure template is only emitted for a host whose recon shows app-generated markup — body size over a floor, a server-rendered/framework marker, or a non-catch-all canary (`ReconResult.UniformResponse.Kind != "catchall"`, D6). Fits this step because it's template-selection quality — the same surface F1's triage annotations describe. Keep the <5% false-positive discipline: a doubtful "is this app content" signal errs toward still emitting the leaf, not suppressing it.
 
 **F4 — "load only these template IDs/paths" fast path in the corpus loader ([follow-up.md](follow-up.md) LT-71).** `planexec.RunPlan`'s LT-18(c) logic forces a full ~9.5k-template corpus load/parse/filter for any specific-template leaf, and a narrow `--tags` scan pays the same cost to run a handful of matches (linkpop: 2,224 loaded + 201 rejected + 7,256 filtered to run 9 named leaves). Add an enumerable-ID/path load path in `pkg/templatesync` + the `pkg/template/nuclei` loader, used when the requested tag/ID set resolves to a small explicit list — skips parsing everything else. Speeds the plan-executor path and any narrow `--tags` scan; pairs with a future `scan --plan-file` that dispatches exactly the approved leaves. Originally slated for Step 4 with LT-54/55; re-homed here when Step 4 shipped without it. Pure performance — no behavior change to which templates match, verified by a before/after finding-set diff on a fixed target.
 
 ### Files (anticipated, confirm at implementation time)
-- `templates/proposed/` — new, empty (gitkept) directory; `pkg/template` loader confirmed to never auto-load from it.
-- `pkg/reporter/triageassist.go` — F1's annotation layer.
-- `pkg/webui/handlers_scan.go` (or a new `feedback.go`) — F2's capture endpoint.
+
+**6a (near-term):**
 - `pkg/registry/decisionengine.go` — F3's dynamic-content gate in `matchTemplateTags` / `resolveTechFact` for response-grep secret/exposure templates.
 - `pkg/templatesync/`, `pkg/template/nuclei/loader.go` — F4's enumerable-ID/path fast load path, taken when the requested set is small and explicit.
 - `pkg/planexec/executor.go` — F4: pass the specific-template leaf's ID set to the loader instead of forcing a full corpus load.
-- `tests/unit/template_index_test.go`, `tests/unit/proposed_dir_isolation_test.go`, `tests/unit/triage_assist_test.go`, `tests/unit/template_select_content_gate_test.go`, `tests/unit/nuclei_loader_idlist_test.go`.
+- `tests/unit/template_select_content_gate_test.go`, `tests/unit/nuclei_loader_idlist_test.go`.
+
+**6b ([Phase 9](18-implementation-plan-ph9.md) Step 5):**
+- `templates/proposed/` — new, empty (gitkept) directory; `pkg/template` loader confirmed to never auto-load from it.
+- `pkg/reporter/triageassist.go` — F1's annotation layer.
+- `pkg/webui/handlers_scan.go` (or a new `feedback.go`) — F2's capture endpoint.
+- `tests/unit/proposed_dir_isolation_test.go`, `tests/unit/triage_assist_test.go`.
 
 ### Verification
-Unit test confirming `templates/proposed/` is never picked up by the default `--templates` load path (mirrors the isolation guarantee `templates/nuclei-samples/` already needs, but inverted — proposed is deliberately *excluded* by default). Triage-assist output verified to never mutate the underlying `Finding` struct it annotates. F3: against a recon fixture whose host serves a static catch-all, no response-grep secret/exposure leaf is emitted; against an app-content fixture they still are; measure the gate's decoy false-positive rate. F4: a plan naming N specific templates loads exactly those (assert the loader's parsed count), and a full before/after finding-set diff on a fixed lab target is empty.
+
+**6a.** F3: against a recon fixture whose host serves a static catch-all, no
+response-grep secret/exposure leaf is emitted; against an app-content fixture they
+still are; measure the gate's decoy false-positive rate. F4: a plan naming N specific
+templates loads exactly those (assert the loader's parsed count), and a full
+before/after finding-set diff on a fixed lab target is empty.
+
+**6b** ([Phase 9](18-implementation-plan-ph9.md) Step 5). Unit test confirming
+`templates/proposed/` is never picked up by the default `--templates` load path
+(mirrors the isolation guarantee `templates/nuclei-samples/` already needs, but
+inverted — proposed is deliberately *excluded* by default). Triage-assist output
+verified to never mutate the underlying `Finding` struct it annotates.
 
 ---
 
 ## Step 7: Eval Maturity + Release (Week 56) — ⬜ not yet implemented — `v0.7.0`
+
+> **`v0.7.0` is cut on batch-readiness (2026-09-07 reprioritisation), not on a step
+> count.** It requires Steps 1-4 (all done), Step 6a (F3/F4), and Step 5's *interim*
+> OWASP pass — not Step 5's full re-walk or Step 6b, both of which are deferred to
+> the [Phase 9](18-implementation-plan-ph9.md) window and ship under a later tag.
+> The integration/eval work below (auth-bypass tests, `--scope` live verification,
+> the crAPI credentialed round trip) is the real gate.
 
 ### Design
 
@@ -316,17 +384,22 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [x] Live log injection (C4, `ph7-step4c`): `POST /scans/{id}/agent/note` appends an operator note as an `operator.note` `agenttask.SessionLogEntry` streamed over the `agent-event` SSE channel; `scan_status.html` has the injection textbox. (Note→coordinator-action effect is a manual check — the webui has no in-process coordinator loop.)
 - [x] Redundant per-target HTTP eliminated (D5 / [follow-up.md](follow-up.md) LT-54 + LT-55) — 2026-09-07 (`ph7-step4b`): `pkg/template/nuclei/respcache.go`'s `respCache` serves a repeat GET/HEAD `(method, URL, Host, header-fp, body)` from a 512-entry FIFO cache in `tryPath` — timing (`req.usesTiming`)/`interactsh_`/`pathCorrelated`/`payloads:`/non-GET-HEAD/`raw:` all carved out; `knownDeadSkip` fires no request for a lone matcher-only `path:` template a `--recon-file` marks 404 when the scan carries no `--header` (recon's posture), still firing it when a credential is present; the shared rate limiter is still the only throughput cap
 - [x] Uniform response wall handled (D6 / [follow-up.md](follow-up.md) LT-43(2) + LT-58 + LT-59 + LT-62) — 2026-09-07 (`ph7-step4a`): `pkg/uniformwall.Classify` runs in recon Wave 3 and records `ReconResult.UniformResponse`; `scanner.Engine` skips `runTemplates` for a `Config.UniformWallHosts` match (unless `--scan-uniform-anyway`/`--all-templates`), emitting one `misconfig-waf-blocked`/`misconfig-uniform-catchall`; `reconShowsAdminSurface` keeps `panel` behind a WAF wall only for a path-discriminating signal; recon warns and `plan` prints the blocked-probe-ratio note
-- [ ] All ten OWASP Agentic Top 10 risks (D4) are checked against real shipped code (file/line cited) and recorded as mitigated or accepted residual risk with a stated reason
-- [ ] `templates/proposed/` exists, is confirmed never auto-loaded by the default `--templates` path, and requires explicit human promotion
-- [ ] Triage-assist annotations never mutate `Finding.Severity`/`Confidence`
-- [ ] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content, decoy false-positive rate measured (F3 / [follow-up.md](follow-up.md) LT-67)
-- [ ] A specific-template leaf or a small explicit `--tags` set loads only its own templates, not the full corpus, with an empty before/after finding-set diff (F4 / [follow-up.md](follow-up.md) LT-71)
+- [ ] **Interim** OWASP Agentic Top 10 pass (D4) against currently-shipped Phase 5-7 code (file/line cited), each row mitigated-with-a-cite or accepted-residual — the **full re-walk** (incl. Phase 9 Steps 3-4's new surface) is [Phase 9](18-implementation-plan-ph9.md) Step 5
+- [ ] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content, decoy false-positive rate measured (Step 6a / F3 / [follow-up.md](follow-up.md) LT-67)
+- [ ] A specific-template leaf or a small explicit `--tags` set loads only its own templates, not the full corpus, with an empty before/after finding-set diff (Step 6a / F4 / [follow-up.md](follow-up.md) LT-71)
 - [ ] Agent-driven false-positive/false-negative rate is measured live against all four lab targets, tracked separately from detector-level rate, with full cost accounting recorded
 - [ ] `authbypass_crapi_test.go`/`authbypass_vapi_test.go` land as reproducible tests against the compose stack, and the crAPI credentialed recon → plan → approve → scan → export round trip is live-verified (moved from Phase 6 Step 5)
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.7.0` tagged and released, or explicitly held with a stated reason
 
+**Moved to [Phase 9](18-implementation-plan-ph9.md) Step 5 (Step 6b + D4 full re-walk):**
+- [ ] All ten OWASP Agentic Top 10 risks re-walked against real shipped Phase 5-9 code (file/line cited), ASI02/ASI04/ASI05/ASI10 re-checked against the new agent-enumeration + active-injection surface
+- [ ] `templates/proposed/` exists, is confirmed never auto-loaded by the default `--templates` path, and requires explicit human promotion (E2)
+- [ ] Triage-assist annotations never mutate `Finding.Severity`/`Confidence` (F1); structured feedback on an overridden agent finding is captured queryably (F2)
+
 ## See also
+- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — detection-coverage breadth/precision; its § "Execution order" holds the single cross-phase backlog Phase 7's Steps 5/6a/6b sit in
+- [18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) — detection-coverage depth/active; absorbs this phase's Step 6b + the D4 full re-walk as its Step 5
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — the MCP server, approval gate, and task-tree backbone this phase hardens
 - [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon/`PlanTree`/`Finding`-schema foundations and decision-engine registry (R9, `templates/index.json`) Phase 6 builds on and this phase's ASI04/ASI06 rows cite directly
 - [90-research-hackerbot.md](90-research-hackerbot.md) — the full research and backlog (Groups A-I, plus R for recon) this plan and doc14/doc15 together schedule

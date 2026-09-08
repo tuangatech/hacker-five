@@ -1,6 +1,19 @@
-# Phase 8 Implementation Plan — Detection Coverage Expansion (Weeks 57-64)
+# Phase 8 Implementation Plan — Detection Coverage: Breadth & Precision (Weeks 57-64)
 
 > Part of the [HackerFive documentation set](../README.md).
+
+**Reprioritised 2026-09-07.** Originally a single 10-step "Detection Coverage
+Expansion" phase. It was split: this doc keeps the **breadth + precision** work
+(new protocol support, served-JS mining, affected-version gating, richer crawl —
+Steps 1, 2, 3, 5, 6, 10), each of which is close to self-contained and needs no
+fresh design pass. The **depth + active** work — OOB blind-RCE (was Step 4),
+template-format gaps (was Step 7), AI-agent surface (was Step 8), WAF-aware +
+native injection detectors (was Step 9) — moved to
+[18-implementation-plan-ph9.md](18-implementation-plan-ph9.md), because each one
+needs its own design pass, several *want* this phase's surface-widening first, and
+they are the areas most likely to grow after the next live-testing rounds. The
+moved steps keep their bodies below for provenance, each with a banner pointing at
+the Phase 9 plan. See **Execution order** below.
 
 ## Objective
 
@@ -8,8 +21,9 @@ Phases 5-7 build and harden the recon → decision-engine → approval → scan 
 agent pipeline. Nothing in them widens *what HackerFive can actually detect* — both
 [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) and
 [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) explicitly scope
-detector/vulnerability-class expansion **out**. This phase is where that expansion
-happens, against a pipeline that by this point actually exists to feed it.
+detector/vulnerability-class expansion **out**. This phase (with Phase 9) is where
+that expansion happens, against a pipeline that by this point actually exists to
+feed it.
 
 Every item here is already assessed and approved in
 [follow-up.md](follow-up.md)'s "Detection Coverage — Protocol/Capability Expansion"
@@ -24,29 +38,68 @@ inspection, never literal command execution on a target.
 1. ⬜ **TCP protocol support + network-service exposure detector** (Weeks 57-58)
 2. ⬜ **TLS/SSL passive checks** (Week 59)
 3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
-4. ⬜ **OOB blind-RCE verification** (Week 62)
+4. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 1** — OOB blind-RCE verification (body retained below for provenance)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
-6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip); content-discovery wordlist, headless crawl, LT-63 still open.
-7. ⬜ **Remaining template-format gaps needing a dependency or larger design** (Week 64) — `xpath`, `flow:` cross-block `_N`, `flow:` script constructs, `substr`/`date_time`/`generate_jwt` DSL
-8. ⬜ **AI-agent surface modeling — `llms.txt` / `SKILL.md` / MCP endpoints** (Week 64) — closes LT-78
-9. ⬜ **WAF-aware probing + active injection / upload-bypass detectors** (Week 64) — closes LT-87
+6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip). **Still open:** content-discovery wordlist, headless crawl, LT-63 (CT-log sibling-API), and LT-40's tail — GraphQL introspection, YAML spec bodies, and widening the spec-probe path set (`/openapi.json`, `/v3/api-docs`, `/v2/api-docs`, `/api-docs`, `/swagger/v1/swagger.json` — a cheap win under the existing LT-30 gate, found in the 2026-09-07 crAPI live-validation).
+7. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 2** — remaining template-format gaps (`xpath`, `flow:`, DSL functions) (body retained below)
+8. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 3** — AI-agent surface modeling (`llms.txt` / `SKILL.md` / MCP), closes LT-78 (body retained below)
+9. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 4** — WAF-aware probing + active injection / upload-bypass detectors, closes LT-87 (body retained below)
 10. ⬜ **Eval maturity + release** (Week 64) — `v0.8.0`
 
-(⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step lands, same convention as doc09-16.)
+(⬜ = not yet implemented; 🟡 = partially landed. Filled in with ✅/🟡 and a dated note as each step lands, same convention as doc09-16.)
+
+## Execution order (2026-09-07 reprioritisation)
+
+**Phase ≠ release train.** The phase docs are a *plan*, not a release contract.
+In practice this project already ships in dated tranches that cut across phase
+boundaries (`post-demo-batch`, the near-term batch, `ph7-step4a/b/c`, this phase's
+Step 6 first/second tranche). The `v0.x.0` tags are cut when a coherent batch of
+work is done and green — **not** when a numbered step count is reached. Week
+numbers in the Scope lists are nominal.
+
+The remaining [Phase 7](16-implementation-plan-ph7.md) + Phase 8 + [Phase 9](18-implementation-plan-ph9.md)
+open work is **one backlog**, ordered by (value × independence), with the eval /
+release steps as terminal gates of their phase. Current order:
+
+**Tier 1 — near-term "do now" (small, independent, precision / quality / perf):**
+- [Phase 7](16-implementation-plan-ph7.md) **Step 6a** — F3 (LT-67, content-gate response-grep secret templates) + F4 (LT-71, narrow-load fast path for a small leaf set).
+- **Step 6 tail** — LT-40's spec-probe-path widening + YAML spec bodies (same file, same LT-30 gate); opportunistically the LT-6 weak-HSTS skip-list entry and LT-66's per-endpoint bucket-catch-all cleanup.
+
+**Tier 2 — Phase 8 (breadth & precision; each near self-contained, dependencies already satisfied):**
+1. **Step 1** — TCP + `netservice` detector. Biggest single new class, live-confirmed on a real target (LT-23). Fully independent.
+2. **Step 3** — JS static analysis + cloud-provider fingerprinting. Directly widens the thin idor/ssrf endpoint surface every live run has complained about; closes P1-5. Minor `resolveTechFact` merge overlap with Step 6 / LT-84.
+3. **Step 5** — affected-version (semver) gating. Removes a concrete false-positive class (LT-7); `staleCVEPenalty` is only a stopgap today. Minor `matchTemplateTags` merge overlap with Phase 7 F3.
+4. **Step 2** — TLS/SSL passive checks. Small, clean, fully independent.
+5. **Step 6 remainder** — bounded content discovery + embedded wordlist (needs a wordlist provenance/licence decision), opt-in headless katana, LT-63.
+6. **Step 10** — eval + `v0.8.0`.
+
+**Tier 3 — [Phase 9](18-implementation-plan-ph9.md) (depth & active; each needs a design pass, several want Tier-2 surface first):**
+7. Phase 9 **Step 1** — OOB blind-RCE verification.
+8. Phase 9 **Step 2** — template-format gaps (`xpath`, `flow:`).
+9. Phase 9 **Step 3** — AI-agent surface (`llms.txt` / MCP) — LT-78.
+10. Phase 9 **Step 4** — WAF-aware probing + native `sqli`/`xss`/`lfi`/`uploadbypass` — LT-87. **Last:** the injection detectors are parameter-aware and realise their value against the param surface Phase 8 Steps 3 + 6 produce.
+11. Phase 9 **Step 5** — full OWASP Agentic Top 10 re-walk + Phase 7's E2/F1/F2 (deferred here because they gate on Steps 3-4's new agent + active surface).
+12. Phase 9 **Step 6** — eval + `v0.9.0`.
+
+**Independence caveats (merge-coordination, not ordering):** Step 3's cloud-provider
+fact extraction and Step 6 / LT-84's CDN-attribution guard both touch
+`resolveTechFact`. Step 5's semver gate and Phase 7 F3's content-gate both touch
+`matchTemplateTags` / `scoreTemplateForTech`. Neither pair is a sequencing
+constraint — whichever lands first, the second rebases onto it.
 
 **Explicitly out of scope for this plan, named rather than silently dropped:**
 - **Literal command execution on a target.** [follow-up.md](follow-up.md)'s Detection
-  Coverage table already records this as "Reject" — OOB verification (Step 4) gets the
-  same detection value without it, and it conflicts with the read/enumerate-only rule
-  and most program authorization.
+  Coverage table already records this as "Reject" — OOB verification ([Phase 9](18-implementation-plan-ph9.md)
+  Step 1) gets the same detection value without it, and it conflicts with the
+  read/enumerate-only rule and most program authorization.
 - **Headless/DOM XSS via Chromedp as a *community-template* capability.** Step 6 adds a
   JS-rendered crawl for recon signal; it does not relax the `headless:` template
   rejection for arbitrary community templates. First-party DOM-XSS validation stays
-  the separately-planned, sandboxed item it already is.
-- **A generic XPath/XML query engine.** Step 7's `xpath` support is scoped to the
-  matcher/extractor shapes real corpus templates actually use, evaluated against a
-  concrete dependency footprint per CLAUDE.md's dependency rule — not an open-ended
-  XML feature.
+  the separately-planned, sandboxed item it already is ([Phase 9](18-implementation-plan-ph9.md) Step 4).
+- **A generic XPath/XML query engine.** [Phase 9](18-implementation-plan-ph9.md) Step 2's
+  `xpath` support is scoped to the matcher/extractor shapes real corpus templates
+  actually use, evaluated against a concrete dependency footprint per CLAUDE.md's
+  dependency rule — not an open-ended XML feature.
 - **Large-wordlist directory/parameter brute-forcing as a default.** Step 6's content
   discovery is a small curated list, opt-in, `--recon-depth full` only, and rides
   httpx's existing rate limit. A `directory-list-2.3-medium`-scale sweep, or
@@ -56,18 +109,13 @@ inspection, never literal command execution on a target.
 
 ## Dependencies used in this plan
 
-**Most steps add no new dependency** — TCP/TLS work is stdlib (`net`, `crypto/tls`),
-JS static analysis is regex/AST over already-crawled response bodies, OOB blind-RCE
-reuses the existing `pkg/oob` Interactsh client Phase 6 already wired into the template
-engine. **Two steps carry a real "verify before adding" gate:**
-- **Step 7 (`xpath`)** — needs an XPath-over-HTML library (e.g. `antchfx/htmlquery` +
-  `antchfx/xpath`). Verify the real transitive footprint via a scratch-branch `go get`
-  and a `go.mod` diff before committing, exactly as doc02 §8's `interactsh-client`
-  lesson requires. If disproportionate, implement only the query subset real templates
-  use directly.
-- **Step 7 (`generate_jwt` DSL function)** — HMAC signing is stdlib;
-  RSA/EC signing may want the JWT library Phase 2 already pinned. Confirm it's the same
-  version, no new module, before use.
+**No step retained in Phase 8 adds a new dependency** — TCP/TLS work is stdlib
+(`net`, `crypto/tls`), JS static analysis is regex/AST over already-crawled response
+bodies, semver gating reuses `pkg/template/dsl`'s hand-rolled version comparison, and
+the crawl work is flag plumbing + an embedded wordlist. The two "verify before
+adding" gates (`xpath`'s XPath-over-HTML library, `generate_jwt`'s RSA/EC signing)
+moved with the template-format step to [Phase 9](18-implementation-plan-ph9.md)
+Step 2 — see that doc's Dependencies section.
 
 ---
 
@@ -191,7 +239,11 @@ and confirm the new endpoints reach the plan tree's idor/ssrf candidate lists.
 
 ---
 
-## Step 4: OOB Blind-RCE Verification (Week 62) — ⬜ not yet implemented
+## Step 4: OOB Blind-RCE Verification — → RESCHEDULED to [Phase 9](18-implementation-plan-ph9.md) Step 1 (2026-09-07)
+
+> **Moved to [Phase 9](18-implementation-plan-ph9.md).** The forward plan and DoD now
+> live there; this body is retained for provenance and is unchanged from the original
+> Phase 8 draft.
 
 ### Design
 
@@ -275,7 +327,7 @@ different versions) and confirm they now get *different* template lists.
 
 - **Configurable crawl depth** — `--crawl-depth` (`recon.WithCrawlDepth`, default 2, on `recon` + `plan`) → `runKatana -depth`.
 - **LT-76** — `pkg/recon/endpointprobe.go`: a bounded (≤20), name-ranked Wave-3 pass GETs the status-less `robots.txt`/`sitemap.xml` endpoints with a no-redirect client, folding the first-hop status (+ `final_url` on a 3xx) back onto the `EndpointFact`.
-- **LT-77** (partial) — `recon.IsRedirectFlowPath` + a `resolveEndpointFacts` rule dispatch the corpus's `open-redirect-generic` against a host with a `*/bounce` / `/oauth/authorize` / `/sso` / `*/logout` endpoint. A first-party per-param off-origin-`Location` probe is deferred to Step 9's active-detector work.
+- **LT-77** (partial) — `recon.IsRedirectFlowPath` + a `resolveEndpointFacts` rule dispatch the corpus's `open-redirect-generic` against a host with a `*/bounce` / `/oauth/authorize` / `/sso` / `*/logout` endpoint. A first-party per-param off-origin-`Location` probe is deferred to [Phase 9](18-implementation-plan-ph9.md) Step 4's active-detector work.
 - **LT-64 / LT-65 / LT-84b** — httpx `-include-chain -location`; `analyzeRedirect` marks a cross-host redirect, the `EndpointFact` keeps the first-hop 3xx + records `redirect_chain`/`final_url` (schema v1.6) and withholds the destination's title/body/tech/fingerprint input; out-of-scope `final_url` warns loudly. `dropCDNTechWithoutHeader` drops an httpx CDN brand with no corroborating edge header.
 - **LT-83** — `recon.numericQueryIDCandidates`: a numeric query param taking ≥2 distinct small-int values across crawled URLs for one path → `/path?key={{id}}`, with a pagination/cosmetic-key denylist.
 - **LT-50** — `productEndpointSignatures` + `techEndpointSignatureHit`: a product-distinctive endpoint on the tech fact's own host promotes that host's pending product leaves to ConfidenceHigh.
@@ -283,10 +335,14 @@ different versions) and confirm they now get *different* template lists.
 
 **🟡 Second tranche landed 2026-09-07** (same gate clean):
 
-- **LT-40** — `pkg/recon/specwalk.go` `walkOpenAPISpec`: a fetched OpenAPI 2.0 / 3.x JSON document's `paths`/`parameters` walked into `EndpointFact{Source: "api-spec"}` (basePath / `servers[0].url` path prefix, `{param}` templating kept verbatim, documented query keys appended keyless, cap 200). `probeCommonPaths` keeps the spec-path body (≤3 MiB) and walks it at the existing LT-30-gated `APISpecFact` record site. `recon.isSpecPathParam` makes `SuggestIDOREndpointCandidates` treat a `{param}` segment as an ID position → `/users/{id}` → `/users/{{id}}` with no fabricated id. GraphQL introspection + YAML bodies still open.
-- **LT-61** — `pkg/recon/cdnasn.go` `cdnEdgeASNs`: a dedicated-CDN-only ASN table; Wave 1's ASN lookup runs it through `cdnForASNField`, adds a `cdn-edge:` HostFact note and `agg.markCDNEdge` on a hit; `runNaabu` drops marked hosts from the port scan (fresh slice, per-host LT-61 warning) and skips naabu entirely when nothing remains. Generic clouds (AWS/GCP/Azure) deliberately excluded. Annotation is host-grain (HostFact note), not per-EndpointFact.
+- **LT-40** — `pkg/recon/specwalk.go` `walkOpenAPISpec`: a fetched OpenAPI 2.0 / 3.x JSON document's `paths`/`parameters` walked into `EndpointFact{Source: "api-spec"}` (basePath / `servers[0].url` path prefix, `{param}` templating kept verbatim, documented query keys appended keyless, cap 200). `probeCommonPaths` keeps the spec-path body (≤3 MiB) and walks it at the existing LT-30-gated `APISpecFact` record site. `recon.isSpecPathParam` makes `SuggestIDOREndpointCandidates` treat a `{param}` segment as an ID position → `/users/{id}` → `/users/{{id}}` with no fabricated id. **Live-validated 2026-09-07** against crAPI's real 101 KB `crapi-openapi-spec.json` (served locally): all 40 routes walked; `plan --recon-file` derived 6 `idor` `endpoint_template` candidates from the `{param}` paths, incl. crAPI's real BOLA path family, plus a `businesslogic` leaf off the spec-walked coupon path. GraphQL introspection + YAML bodies still open.
+- **LT-61** — `pkg/recon/cdnasn.go` `cdnEdgeASNs`: a dedicated-CDN-only ASN table; Wave 1's ASN lookup runs it through `cdnForASNField`, adds a `cdn-edge:` HostFact note and `agg.markCDNEdge` on a hit; `runNaabu` drops marked hosts from the port scan (fresh slice, per-host LT-61 warning) and skips naabu entirely when nothing remains. Generic clouds (AWS/GCP/Azure) deliberately excluded. Annotation is host-grain (HostFact note), not per-EndpointFact. Not lab-validatable (loopback targets have no ASN); `cdnasn_test.go` is the coverage.
 
-**Still open in this step:** bounded content-discovery + embedded wordlist (`--content-discovery` — needs a vetted ~4-5k list with documented provenance/licence); the opt-in headless/JS-rendered katana mode; **LT-63** CT-log sibling-API discovery.
+**Still open in this step:**
+- Bounded content-discovery + embedded wordlist (`--content-discovery` — needs a vetted ~4-5k list with documented provenance/licence).
+- The opt-in headless/JS-rendered katana mode.
+- **LT-63** CT-log sibling-API discovery.
+- **LT-40 tail** (Tier-1 near-term — the crAPI live-validation surfaced these): widen the spec-probe path set beyond `/swagger.json` + `/.well-known/openapi.json` to `/openapi.json`, `/v3/api-docs`, `/v2/api-docs`, `/api-docs`, `/swagger/v1/swagger.json` (FastAPI / springdoc / Swashbuckle conventions — crAPI's own Spring `identity` service serves it at `/identity/api-docs`); walk a YAML spec body (already recorded as an `APISpecFact`, just `json.Unmarshal`-only today — normalise via `yaml.Unmarshal`→`json.Marshal` and reuse the walker). Both stay under the existing LT-30 canary/content-type gate, so no new false-positive surface. GraphQL SDL/introspection (needs a POST introspection query) stays deferred.
 
 ### Design
 
@@ -415,7 +471,7 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
   varies across ≥2 crawled URLs becomes an ID-shaped candidate → `/?article={{id}}`,
   feeding `resolveEndpointFacts` like any path candidate. Same "turn a discovered
   endpoint/param into a real candidate" lineage as LT-40/LT-50/LT-76; realises value once
-  auth is available for `idor` or the Step 9 native injection detector exists.
+  auth is available for `idor` or the [Phase 9](18-implementation-plan-ph9.md) Step 4 native injection detector exists.
 - **Per-path-timeout vs host-down circuit-breaker** ([follow-up.md](follow-up.md) LT-86).
   Recon's repeated-error breaker (LT-4) abandons a host when a few Wave-3 paths time out —
   `sandbox.securegateway.com` served `GET /` and `/robots.txt` fine but tarpits
@@ -465,7 +521,11 @@ candidate lists.
 
 ---
 
-## Step 7: Remaining Template-Format Gaps (Week 64) — ⬜ not yet implemented
+## Step 7: Remaining Template-Format Gaps — → RESCHEDULED to [Phase 9](18-implementation-plan-ph9.md) Step 2 (2026-09-07)
+
+> **Moved to [Phase 9](18-implementation-plan-ph9.md).** The forward plan and DoD now
+> live there (including the two dependency-footprint gates); this body is retained for
+> provenance and is unchanged from the original Phase 8 draft.
 
 ### Design
 
@@ -519,7 +579,11 @@ against the real sampled templates each gap was measured from.
 
 ---
 
-## Step 8: AI-Agent Surface Modeling — `llms.txt` / `SKILL.md` / MCP (Week 64) — ⬜ not yet implemented — closes LT-78
+## Step 8: AI-Agent Surface Modeling — → RESCHEDULED to [Phase 9](18-implementation-plan-ph9.md) Step 3 (2026-09-07) — closes LT-78
+
+> **Moved to [Phase 9](18-implementation-plan-ph9.md).** The forward plan and DoD now
+> live there; this body is retained for provenance and is unchanged from the original
+> Phase 8 draft.
 
 ### Design
 
@@ -573,7 +637,12 @@ enumeration runs read-only.
 
 ---
 
-## Step 9: WAF-Aware Probing + Active Injection / Upload-Bypass Detectors (Week 64) — ⬜ not yet implemented — closes LT-87
+## Step 9: WAF-Aware Probing + Active Injection / Upload-Bypass Detectors — → RESCHEDULED to [Phase 9](18-implementation-plan-ph9.md) Step 4 (2026-09-07) — closes LT-87
+
+> **Moved to [Phase 9](18-implementation-plan-ph9.md).** The forward plan and DoD now
+> live there; this body is retained for provenance and is unchanged from the original
+> Phase 8 draft. Sequenced last in Phase 9 — the native injection detectors want the
+> param surface Phase 8 Steps 3 + 6 produce.
 
 ### Design
 
@@ -646,12 +715,15 @@ reproducible request.
 ### Design
 
 Re-run the fixed eval challenge set (Phase 5's harness, Phase 7's agent-driven
-extension) against the lab targets with every new detector from Steps 1-4, 8 and 9
-enabled, and record the delta: new true positives found, and — held to the same
-"revise down with reasoning, don't pad" discipline — any new false-positive mode the
-new detectors introduced, tracked against the <5% target. Full cost accounting per run
-as in Phase 7 Step 7. Then full integration testing across the Phase 5-8 stack, and
-release.
+extension) against the lab targets with every new detector from **Steps 1, 2, 3**
+(and Step 5's gating, Step 6's crawl) enabled, and record the delta: new true
+positives found, and — held to the same "revise down with reasoning, don't pad"
+discipline — any new false-positive mode the new detectors introduced, tracked
+against the <5% target. Full cost accounting per run as in Phase 7 Step 7. Then full
+integration testing across the Phase 5-8 stack, and release.
+
+`v0.8.0` is cut when the Phase 8 (Tier-2) batch is coherent and green — it does
+**not** wait on Phase 9's depth/active work, which ships under `v0.9.0`.
 
 ### Files (anticipated, confirm at implementation time)
 - `tests/eval/` — the new detectors added to the challenge matrix.
@@ -664,31 +736,33 @@ stated reason.
 
 ## Definition of Done (Phase 8, Weeks 57-64)
 
+Covers the **retained** Phase 8 steps (1, 2, 3, 5, 6, 10). The OOB blind-RCE,
+template-format, AI-agent-surface, and WAF/injection DoD lines moved to
+[18-implementation-plan-ph9.md](18-implementation-plan-ph9.md)'s Definition of Done.
+
 - [ ] `tcp:` templates load and run (bounded connect/probe/banner-match); a `code:`-carrying `tcp:` block still rejected
 - [ ] A `netservice` detector reports anonymous-FTP / unauthenticated-DB / open-Elasticsearch exposure, read-only, `--scope`-gated; `resolvePortFacts` dispatches it instead of only emitting `StatusUnresolved`
 - [ ] A `tls` detector reports expired/weak/mismatched certs, sub-1.2 protocols, and weak ciphers, via stdlib `crypto/tls`, no new dependency
 - [ ] Served-JS static analysis folds extracted endpoints into `ReconResult.Endpoints` (`Source: "js-static"`) and reports high-signal hardcoded secrets as `misconfig` findings, with its decoy-set false-positive rate measured
 - [ ] Cloud-provider exposure facts (`aws`/`s3`/`gcp`) are extracted from headers / URL shapes and dispatch the corpus's cloud-exposure templates (P1-5 closed)
-- [ ] OOB blind-RCE verification proves execution via a callback-only payload, never runs an attacker-meaningful command, and reuses `pkg/oob` unchanged; no real public OOB server in code or tests
 - [ ] `templates/index.json` carries optional `AffectedRange` data; `matchTemplateTags` drops an out-of-affected-range CVE template when the `TechFact` version is known, and real multi-version Nginx hosts get different template lists (LT-7 closed)
 - [ ] An unversioned WordPress plugin/theme slug gets a `readme.txt`/`style.css` version probe (P1-3 leftover closed)
 - [ ] Crawl depth is configurable (default unchanged); an opt-in JS-rendered crawl merges into the Wave 3 endpoint set with a per-host timeout ceiling; an opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints (LT-8 closed)
-- [ ] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed)
-- [ ] An endpoint-name → redirect-parameter-probe rule flags an off-origin `Location` on `*/bounce` / OAuth / SSO / logout-shaped paths, read-only, reusing the `redirect` corpus tag (LT-77 closed)
-- [ ] Recon records `redirect_chain` / `final_url` and warns when an in-scope root redirects out of scope; a `TechFact`'s observed host is tracked and a cross-host (post-redirect / CDN-not-in-own-headers) fact does not seed the target's plan (LT-64 / LT-65 / LT-84b closed)
-- [ ] A numeric-valued query parameter that varies across crawled URLs becomes an `/?param={{id}}` ID candidate, not a blind `/{{id}}` (LT-83 closed)
-- [ ] A Wave-3 path timeout counts toward a per-path skip, not the host-down breaker; a host serving `/` but tarpitting some paths keeps its endpoints/tech in the result (LT-86 closed)
-- [ ] A passive recon signal records an `/llms.txt` / `SKILL.md` / MCP "agent surface" fact; a read-only detector scans the manifest for injection markers and enumerates an unauthenticated MCP `tools/list`, flagging mutation-implying tools, never issuing `tools/call` — decoy false-positive rate measured (LT-78 closed)
-- [ ] A `ReconResult.WAF` fact is set from block-page / header / payload-delta signals; a payload `403`/`406`/`429` against a `2xx` benign control is retried through a bounded mutation/encoding set and a slip-through is a `waf-bypass` finding — off when no WAF fact (LT-87)
-- [ ] First-party `sqli` / `xss` / `lfi` / `uploadbypass` detectors ship (parameter-aware, read-only, dispatched from recon candidates), each with its decoy-set false-positive rate measured against the <5% target — or a sub-item is explicitly descoped with a stated reason (LT-87)
-- [ ] `xpath` matcher/extractor support ships (dependency footprint verified first) or is explicitly descoped with a stated reason; `flow:` cross-block `_N` indexing ships or is explicitly descoped; `substr`/`date_time`/`generate_jwt` DSL functions ship; `flow:` `if`/`set`/`for` script constructs ship or are explicitly descoped
+- [x] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed) — 2026-09-07, first tranche
+- [x] An endpoint-name → redirect-parameter-probe rule flags a `*/bounce` / OAuth / SSO / logout-shaped path into the `redirect`-tagged corpus check (LT-77 partial, first tranche); a first-party per-param off-origin-`Location` probe is [Phase 9](18-implementation-plan-ph9.md) Step 4
+- [x] Recon records `redirect_chain` / `final_url` and warns when an in-scope root redirects out of scope; a `TechFact`'s observed host is tracked and a cross-host (post-redirect / CDN-not-in-own-headers) fact does not seed the target's plan (LT-64 / LT-65 / LT-84b closed) — 2026-09-07, first tranche
+- [x] A numeric-valued query parameter that varies across crawled URLs becomes an `/?param={{id}}` ID candidate, not a blind `/{{id}}` (LT-83 closed) — 2026-09-07, first tranche
+- [x] A Wave-3 path timeout counts toward a per-path skip, not the host-down breaker; a host serving `/` but tarpitting some paths keeps its endpoints/tech in the result (LT-86 closed) — 2026-09-07, first tranche
+- [x] A reachable OpenAPI/Swagger JSON doc is walked into `api-spec` `EndpointFact`s that feed `resolveEndpointFacts` (LT-40) — 2026-09-07, second tranche, live-validated against crAPI; **tail open** (Tier-1): widen the spec-probe path set, walk YAML bodies
+- [x] A host resolving into a known dedicated-CDN ASN is dropped from the naabu port scan with a `cdn-edge:` note (LT-61) — 2026-09-07, second tranche
 - [ ] New-detector yield and any new false-positive mode measured against all lab targets, tracked against the <5% target, with full cost accounting
 - [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
 - [ ] `v0.8.0` tagged and released, or explicitly held with a stated reason
 
 ## See also
+- [18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) — the depth/active half (OOB blind-RCE, template-format gaps, AI-agent surface, WAF + native injection detectors); the "Execution order" section above spans both
 - [follow-up.md](follow-up.md) — the Detection Coverage table and Live-Testing (LT-7, LT-8, LT-23) findings this phase schedules
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) / [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — the agent pipeline this phase's new detectors feed into, and whose stated scope boundaries kept detector expansion out until now
-- [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — the `code:`/`javascript:`/`headless:`/`file:` template-rejection boundary Step 1/Step 7 work within
+- [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — the `code:`/`javascript:`/`headless:`/`file:` template-rejection boundary Step 1 (and Phase 9 Step 2) work within
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — the read/enumerate-only rule every step here holds to
 - [03-development-roadmap.md](03-development-roadmap.md) — full phase roadmap this plan extends

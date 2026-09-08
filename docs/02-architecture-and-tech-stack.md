@@ -2,7 +2,7 @@
 
 > Part of the [HackerFive documentation set](../README.md).
 
-## Design Principles
+## Design Principles in @02 Design Principles
 
 The hybrid direction the project commits to, stated once here rather than left implicit across doc90/doc14/doc15.
 
@@ -198,7 +198,7 @@ The full flow, `recon → decision engine → approval → scan → triage`. **S
 - **Auth Bypass** — state-based checks: no-credentials call, JWT tampering (`alg:none`, stripped signature), cross-user token reuse, rate-limit-signal probe.
 - **SSRF** — scheme-based redirection probes (`file://`, `gopher://`) plus a blind out-of-band check via `pkg/oob`'s Interactsh client. `--oob-server` defaults to 2 public servers; `--no-oob` or a self-hosted server for a real third-party engagement.
 - **Business Logic** — the one detector with mutating checks (coupon self-mint/apply, apply race), gated behind `--allow-writes` — CLAUDE.md's sole permanent exception to read/enumerate-only; absent, those checks are skipped with a stderr warning.
-- **Planned ([Phase 8](17-implementation-plan-ph8.md)):** a `tcp:` protocol executor + `netservice` detector (anonymous-FTP / unauth-DB / open-Elasticsearch, read-only), a `tls` detector (expired/weak certs, sub-1.2 protocols), JS static analysis (secrets + endpoints in served JS, folded into `ReconResult.Endpoints`), and OOB blind-RCE verification.
+- **Planned ([Phase 8](17-implementation-plan-ph8.md)):** a `tcp:` protocol executor + `netservice` detector (anonymous-FTP / unauth-DB / open-Elasticsearch, read-only), a `tls` detector (expired/weak certs, sub-1.2 protocols), and JS static analysis (secrets + endpoints in served JS, folded into `ReconResult.Endpoints`). **[Phase 9](18-implementation-plan-ph9.md):** OOB blind-RCE verification, and first-party `sqli`/`xss`/`lfi`/`uploadbypass` + WAF-aware probing.
 
 Detector-specific logic sits on top of the shared **Template Runner** (YAML parse → request via the worker pool → matcher/extractor engine) rather than each detector reimplementing HTTP handling.
 
