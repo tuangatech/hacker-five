@@ -420,6 +420,14 @@ func (r *Recon) runWHOISAndASN(ctx context.Context, agg *aggregator, domain stri
 	if ip, err := firstIPv4(ctx, domain); err == nil {
 		if asn, prefix, country, err := lookupASN(ctx, ip); err == nil {
 			host.Notes = append(host.Notes, fmt.Sprintf("asn: %s | %s | %s (resolved via %s)", asn, prefix, country, ip))
+			// LT-61 (docs/follow-up.md): if that AS is a known CDN/edge
+			// network, this host is a CDN POP and not the origin — record it
+			// so runNaabu skips a pointless edge port scan and the plan/report
+			// doesn't read as origin coverage.
+			if cdn := cdnForASNField(asn); cdn != "" {
+				host.Notes = append(host.Notes, fmt.Sprintf("cdn-edge: ASN %s (%s) is a CDN/edge network — %s resolves to a CDN POP, not the origin; port scan and edge headers reflect the CDN (LT-61)", asn, cdn, domain))
+				agg.markCDNEdge(domain, cdn)
+			}
 		} else {
 			agg.addWarning("wave1: asn: %v", err)
 		}

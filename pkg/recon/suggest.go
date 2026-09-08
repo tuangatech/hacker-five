@@ -22,6 +22,87 @@ func isIDShaped(s string) bool {
 	return s != "" && (numericIDPattern.MatchString(s) || uuidPattern.MatchString(s))
 }
 
+// isSpecPathParam reports whether seg is an OpenAPI/Swagger path-template
+// parameter — "{id}", "{userId}", "{user_id}". Such a segment is an
+// identifier position by definition (LT-40, docs/follow-up.md), so an
+// EndpointFact the spec walker emitted with the templating intact
+// ("/users/{id}") yields an {{id}} candidate the same as an observed
+// "/users/482" would, without the walker fabricating a concrete id.
+func isSpecPathParam(seg string) bool {
+	return len(seg) > 2 && strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}")
+}
+
+// smallIntPattern matches a 1-6 digit run — a plausible per-record object
+// ID, small enough to exclude epoch timestamps and cache-buster nonces that
+// idShapedQueryCandidate's name check (looksLikeIDKey) would already skip
+// but numericQueryIDCandidates, which ignores the key name, must not.
+var smallIntPattern = regexp.MustCompile(`^[0-9]{1,6}$`)
+
+// nonIDNumericQueryKeys are query-parameter names that conventionally carry
+// a small integer that is not an object identifier — pagination, image
+// resize, cache-busting. A varying numeric value on one of these is not an
+// IDOR/SQLi candidate even though its shape matches (docs/follow-up.md
+// LT-83). Same "exclude by curated table" discipline as ssrfParamKeywords.
+var nonIDNumericQueryKeys = map[string]bool{
+	"page": true, "limit": true, "offset": true, "per_page": true, "perpage": true,
+	"page_size": true, "pagesize": true, "start": true, "count": true, "size": true,
+	"w": true, "h": true, "width": true, "height": true, "dpr": true, "quality": true,
+	"q": true, "fit": true, "v": true, "ver": true, "version": true, "rev": true,
+	"t": true, "ts": true, "timestamp": true, "_": true,
+}
+
+// numericQueryIDCandidates finds query keys whose observed value is a small
+// integer that varies across at least two crawled URLs sharing the same
+// path, and returns each as a "/path?key={{id}}" candidate. This is the
+// IDOR/SQLi surface of a query-routed CMS (?article=3..13, ?topic=1..2 —
+// sandbox-royal.securegateway.com, docs/follow-up.md LT-83) that
+// idShapedQueryCandidate misses because it gates on the key *name*
+// (looksLikeIDKey) and "article" doesn't look like an identifier. The
+// ">= 2 distinct values" requirement is what separates a route parameter
+// enumerated by the crawl from a lone constant that could be anything.
+func numericQueryIDCandidates(endpoints []EndpointFact) []string {
+	type pathKey struct{ path, key string }
+	values := map[pathKey]map[string]bool{}
+	var order []pathKey
+	for _, ep := range endpoints {
+		u, err := url.Parse(ep.URL)
+		if err != nil || u.RawQuery == "" {
+			continue
+		}
+		if IsStaticAssetPath(u.Path) || !IsPlausibleURLPath(u.Path) {
+			continue
+		}
+		for _, pair := range strings.Split(u.RawQuery, "&") {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			key := kv[0]
+			if key == "" || nonIDNumericQueryKeys[strings.ToLower(key)] {
+				continue
+			}
+			val, err := url.QueryUnescape(kv[1])
+			if err != nil || !smallIntPattern.MatchString(val) {
+				continue
+			}
+			k := pathKey{u.Path, key}
+			if values[k] == nil {
+				values[k] = map[string]bool{}
+				order = append(order, k)
+			}
+			values[k][val] = true
+		}
+	}
+	var out []string
+	for _, k := range order {
+		if len(values[k]) < 2 {
+			continue
+		}
+		out = append(out, k.path+"?"+k.key+"={{id}}")
+	}
+	return out
+}
+
 // jsSyntaxInPath matches a character that never legitimately appears
 // unescaped in a URL path but is common in a JavaScript source fragment —
 // a quote, a backtick, a paren/bracket, a "+", an angle bracket, a
@@ -102,6 +183,16 @@ func SuggestIDOREndpointCandidates(result *ReconResult) []string {
 		seen[tmpl] = true
 		candidates = append(candidates, tmpl)
 	}
+	// LT-83: a query-routed CMS enumerates its content through a numeric
+	// param whose name (e.g. "article") doesn't look ID-shaped — pick those
+	// up from the cross-endpoint value spread, after the per-URL pass above.
+	for _, tmpl := range numericQueryIDCandidates(result.Endpoints) {
+		if seen[tmpl] {
+			continue
+		}
+		seen[tmpl] = true
+		candidates = append(candidates, tmpl)
+	}
 	return candidates
 }
 
@@ -131,7 +222,7 @@ func idShapedCandidate(rawURL string) (string, bool) {
 func idShapedPathCandidate(u *url.URL) (string, bool) {
 	segments := strings.Split(u.Path, "/")
 	for i, seg := range segments {
-		if !isIDShaped(seg) {
+		if !isIDShaped(seg) && !isSpecPathParam(seg) {
 			continue
 		}
 		newSegments := append([]string(nil), segments...)
@@ -175,6 +266,35 @@ func idShapedQueryCandidate(u *url.URL) (string, bool) {
 // parameter that just happens to hold a small integer.
 func looksLikeIDKey(key string) bool {
 	return strings.Contains(strings.ToLower(key), "id")
+}
+
+// redirectFlowPathHints are lower-cased path substrings whose shape is a
+// redirect / OAuth / SSO / logout flow — the classic open-redirect and
+// OAuth-flow surface (`redirect_uri`, `return_to`, `RelayState` params).
+// docs/follow-up.md LT-77: `/accounts/bounce` 302s to `/account`,
+// `/oauth/authorize` + `/oauth/continue` are textbook candidates, but the
+// decision engine had no rule mapping such a path to a redirect probe.
+var redirectFlowPathHints = []string{
+	"/oauth/authorize", "/oauth/continue", "/oauth2/authorize", "/connect/authorize",
+	"/sso", "/saml", "/openid",
+	"/bounce", "/callback", "/logout", "/signout", "/return", "/continue",
+}
+
+// IsRedirectFlowPath reports whether p (a URL path) looks like a redirect /
+// OAuth / SSO / logout flow endpoint — the LT-77 surface the decision
+// engine dispatches the generic open-redirect check against. Requires a
+// plausible path first, so a JS fragment never matches.
+func IsRedirectFlowPath(p string) bool {
+	if !IsPlausibleURLPath(p) || IsStaticAssetPath(p) {
+		return false
+	}
+	lp := strings.ToLower(p)
+	for _, hint := range redirectFlowPathHints {
+		if strings.HasSuffix(lp, hint) || strings.Contains(lp, hint+"/") || strings.Contains(lp, hint+"?") {
+			return true
+		}
+	}
+	return false
 }
 
 // SuggestAuthBypassPathsFromRecon buckets result's EndpointFacts into

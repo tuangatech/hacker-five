@@ -26,7 +26,7 @@ inspection, never literal command execution on a target.
 3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
 4. ⬜ **OOB blind-RCE verification** (Week 62)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
-6. ⬜ **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86)
+6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip); content-discovery wordlist, headless crawl, LT-63 still open.
 7. ⬜ **Remaining template-format gaps needing a dependency or larger design** (Week 64) — `xpath`, `flow:` cross-block `_N`, `flow:` script constructs, `substr`/`date_time`/`generate_jwt` DSL
 8. ⬜ **AI-agent surface modeling — `llms.txt` / `SKILL.md` / MCP endpoints** (Week 64) — closes LT-78
 9. ⬜ **WAF-aware probing + active injection / upload-bypass detectors** (Week 64) — closes LT-87
@@ -269,7 +269,24 @@ different versions) and confirm they now get *different* template lists.
 
 ---
 
-## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — ⬜ not yet implemented — closes LT-8
+## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07 — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86
+
+**🟡 First tranche landed 2026-09-07** (build / `go vet` / `go test -race` / `golangci-lint` all clean):
+
+- **Configurable crawl depth** — `--crawl-depth` (`recon.WithCrawlDepth`, default 2, on `recon` + `plan`) → `runKatana -depth`.
+- **LT-76** — `pkg/recon/endpointprobe.go`: a bounded (≤20), name-ranked Wave-3 pass GETs the status-less `robots.txt`/`sitemap.xml` endpoints with a no-redirect client, folding the first-hop status (+ `final_url` on a 3xx) back onto the `EndpointFact`.
+- **LT-77** (partial) — `recon.IsRedirectFlowPath` + a `resolveEndpointFacts` rule dispatch the corpus's `open-redirect-generic` against a host with a `*/bounce` / `/oauth/authorize` / `/sso` / `*/logout` endpoint. A first-party per-param off-origin-`Location` probe is deferred to Step 9's active-detector work.
+- **LT-64 / LT-65 / LT-84b** — httpx `-include-chain -location`; `analyzeRedirect` marks a cross-host redirect, the `EndpointFact` keeps the first-hop 3xx + records `redirect_chain`/`final_url` (schema v1.6) and withholds the destination's title/body/tech/fingerprint input; out-of-scope `final_url` warns loudly. `dropCDNTechWithoutHeader` drops an httpx CDN brand with no corroborating edge header.
+- **LT-83** — `recon.numericQueryIDCandidates`: a numeric query param taking ≥2 distinct small-int values across crawled URLs for one path → `/path?key={{id}}`, with a pagination/cosmetic-key denylist.
+- **LT-50** — `productEndpointSignatures` + `techEndpointSignatureHit`: a product-distinctive endpoint on the tech fact's own host promotes that host's pending product leaves to ConfidenceHigh.
+- **LT-86b** — `recon.isRequestTimeout`: a client/context timeout is a per-path skip, not a host-down signal; only a connection-level failure feeds the LT-4 breaker.
+
+**🟡 Second tranche landed 2026-09-07** (same gate clean):
+
+- **LT-40** — `pkg/recon/specwalk.go` `walkOpenAPISpec`: a fetched OpenAPI 2.0 / 3.x JSON document's `paths`/`parameters` walked into `EndpointFact{Source: "api-spec"}` (basePath / `servers[0].url` path prefix, `{param}` templating kept verbatim, documented query keys appended keyless, cap 200). `probeCommonPaths` keeps the spec-path body (≤3 MiB) and walks it at the existing LT-30-gated `APISpecFact` record site. `recon.isSpecPathParam` makes `SuggestIDOREndpointCandidates` treat a `{param}` segment as an ID position → `/users/{id}` → `/users/{{id}}` with no fabricated id. GraphQL introspection + YAML bodies still open.
+- **LT-61** — `pkg/recon/cdnasn.go` `cdnEdgeASNs`: a dedicated-CDN-only ASN table; Wave 1's ASN lookup runs it through `cdnForASNField`, adds a `cdn-edge:` HostFact note and `agg.markCDNEdge` on a hit; `runNaabu` drops marked hosts from the port scan (fresh slice, per-host LT-61 warning) and skips naabu entirely when nothing remains. Generic clouds (AWS/GCP/Azure) deliberately excluded. Annotation is host-grain (HostFact note), not per-EndpointFact.
+
+**Still open in this step:** bounded content-discovery + embedded wordlist (`--content-discovery` — needs a vetted ~4-5k list with documented provenance/licence); the opt-in headless/JS-rendered katana mode; **LT-63** CT-log sibling-API discovery.
 
 ### Design
 

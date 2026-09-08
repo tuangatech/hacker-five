@@ -35,6 +35,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 		allowNoScope        bool
 		rateLimit           int
 		concurrency         int
+		crawlDepth          int
 		verbose             bool
 		policyFile          string
 		allowPolicyOverride bool
@@ -83,7 +84,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 				ProxyURL:            root.proxy,
 			}), httpclient.WithRateLimit(ratelimit.New(rateLimit)))
 
-			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
+			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency), recon.WithCrawlDepth(crawlDepth)}
 			if s != nil {
 				opts = append(opts, recon.WithScope(s))
 			}
@@ -124,6 +125,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&allowNoScope, "allow-no-scope", false, "proceed with no --scope boundary — every host recon discovers is treated as in-scope, including unrelated infrastructure (e.g. a shared CDN/vendor domain); lab/local use only, never a real engagement")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", recon.DefaultRateLimit, "requests/sec passed to each external recon binary's own native rate-limit flag, and used for this package's own direct HTTP calls")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
+	cmd.Flags().IntVar(&crawlDepth, "crawl-depth", recon.DefaultCrawlDepth, "Wave 3 katana crawl depth (--recon-depth full only); higher widens the idor/authbypass/ssrf candidate surface at a proportional request/time cost (LT-8)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")

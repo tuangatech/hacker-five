@@ -1455,3 +1455,75 @@ func TestResolve_APISpec_MatchesTemplateTags(t *testing.T) {
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "swagger-api-docs" })
 	require.NotNil(t, leaf, "an openapi spec should also rank synced templates tagged 'swagger', same as a real swagger TechFact would")
 }
+
+// TestResolve_RedirectFlowEndpoint_DispatchesOpenRedirectCheck guards LT-77
+// (Phase 8 Step 6): a redirect/OAuth-flow-shaped endpoint dispatches the
+// corpus's generic open-redirect check against the host.
+func TestResolve_RedirectFlowEndpoint_DispatchesOpenRedirectCheck(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "open-redirect-generic", Tags: []string{"redirect"}},
+	}
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/accounts/bounce", Method: "GET", StatusCode: 302, Source: "sitemap-xml", Confidence: "low"},
+			{URL: "http://example.test/about", Method: "GET", StatusCode: 200, Source: "katana-crawl", Confidence: "medium"},
+		},
+	}
+
+	tree, _ := Resolve(result, index)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "open-redirect-generic" })
+	require.NotNil(t, leaf, "a */bounce endpoint must dispatch the generic open-redirect template (LT-77)")
+	assert.Equal(t, agenttask.StatusPending, leaf.Status)
+	assert.Contains(t, leaf.Rationale, "LT-77")
+}
+
+func TestResolve_NoRedirectFlowEndpoint_NoOpenRedirectLeaf(t *testing.T) {
+	index := []templatesync.Entry{{ID: "open-redirect-generic", Tags: []string{"redirect"}}}
+	result := &recon.ReconResult{
+		Target:    "http://example.test",
+		Endpoints: []recon.EndpointFact{{URL: "http://example.test/products/42", Method: "GET", StatusCode: 200, Source: "katana-crawl", Confidence: "medium"}},
+	}
+	tree, _ := Resolve(result, index)
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "open-redirect-generic" })
+	assert.Nil(t, leaf, "a plain product path must not dispatch the open-redirect check")
+}
+
+// TestResolve_TechEndpointSignature_PromotesConfidence guards LT-50 (Phase 8
+// Step 6): a product-distinctive endpoint on the same host as its tech fact
+// promotes that host's pending product leaves to ConfidenceHigh.
+func TestResolve_TechEndpointSignature_PromotesConfidence(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "jira-unauth-dashboards", Tags: []string{"jira", "exposure"}},
+	}
+	result := &recon.ReconResult{
+		Target:    "http://jira.example.test",
+		TechStack: []recon.TechFact{{Name: "Jira", Host: "jira.example.test", Source: "httpx-tech-detect", Confidence: "low"}},
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://jira.example.test/secure/Dashboard.jspa", Method: "GET", StatusCode: 200, Source: "katana-crawl", Confidence: "medium"},
+		},
+	}
+
+	tree, _ := Resolve(result, index)
+
+	leaf := findLeaf(t, tree, "jira.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "jira-unauth-dashboards" })
+	require.NotNil(t, leaf)
+	assert.Equal(t, agenttask.ConfidenceHigh, leaf.Confidence, "an observed Jira-distinctive endpoint must promote the Jira leaf (LT-50)")
+	assert.Contains(t, leaf.Rationale, "LT-50")
+}
+
+func TestResolve_TechEndpointSignature_NoHitLeavesConfidenceAlone(t *testing.T) {
+	index := []templatesync.Entry{{ID: "jira-unauth-dashboards", Tags: []string{"jira", "exposure"}}}
+	result := &recon.ReconResult{
+		Target:    "http://jira.example.test",
+		TechStack: []recon.TechFact{{Name: "Jira", Host: "jira.example.test", Source: "httpx-tech-detect", Confidence: "low"}},
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://jira.example.test/some/unrelated/path", Method: "GET", StatusCode: 200, Source: "katana-crawl", Confidence: "medium"},
+		},
+	}
+	tree, _ := Resolve(result, index)
+	leaf := findLeaf(t, tree, "jira.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "jira-unauth-dashboards" })
+	require.NotNil(t, leaf)
+	assert.Equal(t, agenttask.ConfidenceLow, leaf.Confidence, "no signature endpoint -> the fingerprint's own confidence stands")
+}

@@ -144,6 +144,47 @@ var endpointSignals = []endpointSignal{
 	{pathSubstr: "wp-json/wp/v2/users", templateIDs: []string{"wordpress-user-enum"}},
 }
 
+// productEndpointSignatures pairs a normalized tech name (NormalizeTechName)
+// with lower-cased path substrings that only that product serves. LT-50
+// (docs/follow-up.md, Phase 8 Step 6): a `Jira` tech fact plus an observed
+// `/secure/Dashboard.jspa` on the same host is far stronger evidence than
+// the fingerprint alone — correlatedEndpoints already folds such endpoints
+// into an unresolved leaf's prose, but never to raise a matched leaf's
+// Confidence. When a signature endpoint is present, resolveTechFact
+// promotes that host's pending product leaves to ConfidenceHigh and notes
+// the corroboration. Deliberately specific paths — a generic "/login"
+// would over-match — verified as product-distinctive, 2026-09-07.
+var productEndpointSignatures = map[string][]string{
+	"jira":       {"/secure/dashboard.jspa", "/rest/api/2/", "/servicedesk/customer", "/secure/myjirahome.jspa"},
+	"confluence": {"/dologin.action", "/rest/api/content", "/pages/viewpage.action", "/login.action"},
+	"gitlab":     {"/-/health", "/-/liveness", "/-/readiness", "/users/sign_in", "/explore/projects"},
+	"jenkins":    {"/login?from=", "/securityrealm/", "/manage", "/computer/", "/script"},
+	"grafana":    {"/api/health", "/api/dashboards/home", "/d/", "/grafana/login"},
+	"drupal":     {"/user/login", "/core/misc/drupal.js", "/sites/default/files", "/node?page="},
+	"joomla":     {"/administrator/index.php", "/index.php?option=com_", "/language/en-gb/"},
+}
+
+// techEndpointSignatureHit reports the first productEndpointSignatures path
+// for techName observed on host, if any (LT-50).
+func techEndpointSignatureHit(techName, host string, endpoints []recon.EndpointFact) (string, bool) {
+	sigs, ok := productEndpointSignatures[NormalizeTechName(techName)]
+	if !ok {
+		return "", false
+	}
+	for _, ep := range endpoints {
+		if endpointHostname(ep.URL) != host {
+			continue
+		}
+		p := strings.ToLower(endpointURLPath(ep.URL))
+		for _, sig := range sigs {
+			if strings.Contains(p, sig) {
+				return endpointURLPath(ep.URL), true
+			}
+		}
+	}
+	return "", false
+}
+
 // interestingPorts is a small, hand-authored table of non-HTTP service
 // ports worth surfacing when naabu finds one open (P1-2, docs/follow-up.md)
 // — real recon signal that currently goes entirely unused downstream of a
@@ -1142,6 +1183,19 @@ func resolveTechFact(host string, fact recon.TechFact, templateIndex []templates
 		*leafIdx++
 	}
 
+	// LT-50: a product-distinctive endpoint observed on this same host turns
+	// a plausible fingerprint into a confirmed one — promote this host's
+	// pending product leaves and record what corroborated them.
+	if sigPath, hit := techEndpointSignatureHit(fact.Name, host, endpoints); hit {
+		for _, leaf := range leaves {
+			if leaf.Status != agenttask.StatusPending {
+				continue
+			}
+			leaf.Confidence = agenttask.ConfidenceHigh
+			leaf.Rationale += fmt.Sprintf("; corroborated by an observed %s endpoint (%s) on this host (LT-50)", fact.Name, sigPath)
+		}
+	}
+
 	if len(leaves) == 0 {
 		rationale := fmt.Sprintf("tech fact %q (source: %s) matched no registry capability or template tag", fact.Name, fact.Source)
 		obs := correlatedEndpoints(host, endpoints)
@@ -1267,7 +1321,40 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 			break // one observed match is enough to justify this signal's leaves
 		}
 	}
+
+	// LT-77 (docs/follow-up.md, Phase 8 Step 6): a redirect/OAuth/SSO/logout-
+	// shaped endpoint is a textbook open-redirect candidate. Dispatch the
+	// corpus's generic open-redirect check (the "reuse the redirect tag"
+	// half of LT-77) against the host when recon observed such a path —
+	// same specific-template-ID-on-observed-path shape as endpointSignals
+	// above. A per-param off-origin Location probe beyond this template is a
+	// separate follow-on (needs its own decoy-FP measurement).
+	if redirectFlowEndpoint, ok := firstRedirectFlowEndpoint(hostEndpoints); ok {
+		if entry, present := templateByID["open-redirect-generic"]; present {
+			leaves = append(leaves, &agenttask.PlanNode{
+				ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+				Target:     host,
+				Detector:   entry.ID,
+				Rationale:  fmt.Sprintf("recon observed a redirect/OAuth-flow endpoint (%s) — dispatching the generic open-redirect check (LT-77)", redirectFlowEndpoint),
+				Status:     agenttask.StatusPending,
+				Confidence: agenttask.ConfidenceMedium,
+			})
+			*leafIdx++
+		}
+	}
 	return leaves
+}
+
+// firstRedirectFlowEndpoint returns the path(+query) of the first endpoint
+// whose shape is a redirect/OAuth/SSO/logout flow (LT-77), or ok=false.
+func firstRedirectFlowEndpoint(endpoints []recon.EndpointFact) (string, bool) {
+	for _, ep := range endpoints {
+		p := endpointURLPath(ep.URL)
+		if recon.IsRedirectFlowPath(p) {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // newEndpointLeaf builds one Pending leaf for resolveEndpointFacts —

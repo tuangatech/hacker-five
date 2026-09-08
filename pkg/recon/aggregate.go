@@ -32,6 +32,25 @@ type aggregator struct {
 	// policy signals from Wave 0 (pkg/preflight's D2 input) — see PolicySignals.
 	securityTxt       string
 	robotsDisallowAll bool
+
+	// cdnEdgeHosts maps a NormalizeHost'd hostname to the CDN/edge network its
+	// ASN belongs to (LT-61) — set by Wave 1's ASN lookup, read by runNaabu to
+	// skip a port scan that would only ever reach the CDN's POPs.
+	cdnEdgeHosts map[string]string
+}
+
+// markCDNEdge records that host resolves into cdn's edge network (LT-61).
+func (a *aggregator) markCDNEdge(host, cdn string) {
+	if a.cdnEdgeHosts == nil {
+		a.cdnEdgeHosts = make(map[string]string)
+	}
+	a.cdnEdgeHosts[NormalizeHost(host)] = cdn
+}
+
+// cdnEdgeFor returns the CDN name markCDNEdge recorded for host, if any.
+func (a *aggregator) cdnEdgeFor(host string) (string, bool) {
+	cdn, ok := a.cdnEdgeHosts[NormalizeHost(host)]
+	return cdn, ok
 }
 
 // setUniformResponse records the first uniform-wall verdict seen for a host

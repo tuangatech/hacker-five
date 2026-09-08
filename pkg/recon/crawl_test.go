@@ -6,11 +6,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
+	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 )
 
@@ -51,6 +53,41 @@ func TestRunKatana_OutOfScopeFetchedEndpoint_DivertedToOutOfScope(t *testing.T) 
 		}
 	}
 	assert.True(t, found, "the in-scope seed-host endpoint must still be kept")
+}
+
+// TestRunKatana_CrawlDepth guards Phase 8 Step 6 / LT-8: the katana -depth
+// argument tracks WithCrawlDepth, and an unset depth is byte-for-byte the
+// pre-knob default of 2.
+func TestRunKatana_CrawlDepth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	depthArg := func(opts ...Option) string {
+		t.Helper()
+		var captured []string
+		fake := func(_ context.Context, _ string, name string, args ...string) ([]byte, error) {
+			if name == "katana" {
+				captured = args
+			}
+			return nil, nil
+		}
+		r := New(newTestClient(), append([]Option{withRun(fake)}, opts...)...)
+		_, err := r.Run(context.Background(), srv.URL, DepthFull)
+		require.NoError(t, err)
+		for i, a := range captured {
+			if a == "-depth" && i+1 < len(captured) {
+				return captured[i+1]
+			}
+		}
+		t.Fatalf("no -depth arg in katana invocation: %v", captured)
+		return ""
+	}
+
+	assert.Equal(t, "2", depthArg(), "default crawl depth must stay 2")
+	assert.Equal(t, "4", depthArg(WithCrawlDepth(4)), "WithCrawlDepth(4) must reach katana -depth")
+	assert.Equal(t, "2", depthArg(WithCrawlDepth(0)), "a sub-1 crawl depth is ignored, default stands")
 }
 
 func TestRunWave3_SwaggerJSONExposed_SetsAPISpec(t *testing.T) {
@@ -347,6 +384,63 @@ func TestRunKatana_EscapedJSArtifacts_Dropped(t *testing.T) {
 	}
 	assert.True(t, found, "a genuine katana-crawl endpoint alongside the artifact must still be kept")
 }
+
+// TestProbeCommonPaths_PathTarpit_DoesNotTripHostBreaker guards LT-86
+// (docs/follow-up.md, Phase 8 Step 6): a host that answers some paths but
+// tarpits others (never responds) must keep the endpoints it did serve —
+// the timing-out paths count as per-path skips, not toward the LT-4
+// host-down breaker — and it warns about the tarpit rather than about the
+// breaker.
+func TestProbeCommonPaths_PathTarpit_DoesNotTripHostBreaker(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("api root"))
+		case "/", "/hackerfivereconcanary8b2e14d0":
+			w.WriteHeader(http.StatusNotFound)
+		default: // /graphql, /swagger.json, /.well-known/openapi.json — tarpit
+			<-r.Context().Done()
+		}
+	}))
+	defer srv.Close()
+
+	client := httpclient.New(httpclient.Config{Timeout: 200 * time.Millisecond, MaxRedirects: 2, MaxIdleConnsPerHost: 4})
+	r := New(client, withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	foundAPI := false
+	for _, ep := range result.Endpoints {
+		if ep.URL == srv.URL+"/api" && ep.Source == "wave3-common-path-probe" {
+			foundAPI = true
+		}
+	}
+	assert.True(t, foundAPI, "the path the host actually served must survive the other paths tarpitting")
+
+	var breakerWarn, tarpitWarn int
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "no further common-path/auth-boundary probes will run against this host") {
+			breakerWarn++
+		}
+		if strings.Contains(w, "tarpits some paths") {
+			tarpitWarn++
+		}
+	}
+	assert.Zero(t, breakerWarn, "a tarpit must not trip the host-down breaker (LT-86)")
+	assert.Equal(t, 1, tarpitWarn, "exactly one LT-86 tarpit warning expected")
+}
+
+func TestIsRequestTimeout(t *testing.T) {
+	assert.True(t, isRequestTimeout(context.DeadlineExceeded))
+	assert.False(t, isRequestTimeout(nil))
+	assert.False(t, isRequestTimeout(errFakeConnRefused{}))
+}
+
+type errFakeConnRefused struct{}
+
+func (errFakeConnRefused) Error() string { return "dial tcp 127.0.0.1:1: connect: connection refused" }
 
 // --- LT-4 (docs/follow-up.md): hostErrors trip is now warned, not silent ---
 

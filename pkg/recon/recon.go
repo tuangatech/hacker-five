@@ -29,6 +29,10 @@ const (
 	// program's own limits. Raise it explicitly per engagement.
 	DefaultRateLimit   = 10
 	DefaultConcurrency = 25
+	// DefaultCrawlDepth is katana's -depth for Wave 3. Kept at 2 so a run
+	// with no explicit --crawl-depth is byte-for-byte the crawl it was
+	// before the knob existed (docs/follow-up.md LT-8, Phase 8 Step 6).
+	DefaultCrawlDepth = 2
 )
 
 // DefaultBrowserUserAgent is the User-Agent recon's own direct HTTP probes
@@ -65,6 +69,7 @@ type Recon struct {
 	scope       *scope.Scope // nil = no enforcement (a warning is appended, same posture as scan's --scope)
 	rateLimit   int
 	concurrency int
+	crawlDepth  int
 	run         runFunc
 	progress    func(wave, status string)
 	headers     map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
@@ -96,6 +101,20 @@ func WithConcurrency(n int) Option {
 	return func(r *Recon) {
 		if n > 0 {
 			r.concurrency = n
+		}
+	}
+}
+
+// WithCrawlDepth overrides DefaultCrawlDepth for Wave 3's katana crawl.
+// Values below 1 are ignored (the default stands). A deeper crawl widens
+// the endpoint set resolveEndpointFacts turns into idor/authbypass/ssrf
+// candidates, at a proportional request-volume and wall-clock cost — so
+// it moves off the default only when an operator asks for it
+// (docs/follow-up.md LT-8, Phase 8 Step 6).
+func WithCrawlDepth(d int) Option {
+	return func(r *Recon) {
+		if d >= 1 {
+			r.crawlDepth = d
 		}
 	}
 }
@@ -176,6 +195,7 @@ func New(client *httpclient.Client, opts ...Option) *Recon {
 		hostErrors:  hosterrors.New(hosterrors.DefaultThreshold),
 		rateLimit:   DefaultRateLimit,
 		concurrency: DefaultConcurrency,
+		crawlDepth:  DefaultCrawlDepth,
 		run:         defaultRun,
 		progress:    func(string, string) {},
 	}

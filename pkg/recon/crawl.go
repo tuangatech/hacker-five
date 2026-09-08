@@ -5,13 +5,38 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/uniformwall"
 )
+
+// isRequestTimeout reports whether err is a client/context timeout — the
+// server accepted the connection but never answered in time (a response
+// tarpit) — as opposed to a connection-level failure (refused, reset, DNS,
+// TLS). Only a connection-level failure counts toward the per-host circuit
+// breaker (LT-4) that abandons a host's remaining Wave 3 probes: a host
+// that serves "/" and "/robots.txt" fine but hangs on ".well-known/*" is
+// not down, and dropping the endpoints it already yielded because two paths
+// tarpitted was the LT-86 regression (docs/follow-up.md, Phase 8 Step 6).
+func isRequestTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "timeout") || strings.Contains(s, "deadline exceeded")
+}
 
 // commonPaths are probed directly (via r.client, not katana) to map the
 // shape of the app — distinct from misconfig's exposed-path checks, which
@@ -142,6 +167,11 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 		r.probeCommonPaths(ctx, agg, seed)
 		r.tagAuthBoundary(ctx, agg, seed)
 	}
+
+	// LT-76 (docs/follow-up.md, Phase 8 Step 6): give the highest-interest
+	// paths that Wave 0 lifted from robots.txt / sitemap.xml but never
+	// probed a live status, so resolveEndpointFacts can reason over them.
+	r.probeUnprobedEndpoints(ctx, agg, seeds)
 }
 
 // runKatana crawls seeds. katana's own default scope ("-fs rdn", confirmed
@@ -158,7 +188,7 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
 	defer cancel()
 	katanaArgs := []string{
-		"-silent", "-jsonl", "-jc", "-depth", "2", "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency),
+		"-silent", "-jsonl", "-jc", "-depth", itoa(r.crawlDepth), "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency),
 	}
 	katanaArgs = append(katanaArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every crawl request
 	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana", katanaArgs...)
@@ -296,7 +326,9 @@ func (r *Recon) verifyAuthCandidates(ctx context.Context, agg *aggregator, candi
 		r.applyHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
-			r.hostErrors.RecordError(host)
+			if !isRequestTimeout(err) { // LT-86: a tarpit path isn't a host-down signal
+				r.hostErrors.RecordError(host)
+			}
 			continue
 		}
 		r.hostErrors.RecordSuccess(host)
@@ -329,6 +361,7 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 	canary := r.fetchReconCanary(ctx, agg, base, host)
 
 	suppressed := 0
+	timedOut := 0
 	blocked, answered := 0, 0
 	for _, path := range commonPaths {
 		reqURL := base + path
@@ -337,8 +370,17 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 			continue
 		}
 		r.applyHeaders(req)
+		_, isSpecPath := specPaths[path]
 		resp, err := r.client.Do(req)
 		if err != nil {
+			// LT-86 (docs/follow-up.md): a path that tarpits (the server
+			// accepted the connection but never answered) is a per-path skip,
+			// not evidence the host is down — don't let it feed the LT-4
+			// breaker below and cost this host its other, working endpoints.
+			if isRequestTimeout(err) {
+				timedOut++
+				continue
+			}
 			// LT-4 (docs/follow-up.md): before this, a host that failed every
 			// wave3 request did so 100% silently — hostErrors.ShouldSkip
 			// tripping was never logged anywhere, so a real recon run could
@@ -353,7 +395,19 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 			continue
 		}
 		r.hostErrors.RecordSuccess(host)
-		n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+		// LT-40: a spec path's body is kept (bounded) so walkOpenAPISpec can
+		// parse its routes; every other path's body is measured for length
+		// and discarded exactly as before.
+		var (
+			n        int64
+			specBody []byte
+		)
+		if isSpecPath {
+			specBody, _ = io.ReadAll(io.LimitReader(resp.Body, maxSpecBodyBytes))
+			n = int64(len(specBody))
+		} else {
+			n, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+		}
 		_ = resp.Body.Close()
 		answered++
 		switch resp.StatusCode {
@@ -377,10 +431,29 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		})
 		if kind, ok := specPaths[path]; ok && isStructuredSpecContentType(ctype) {
 			agg.addAPISpec(APISpecFact{Kind: kind, URL: reqURL})
+			// LT-40 (docs/follow-up.md): turn the spec's own documented routes
+			// into endpoint candidates instead of only noting the spec exists —
+			// a "{param}" path becomes an idor candidate, a documented query
+			// key an ssrf one, feeding resolveEndpointFacts like any other
+			// observed endpoint. JSON only this pass; a YAML body parses to
+			// nothing here and is left as the presence-only APISpecFact.
+			if specEPs, truncated := walkOpenAPISpec(reqURL, specBody); len(specEPs) > 0 {
+				for _, ef := range specEPs {
+					agg.addEndpoint(ef)
+				}
+				if truncated {
+					agg.addWarning("wave3: %s: walked the first %d route(s) from the OpenAPI spec at %s into endpoint candidates — the spec has more (LT-40)", host, len(specEPs), path)
+				} else {
+					agg.addWarning("wave3: %s: walked %d route(s) from the OpenAPI spec at %s into endpoint candidates (LT-40)", host, len(specEPs), path)
+				}
+			}
 		}
 	}
 	if suppressed > 0 {
 		agg.addWarning("wave3: %s: %d common-path probe(s) returned a response indistinguishable from a random-path canary (uniform SPA/catch-all) — not recorded as endpoints (LT-30)", host, suppressed)
+	}
+	if timedOut > 0 {
+		agg.addWarning("wave3: %s: %d common-path probe(s) timed out (host tarpits some paths) — counted as per-path skips, not toward the host-down breaker (LT-86)", host, timedOut)
 	}
 
 	r.recordUniformResponse(ctx, agg, base, host, canary, blocked, answered)
@@ -580,6 +653,9 @@ func (r *Recon) fetchReconCanary(ctx context.Context, agg *aggregator, base, hos
 	r.applyHeaders(req)
 	resp, err := r.client.Do(req)
 	if err != nil {
+		if isRequestTimeout(err) { // LT-86: a canary-path tarpit isn't a host-down signal
+			return canaryResponse{}
+		}
 		wasOK := !r.hostErrors.ShouldSkip(host)
 		r.hostErrors.RecordError(host)
 		if wasOK && r.hostErrors.ShouldSkip(host) {

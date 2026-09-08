@@ -72,6 +72,39 @@ func TestSuggestIDOREndpointCandidates(t *testing.T) {
 			},
 			want: nil,
 		},
+		{
+			name: "numeric query param varying across crawled URLs is an ID candidate even when the key name isn't ID-shaped (LT-83)",
+			urls: []string{
+				"https://example.com/index.php?article=3",
+				"https://example.com/index.php?article=8",
+				"https://example.com/index.php?topic=1",
+				"https://example.com/index.php?topic=2",
+			},
+			want: []string{
+				"/index.php?article={{id}}",
+				"/index.php?topic={{id}}",
+			},
+		},
+		{
+			name: "a lone numeric query value (single observation) is not enough for an LT-83 candidate",
+			urls: []string{"https://example.com/index.php?article=8"},
+			want: nil,
+		},
+		{
+			name: "pagination/cosmetic numeric query keys are excluded from LT-83 even when they vary",
+			urls: []string{
+				"https://example.com/list?page=2",
+				"https://example.com/list?page=3",
+				"https://example.com/thumb?w=96",
+				"https://example.com/thumb?w=32",
+			},
+			want: nil,
+		},
+		{
+			name: "an OpenAPI-templated path param is an ID candidate without a concrete id (LT-40)",
+			urls: []string{"https://example.com/api/accounts/{accountId}"},
+			want: []string{"/api/accounts/{{id}}"},
+		},
 	}
 
 	for _, tc := range cases {

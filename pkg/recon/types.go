@@ -79,6 +79,19 @@ type EndpointFact struct {
 	Title       string `json:"title,omitempty"`
 	Source      string `json:"source"`
 	Confidence  string `json:"confidence"`
+
+	// RedirectChain / FinalURL are populated (LT-64, docs/follow-up.md) only
+	// when httpx followed a redirect whose final host differs from the
+	// probed host — a cross-host redirect. RedirectChain is one
+	// "<status> <url>" string per hop; FinalURL is where the chain landed.
+	// StatusCode then stays the *first* hop's status (the 3xx), never the
+	// final 2xx, so a consumer sees "this host redirected away" instead of a
+	// fabricated 200 for content another host served — the linkpop.com →
+	// www.shopify.com case that seeded a whole wrong template class.
+	// BodyLen/ContentType/Title/tech are left off such a record for the same
+	// reason. An empty pair is the common case (no cross-host redirect).
+	RedirectChain []string `json:"redirect_chain,omitempty"`
+	FinalURL      string   `json:"final_url,omitempty"`
 }
 
 // TechFact is one technology/framework signal observed on the target.
