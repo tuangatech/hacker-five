@@ -48,6 +48,17 @@ const corsProbeOrigin = "https://hackerfive-cors-probe.invalid"
 // positives that a purely alphanumeric one correctly catches).
 const baselineCanaryPath = "/hackerfivebaselinecanary9f3c7a21"
 
+// baselineCanaryPath2 is a second guaranteed-nonexistent path, unrelated to
+// baselineCanaryPath, used by detectCatchAll. One canary can't tell a
+// per-path-varying catch-all (DokuWiki renders the requested page name into
+// a "create this topic" page, so every path yields a slightly different
+// body) apart from a real resource — its body legitimately differs from a
+// canary's by the reflected path alone. Two canaries compared to each other
+// can: if both nonexistent paths get the same template, a third path that
+// also gets it is the catch-all, not a find. Same alphanumeric-only
+// discipline as baselineCanaryPath (see its comment).
+const baselineCanaryPath2 = "/hackerfivecanarytwo5b1d84e0"
+
 // suspiciousBaselineStatuses are the status codes a guaranteed-nonexistent
 // canary path returning them actually suggests interception (a WAF/
 // bot-protection/auth layer), not the application's own routing. Used for
@@ -143,6 +154,17 @@ type Detector struct {
 	baselineBody             []byte
 	baselineRequestEvidence  string
 	baselineResponseEvidence string
+
+	// baselineCatchAll is set once by detectCatchAll when a second
+	// guaranteed-nonexistent path also returns 2xx with the same template
+	// shape as the first — i.e. the host serves a real page for any path
+	// (DokuWiki / SPA / soft-404 catch-all). checkExposedPaths /
+	// checkDirListing / checkVerboseErrors then require a probe body to
+	// differ from that template by more than the two canaries differ from
+	// each other before reporting (LT-104).
+	baselineCatchAll        bool
+	baselineCatchAllChecked bool
+	baselineBody2           []byte
 }
 
 // New constructs a Detector.
@@ -198,7 +220,50 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		})
 	}
 
-	checks := []func(context.Context, string, string, string) ([]detectors.Finding, error){
+	d.detectCatchAll(ctx, target, host, authToken)
+	if d.baselineCatchAll {
+		findings = append(findings, detectors.Finding{
+			ID:         "misconfig-soft-404-catchall",
+			Type:       "misconfig",
+			Severity:   "info",
+			Confidence: "medium",
+			Target:     target,
+			Description: fmt.Sprintf(
+				"two unrelated guaranteed-nonexistent paths (%s, %s) both returned status %d with a full page body — this host serves a catch-all/soft-404 for any path, so exposed-path, directory-listing and verbose-error checks below require a probe response to differ structurally from that template before reporting (LT-104)",
+				baselineCanaryPath, baselineCanaryPath2, d.baselineStatus),
+			Evidence: map[string]string{
+				"baseline_path":   baselineCanaryPath,
+				"baseline_path_2": baselineCanaryPath2,
+				"baseline_status": fmt.Sprintf("%d", d.baselineStatus),
+			},
+		})
+	}
+
+	type check func(context.Context, string, string, string) ([]detectors.Finding, error)
+
+	// Product-fingerprint checks are each one to a few requests and each
+	// identifies a specific outdated product plus its known CVEs — the
+	// highest-value output this detector produces. They run first, and are
+	// deliberately NOT gated by the host-error breaker below. Ordered last (as
+	// they were before LT-113), a burst of connection errors from the heavier
+	// probe checks — checkDisallowedMethods fires PUT/DELETE/PATCH plus a
+	// comparison GET; checkDefaultCreds POSTs ~10 login attempts — would push
+	// the host past hosterrors.DefaultThreshold, ShouldSkip would trip, the
+	// loop would `break`, and a cleanly-fingerprinted Dolibarr / Nextcloud /
+	// phpMyAdmin / Webmin host would silently produce nothing (observed live
+	// on erp/ixn.nettix.com.pe, docs/follow-up.md LT-113). A per-target
+	// context deadline still stops them.
+	priorityChecks := []check{
+		d.checkWPUserEnum,
+		d.checkDolibarrOutdated,
+		d.checkNextcloudStatus,
+		d.checkPhpMyAdmin,
+		d.checkWebmin,
+	}
+	// Standard checks are the broader probes (many requests each). They keep
+	// the host-error breaker: once a host has failed DefaultThreshold requests
+	// in a row, continuing to probe it is both pointless and impolite.
+	standardChecks := []check{
 		d.checkExposedPaths,
 		d.checkDirListing,
 		d.checkCommentLeaks,
@@ -207,24 +272,36 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		d.checkCORS,
 		d.checkVerboseErrors,
 		d.checkDefaultCreds,
-		d.checkWPUserEnum,
-		d.checkDolibarrOutdated,
-		d.checkNextcloudStatus,
-		d.checkPhpMyAdmin,
-		d.checkWebmin,
 	}
-	for _, check := range checks {
+
+	// run one check, folding its result into findings. A non-nil error is
+	// non-fatal: no built-in check returns one today, and if one ever starts
+	// to, that is a fault in that single check — skip its results and keep
+	// going, rather than forfeiting every remaining check for this target as
+	// the pre-LT-113 loop did (`return findings, err`). Genuine context
+	// cancellation is caught by the ctx.Err() guards at the call sites.
+	run := func(c check) {
+		fs, err := c(ctx, target, host, authToken)
+		if err != nil {
+			return
+		}
+		findings = append(findings, fs...)
+	}
+
+	for _, c := range priorityChecks {
+		if ctx.Err() != nil {
+			return findings, ctx.Err()
+		}
+		run(c)
+	}
+	for _, c := range standardChecks {
 		if ctx.Err() != nil {
 			return findings, ctx.Err()
 		}
 		if d.hostErrors.ShouldSkip(host) {
 			break
 		}
-		fs, err := check(ctx, target, host, authToken)
-		if err != nil {
-			return findings, err
-		}
-		findings = append(findings, fs...)
+		run(c)
 	}
 	return findings, nil
 }
@@ -242,7 +319,8 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 		if !containsAny(body, rule.Keywords) {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) {
+		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) ||
+			d.looksLikeCatchAllServed(resp.StatusCode, body, rule.Path) {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
@@ -281,7 +359,8 @@ func (d *Detector) checkDirListing(ctx context.Context, target, host, authToken 
 		if !containsAnyFold(body, DirListingMarkers) {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, path) {
+		if d.looksLikeBaselinePage(resp.StatusCode, body, path) ||
+			d.looksLikeCatchAllServed(resp.StatusCode, body, path) {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
@@ -577,7 +656,8 @@ func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authTok
 		if !matched {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) {
+		if d.looksLikeBaselinePage(resp.StatusCode, body, rule.Path) ||
+			d.looksLikeCatchAllServed(resp.StatusCode, body, rule.Path) {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
@@ -625,9 +705,14 @@ func (d *Detector) checkWPUserEnum(ctx context.Context, target, host, authToken 
 	if !containsAll(body, wpUserObjectMarkers) {
 		return nil, nil
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, WPUserEnumPath) {
-		return nil, nil
-	}
+	// No looksLikeBaselinePage / looksLikeCatchAllServed guard here: the
+	// checks above are a hard product signature (200 + JSON content type + a
+	// JSON array carrying every wpUserObjectMarkers key) that a WAF block
+	// page or a soft-404 catch-all cannot satisfy. Adding the guard only
+	// created false negatives — a Dolibarr/Nextcloud/WordPress host that
+	// serves its real app for every path (its own login/redirect behaviour)
+	// had its confirmed-product finding suppressed because the canary probe
+	// landed on that same real page (LT-113, live on erp/ixn.nettix.com.pe).
 
 	var slugs []string
 	seen := map[string]bool{}
@@ -692,9 +777,12 @@ func (d *Detector) checkDolibarrOutdated(ctx context.Context, target, host, auth
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(DolibarrAuthorMeta)) {
 		return nil, nil // root not served, or not Dolibarr
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, "/") {
-		return nil, nil // a WAF/interstitial serving one page for everything
-	}
+	// No baseline/catch-all guard: DolibarrAuthorMeta plus a parsed version
+	// is a hard product signature no WAF/interstitial page carries. Dolibarr
+	// itself redirects every unauthenticated path to the login page, so the
+	// canary probe lands on the very page this check reads — guarding on it
+	// suppressed the finding on a real, outdated, internet-facing instance
+	// (LT-113, live on erp/ixn.nettix.com.pe).
 
 	version := firstSubmatchString(dolibarrTitleVersionRe, body)
 	if version == "" {
@@ -853,9 +941,10 @@ func (d *Detector) checkNextcloudStatus(ctx context.Context, target, host, authT
 	if !containsAll(body, nextcloudStatusMarkers) {
 		return nil, nil
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, NextcloudStatusPath) {
-		return nil, nil
-	}
+	// No baseline/catch-all guard — see checkWPUserEnum: the JSON-key
+	// product gate above is not something a generic catch-all page returns,
+	// and the guard only produced false negatives on hosts that serve a real
+	// app for every path (LT-113).
 
 	product := firstSubmatchString(nextcloudProductnameRe, body)
 	if product == "" {
@@ -951,9 +1040,9 @@ func (d *Detector) checkPhpMyAdmin(ctx context.Context, target, host, authToken 
 		if !containsAll(body, phpMyAdminLoginMarkers) {
 			continue
 		}
-		if d.looksLikeBaselinePage(resp.StatusCode, body, path) {
-			continue
-		}
+		// No baseline/catch-all guard — see checkWPUserEnum: phpMyAdminLoginMarkers
+		// is a hard product gate, and the guard only cost real findings on
+		// hosts that serve one real page for every path (LT-113).
 
 		version := firstSubmatchString(phpMyAdminVersionRe, body)
 		verClause := ""
@@ -1044,9 +1133,9 @@ func (d *Detector) checkWebmin(ctx context.Context, target, host, authToken stri
 	if !bytes.Contains(body, []byte(webminLoginMarker)) {
 		return nil, nil // MiniServ, but this response isn't the unauthenticated login page
 	}
-	if d.looksLikeBaselinePage(resp.StatusCode, body, "/") {
-		return nil, nil
-	}
+	// No baseline/catch-all guard — see checkWPUserEnum: the "Server:
+	// MiniServ" header plus the login marker is a hard product gate no
+	// generic catch-all carries (LT-113).
 
 	version := firstSubmatchString(webminServerVersionRe, []byte(server))
 	verClause := ""
@@ -1275,6 +1364,73 @@ func (d *Detector) looksLikeBaselinePage(status int, body []byte, path string) b
 		tolerance = 32
 	}
 	return diff <= tolerance
+}
+
+// detectCatchAll runs once per Run. probeBaseline has already fetched
+// baselineCanaryPath; if that came back 2xx, this fetches a second
+// unrelated guaranteed-nonexistent path and sets baselineCatchAll when it
+// is also 2xx, same status, and its path-adjusted body length is close to
+// the first's. That is the signature of a host serving a real page for any
+// path — which looksLikeBaselinePage alone can misjudge, because a template
+// that renders the requested path into the page (DokuWiki's "create this
+// topic" page) drifts a single canary's body away from a real probe's by
+// the reflected path text. Comparing two canaries to each other removes
+// that confound (LT-104).
+func (d *Detector) detectCatchAll(ctx context.Context, target, host, authToken string) {
+	if d.baselineCatchAllChecked {
+		return
+	}
+	d.baselineCatchAllChecked = true
+	if !d.baselineFetched || d.baselineStatus < 200 || d.baselineStatus >= 300 {
+		return // a 404 (or a 401/403 WAF wall, handled separately) is not a catch-all
+	}
+	_, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, baselineCanaryPath2, authToken, nil, nil)
+	if err != nil || resp.StatusCode != d.baselineStatus {
+		return
+	}
+	adj1 := bodyLengthExcluding(d.baselineBody, strings.Trim(baselineCanaryPath, "/"))
+	adj2 := bodyLengthExcluding(body, strings.Trim(baselineCanaryPath2, "/"))
+	tol := adj1 / 4
+	if tol < 256 {
+		tol = 256
+	}
+	if absInt(adj1-adj2) > tol {
+		return // the two nonexistent paths get materially different pages — not a plain catch-all
+	}
+	d.baselineBody2 = body
+	d.baselineCatchAll = true
+}
+
+// looksLikeCatchAllServed reports whether a 2xx probe body is just the
+// confirmed catch-all template with this path's name rendered into it,
+// rather than a distinct resource. Only meaningful once detectCatchAll has
+// set baselineCatchAll. The tolerance adapts to how much the two canaries
+// themselves differ per path: a genuine resource (a real Swagger UI, a real
+// directory index) sits many multiples of that variance away from the
+// template; the catch-all's own per-path text substitution does not
+// (LT-104).
+func (d *Detector) looksLikeCatchAllServed(status int, body []byte, path string) bool {
+	if !d.baselineCatchAll || status != d.baselineStatus {
+		return false
+	}
+	adj1 := bodyLengthExcluding(d.baselineBody, strings.Trim(baselineCanaryPath, "/"))
+	adj2 := bodyLengthExcluding(d.baselineBody2, strings.Trim(baselineCanaryPath2, "/"))
+	adjP := bodyLengthExcluding(body, strings.Trim(path, "/"))
+	tol := 3 * absInt(adj1-adj2)
+	if floor := adj1 / 8; tol < floor {
+		tol = floor
+	}
+	if tol < 512 {
+		tol = 512
+	}
+	return absInt(adjP-adj1) <= tol && absInt(adjP-adj2) <= tol
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // looksLikeInterceptedPage is looksLikeBaselinePage's stricter counterpart

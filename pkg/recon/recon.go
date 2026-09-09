@@ -2,9 +2,11 @@ package recon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -34,6 +36,36 @@ const (
 	// before the knob existed (docs/follow-up.md LT-8, Phase 8 Step 6).
 	DefaultCrawlDepth = 2
 )
+
+// DefaultWaveTimeout bounds each external-binary invocation (subfinder,
+// tlsx, dnsx, naabu, httpx, katana) so one hung or slow wave can't stall
+// the whole Run past a caller's own context deadline unnoticed. It was a
+// hard-coded const with no override until LT-111 (docs/follow-up.md): a
+// subfinder enumeration of a broad apex routinely finishes right around
+// 60s, so one run returned 24 hosts and the next returned 3, non-
+// deterministically starving every later wave. Override
+// per run with WithWaveTimeout, or process-wide with the
+// HACKERFIVE_RECON_WAVE_TIMEOUT env var (a Go duration string, e.g.
+// "180s"); an invalid or non-positive value is ignored and this default
+// stands.
+const DefaultWaveTimeout = 60 * time.Second
+
+// waveTimeoutEnv is the process-wide override for DefaultWaveTimeout.
+const waveTimeoutEnv = "HACKERFIVE_RECON_WAVE_TIMEOUT"
+
+// envWaveTimeout returns the duration in waveTimeoutEnv, or 0 if it is
+// unset, empty, unparseable, or non-positive (callers keep their default).
+func envWaveTimeout() time.Duration {
+	v, ok := os.LookupEnv(waveTimeoutEnv)
+	if !ok || strings.TrimSpace(v) == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
 
 // DefaultBrowserUserAgent is the User-Agent recon's own direct HTTP probes
 // send unless an operator overrides it with a --header of the same name.
@@ -70,7 +102,8 @@ type Recon struct {
 	rateLimit   int
 	concurrency int
 	crawlDepth  int
-	run         runFunc
+	waveTimeout time.Duration // per external-binary invocation; DefaultWaveTimeout unless overridden (LT-111)
+	runBinary   runFunc
 	progress    func(wave, status string)
 	headers     map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
 
@@ -158,10 +191,39 @@ func WithHeaders(h map[string]string) Option {
 	}
 }
 
+// WithWaveTimeout overrides DefaultWaveTimeout — the wall-clock cap on each
+// external-binary invocation (subfinder/tlsx/dnsx/naabu/httpx/katana).
+// Values <= 0 are ignored (the default, or any HACKERFIVE_RECON_WAVE_TIMEOUT
+// already applied, stands). LT-111 (docs/follow-up.md): 60s is too tight for
+// subfinder against a broad apex, and a truncated enumeration silently
+// starved every later wave.
+func WithWaveTimeout(d time.Duration) Option {
+	return func(r *Recon) {
+		if d > 0 {
+			r.waveTimeout = d
+		}
+	}
+}
+
 // withRun overrides the binary-execution function — test-only, unexported:
 // production callers always get defaultRun.
 func withRun(fn runFunc) Option {
-	return func(r *Recon) { r.run = fn }
+	return func(r *Recon) { r.runBinary = fn }
+}
+
+// run executes one external recon binary under the caller-provided
+// (wave-bounded) ctx. It wraps r.runBinary so that a bare errWaveTimeout
+// from defaultRun — which has no way to know the configured cap — is
+// re-stamped with r.waveTimeout, keeping the operator-facing "hit the Ns
+// wave time cap" warning honest when WithWaveTimeout /
+// HACKERFIVE_RECON_WAVE_TIMEOUT raised it (LT-111).
+func (r *Recon) run(ctx context.Context, stdin, name string, args ...string) ([]byte, error) {
+	out, err := r.runBinary(ctx, stdin, name, args...)
+	var wt *errWaveTimeout
+	if errors.As(err, &wt) && wt.cap == 0 {
+		return out, &errWaveTimeout{cap: r.waveTimeout}
+	}
+	return out, err
 }
 
 // WithProgressCallback registers fn to be invoked as "wave0"/"wave1"/
@@ -211,8 +273,12 @@ func New(client *httpclient.Client, opts ...Option) *Recon {
 		rateLimit:   DefaultRateLimit,
 		concurrency: DefaultConcurrency,
 		crawlDepth:  DefaultCrawlDepth,
-		run:         defaultRun,
+		waveTimeout: DefaultWaveTimeout,
+		runBinary:   defaultRun,
 		progress:    func(string, string) {},
+	}
+	if d := envWaveTimeout(); d > 0 {
+		r.waveTimeout = d // an explicit WithWaveTimeout option below still wins
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -371,8 +437,3 @@ func (r *Recon) headerArgs() []string {
 	}
 	return args
 }
-
-// waveTimeout bounds each external-binary invocation so one hung wave
-// can't stall the whole Run past a caller's own context deadline going
-// unnoticed.
-const waveTimeout = 60 * time.Second

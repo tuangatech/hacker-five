@@ -406,6 +406,14 @@ DokuWiki is current (`2026-07-14c "Mort"`); `soporte.nettix.com.pe` throwing
   The corpus *load* cost and the shared rate-limit bucket are **LT-106**.
   **→ demo-prep candidate (pending the baseline run); not demo-blocking
   (LT-97 sidesteps it).**
+  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):** both parts
+  done. (1) `runTemplates` returns a dispatched count; `timeBudgetFinding` /
+  `adaptiveAbortFinding` report it. (2) Priority is keyed off
+  `info.severity` (nuclei templates carry no per-file path) — descending
+  severity band, CVE-specific templates last within a band — plus native
+  templates dispatched ahead of the nuclei corpus; sorted once in
+  `loadTemplates`, `pkg/scanner/dispatchorder.go`. See the LT-114 resolution
+  note under the 2026-09-08 baseline section.
 - **LT-106 — corpus-load performance: parsed-corpus cache + on-disk tag
   index + per-target rate share (the expensive half of the old LT-98, split
   out 2026-09-08).** Template **load** of the ~9.6k-file synced corpus is
@@ -681,6 +689,22 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   `UniformResponse.Kind == "catchall"`, drop that host's
   `wave3-common-path-probe` endpoints unless the body hash differs across ≥2
   probed paths.
+  **Scan-side face resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):**
+  the same catch-all also produced a false `misconfig-exposed-path-swagger-ui.html`
+  in the baseline run. `misconfig.Detector` now probes a **second** unrelated
+  guaranteed-nonexistent path (`detectCatchAll`) and, when both canaries come
+  back 2xx with the same template shape, sets `baselineCatchAll`, emits one
+  `misconfig-soft-404-catchall` (info) note, and suppresses exposed-path /
+  dir-listing / verbose-error findings whose body is within an
+  adaptive-to-the-two-canaries' own per-path variance of that template
+  (`looksLikeCatchAllServed`). A genuinely distinct/larger resource on the
+  same host still surfaces. The single-canary `looksLikeBaselinePage` missed
+  this because DokuWiki renders the requested page name into the body, so its
+  one canary drifted from a real probe by the reflected-path text alone.
+  Tests: `TestMisconfigLT104_CatchAllSuppressesExposedPathFP`,
+  `TestMisconfigLT104_CatchAllStillSurfacesDistinctResource`. The **recon-side
+  face** (dropping the phantom `wave3-common-path-probe` endpoints on a
+  catch-all host — LT-66 tail) is still open.
 - **LT-105 — `WordPress:7.1` tech fact on `www.nettix.com.pe`.** WordPress
   core is 6.x; "7.1" is a misparse (a plugin / Block-Editor asset version
   bleeding into the core product fact — cf. LT-21's cache-hash-as-version).
@@ -716,6 +740,15 @@ demo-blocking on its own:
   fix it. **Fix:** a `--wave-timeout` flag + `HACKERFIVE_RECON_WAVE_TIMEOUT`
   env (default stays 60 s), and/or scale by in-scope host count as LT-38
   sketched. **→ recon completeness; demo-blocking (demo target is nettix).**
+  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):** `--wave-timeout`
+  duration flag on `hackerfive recon` + `HACKERFIVE_RECON_WAVE_TIMEOUT` env,
+  both funnelled through `recon.WithWaveTimeout` / `recon.New` so webui / plan /
+  mcp pick up the env var too; default unchanged at `DefaultWaveTimeout = 60s`;
+  precedence default < env < explicit option; the "hit the Ns wave time cap"
+  warning now names the configured value, not a hard-coded 1m0s. Host-count
+  auto-scaling (LT-38) still open. Tests: `pkg/recon/recon_test.go`
+  (`TestEnvWaveTimeout`, `TestNew_WaveTimeoutPrecedence`,
+  `TestWithWaveTimeout_WarningNamesConfiguredCap`).
 - **LT-112 — subfinder emits FTP-banner-prefixed hostnames (`220-sinchi01.nettix.com.pe`),
   and one malformed line silently voids the entire httpx batch.** The hand-run
   subfinder list contained `220-sinchi01.nettix.com.pe` / `220-sinchi03.nettix.com.pe`
@@ -728,6 +761,17 @@ demo-blocking on its own:
   treat "0 results" as success when the input had N lines and some were
   rejected — log the rejects. **→ recon robustness; contributes to LT-111's
   collapse.**
+  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):** new
+  `normalizeHostname` (`pkg/recon/hostname.go`) — lowercases, strips a
+  trailing FQDN dot and a leading `*.` wildcard label, validates LDH label
+  structure + an alphabetic TLD, and rejects a leading FTP/SMTP banner
+  prefix (`^\d{3}-`, the `220-` case, which is valid LDH so the charset
+  check alone misses it). `runWave1` funnels every subfinder/tlsx result
+  through it and emits one `wave1: dropped N malformed host name(s) … (LT-112)`
+  warning. `runHTTPX` now warns `wave2: httpx returned no live host for N
+  input(s) …` instead of silently treating an empty non-timeout result as
+  "nothing alive". Tests: `pkg/recon/hostname_test.go`,
+  `TestRunWave1_DropsMalformedSubfinderHosts`.
 - **LT-113 — the `misconfig` check loop forfeits every remaining check when the
   host-error breaker trips, and the always-on product-fingerprint checks are
   ordered last, so they are the first casualties.** `Detector.Run`
@@ -760,6 +804,18 @@ demo-blocking on its own:
   root-response cache already logged under Step 5's follow-up removes most of
   the pre-product request volume that trips the breaker. **→ detector
   correctness; #1 demo-blocker.**
+  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`), fixes (1)+(2):**
+  `Detector.Run` now splits the check slice into `priorityChecks` (the five
+  product-fingerprint checks — `checkWPUserEnum` / `checkDolibarrOutdated` /
+  `checkNextcloudStatus` / `checkPhpMyAdmin` / `checkWebmin`) and
+  `standardChecks` (the eight broad probes). Priority checks run first and are
+  **not** gated by `hostErrors.ShouldSkip` — only a per-target `ctx` deadline
+  stops them; the breaker `break` still applies to the standard tier. A check
+  returning a non-nil error is now non-fatal (skip its results, keep going)
+  instead of `return findings, err`. Fix (3) — the shared root-response cache —
+  is still open (its own Step 5 follow-up). Test:
+  `tests/unit/detector_misconfig_test.go`
+  (`TestMisconfigDolibarr_ProductCheckRunsBeforeHostErrorBreaker`).
 - **LT-114 — a multi-target corpus scan dispatches ~0 templates per host inside
   any sane per-target budget.** The 8-host `--detector misconfig` scan loaded
   3745 templates then reported, for **every** target,
@@ -777,6 +833,18 @@ demo-blocking on its own:
   the run rests entirely on the native checks that LT-113 is also breaking.
   **→ scan-engine throughput; demo-blocking for any >2-host scan. Raises the
   priority of LT-98 (do-now half) and LT-106 (design half).**
+  **Partly resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`) — the
+  do-now half:** (a) `runTemplates` now returns the real dispatched-template
+  count and `timeBudgetFinding` / `adaptiveAbortFinding` report it as
+  `templates_started` instead of `len(findings)`; (b) native templates dispatch
+  ahead of the nuclei corpus (curated, few); (c) `loadTemplates` sorts the
+  nuclei corpus once into dispatch-priority order (descending `info.severity`
+  band, CVE-specific templates last within a band, stable within ties) via
+  `pkg/scanner/dispatchorder.go`, replacing `filepath.WalkDir`'s lexical
+  `http/cves/**`-first order. The design half — a per-target share of the
+  shared `--rate-limit` token bucket — is still LT-106. Tests:
+  `pkg/scanner/dispatchorder_test.go`,
+  `tests/unit/engine_test.go` (`TestEngineRun_TimeBudgetFinding_ReportsDispatchedNotFindingCount`).
 
 **Baseline finding inventory (what the tool actually produced, 8-host corpus
 run, 20 findings post-dedup):** `www.nettix.com.pe` — `misconfig-wordpress-user-enumeration`

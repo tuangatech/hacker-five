@@ -124,7 +124,7 @@ func (r *Recon) runWave2(ctx context.Context, agg *aggregator, targetHost string
 }
 
 func (r *Recon) runDNSX(ctx context.Context, agg *aggregator, hosts []string) []string {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "dnsx", "-silent", "-json", "-a", "-resp", "-rl", itoa(r.rateLimit))
 	if err != nil && !isWaveTimeout(err) {
@@ -178,7 +178,7 @@ func (r *Recon) runNaabu(ctx context.Context, agg *aggregator, hosts []string) m
 	}
 	hosts = scanHosts
 
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, strings.Join(hosts, "\n"), "naabu", "-silent", "-json", "-top-ports", "100", "-rate", itoa(r.rateLimit))
 	if err != nil && !isWaveTimeout(err) {
@@ -247,7 +247,7 @@ type hostWithIP struct {
 }
 
 func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) ([]string, []hostWithIP) {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	httpxArgs := []string{
 		"-silent", "-json", "-status-code", "-title", "-web-server", "-tech-detect", "-follow-redirects",
@@ -346,6 +346,14 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 				agg.addTech(TechFact{Name: tech, Host: host, Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
 			}
 		}
+	}
+	// LT-112 (docs/follow-up.md): httpx exits 0 with no output both when
+	// every host is genuinely down and when it rejected the input outright
+	// (one malformed line in an `-l`/stdin batch does the latter silently).
+	// A non-timeout empty result for a non-empty host list is worth a
+	// warning, not a silent "nothing is alive".
+	if len(hostFacts) == 0 && len(hosts) > 0 && !isWaveTimeout(err) {
+		agg.addWarning("wave2: httpx returned no live host for %d input(s) — either none responded or httpx rejected the batch (LT-112)", len(hosts))
 	}
 	return urls, hostFacts
 }

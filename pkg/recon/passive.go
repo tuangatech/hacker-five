@@ -251,6 +251,20 @@ func robotsDisallowsAll(body string) bool {
 func (r *Recon) runWave1(ctx context.Context, agg *aggregator, domain string) []string {
 	candidates := map[string]bool{domain: true}
 
+	// LT-112 (docs/follow-up.md): passive sources are not always well-behaved
+	// — subfinder has been seen emitting an FTP banner line verbatim as a
+	// host ("220-sinchi01.nettix.com.pe"), and one malformed value fed to
+	// `httpx -l` silently voids the whole batch. Every subfinder/tlsx result
+	// goes through normalizeHostname before it can reach Wave 2.
+	var dropped []string
+	addCandidate := func(raw string) {
+		if h, ok := normalizeHostname(raw); ok {
+			candidates[h] = true
+		} else if s := strings.TrimSpace(raw); s != "" {
+			dropped = append(dropped, s)
+		}
+	}
+
 	// LT-35 (docs/follow-up.md): subdomain/SAN enumeration only has somewhere
 	// to land when the scope is broader than a list of exact hostnames. A
 	// bug-bounty program's scope.txt is often 8 named assets and nothing else
@@ -272,7 +286,7 @@ func (r *Recon) runWave1(ctx context.Context, agg *aggregator, domain string) []
 				agg.addWarning("wave1: subfinder: %v", err)
 			}
 			for _, h := range hosts {
-				candidates[h] = true
+				addCandidate(h)
 			}
 		}
 
@@ -287,9 +301,13 @@ func (r *Recon) runWave1(ctx context.Context, agg *aggregator, domain string) []
 				agg.addWarning("wave1: tlsx: %v", err)
 			}
 			for _, h := range sans {
-				candidates[h] = true
+				addCandidate(h)
 			}
 		}
+	}
+
+	if len(dropped) > 0 {
+		agg.addWarning("wave1: dropped %d malformed host name(s) from passive enumeration (e.g. %q) — a source returned a value that is not a hostname (LT-112)", len(dropped), dropped[0])
 	}
 
 	if isPrivateOrLoopbackHost(domain) {
@@ -328,7 +346,7 @@ func (r *Recon) filterScope(agg *aggregator, hosts []string) []string {
 }
 
 func (r *Recon) runSubfinder(ctx context.Context, domain string) ([]string, error) {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	out, err := r.run(waveCtx, "", "subfinder", "-d", domain, "-silent", "-json", "-rate-limit", itoa(r.rateLimit))
 	if err != nil && !isWaveTimeout(err) {
@@ -356,7 +374,7 @@ func (r *Recon) runSubfinder(ctx context.Context, domain string) ([]string, erro
 }
 
 func (r *Recon) runTLSX(ctx context.Context, domain string) ([]string, error) {
-	waveCtx, cancel := context.WithTimeout(ctx, waveTimeout)
+	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
 	defer cancel()
 	target := domain + ":443"
 	out, err := r.run(waveCtx, "", "tlsx", "-u", target, "-san", "-silent", "-json")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/toolsync"
 )
@@ -25,19 +26,27 @@ func (e *errBinaryMissing) Error() string {
 }
 
 // errWaveTimeout marks a wave binary that was killed by its per-wave context
-// deadline (waveTimeout) rather than exiting on its own. defaultRun still
+// deadline (r.waveTimeout) rather than exiting on its own. defaultRun still
 // returns the stdout captured up to the kill alongside this error, so a
 // caller logs "results may be partial" and parses what it got instead of
 // silently treating a truncated run as "found nothing" (docs/follow-up.md
 // LT-38: runNaabu's top-100-port scan across every in-scope host routinely
-// hits the 60s cap past ~6 hosts, and the partial port list was used with no
+// hits the cap past ~6 hosts, and the partial port list was used with no
 // visible trace it had been cut off).
-type errWaveTimeout struct{}
+//
+// cap records the wave timeout that was in effect, for the operator-facing
+// message. defaultRun cannot know it (it only sees a ctx deadline), so it
+// leaves cap zero and (*Recon).run re-stamps it with r.waveTimeout (LT-111).
+type errWaveTimeout struct{ cap time.Duration }
 
 // Error carries no tool name — every caller already prefixes the wave and
 // tool ("wave2: naabu: %v"), so naming it here only doubled it.
-func (errWaveTimeout) Error() string {
-	return fmt.Sprintf("hit the %s wave time cap — results may be partial", waveTimeout)
+func (e *errWaveTimeout) Error() string {
+	cap := e.cap
+	if cap <= 0 {
+		cap = DefaultWaveTimeout
+	}
+	return fmt.Sprintf("hit the %s wave time cap — results may be partial", cap)
 }
 
 // runFunc executes name with args and returns its stdout. stdin, if
@@ -85,11 +94,13 @@ func defaultRun(ctx context.Context, stdin string, name string, args ...string) 
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		// A per-wave deadline (waveTimeout) SIGKILLs the process; its stdout
+		// A per-wave deadline (r.waveTimeout) SIGKILLs the process; its stdout
 		// so far is still worth returning, but flagged as errWaveTimeout so a
 		// caller doesn't read a truncated run as an empty result set (LT-38).
-		// Checked before the ExitError branch — a killed process also surfaces
-		// as an *exec.ExitError.
+		// cap is left zero here — (*Recon).run stamps in the configured
+		// timeout for the operator-facing message (LT-111). Checked before the
+		// ExitError branch — a killed process also surfaces as an
+		// *exec.ExitError.
 		if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return out, &errWaveTimeout{}
 		}

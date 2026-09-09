@@ -332,6 +332,100 @@ func TestIsWaveTimeout(t *testing.T) {
 	assert.False(t, isWaveTimeout(nil))
 }
 
+// TestEnvWaveTimeout covers LT-111's process-wide override: a valid Go
+// duration is honored, anything unparseable / non-positive / blank / unset
+// is ignored so the caller keeps its default.
+func TestEnvWaveTimeout(t *testing.T) {
+	cases := []struct {
+		val  string // "" here means the env var is present but empty, which envWaveTimeout treats as unset
+		want time.Duration
+	}{
+		{"180s", 180 * time.Second},
+		{"3m", 3 * time.Minute},
+		{"  90s  ", 90 * time.Second},
+		{"", 0},
+		{"garbage", 0},
+		{"-5s", 0},
+		{"0", 0},
+	}
+	for _, c := range cases {
+		t.Setenv(waveTimeoutEnv, c.val)
+		assert.Equal(t, c.want, envWaveTimeout(), "val=%q", c.val)
+	}
+}
+
+// TestNew_WaveTimeoutPrecedence: default < env var < explicit WithWaveTimeout.
+func TestNew_WaveTimeoutPrecedence(t *testing.T) {
+	t.Setenv(waveTimeoutEnv, "")
+	assert.Equal(t, DefaultWaveTimeout, New(newTestClient()).waveTimeout)
+
+	t.Setenv(waveTimeoutEnv, "42s")
+	assert.Equal(t, 42*time.Second, New(newTestClient()).waveTimeout,
+		"HACKERFIVE_RECON_WAVE_TIMEOUT must override the default")
+
+	assert.Equal(t, 90*time.Second, New(newTestClient(), WithWaveTimeout(90*time.Second)).waveTimeout,
+		"an explicit WithWaveTimeout must win over the env var")
+
+	assert.Equal(t, 42*time.Second, New(newTestClient(), WithWaveTimeout(0)).waveTimeout,
+		"WithWaveTimeout(0) is a no-op — the env value stands")
+}
+
+// TestWithWaveTimeout_WarningNamesConfiguredCap guards LT-111's honesty
+// requirement: defaultRun emits a bare errWaveTimeout (it only sees a ctx
+// deadline), and (*Recon).run must re-stamp it with the cap actually in
+// effect so the operator-facing "hit the Ns wave time cap" warning doesn't
+// always read 1m0s after the cap was raised.
+func TestWithWaveTimeout_WarningNamesConfiguredCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+
+	fake := func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
+		if name == "subfinder" {
+			return []byte(""), &errWaveTimeout{} // bare — as defaultRun would return it
+		}
+		return nil, nil
+	}
+
+	r := New(newTestClient(), withRun(fake), WithWaveTimeout(3*time.Minute))
+	result, err := r.Run(context.Background(), srv.URL, DepthPassive)
+	require.NoError(t, err)
+
+	joined := strings.Join(result.Warnings, " | ")
+	assert.Contains(t, joined, "subfinder")
+	assert.Contains(t, joined, "3m0s wave time cap", "the warning must name the raised cap, not the 1m0s default")
+	assert.NotContains(t, joined, "1m0s")
+}
+
+// TestRunWave1_DropsMalformedSubfinderHosts guards LT-112: a passive source
+// that emits an FTP-banner-prefixed value ("220-...") must not carry it into
+// the candidate set, and the drop must be visible in Warnings rather than
+// silently poisoning the httpx batch.
+func TestRunWave1_DropsMalformedSubfinderHosts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+
+	fake := func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
+		if name == "subfinder" {
+			return []byte(
+				`{"host":"220-sinchi01.nettix.com.pe"}` + "\n" +
+					`{"host":"good.nettix.com.pe"}` + "\n"), nil
+		}
+		return nil, nil
+	}
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthPassive)
+	require.NoError(t, err)
+
+	joined := strings.Join(result.Warnings, " | ")
+	assert.Contains(t, joined, "LT-112")
+	assert.Contains(t, joined, "220-sinchi01.nettix.com.pe", "the dropped value should be shown in the warning")
+
+	for _, h := range result.Hosts {
+		assert.NotEqual(t, "220-sinchi01.nettix.com.pe", h.Host, "the malformed host must never reach the result")
+	}
+}
+
 func TestRun_MissingBinaries_DegradesToWarningsNotFailure(t *testing.T) {
 	fn := func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
 		return nil, &errBinaryMissing{name: name}

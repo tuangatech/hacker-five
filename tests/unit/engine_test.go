@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1000,6 +1001,70 @@ http:
 	mu.Lock()
 	defer mu.Unlock()
 	assert.NotContains(t, strings.Join(msgs, "\n"), "t11", "must not log anything for a template it never dispatched")
+}
+
+// TestEngineRun_TimeBudgetFinding_ReportsDispatchedNotFindingCount guards
+// LT-114 (docs/follow-up.md): when --max-target-duration cuts a corpus run
+// short, the scan-partial-time-budget finding must report how many templates
+// actually started, not how many findings came back. Every template here
+// matches nothing (the host 404s), so the pre-LT-114 code — which passed
+// len(findings) — reported "roughly 0 of 20 templates started" even though
+// several dozen had fired.
+func TestEngineRun_TimeBudgetFinding_ReportsDispatchedNotFindingCount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusNotFound) // nothing matches status:[200] — zero findings
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	const total = 20
+	for i := 0; i < total; i++ {
+		// Distinct path per template so the nuclei response cache can't
+		// collapse all 20 into one network round-trip.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("t%02d.yaml", i)), []byte(fmt.Sprintf(`
+id: t%02d
+info:
+  name: t
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/t%02d"
+    matchers:
+      - type: status
+        status: [200]
+`, i, i)), 0o644))
+	}
+
+	cfg := scanner.Config{
+		Targets:             []string{server.URL},
+		TemplatePaths:       []string{dir},
+		Concurrency:         5,
+		TemplateConcurrency: 2,
+		RateLimit:           1000,
+		MaxTargetDuration:   250 * time.Millisecond, // 20 × 200ms / 2 ≫ 250ms, so the budget always trips first
+		Timeout:             5 * time.Second,
+	}
+	require.NoError(t, cfg.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true}))
+
+	findings, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+
+	var budget *detectors.Finding
+	for i := range findings {
+		if findings[i].ID == "scan-partial-time-budget" {
+			budget = &findings[i]
+		}
+	}
+	require.NotNil(t, budget, "the per-target time budget must have produced a scan-partial-time-budget finding")
+
+	assert.Equal(t, "20", budget.Evidence["templates_total"])
+	started, convErr := strconv.Atoi(budget.Evidence["templates_started"])
+	require.NoError(t, convErr)
+	assert.GreaterOrEqual(t, started, cfg.TemplateConcurrency,
+		"at least the first concurrency-wide wave dispatched before the 250ms budget could fire")
+	assert.Less(t, started, total, "the budget must have stopped dispatch before the whole corpus ran")
 }
 
 // TestEngineRun_TemplateLoop_RunsConcurrently locks in doc15 Step 6b's core
