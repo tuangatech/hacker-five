@@ -207,7 +207,6 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 		threshold = hosterrors.DefaultThreshold
 	}
 	hostCache := hosterrors.New(threshold)
-	pool := workerpool.New(ctx, e.cfg.Concurrency, 2*e.cfg.Concurrency)
 
 	sc, err := e.loadScope()
 	if err != nil {
@@ -216,6 +215,18 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 	e.warnIfWritesUngated()
 
 	nucleiTemplates, nativeTemplates := e.loadTemplates()
+
+	// LT-106 (runtime half): with a large corpus loaded, cap cross-target
+	// concurrency so each in-flight target keeps a usable share of the one
+	// shared --rate-limit bucket — otherwise N concurrent targets each get
+	// RateLimit/N req/s and a per-target --max-target-duration budget expires
+	// having dispatched almost nothing (LT-114). See targetshare.go.
+	poolSize := effectiveTargetConcurrency(e.cfg.Concurrency, e.cfg.RateLimit, len(nucleiTemplates), len(e.cfg.Targets))
+	if poolSize < e.cfg.Concurrency {
+		e.warnf("info", "cross-target concurrency capped %d -> %d so each in-flight target keeps >= %d req/s of the shared --rate-limit %d bucket while %d nuclei templates are loaded (LT-106); raise --rate-limit or narrow --templates/--tags to parallelize more targets",
+			e.cfg.Concurrency, poolSize, minPerTargetShareQPS, e.cfg.RateLimit, len(nucleiTemplates))
+	}
+	pool := workerpool.New(ctx, poolSize, 2*poolSize)
 	// WithOOBServers reuses the same cfg.OOBServers --oob-server/--no-oob
 	// value the ssrf detector's own blind check already uses (see
 	// cfg.OOBServers' doc comment) — one config surface, not a second
@@ -509,14 +520,32 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	// template's tags: block, so the whole corpus must be parsed anyway.
 	fastIDs := e.fastLoadNucleiIDs()
 
+	// scopeTags is resolved here, before the load, so the LT-106 parse cache
+	// can use it: a tag-scoped run (and not an exact-id run — fastIDs already
+	// handles that) parses only the corpus files a still-valid cache lists as
+	// carrying a wanted tag, not the whole ~9.6k. See parsecache.go. The
+	// post-parse filterNucleiByTags/filterNativeByTags below still runs on
+	// whatever loads, so the cache can only narrow, never widen.
+	scopeTags, scopeSource := e.effectiveScopeTags()
+	tagCacheEligible := fastIDs == nil && len(scopeTags) > 0 && !parseCacheDisabled()
+
 	var (
 		nucleiTemplates []*nuclei.Template
 		nativeTemplates []*native.Template
 		rejected        []rejectedTemplate
+		cacheHitDirs    int
 	)
 	for _, dir := range e.cfg.TemplatePaths {
 		if dir == "" {
 			continue
+		}
+		if tagCacheEligible {
+			if cnt, cvt, hit := e.loadDirViaParseCache(dir, scopeTags); hit {
+				nucleiTemplates = append(nucleiTemplates, cnt...)
+				nativeTemplates = append(nativeTemplates, cvt...)
+				cacheHitDirs++
+				continue
+			}
 		}
 		var (
 			nt    []*nuclei.Template
@@ -538,6 +567,14 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		// pkg/templatesync.List's countRejectedByBothFormats, the same fix
 		// applied there for the Web UI's template count.
 		rejected = append(rejected, rejectedByBothFormats(nErrs, vErrs)...)
+
+		// LT-106: refresh this dir's parse cache from the authoritative full
+		// parse we just did, so a later tag-scoped run can skip it. Only when
+		// the whole dir was parsed (not the fastIDs id-peek path). Best
+		// effort — a write failure is logged inside, never fatal.
+		if fastIDs == nil {
+			e.storeParseCache(dir, nt, vt)
+		}
 	}
 	// If the id: peek missed a requested template (never seen on the real
 	// nuclei corpus, but the fast path must not be able to change results),
@@ -572,18 +609,11 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	e.reportRejected(rejected)
 
 	loadedNuclei, loadedNative := len(nucleiTemplates), len(nativeTemplates)
-	// Effective tag scoping (doc15 Step 6a): an explicit --tags (cfg.Tags) is
-	// authoritative and wins untouched; otherwise, unless --all-templates was
-	// passed, scope to the detector-category floor ∪ tech-matched tags a
-	// frontend composed into cfg.DerivedTags. Empty DerivedTags (e.g.
-	// --detector businesslogic, which has no floor) falls through to the full
-	// corpus, same as before this change.
-	scopeTags := e.cfg.Tags
-	scopeSource := "explicit --tags"
-	if len(scopeTags) == 0 && !e.cfg.AllTemplates {
-		scopeTags = e.cfg.DerivedTags
-		scopeSource = "detector/tech scoping"
-	}
+	// Tag scoping (doc15 Step 6a), resolved once into scopeTags/scopeSource
+	// above (e.effectiveScopeTags). Still applied here unconditionally: on an
+	// LT-106 parse-cache hit the loaded set is already tag-selected, so this
+	// keeps everything — it exists as the authoritative backstop for the
+	// full-parse path and for any cache entry whose recorded tags drifted.
 	if len(scopeTags) > 0 {
 		nucleiTemplates = filterNucleiByTags(nucleiTemplates, scopeTags)
 		nativeTemplates = filterNativeByTags(nativeTemplates, scopeTags)
@@ -593,7 +623,7 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		nativeTemplates = filterNativeByID(nativeTemplates, e.cfg.TemplateID)
 	}
 	filtered := (loadedNuclei - len(nucleiTemplates)) + (loadedNative - len(nativeTemplates))
-	if filtered > 0 && len(scopeTags) > 0 {
+	if len(scopeTags) > 0 && (filtered > 0 || cacheHitDirs > 0) {
 		e.warnf("info", "scoped to %d template tag(s) via %s: %s", len(scopeTags), scopeSource, strings.Join(scopeTags, ", "))
 	}
 
@@ -609,9 +639,81 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	// once per target.
 	sortNucleiByDispatchPriority(nucleiTemplates)
 
-	e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
-		len(nucleiTemplates), len(nativeTemplates), len(rejected), filtered)
+	if cacheHitDirs > 0 {
+		e.warnf("info", "loaded %d nuclei-compatible, %d native templates via the LT-106 parse cache (%d dir(s) — tag scope resolved without a full corpus parse)",
+			len(nucleiTemplates), len(nativeTemplates), cacheHitDirs)
+	} else {
+		e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
+			len(nucleiTemplates), len(nativeTemplates), len(rejected), filtered)
+	}
 	return nucleiTemplates, nativeTemplates
+}
+
+// effectiveScopeTags resolves the tag scope a load should apply, identically
+// to the inline logic loadTemplates used before LT-106 hoisted it: an
+// explicit --tags wins; otherwise, unless --all-templates was passed, the
+// detector-category-floor ∪ tech-matched DerivedTags a frontend composed.
+// Returns (nil, "") when nothing scopes the corpus (full run).
+func (e *Engine) effectiveScopeTags() (tags []string, source string) {
+	if len(e.cfg.Tags) > 0 {
+		return e.cfg.Tags, "explicit --tags"
+	}
+	if !e.cfg.AllTemplates && len(e.cfg.DerivedTags) > 0 {
+		return e.cfg.DerivedTags, "detector/tech scoping"
+	}
+	return nil, ""
+}
+
+// loadDirViaParseCache is the LT-106 fast path: if dir has a parse-cache
+// sidecar whose fingerprint still matches the directory, parse only the
+// files it lists as carrying one of scopeTags, not the whole corpus.
+// hit == false means "no usable cache — caller must do a full parse"; it is
+// returned for every failure mode (no sidecar, stale fingerprint, an entry
+// with no recorded path, a listed file that no longer parses), so the fast
+// path can never change what a scan sees.
+func (e *Engine) loadDirViaParseCache(dir string, scopeTags []string) (nt []*nuclei.Template, vt []*native.Template, hit bool) {
+	fp, err := fingerprintTemplateDir(dir)
+	if err != nil {
+		return nil, nil, false
+	}
+	pc, err := readParseCache(dir)
+	if err != nil || pc.Fingerprint != fp {
+		return nil, nil, false
+	}
+	nucleiPaths, nativePaths, ok := selectCachedByTags(pc.Entries, scopeTags)
+	if !ok {
+		return nil, nil, false
+	}
+	nt, nErrs := nuclei.LoadFiles(dir, nucleiPaths)
+	vt, vErrs := native.LoadFiles(dir, nativePaths)
+	if len(nErrs) > 0 || len(vErrs) > 0 || len(nt) != len(nucleiPaths) || len(vt) != len(nativePaths) {
+		e.warnf("info", "parse cache for %s no longer resolves cleanly (%d unreadable entry(ies)) — doing a full parse (LT-106)",
+			dir, len(nErrs)+len(vErrs)+(len(nucleiPaths)-len(nt))+(len(nativePaths)-len(vt)))
+		return nil, nil, false
+	}
+	e.warnf("info", "parse cache hit for %s: parsed %d nuclei + %d native tag-matching templates, skipped the full corpus load (LT-106)",
+		dir, len(nt), len(vt))
+	return nt, vt, true
+}
+
+// storeParseCache refreshes dir's parse-cache sidecar from an authoritative
+// full parse (nt/vt just loaded by LoadDirDetailed). Best effort: any
+// failure is logged at info and dropped — the next run simply re-parses.
+func (e *Engine) storeParseCache(dir string, nt []*nuclei.Template, vt []*native.Template) {
+	if parseCacheDisabled() {
+		return
+	}
+	fp, err := fingerprintTemplateDir(dir)
+	if err != nil {
+		return
+	}
+	entries, err := parseCacheEntriesFor(dir, nt, vt)
+	if err != nil {
+		return
+	}
+	if err := writeParseCache(dir, fp, entries); err != nil {
+		e.warnf("info", "could not write parse cache for %s: %v (LT-106; next run re-parses the full corpus)", dir, err)
+	}
 }
 
 // fastLoadNucleiIDs returns the exact-id set loadTemplates should parse

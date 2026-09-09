@@ -119,6 +119,72 @@ func LoadDirByIDs(dir string, want map[string]bool) (templates []*Template, errs
 	return templates, errs
 }
 
+// LoadFiles parses exactly the files named in relPaths (each resolved
+// against dir), skipping the recursive directory walk LoadDirDetailed does.
+// It is the fast-load counterpart to a caller that already knows which files
+// it wants — pkg/scanner's parse cache (docs/follow-up.md LT-106): given a
+// dir fingerprint that still matches, the cache holds the id/tags/path of
+// every template, so a tag-scoped scan can parse only the ~1.6k matching
+// files instead of the full ~9.6k corpus. sourceDir on each returned
+// Template is dir, identical to LoadDirDetailed, so file-based payloads:
+// resolve the same way. A relPath that doesn't exist or fails to parse is
+// collected in errs, exactly as LoadDirDetailed collects a bad file — one
+// missing entry doesn't abort the rest.
+func LoadFiles(dir string, relPaths []string) (templates []*Template, errs []LoadError) {
+	for _, rel := range relPaths {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		tmpl, err := loadFile(full, dir)
+		if err != nil {
+			errs = append(errs, LoadError{Path: full, Err: err})
+			continue
+		}
+		templates = append(templates, tmpl)
+	}
+	return templates, errs
+}
+
+// PeekDirIDs walks dir recursively and returns a map from each template's
+// declared id: to its path relative to dir (forward-slash form), read via
+// the same bounded head-of-file peek LoadDirByIDs uses — no YAML parse. It
+// backs pkg/scanner's parse-cache rebuild: after a full LoadDirDetailed, the
+// scanner needs each loaded template's on-disk path to record in the cache,
+// and re-deriving it from a cheap peek pass is far cheaper than threading a
+// path back through every loader signature. A file whose id: isn't in the
+// peeked head is omitted (its entry then carries an empty path, which the
+// cache treats as a reason to fall back to a full parse). The id: convention
+// (column-0, near the top) is shared by both this format and the native
+// one, so the same map covers a mixed directory. On a duplicate id the last
+// file walked wins; the corpus is not expected to contain any.
+func PeekDirIDs(dir string) (map[string]string, error) {
+	ids := make(map[string]string)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // a walk error on one entry must not abort the rest — same posture as LoadDirDetailed
+		}
+		if ext := filepath.Ext(path); ext != ".yaml" && ext != ".yml" {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		id := peekTemplateID(data)
+		if id == "" {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr != nil {
+			return nil
+		}
+		ids[id] = filepath.ToSlash(rel)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // templateIDPeekPattern pulls the id: value from the head of a nuclei
 // template without a full YAML parse — id: is the conventional first
 // top-level key of every nuclei template (upstream's template guidelines
