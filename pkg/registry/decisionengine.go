@@ -373,6 +373,20 @@ var canonicalTechTags = map[string]tagQuery{
 	"wordpress":   {include: []string{"wordpress"}},
 	"woocommerce": {include: []string{"woocommerce"}},
 	"litespeed":   {include: []string{"litespeed"}},
+	// Phase 8 Step 3 (P1-5, docs/follow-up.md): "aws"/"gcp"/"amazon" are all
+	// in genericTechWords below (a bare hosting-brand word carries no
+	// product identity by itself — the same reasoning nonActionableTech's
+	// "Google Cloud" entry documents), so a plain word-level match on these
+	// exact single-word TechFact names would otherwise return nothing.
+	// pkg/fingerprint's new cloud-provider header signatures and
+	// pkg/recon/jsstatic.go's bucket-URL fingerprinting emit TechFacts
+	// named exactly "aws"/"s3"/"gcp" — pinning them here is what lets that
+	// signal actually dispatch the corpus's real aws/s3/gcp-tagged
+	// exposure templates (aws-object-listing, s3-username-disclosure,
+	// cloud-metadata, ...) instead of being silently filtered as generic.
+	"aws": {include: []string{"aws"}},
+	"s3":  {include: []string{"s3"}},
+	"gcp": {include: []string{"gcp"}},
 }
 
 // genericTechWords are words that carry no product identity on their own —
@@ -441,6 +455,23 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 		return nil
 	}
 	primary := primaryTechWord(normalized)
+	if canonical && len(q.include) > 0 {
+		// Phase 8 Step 3 (P1-5, docs/follow-up.md): primaryTechWord filters
+		// out any word also in genericTechWords, which "aws" itself is (a
+		// bare "aws" mention inside some OTHER multi-word name carries no
+		// product identity on its own — the same reasoning as "cloud"). But
+		// a canonical entry's own key IS the product identity by
+		// construction — deriving primary from it directly (rather than
+		// re-running it through the generic-word filter) is what lets an
+		// "aws" TechFact earn the 100-point primaryTagHit score instead of
+		// being capped at tagHit's 50, which sits below
+		// minTemplateLeafScore (60) for the mostly low/info-severity real
+		// aws-bucket-exposure templates. Behavior-neutral for every
+		// pre-existing canonical entry (nginx/jquery/mysql/wordpress/
+		// woocommerce/litespeed): q.include[0] already equals what
+		// primaryTechWord would have derived for each of those.
+		primary = strings.ToLower(q.include[0])
+	}
 	// fullSlug catches a hyphenated multi-word name the corpus tags as one
 	// literal compound token — "contact-form-7", "wp-fastest-cache",
 	// "litespeed-cache" all confirmed tagged this way on the real synced

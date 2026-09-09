@@ -47,4 +47,25 @@ var signatures = []Signature{
 	// running lab container (httpx -favicon against http://localhost:8888,
 	// 2026-08-31) — not a guessed/fabricated value.
 	{Product: "crAPI", FaviconHash: "-254193850"},
+
+	// Cloud-provider infrastructure signals (Phase 8 Step 3, P1-5,
+	// docs/follow-up.md): closes the gap where the decision engine could
+	// dispatch the corpus's aws/s3/gcp-tagged exposure templates but
+	// nothing ever produced a fact more specific than the denylisted
+	// "Google Cloud" / "Amazon S3" hosting-brand facts (see
+	// pkg/registry's nonActionableTech). Each header name below is
+	// specific to that one provider's own edge/API/storage layer, not a
+	// generic "cloud" hint, so the false-positive risk is low — these
+	// fire only against a target genuinely fronted by that provider.
+	// HeaderContains left blank on a header-presence-only signature is
+	// intentional: evaluate() treats an empty HeaderContains as "header
+	// exists", which is exactly what these headers signal.
+	{Product: "aws", HeaderName: "x-amzn-requestid"},                  // API Gateway / Lambda
+	{Product: "aws", HeaderName: "x-amzn-trace-id"},                   // ALB / API Gateway
+	{Product: "aws", HeaderName: "x-amz-cf-id"},                       // CloudFront edge
+	{Product: "aws", HeaderName: "server", HeaderContains: "awselb"},  // Elastic Load Balancer
+	{Product: "s3", HeaderName: "x-amz-bucket-region"},                // a direct S3 bucket response
+	{Product: "s3", HeaderName: "server", HeaderContains: "amazons3"}, // S3 static-website hosting
+	{Product: "gcp", HeaderName: "x-goog-generation"},                 // GCS object metadata
+	{Product: "gcp", HeaderName: "x-guploader-uploadid"},              // GCS upload/session header
 }

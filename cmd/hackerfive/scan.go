@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/fieldsuggest"
 	"github.com/tuangatech/hacker-five/pkg/recon"
@@ -121,39 +124,39 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			}
 
 			cfg := scanner.Config{
-				Targets:             targetList,
-				TemplatePaths:       templatesPaths,
-				Tags:                parseTags(tags),
-				Concurrency:         concurrency,
-				TemplateConcurrency: templateConcurrency,
-				RateLimit:           rateLimit,
-				ProxyURL:            root.proxy,
-				Timeout:             root.timeout,
-				OutputFormat:        format,
-				OutputPath:          root.output,
-				Detector:            detector,
-				EndpointTemplate:    endpointTemplate,
-				IDORPreview:         idorPreview,
-				Insecure:            insecure,
-				AuthToken:           authToken,
-				OtherAuthToken:      otherAuthToken,
-				AuthHeaderName:      authHeaderName,
-				AuthHeaderFormat:    authHeaderFormat,
-				ScopeFile:           scopeFile,
-				ProtectedPaths:      parseTags(protectedPaths),
-				LoginPaths:          parseTags(loginPaths),
-				LogoutPaths:         parseTags(logoutPaths),
-				ExtraHeaders:        extraHeaders,
-				SSRFParams:          ssrfParams,
-				OOBServers:          expandedOOBServers,
-				AllowWrites:         allowWrites,
-				CouponMintPath:      couponMintPath,
-				CouponApplyPath:     couponApplyPath,
-				RaceConcurrency:     raceConcurrency,
-				Verbose:             verbose,
-				LogRejectedPath:     logRejected,
-				ScanUniformAnyway:   scanUniformAnyway,
-				MaxTargetDuration:   maxTargetDuration,
+				Targets:                 targetList,
+				TemplatePaths:           templatesPaths,
+				Tags:                    parseTags(tags),
+				Concurrency:             concurrency,
+				TemplateConcurrency:     templateConcurrency,
+				RateLimit:               rateLimit,
+				ProxyURL:                root.proxy,
+				Timeout:                 root.timeout,
+				OutputFormat:            format,
+				OutputPath:              root.output,
+				Detector:                detector,
+				EndpointTemplate:        endpointTemplate,
+				IDORPreview:             idorPreview,
+				Insecure:                insecure,
+				AuthToken:               authToken,
+				OtherAuthToken:          otherAuthToken,
+				AuthHeaderName:          authHeaderName,
+				AuthHeaderFormat:        authHeaderFormat,
+				ScopeFile:               scopeFile,
+				ProtectedPaths:          parseTags(protectedPaths),
+				LoginPaths:              parseTags(loginPaths),
+				LogoutPaths:             parseTags(logoutPaths),
+				ExtraHeaders:            extraHeaders,
+				SSRFParams:              ssrfParams,
+				OOBServers:              expandedOOBServers,
+				AllowWrites:             allowWrites,
+				CouponMintPath:          couponMintPath,
+				CouponApplyPath:         couponApplyPath,
+				RaceConcurrency:         raceConcurrency,
+				Verbose:                 verbose,
+				LogRejectedPath:         logRejected,
+				ScanUniformAnyway:       scanUniformAnyway,
+				MaxTargetDuration:       maxTargetDuration,
 				DisableAdaptiveThrottle: noAdaptiveThrottle,
 			}
 			// LT-34 / A6 (doc16 Phase 7 Step 1): parse --recon-file once, up
@@ -269,6 +272,15 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("running scan: %w", err)
 			}
+			// Phase 8 Step 3 (docs/17-implementation-plan-ph8.md): a
+			// --recon-file's JS-static-analysis secrets were already found
+			// in a body recon fetched during the crawl — no live request
+			// can "detect" them a second time, so they're merged straight
+			// in as Findings rather than requiring a detector to re-derive
+			// them from a template/config that doesn't exist for this case.
+			if reconResult != nil && len(reconResult.Secrets) > 0 {
+				findings = append(findings, jsSecretFindings(reconResult.Secrets)...)
+			}
 			// LT-6 / doc16 C6: expand the nuclei http-missing-security-headers
 			// aggregate into per-header findings first, so Dedup's exact-ID key
 			// then collapses the native/nuclei overlap for the headers the
@@ -333,6 +345,38 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
 
 	return cmd
+}
+
+// jsSecretIDPattern turns a JS bundle URL + line into a Finding-ID-safe
+// fragment, the same "non-alnum run -> single dash" shape misconfig's own
+// sanitizeID uses (kept local rather than exported from pkg/detectors/
+// misconfig — this conversion has no other reason to depend on that
+// package's internals).
+var jsSecretIDPattern = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+
+func jsSecretID(kind, url string, line int) string {
+	frag := jsSecretIDPattern.ReplaceAllString(fmt.Sprintf("%s-%d", url, line), "-")
+	return fmt.Sprintf("misconfig-js-secret-%s-%s", kind, strings.Trim(frag, "-"))
+}
+
+// jsSecretFindings converts recon's JS-static-analysis secret facts (Phase 8
+// Step 3, docs/17-implementation-plan-ph8.md) into misconfig Findings — the
+// secret was already found in a JS body recon fetched during the crawl, so
+// this is a direct conversion, not a new detector making a live request.
+func jsSecretFindings(secrets []recon.JSSecretFact) []detectors.Finding {
+	findings := make([]detectors.Finding, 0, len(secrets))
+	for _, s := range secrets {
+		findings = append(findings, detectors.Finding{
+			ID:          jsSecretID(s.Kind, s.URL, s.Line),
+			Type:        "misconfig",
+			Severity:    s.Severity,
+			Confidence:  "high", // a literal pattern match on already-fetched content, not a heuristic
+			Target:      s.URL,
+			Description: fmt.Sprintf("Hardcoded %s found in served JavaScript at %s:%d", strings.ReplaceAll(s.Kind, "-", " "), s.URL, s.Line),
+			Evidence:    map[string]string{"kind": s.Kind, "line": strconv.Itoa(s.Line), "match": s.Redacted},
+		})
+	}
+	return findings
 }
 
 // unionTags returns the de-duplicated, order-stable union of two tag slices

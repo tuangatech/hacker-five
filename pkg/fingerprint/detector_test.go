@@ -51,6 +51,40 @@ func TestDetect_CombinedSignals_MultipleIndependentMatches(t *testing.T) {
 	assertHasMatch(t, matches, "MySQL", SourcePort)
 }
 
+// TestDetect_CloudProviderHeaders guards Phase 8 Step 3 / P1-5
+// (docs/follow-up.md): each cloud-provider signature must fire on its own
+// header, and a header-presence-only signature (empty HeaderContains) must
+// match regardless of the header's actual value.
+func TestDetect_CloudProviderHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers map[string]string
+		product string
+	}{
+		{"API Gateway / Lambda", map[string]string{"x-amzn-requestid": "abc-123"}, "aws"},
+		{"ALB / API Gateway trace", map[string]string{"x-amzn-trace-id": "Root=1-abc"}, "aws"},
+		{"CloudFront edge", map[string]string{"x-amz-cf-id": "xyz"}, "aws"},
+		{"Elastic Load Balancer", map[string]string{"server": "awselb/2.0"}, "aws"},
+		{"S3 bucket region header", map[string]string{"x-amz-bucket-region": "us-east-1"}, "s3"},
+		{"S3 static website Server", map[string]string{"server": "AmazonS3"}, "s3"},
+		{"GCS object generation", map[string]string{"x-goog-generation": "12345"}, "gcp"},
+		{"GCS uploader header", map[string]string{"x-guploader-uploadid": "abc"}, "gcp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := Detect(Signal{Headers: tc.headers})
+			assertHasMatch(t, matches, tc.product, SourceHeader)
+		})
+	}
+}
+
+func TestDetect_CloudProviderHeaders_NoFalsePositiveOnUnrelatedHeaders(t *testing.T) {
+	matches := Detect(Signal{Headers: map[string]string{"server": "nginx/1.25", "content-type": "text/html"}})
+	for _, m := range matches {
+		assert.NotContains(t, []string{"aws", "s3", "gcp"}, m.Product, "an unrelated header set must not fire a cloud-provider signature")
+	}
+}
+
 func assertHasMatch(t *testing.T, matches []Match, product, source string) {
 	t.Helper()
 	for _, m := range matches {

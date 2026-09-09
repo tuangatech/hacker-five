@@ -718,6 +718,34 @@ func TestMatchTemplateTags_JQueryExcludesFileUploadPlugin(t *testing.T) {
 	assert.Equal(t, "jquery-version-detect", got[0].ID)
 }
 
+// TestMatchTemplateTags_CloudProviderTechFactsDispatch guards Phase 8 Step 3
+// / P1-5 (docs/follow-up.md): "aws"/"s3"/"gcp" are single generic-looking
+// words (all three sit in genericTechWords) that would otherwise match
+// nothing via the plain word-level path — the canonicalTechTags pin is what
+// lets pkg/fingerprint's new cloud-provider header signatures and
+// pkg/recon/jsstatic.go's bucket-URL fingerprinting actually dispatch the
+// corpus's real cloud-exposure templates.
+func TestMatchTemplateTags_CloudProviderTechFactsDispatch(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "aws-object-listing", Name: "AWS bucket with Object listing", Tags: []string{"aws", "misconfig", "bucket"}, Severity: "low"},
+		{ID: "s3-username-disclosure", Name: "x-amz-meta-s3cmd-attrs Header Username Disclosure", Tags: []string{"s3", "aws", "exposure"}, Severity: "low"},
+		{ID: "cloud-metadata", Name: "GCP/AWS Metadata Disclosure", Tags: []string{"misconfig", "aws", "gcp"}, Severity: "low"},
+		{ID: "unrelated-template", Name: "Unrelated", Tags: []string{"generic"}, Severity: "info"},
+	}
+
+	awsGot := matchTemplateTags("aws", index)
+	require.NotEmpty(t, awsGot, "an 'aws' TechFact must dispatch at least one aws-tagged template")
+	for _, e := range awsGot {
+		assert.Contains(t, e.Tags, "aws")
+	}
+
+	s3Got := matchTemplateTags("s3", index)
+	require.NotEmpty(t, s3Got, "an 's3' TechFact must dispatch at least one s3-tagged template")
+
+	gcpGot := matchTemplateTags("gcp", index)
+	require.NotEmpty(t, gcpGot, "a 'gcp' TechFact must dispatch at least one gcp-tagged template")
+}
+
 // TestMatchTemplateTags_GenericWordAloneDoesNotMatch guards P0-2: a tag
 // that is only a generic word ("cache", "editor") is not a match.
 func TestMatchTemplateTags_GenericWordAloneDoesNotMatch(t *testing.T) {
