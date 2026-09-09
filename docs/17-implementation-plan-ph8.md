@@ -450,7 +450,7 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
 - **First-party hidden-parameter mining (LT-100, 6c tranche)** — a curated
   candidate-name list + a corroboration-gated response-diff oracle over the existing
   rate-limited `httpclient`, behind `--param-mining`, `--recon-depth full` only, with
-  a hard per-host request cap. Finds parameters the app honours but never advertises
+  a hard per-run request cap shared across every target. Finds parameters the app honours but never advertises
   (reflected-XSS / LFI / SSRF / IDOR surface). Distinct from ffuf-as-a-tool (still
   out of scope) — targeted enumeration bounded like content discovery, not generic
   multi-position fuzzing. Full scheduled write-up in the "Still open in this step /
@@ -572,12 +572,12 @@ neither adds a dependency.
 - `pkg/recon/passive.go` / `crawl.go` — LT-63's CT-log sibling-API pass (subfinder `crtsh` source, `api.`/`gw.`/`mobile.` labels), scope-checked, `--recon-depth full` only.
 - `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
 - `pkg/recon/crawl.go` — **LT-99**: `runKatana` gains a headless bool + a per-host `context.WithTimeout`; headless katana args (`-headless -no-incognito` / `-system-chrome`) added only when the flag is set; hits fold in as `wave3-headless-crawl` (or merge into the existing katana source), deduped.
-- `pkg/recon/parammine.go` (new) — **LT-100**: the candidate-name diff-oracle pass — many-per-request batching, binary-search narrowing, the ≥2-signal corroboration gate, the per-host request cap; emits `EndpointFact{Source: "wave3-param-mining"}` with the discovered key keyless on the URL.
+- `pkg/recon/parammine.go` (new) — **LT-100**: the candidate-name diff-oracle pass — many-per-request batching, binary-search narrowing, the ≥2-signal corroboration gate, the per-run request cap shared across every target; emits `EndpointFact{Source: "wave3-param-mining"}` with the discovered key keyless on the URL.
 - `pkg/recon/wordlists/params.txt` (new, `go:embed`) — the curated default hidden-parameter candidate list (hundreds of high-signal names); header comment records provenance/licence; `--param-mining-wordlist` overrides.
 - `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs (crawl depth, headless, content-discovery on/off + wordlist override, param-mining on/off + wordlist override + request cap).
 - `cmd/hackerfive/{recon,plan}.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_recon.go` — surface the flags/fields (`--headless-crawl`, `--param-mining`, `--param-mining-wordlist`).
 - `tests/unit/crawl_test.go` — depth threaded through to the katana arg list; headless flag gated correctly (LT-99); `httpx -path` present only when `--content-discovery` is set; a hit becomes a `wave3-content-discovery` `EndpointFact` and reaches `resolveEndpointFacts`.
-- `tests/unit/parammine_test.go` (new) — **LT-100**: a fixture endpoint that reflects an undocumented `?debug=` yields exactly one discovered-param `EndpointFact`; one that reflects nothing yields none; a single weak signal (length shift only) is not enough; the per-host request cap is honoured; the discovered param reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`.
+- `tests/unit/parammine_test.go` (new) — **LT-100**: a fixture endpoint that reflects an undocumented `?debug=` yields exactly one discovered-param `EndpointFact`; one that reflects nothing yields none; a single weak signal (length shift only) is not enough; the per-run request cap shared across every target is honoured; the discovered param reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`.
 
 ### Verification
 Unit: the katana arg list reflects the configured depth/headless; the httpx arg list
