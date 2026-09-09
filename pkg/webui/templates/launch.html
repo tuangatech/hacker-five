@@ -13,6 +13,10 @@
 <input type="text" id="target" name="target" value="{{.Target}}" required placeholder="https://www.example.com">
 <p class="hint">Recon runs first automatically, at full depth (bounded crawl + common-path probing).</p>
 
+<label for="extra_targets">Additional targets (optional, one per line)</label>
+<textarea id="extra_targets" name="extra_targets" rows="3" placeholder="https://erp.example.com&#10;cloud01.example.com&#10;# blank lines and #comments are ignored">{{.ExtraTargets}}</textarea>
+<p class="hint">Each is scanned in this same job, alongside the target above. Recon runs once (against the target above); its detected tech stack and recon-filled fields are applied to every host &mdash; so for a mixed-technology set, leave &ldquo;scope templates to detected tech stack&rdquo; unchecked. Leave blank for a normal single-target scan.</p>
+
 <div class="advanced-content">
 
 <fieldset>

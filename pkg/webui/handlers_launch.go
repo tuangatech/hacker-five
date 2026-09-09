@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -111,6 +112,46 @@ func launchTargetScheme(target string) string {
 	return "https://" + target
 }
 
+// parseExtraTargets turns the LT-115 "additional targets" textarea into a
+// deduplicated, scheme-normalized host list. Entries are separated by
+// newlines or commas; each is trimmed, and an inline "#" comment plus blank
+// lines are dropped (same convention as CLI resolveTargets / scope.txt).
+// primaryNormalized is the already-scheme-applied Target field — an entry
+// equal to it, or a duplicate of an earlier one, is silently skipped so the
+// engine never scans one host twice. An entry that doesn't parse as a URL
+// with a host is reported in errs (the caller merges it into the form's
+// error list), not dropped silently.
+func parseExtraTargets(primaryNormalized, raw string) (targets []string, errs []string) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{strings.ToLower(primaryNormalized): true}
+	for _, line := range strings.Split(raw, "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		for _, tok := range strings.Split(line, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok == "" {
+				continue
+			}
+			norm := launchTargetScheme(tok)
+			u, err := url.Parse(norm)
+			if err != nil || u.Hostname() == "" {
+				errs = append(errs, fmt.Sprintf("additional target %q is not a valid URL", tok))
+				continue
+			}
+			key := strings.ToLower(norm)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			targets = append(targets, norm)
+		}
+	}
+	return targets, errs
+}
+
 // startLaunch is POST /scans — the unified submit handler replacing
 // startScan/startRecon/startGuidedScan. r.Form/r.PostForm are already
 // populated by csrfMiddleware.
@@ -165,12 +206,25 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 	// "audit trail" doc12 calls for; reuses the one logging surface that
 	// already does this rather than a separate audit mechanism.
 	job.AppendLog("info", "authorized: target confirmed by operator acknowledgment")
+	if allTargets := launchJobTargets(cfgs, target); len(allTargets) > 1 {
+		job.AppendLog("info", fmt.Sprintf("multi-target scan (LT-115): %d hosts — %s", len(allTargets), strings.Join(allTargets, ", ")))
+	}
 	h.store.Add(job)
 
 	go h.runLaunchJob(job, form, cfgs)
 
 	w.Header().Set("HX-Push-Url", "/scans/"+job.ID)
 	executeTemplate(w, h.tmpl, "fragment_scan_status_body", h.snapshotData(job, csrfTok))
+}
+
+// launchJobTargets returns the target list this submission's scanner.Configs
+// carry (LT-115 multi-target), falling back to just primary when no detector
+// tab was checked (cfgs is empty, so there's nothing multi-target about it).
+func launchJobTargets(cfgs []scanner.Config, primary string) []string {
+	if len(cfgs) > 0 {
+		return cfgs[0].Targets
+	}
+	return []string{primary}
 }
 
 func (h *handlers) rerenderLaunchWithErrors(w http.ResponseWriter, r *http.Request, form LaunchFormData, errs []string) {
@@ -214,6 +268,14 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 	}
 	target := launchTargetScheme(rawTarget)
 
+	// LT-115: zero or more additional hosts from the textarea, each scanned
+	// in the same Job via the engine's own per-target loop. allTargets keeps
+	// Target first (it stays the recon seed and the status-page title).
+	rawExtraTargets := r.PostFormValue("extra_targets")
+	extraTargets, extraErrs := parseExtraTargets(target, rawExtraTargets)
+	errs = append(errs, extraErrs...)
+	allTargets := append([]string{target}, extraTargets...)
+
 	rateLimit, err := parsePositiveInt(r.PostFormValue("rate_limit"), defaultRateLimit)
 	if err != nil {
 		errs = append(errs, "rate limit must be a positive integer")
@@ -239,6 +301,7 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 
 	form := LaunchFormData{
 		Target:           rawTarget,
+		ExtraTargets:     rawExtraTargets,
 		RunMisconfig:     r.PostFormValue("run_misconfig") == "on",
 		RunIdor:          r.PostFormValue("run_idor") == "on",
 		Endpoint:         r.PostFormValue("endpoint"),
@@ -291,7 +354,7 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 			templatesAssigned = true
 		}
 		return scanner.Config{
-			Targets:          []string{target},
+			Targets:          allTargets,
 			TemplatePaths:    templatePaths,
 			Tags:             splitCSV(form.Tags),
 			Detector:         detector,
@@ -464,6 +527,13 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	}
 	job.SetPhase("recon")
 	h.runLaunchRecon(job, form, cfgs)
+
+	// LT-115: recon ran against Target only. When extra targets are in play,
+	// say so plainly — the tech-stack narrowing and recon-filled fields below
+	// are derived from the primary host and then applied to every target.
+	if targets := launchJobTargets(cfgs, launchTargetScheme(form.Target)); len(targets) > 1 {
+		job.AppendLog("info", fmt.Sprintf("recon covered the primary target only (%s); its findings scope templates/fields for all %d hosts in this job", targets[0], len(targets)))
+	}
 
 	cfgs = fillReconFields(job.Ctx(), job, cfgs)
 	mergeReconDerivedExecFields(job, cfgs)

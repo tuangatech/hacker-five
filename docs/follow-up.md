@@ -1037,6 +1037,27 @@ one host, 5 findings / 0 false positives. Three UI gaps noted:
   each host gets its own Job row or all share one. **→ Web UI ergonomics; not
   demo-blocking (workaround: per-host launches with
   `.engagements/owned-sites/nettix-demo-focus.txt` as the scope filter). Post-demo.**
+  **Resolved 2026-09-09 (branch `feat-lt115-multi-target-launch`) — scoped MVP
+  (user decision):** a new optional **"Additional targets"** textarea on the
+  Launch form (`launch.html`, `LaunchFormData.ExtraTargets`). `parseExtraTargets`
+  normalises the scheme, validates each entry as a URL-with-host (a bad entry
+  is a form error, not a silent drop), strips `#` comments / blank lines
+  (comma-separated also accepted), and dedups against the primary and itself;
+  `parseLaunchSubmission` builds `allTargets = [primary, …extras]` onto every
+  detector's `scanner.Config.Targets`, and `scanner.Engine`'s own per-target
+  loop (plus the LT-106 per-target rate share) fans the scan across them in the
+  one Job. An empty textarea is byte-identical to the previous single-target
+  path. **Deferred to the full version (still open under LT-115):** recon runs
+  **once, against the primary host only** — its tech-stack narrowing and
+  recon-filled idor/authbypass/ssrf fields then apply to every target, so a
+  mixed-technology host set (nettix: WP + Dolibarr + Nextcloud) should leave
+  "scope templates to detected tech stack" unchecked. Plan Preview still
+  resolves against the primary's recon result. Per-host recon + a merged
+  multi-host `ReconResult` + host-outer `runLaunchJob` is the larger follow-up.
+  Tests: `TestParseExtraTargets`,
+  `TestParseLaunchSubmission_ExtraTargets_MultiTargetConfig` /
+  `_InvalidLineRejected` / `TestParseLaunchSubmission_NoExtraTargets_SingleTargetUnchanged`,
+  `TestStartLaunch_MultiTarget_ScansEveryHost`.
 - **LT-116 — the "Plan Preview" link is invisible during a running scan.**
   `scan_status.html`'s header line renders it only `{{if .Snapshot.ReconResult}}`,
   and that `<p>` is part of the initial server render, not any `sse-swap`
