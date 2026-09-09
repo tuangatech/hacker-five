@@ -90,6 +90,66 @@ func TestRunKatana_CrawlDepth(t *testing.T) {
 	assert.Equal(t, "2", depthArg(WithCrawlDepth(0)), "a sub-1 crawl depth is ignored, default stands")
 }
 
+// TestRunKatana_HeadlessCrawl guards LT-99 (docs/follow-up.md): the katana
+// invocation grows the real-browser headless args only when
+// WithHeadlessCrawl(true) is set, runs under the larger headless timeout, and
+// tags its endpoints "katana-headless" — a fetch()/XHR-style endpoint (the
+// surface a link-following crawl can't see) reaches the endpoint set. Unset,
+// the crawl is byte-for-byte the pre-knob one.
+func TestRunKatana_HeadlessCrawl(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	katanaOut := `{"request":{"endpoint":"` + srv.URL + `/api/v1/orders","method":"POST"},"response":{"status_code":200}}
+{"request":{"endpoint":"` + srv.URL + `/dashboard","method":"GET"},"response":{"status_code":200}}`
+
+	run := func(opts ...Option) (args []string, deadline time.Time, res *ReconResult) {
+		t.Helper()
+		fake := func(ctx context.Context, _ string, name string, a ...string) ([]byte, error) {
+			if name == "katana" {
+				args = append([]string(nil), a...)
+				deadline, _ = ctx.Deadline()
+				return []byte(katanaOut), nil
+			}
+			return nil, nil
+		}
+		r := New(newTestClient(), append([]Option{withRun(fake)}, opts...)...)
+		out, err := r.Run(context.Background(), srv.URL, DepthFull)
+		require.NoError(t, err)
+		return args, deadline, out
+	}
+
+	t.Run("default crawl is unchanged", func(t *testing.T) {
+		args, deadline, res := run()
+		assert.NotContains(t, args, "-headless")
+		assert.NotContains(t, args, "-xhr-extraction")
+		assert.NotContains(t, args, "-no-sandbox")
+		assert.WithinDuration(t, time.Now().Add(DefaultWaveTimeout), deadline, 10*time.Second,
+			"the default crawl runs under the per-wave timeout")
+		for _, ep := range res.Endpoints {
+			assert.NotEqual(t, "katana-headless", ep.Source)
+		}
+	})
+
+	t.Run("headless adds browser args, larger timeout, source tag", func(t *testing.T) {
+		args, deadline, res := run(WithHeadlessCrawl(true))
+		assert.Subset(t, args, []string{"-headless", "-no-sandbox", "-xhr-extraction"})
+		assert.WithinDuration(t, time.Now().Add(DefaultHeadlessCrawlTimeout), deadline, 10*time.Second,
+			"a headless crawl runs under the larger headless timeout")
+		var sawXHR bool
+		for _, ep := range res.Endpoints {
+			if strings.HasSuffix(ep.URL, "/api/v1/orders") {
+				sawXHR = true
+				assert.Equal(t, "katana-headless", ep.Source)
+				assert.Equal(t, "POST", ep.Method)
+			}
+		}
+		assert.True(t, sawXHR, "the fetch()/XHR endpoint must reach the endpoint set")
+	})
+}
+
 func TestRunWave3_SwaggerJSONExposed_SetsAPISpec(t *testing.T) {
 	_, fake := recordingRun(t, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -387,6 +447,7 @@ func TestRunKatana_EscapedJSArtifacts_Dropped(t *testing.T) {
 
 	responses := map[string]string{
 		"katana": `{"request":{"endpoint":"` + srv.URL + `/en%5C","method":"GET","attribute":"text"},"response":{"status_code":404}}
+{"request":{"endpoint":"` + srv.URL + `/static/js/%27%29,D=f%28%27%3Cscript%20type=","method":"GET","attribute":"text"},"response":{"status_code":404}}
 {"request":{"endpoint":"` + srv.URL + `/about","method":"GET","attribute":"href"},"response":{"status_code":200}}`,
 	}
 	_, fake := recordingRun(t, responses)
@@ -398,6 +459,7 @@ func TestRunKatana_EscapedJSArtifacts_Dropped(t *testing.T) {
 	for _, ep := range result.Endpoints {
 		assert.NotContains(t, ep.URL, "%5C", "an escaped-backslash artifact must never reach the aggregated result")
 		assert.NotContains(t, ep.URL, `\`, "a raw backslash artifact must never reach the aggregated result")
+		assert.NotContains(t, ep.URL, "%3C", "a mis-parsed inline-<script> fragment must never reach the aggregated result (LT-99)")
 	}
 	found := false
 	for _, ep := range result.Endpoints {
