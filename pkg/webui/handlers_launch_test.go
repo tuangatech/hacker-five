@@ -824,6 +824,41 @@ func TestLaunchForm_PrefillsTargetFromQueryParam(t *testing.T) {
 	assert.NotContains(t, html, `name="authorized" checked`, "re-launching must still require explicit re-confirmation")
 }
 
+// TestLaunchForm_PrefillScript_ExcludesSecretsAndAuthorized guards LT-122's
+// client-side "remember my last scan" prefill: the launch form must ship the
+// localStorage script, and its persisted-field list must never include a
+// credential-bearing field or the per-launch "authorized" / "allow_writes"
+// acknowledgements — no bearer token or session cookie is written to disk in
+// the operator's browser, and neither deliberate opt-in is ever pre-armed.
+func TestLaunchForm_PrefillScript_ExcludesSecretsAndAuthorized(t *testing.T) {
+	ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	html := string(body)
+
+	require.Contains(t, html, `"hf.launch.v1"`, "the LT-122 prefill script must be present")
+	require.Contains(t, html, "localStorage.setItem", "prefill must persist client-side only")
+
+	// Isolate the FIELDS whitelist literal and assert what it must not carry.
+	const marker = "var FIELDS = ["
+	i := strings.Index(html, marker)
+	require.GreaterOrEqual(t, i, 0)
+	fieldsLiteral := html[i : i+strings.Index(html[i:], "]")+1]
+	for _, banned := range []string{"auth_token", "other_auth_token", "headers", "authorized", "allow_writes"} {
+		assert.NotContainsf(t, fieldsLiteral, `"`+banned+`"`, "LT-122: %q must never be persisted to localStorage", banned)
+	}
+	// Sanity: it does remember the ordinary fields, including LT-115's textarea.
+	for _, kept := range []string{"target", "extra_targets", "tags", "narrow_by_tech", "rate_limit"} {
+		assert.Containsf(t, fieldsLiteral, `"`+kept+`"`, "LT-122: %q should be remembered", kept)
+	}
+
+	assert.NotContains(t, html, "form.submit()", "prefill must never auto-submit")
+}
+
 // TestSnapshotData_FindingsRenderNewestFirst guards the "Scan Activity"
 // newest-on-top redesign (doc14 Step 6): the initial render must already
 // match the order live SSE appends (hx-swap="afterbegin") produce.

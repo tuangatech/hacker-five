@@ -4,7 +4,7 @@
 
 Open enhancement items and unresolved review findings, organized by category rather than by when they were raised. Direction: HackerFive is expanding beyond HackerOne-program scanning, so categories here stay useful for detection/reporting work generally. Narrative-style research and decision write-ups live in [discussions.md](discussions.md); this doc is the open-items backlog.
 
-**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-121 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs; LT-106–110 split out of the 2026-09-08 demo-prep scan-engine / end-of-scan-loop review; LT-111–114 from the 2026-09-08 nettix.com.pe baseline run; LT-115–117 from the 2026-09-08 demo-prep Web UI Playwright check; LT-118 from the 2026-09-09 demo-prep `www.nettix.com.pe` Web UI run; LT-119–121 from the 2026-09-09 `www.aalberts.com` full recon+scan). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
+**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-122 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs; LT-106–110 split out of the 2026-09-08 demo-prep scan-engine / end-of-scan-loop review; LT-111–114 from the 2026-09-08 nettix.com.pe baseline run; LT-115–117 from the 2026-09-08 demo-prep Web UI Playwright check; LT-118 from the 2026-09-09 demo-prep `www.nettix.com.pe` Web UI run; LT-119–121 from the 2026-09-09 `www.aalberts.com` full recon+scan; LT-122 from the 2026-09-09 post-LT-115 form-persistence question). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
 
 ## Near-term batch — "do now" (raised across the 2026-09-07 linkpop / shop.app / ALSCO runs)
 
@@ -1147,6 +1147,24 @@ D6 corpus-skip on `agent`. The LT-74 adaptive throttle correctly aborted
   response's own status is `isAuthWallStatus` (401/403/407) — not suppressed.
   Test `TestMisconfigCORS_AuthWallResponse_DownRanked`
   (`TestMisconfigCORS_WildcardWithCredentials`'s 200 case still asserts `high`).
+- **LT-122 — the Scan form starts blank after every `hackerfive serve`
+  restart.** The async-job store is in-memory (doc12), so rebuilding the binary
+  and restarting the server drops every job and its "New scan" prefill link;
+  the operator re-types the whole form (target + LT-115 additional targets +
+  Advanced Settings) each iteration of the build → scan → rebuild loop. The
+  server has nowhere durable to keep the last submission, and adding one would
+  mean a credential-bearing payload at rest. **Fix (user decision — client-side
+  only):** `launch.html` inline script writes the last submission's non-secret
+  fields to `localStorage["hf.launch.v1"]` on submit and prefills them into a
+  pristine form (no validation errors showing, no `?target=` deep link, target
+  box empty). Survives a rebuild for free — the server never sees it.
+  Deliberately **never persisted:** `auth_token`, `other_auth_token`, the
+  extra-headers box (can carry a session `Cookie:`), the "I am authorized" tick
+  (fresh per launch), `allow_writes` (deliberate mutating-checks opt-in per
+  CLAUDE.md). Prefill only — it never submits. A "Clear saved values" link wipes
+  the key and `form.reset()`s. Restore skips any field the form no longer has,
+  so a form change between builds degrades cleanly. **Resolved 2026-09-09
+  (branch `feat-lt122-launch-form-prefill`, stacked on `feat-lt115-...`).**
 - **Datapoints for existing items (no new LT):**
   - **LT-6 tail** — `tmo.aalberts.com` produced 5 separate
     `nuclei-http-missing-security-headers-*` **info** rows (permissions-policy,
