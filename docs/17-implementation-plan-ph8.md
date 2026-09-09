@@ -40,7 +40,7 @@ inspection, never literal command execution on a target.
 3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
 4. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 1** — OOB blind-RCE verification (body retained below for provenance)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
-6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip). LT-40's YAML-body + spec-probe-path-widening tail (b)/(c) landed 2026-09-07 with the Phase 7 Step 6a batch. LT-89 (`recon --openapi-spec` ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf `Target` carries scheme+port) + LT-94 (endpoint-driven `authbypass`/`ssrf` leaf carries its recon fields, so `plan→execute` is self-sufficient) ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds — the pipeline now autonomously produces 13 verified actionable findings against crAPI, 0 FP). LT-99 (opt-in `--headless-crawl` JS-rendered katana) ✅ done 2026-09-09. **Still open:** content-discovery wordlist, LT-63 (CT-log sibling-API), LT-40 (a) — GraphQL SDL/introspection, LT-92 (BFLA vs. token-reuse split), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection).
+6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip). LT-40's YAML-body + spec-probe-path-widening tail (b)/(c) landed 2026-09-07 with the Phase 7 Step 6a batch. LT-89 (`recon --openapi-spec` ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf `Target` carries scheme+port) + LT-94 (endpoint-driven `authbypass`/`ssrf` leaf carries its recon fields, so `plan→execute` is self-sufficient) ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds — the pipeline now autonomously produces 13 verified actionable findings against crAPI, 0 FP). LT-99 (opt-in `--headless-crawl` JS-rendered katana) + LT-100 (opt-in `--param-mining` hidden-parameter oracle) ✅ both done 2026-09-09. **Still open:** content-discovery wordlist, LT-63 (CT-log sibling-API), LT-40 (a) — GraphQL SDL/introspection, LT-92 (BFLA vs. token-reuse split), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection).
 7. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 2** — remaining template-format gaps (`xpath`, `flow:`, DSL functions) (body retained below)
 8. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 3** — AI-agent surface modeling (`llms.txt` / `SKILL.md` / MCP), closes LT-78 (body retained below)
 9. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 4** — WAF-aware probing + active injection / upload-bypass detectors, closes LT-87 (body retained below)
@@ -78,11 +78,12 @@ release steps as terminal gates of their phase. Current order:
    - **LT-99** opt-in headless / JS-rendered katana (`--headless-crawl`).
      ✅ **done 2026-09-09** — CLI only (webui/mcp deferred); re-measured crAPI
      `:8888` 4 → 7 endpoints incl. a real `fetch()` call. See § Step 6.
-   - **LT-100** first-party hidden-parameter mining (`--param-mining`) — a
-     curated candidate-name list + a multi-signal response-diff oracle over the
-     existing rate-limited `httpclient`. Distinct from the ffuf-tool approach
-     still ruled out below. Its *active* consumption (feeding native injection
-     probes) pairs with [Phase 9](18-implementation-plan-ph9.md) Step 4.
+   - **LT-100** first-party hidden-parameter mining (`--param-mining`).
+     ✅ **done 2026-09-09** — CLI only (webui/mcp deferred); curated `go:embed`
+     list + ≥2-signal diff oracle over the rate-limited `r.client`, 160-req/run
+     cap. Live: 0% decoy FP on crAPI, 4 real params on Juice Shop. See § Step 6.
+     Its *active* consumption (feeding native injection probes) pairs with
+     [Phase 9](18-implementation-plan-ph9.md) Step 4.
 6. **Step 6 remainder** — bounded content discovery + embedded wordlist (needs a wordlist provenance/licence decision), LT-63.
 7. **Step 10** — eval + `v0.8.0`.
 
@@ -341,7 +342,7 @@ different versions) and confirm they now get *different* template lists.
 
 ---
 
-## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07; 6c: LT-99 done 2026-09-09, LT-100 still open — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86, LT-99, LT-100
+## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07; 6c: LT-99 + LT-100 done 2026-09-09; only bounded content-discovery + LT-63 left — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86, LT-99, LT-100
 
 **🟡 First tranche landed 2026-09-07** (build / `go vet` / `go test -race` / `golangci-lint` all clean):
 
@@ -378,38 +379,30 @@ different versions) and confirm they now get *different* template lists.
   call (the 4-vs-40 was OpenAPI-spec-wide, not one shell's JS). webui/mcp
   toggle deferred — detail in [follow-up.md](follow-up.md) § LT-99. Supersedes
   LT-8's open tail.
-- **LT-100 — first-party hidden-parameter mining (scheduled 2026-09-08 as the
-  6c tranche).** HackerFive finds parameters only from what recon literally
-  observes (crawled query strings, spec `parameters`, JS-extracted names); a
-  parameter the app honours but never advertises — the classic source of
-  reflected-XSS / LFI / SSRF / IDOR — is never found. No Go-native Arjun
-  equivalent exists, so this is a **first-party addition over the existing
-  rate-limited `httpclient`**, not a new dependency or a second traffic tool:
-  - A **curated candidate-name list**, `go:embed`-ed — start deliberately small
-    (a few hundred high-signal names: `id`, `user`, `file`, `url`, `redirect`,
-    `debug`, `admin`, `callback`, `path`, `template`, `page`, `next`, …), a
-    larger list only via `--param-mining-wordlist <path>` (operator's stated
-    choice). Provenance/licence documented like the content-discovery list.
-  - **Many candidates per request**, with binary-search narrowing once a batch
-    shows an effect — keeps request count logarithmic in list size.
-  - A **corroboration-gated diff oracle**: a candidate is only emitted when ≥2
-    independent signals agree — reflection of the sent token in the body,
-    response status-class change, response-length bucket shift, or the param
-    name echoed in a validation-error body — measured against a per-endpoint
-    control request. This is the <5%-FP discipline; a single weak signal is
-    dropped.
-  - **Opt-in** (`--param-mining`), `--recon-depth full` only, `--scope`-gated,
-    with a **hard per-host request cap** so it can't starve the shared
-    `--rate-limit` bucket (same reconciliation constraint that gates content
-    discovery; interacts with LT-98).
-  - Hits fold into the Wave 3 endpoint set as
-    `EndpointFact{Source: "wave3-param-mining"}` with the discovered param
-    keyless on the URL (`/path?newparam=`), so `resolveEndpointFacts` /
-    `SuggestIDOREndpointCandidates` / `SuggestSSRFParamsFromRecon` pick them up
-    exactly like a documented-but-valueless spec query key (LT-40 path).
-  - Pairs with LT-83 (numeric query-param ID candidates) and LT-96 (body-param
-    SSRF); its *active* consumption — feeding the native `sqli`/`xss`/`lfi`
-    probes — is [Phase 9](18-implementation-plan-ph9.md) Step 4, sequenced after.
+- **LT-100 — first-party hidden-parameter mining. ✅ done 2026-09-09** (branch
+  `feat-lt100-param-mining`). `--param-mining` on `recon`/`plan` (DepthFull
+  only), `--param-mining-wordlist` / `--param-mining-request-cap` overrides.
+  `pkg/recon/parammine.go`: mines the top 6 ranked GET endpoints through the
+  rate-limited `r.client`, hard-capped at 160 requests/run. Per endpoint: 2
+  control requests set a baseline (+ `statusNoisy`/`lenNoisy` flags that
+  disable those signals on a too-dynamic endpoint), then batches of 24 names
+  ride one request each with a unique marker value. **Gate (≥2 signals, same
+  param):** `reflect` + `nameEcho` pinpoint; `status-class change` /
+  significant `length shift` (>64 B & >5%) count only when exactly one param in
+  the batch was pinpointed. **FP guards:** reflect-all sinks (>8 markers/batch,
+  baseline reflecting an unsent marker, or >6 corroborated) dropped whole;
+  binary-search narrowing dropped (a status/length-only isolate is 1 signal,
+  which the gate rejects anyway). `pkg/recon/wordlists/params.txt` (`go:embed`,
+  ~239 names, provenance header cites the public Arjun / SecLists lists). Hits →
+  `EndpointFact{Source: "wave3-param-mining", URL: "path?key=<v>"}` — `<v>=1`
+  for id-shaped keys → `idShapedQueryCandidate` → IDOR; else value-less →
+  `SuggestSSRFParamsFromRecon` on a keyword match. webui/mcp toggle deferred
+  (same reasoning as LT-99). **Live:** crAPI 478 decoy probes → 0 emitted (FP
+  0%); Juice Shop → 4 real undocumented params (`sort`/`scope` on the auto-REST
+  `/api/Challenges/` + `/api/Quantitys/`), 72 requests within cap. Detail in
+  [follow-up.md](follow-up.md) § LT-100. Its *active* consumption — feeding the
+  native `sqli`/`xss`/`lfi` probes — is [Phase 9](18-implementation-plan-ph9.md)
+  Step 4, sequenced after.
 - **LT-40 tail (b)/(c) ✅ done 2026-09-07** (with the Phase 7 Step 6a batch): the spec-probe path set now also covers `/openapi.json`, `/v3/api-docs`, `/v2/api-docs`, `/api-docs`, `/swagger/v1/swagger.json` (`commonPaths`/`specPaths` in crawl.go), and `walkOpenAPISpec` normalises a YAML body to JSON up front (`specBodyToJSON`: `yaml.Unmarshal`→`json.Marshal`) and walks it on the same path as JSON. Both stay under the existing LT-30 canary/content-type gate. GraphQL SDL/introspection (a) — needs a POST introspection query — stays deferred.
 
 ### Design
@@ -844,7 +837,7 @@ template-format, AI-agent-surface, and WAF/injection DoD lines moved to
 - [x] Crawl depth is configurable (default unchanged) — 2026-09-07, first tranche
 - [x] **LT-99 (6c):** an opt-in JS-rendered crawl (`--headless-crawl`, `--recon-depth full` only) runs Wave 3's katana in real-browser headless mode under a larger timeout ceiling (`DefaultHeadlessCrawlTimeout` 180s / `HACKERFIVE_RECON_HEADLESS_TIMEOUT`), recovering `fetch()`/XHR endpoints the link crawl misses; hits tagged `katana-headless`. Supersedes LT-8's open tail — **done 2026-09-09** (branch `feat-lt99-headless-crawl`). CLI (`recon`/`plan`) + `recon.WithHeadlessCrawl`; `-headless -no-sandbox -xhr-extraction`, `-system-chrome-path` when a local/Playwright Chrome resolves (else katana self-provisions with a logged one-time-download warning). Re-measured against crAPI's `:8888` React shell: 4 endpoints link-crawled → 7 headless, incl. the real `/chatbot/genai/state` fetch call (the doc's 4-vs-40 was OpenAPI-spec-wide; a headless crawl of one shell recovers what that shell's JS calls). `looksLikeEscapedJSArtifact` widened to drop mis-parsed inline-`<script>` fragments the headless pass surfaces. webui/mcp surface deferred (neither wires `--crawl-depth` today either — see follow-up.md LT-99)
 - [ ] An opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints
-- [ ] **LT-100 (6c):** an opt-in (`--param-mining`, `--recon-depth full` only) hidden-parameter pass over the rate-limited `httpclient` — curated `go:embed` candidate list, many-per-request batching, ≥2-signal corroboration gate, hard per-host request cap — emits a discovered undocumented parameter as a `wave3-param-mining` `EndpointFact` that reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`; its decoy-set false-positive rate is measured against the <5% target
+- [x] **LT-100 (6c):** an opt-in (`--param-mining`, `--recon-depth full` only) hidden-parameter pass over the rate-limited `r.client` — `go:embed` candidate list (`wordlists/params.txt`), 24-name batches, ≥2-signal corroboration gate, reflect-all sink suppression, hard 160-request/run cap — emits a discovered undocumented parameter as a `wave3-param-mining` `EndpointFact` that reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates` — **done 2026-09-09** (branch `feat-lt100-param-mining`). Decoy FP rate measured live: crAPI 478 probes → 0 emitted (0%); Juice Shop → 4 real params. webui/mcp toggle deferred
 - [x] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed) — 2026-09-07, first tranche
 - [x] An endpoint-name → redirect-parameter-probe rule flags a `*/bounce` / OAuth / SSO / logout-shaped path into the `redirect`-tagged corpus check (LT-77 partial, first tranche); a first-party per-param off-origin-`Location` probe is [Phase 9](18-implementation-plan-ph9.md) Step 4
 - [x] Recon records `redirect_chain` / `final_url` and warns when an in-scope root redirects out of scope; a `TechFact`'s observed host is tracked and a cross-host (post-redirect / CDN-not-in-own-headers) fact does not seed the target's plan (LT-64 / LT-65 / LT-84b closed) — 2026-09-07, first tranche

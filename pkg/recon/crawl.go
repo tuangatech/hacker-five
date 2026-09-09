@@ -189,6 +189,10 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	// paths that Wave 0 lifted from robots.txt / sitemap.xml but never
 	// probed a live status, so resolveEndpointFacts can reason over them.
 	r.probeUnprobedEndpoints(ctx, agg, seeds)
+
+	// LT-100 (docs/follow-up.md): opt-in hidden-parameter mining over the
+	// endpoints gathered above — a no-op unless --param-mining is set.
+	r.runParamMining(ctx, agg, seeds)
 }
 
 // runKatana crawls seeds. katana's own default scope ("-fs rdn", confirmed
