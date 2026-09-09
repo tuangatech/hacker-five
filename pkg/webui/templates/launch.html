@@ -108,6 +108,90 @@
 <button type="submit">Start Scan</button>
 </div>
 </form>
+
+{{/* LT-122: remember the last submission's non-secret fields in the
+     operator's browser so a fresh Scan form (e.g. after rebuilding the
+     binary and restarting `hackerfive serve`, which drops the in-memory
+     job store) comes back prefilled. Purely client-side — the server never
+     sees or stores this. Deliberately never persists auth_token /
+     other_auth_token / the extra-headers box (can carry a session Cookie),
+     never the "I am authorized" tick, never "allow_writes"; and it only
+     prefills — it never submits. */}}
+<script>
+(function () {
+  var form = document.querySelector('form[hx-post="/scans"]');
+  if (!form || form.dataset.hfPrefillWired === "1") { return; }
+  form.dataset.hfPrefillWired = "1";
+
+  var KEY = "hf.launch.v1";
+  // Non-secret, safe-to-remember fields. Excludes auth_token,
+  // other_auth_token, headers (session Cookie), authorized (fresh
+  // per-launch acknowledgement), allow_writes (deliberate mutating-checks
+  // opt-in per CLAUDE.md), and the mechanical csrf_token / _activetab.
+  var FIELDS = [
+    "target", "extra_targets",
+    "run_misconfig", "run_idor", "run_authbypass", "run_ssrf", "run_businesslogic",
+    "endpoint",
+    "protected_paths", "login_paths", "logout_paths",
+    "ssrf_params", "oob_servers",
+    "coupon_mint_path", "coupon_apply_path", "race_concurrency",
+    "tags", "narrow_by_tech",
+    "auth_header_name", "auth_header_format",
+    "rate_limit", "concurrency", "insecure", "scope_file"
+  ];
+  function field(name) { return form.elements[name]; }
+
+  // Save the values actually launched with.
+  form.addEventListener("submit", function () {
+    try {
+      var data = {};
+      FIELDS.forEach(function (name) {
+        var node = field(name);
+        if (!node) { return; }
+        data[name] = node.type === "checkbox" ? node.checked : node.value;
+      });
+      localStorage.setItem(KEY, JSON.stringify(data));
+    } catch (e) { /* private mode / quota / storage disabled — skip */ }
+  });
+
+  // Prefill only a pristine form: no validation errors showing, no explicit
+  // ?target= in the URL (a deep link wins), and the target box still empty.
+  var pristine = !document.querySelector(".error") &&
+                 !/[?&]target=/.test(window.location.search) &&
+                 (!field("target") || field("target").value === "");
+  if (!pristine) { return; }
+
+  var saved;
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { saved = null; }
+  if (!saved || typeof saved !== "object") { return; }
+
+  var restored = false;
+  FIELDS.forEach(function (name) {
+    if (!(name in saved)) { return; }
+    var node = field(name);
+    if (!node) { return; } // form changed between builds — skip cleanly
+    if (node.type === "checkbox") { node.checked = !!saved[name]; }
+    else { node.value = saved[name]; }
+    restored = true;
+  });
+  if (!restored) { return; }
+
+  var note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = "Prefilled from your last scan on this machine — auth tokens and extra headers are never saved, re-enter them below. ";
+  var clear = document.createElement("a");
+  clear.href = "#";
+  clear.textContent = "Clear saved values";
+  clear.addEventListener("click", function (ev) {
+    ev.preventDefault();
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    form.reset();
+    note.remove();
+  });
+  note.appendChild(clear);
+  form.insertBefore(note, form.firstChild);
+})();
+</script>
 {{end}}
 {{define "launch.html"}}{{template "header" .}}
 {{template "fragment_launch_body" .}}
