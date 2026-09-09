@@ -323,6 +323,13 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 			d.looksLikeCatchAllServed(resp.StatusCode, body, rule.Path) {
 			continue
 		}
+		finalURL := req.URL.String()
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalURL = resp.Request.URL.String()
+		}
+		if looksLikeAuthLoginPage(finalURL, body) {
+			continue // LT-118: an auth form at a sensitive path (e.g. /admin -> wp-login.php) is the boundary working, not an exposure
+		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("misconfig-exposed-path-%s", sanitizeID(rule.Path)),
 			Type:        "misconfig",
@@ -339,6 +346,51 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 		})
 	}
 	return findings, nil
+}
+
+// authLoginPathMarkers are lower-cased substrings of a conventional
+// authentication endpoint's URL. A GET of an ExposedPaths rule that
+// redirect-chains onto one of these landed on a login form, not the
+// resource the rule was probing for.
+var authLoginPathMarkers = []string{
+	"wp-login.php", "/login", "/signin", "/sign-in", "/sign_in",
+	"/session/new", "/users/sign_in", "/account/login", "/accounts/login",
+	"/auth/login", "/sso/", "/oauth/", "session_login.cgi", "/adfs/ls",
+}
+
+// postLoginMarkers separate "a page with a password field" that is just a
+// credential form (suppress) from an authenticated view that also happens
+// to contain one (keep) — the latter carries at least one of these.
+var postLoginMarkers = []string{
+	"logout", "log out", "sign out", "wp-admin", "adminmenu", "admin-bar",
+	"dashboard-widgets", "id=\"wpadminbar\"",
+}
+
+// looksLikeAuthLoginPage reports whether an ExposedPaths probe's response is
+// only an authentication form — the auth boundary doing its job — rather
+// than the sensitive resource the rule was looking for. LT-118: `/admin` on
+// any WordPress install 302s to `wp-login.php`, whose body carries the
+// "login" keyword the `/admin` rule matches on, so every WordPress site
+// produced a spurious medium finding. Two signals: the redirect chain
+// landed on a conventional auth path, or the body is a bare credential form
+// with none of the post-login markers a genuinely-exposed dashboard shows.
+func looksLikeAuthLoginPage(finalURL string, body []byte) bool {
+	lf := strings.ToLower(finalURL)
+	for _, seg := range authLoginPathMarkers {
+		if strings.Contains(lf, seg) {
+			return true
+		}
+	}
+	lb := strings.ToLower(string(body))
+	if !strings.Contains(lb, `type="password"`) && !strings.Contains(lb, "type='password'") {
+		return false
+	}
+	for _, m := range postLoginMarkers {
+		if strings.Contains(lb, m) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkDirListing probes DirListingPaths (root plus common subpaths) for

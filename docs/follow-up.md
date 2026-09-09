@@ -732,6 +732,15 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   `TestMisconfigExposedPath_AdminRedirectsToLogin_NotFlagged` case.
   **→ detector false-positive; demo-visible (shows in the nettix Findings
   table); do before 2026-09-10.**
+  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
+  new `looksLikeAuthLoginPage(finalURL, body)` — true when the redirect chain
+  landed on a conventional auth path (`wp-login.php`, `/login`, `/signin`,
+  `/users/sign_in`, `session_login.cgi`, …) or the body carries a password
+  input with none of the post-login markers (`logout`, `wp-admin`,
+  `adminmenu`, `#wpadminbar`, …). `checkExposedPaths` resolves the final URL
+  from `resp.Request.URL` and `continue`s on a match. Tests:
+  `TestMisconfigExposedPath_AdminRedirectsToLogin_NotFlagged`,
+  `TestMisconfigExposedPath_RealAdminPanel_StillFlagged` (positive guard).
 
 ### Baseline run 2026-09-08 (pre-implementation, apex-seeded) — engine multi-host findings
 
@@ -1006,6 +1015,14 @@ one host, 5 findings / 0 false positives. Three UI gaps noted:
   www.nettix.com.pe" the operator saw. Tests: `TestScanCatchup_*PlanPreviewLink*`,
   `TestStartLaunch_ReconOnly_*` link assertion, `TestPlanPreview_RendersNested*`
   class-label assertion.
+- **"Plan Preview" → "Suggested Checks" rename (demo-prep, 2026-09-09, same
+  branch).** The page was misnamed — it's a supplementary, opt-in
+  decision-engine pass ranked from recon signal, *not* a preview of the main
+  scan (which runs un-previewed) and *not* the whole plan (it omits the native
+  detector checks). Renamed the `<h1>`, the header link + its `title`, and the
+  "recon also suggests …" log line to "Suggested Checks", and added a
+  one-line subtitle on the page saying what it is. Route (`/plan-preview…`),
+  Go identifiers, and template file names are unchanged — label only.
 - **LT-117 — the recon Endpoints table is swamped by katana-crawled JS-library
   internals.** On `erp` the table carried ~50 rows of
   `includes/jquery/plugins/select2/dist/js/i18n/*` and `*.js.php` fragments —

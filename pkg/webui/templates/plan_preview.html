@@ -21,8 +21,9 @@
 {{end}}
 {{end}}
 {{define "plan_preview.html"}}{{template "header" .}}
-<h1>Plan Preview</h1>
+<h1>Suggested Checks</h1>
 <p>Recon job: <a href="/recon/{{.JobID}}">{{.JobID}}</a> — target: <code>{{.Target}}</code></p>
+<p class="hint">Extra checks the decision engine ranked from this job's recon signal, <em>beyond</em> the detectors the scan already ran. Opt-in: nothing here runs until you approve it.</p>
 <p><em>Uncheck a leaf's "run this leaf" box to exclude it, then Approve to dispatch the rest against the live target — same executor an MCP client's own approved <code>plan</code> tool call uses.</em></p>
 
 <div id="plan-tree">{{template "fragment_plan_tree" .}}</div>

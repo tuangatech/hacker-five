@@ -107,6 +107,44 @@ func TestMisconfigExposedPath_CustomNotFoundPage_NoFinding(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// TestMisconfigExposedPath_AdminRedirectsToLogin_NotFlagged locks in LT-118:
+// `/admin` on any WordPress install 302s to `wp-login.php`, whose <body
+// class="login"> markup trivially contains the "login" keyword the `/admin`
+// ExposedPaths rule matches on — a spurious medium finding on every WP site.
+func TestMisconfigExposedPath_AdminRedirectsToLogin_NotFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin":
+			http.Redirect(w, r, "/wp-login.php?redirect_to=%2Fadmin", http.StatusFound)
+		case "/wp-login.php":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><body class="login no-js"><form name="loginform" action="/wp-login.php" method="post"><input type="text" name="log" id="user_login"><input type="password" name="pwd" id="user_pass"><input type="submit" value="Log In"></form><p id="nav"><a href="/wp-login.php?action=lostpassword">Lost your password?</a></p></body></html>`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	assert.Empty(t, withPrefix(findings, "misconfig-exposed-path-admin"),
+		"a /admin that redirect-chains to a login form is the auth boundary working, not an exposed panel")
+}
+
+// TestMisconfigExposedPath_RealAdminPanel_StillFlagged is LT-118's positive
+// guard: an /admin that actually serves an authenticated dashboard (no
+// credential form, real nav/logout markup) must still be reported.
+func TestMisconfigExposedPath_RealAdminPanel_StillFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><body><nav id="adminmenu"><a href="/admin/users">Users</a></nav><a href="/admin/logout">Logout</a><h1>Admin dashboard</h1><p>Welcome back.</p></body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	require.Len(t, withPrefix(findings, "misconfig-exposed-path-admin"), 1,
+		"a genuinely exposed admin dashboard must still be flagged")
+}
+
 // TestMisconfigExposedPath_WellKnownSecurityTxt_NotFlagged locks in LT-119:
 // RFC 9116 requires security.txt to be publicly served at exactly this
 // path, so a well-formed one (with the mandatory Contact: field) is the

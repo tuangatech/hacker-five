@@ -755,7 +755,7 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 		selected[cfg.Detector] = true
 	}
 	if suggestions := suggestedDetectorNames(tree, selected); len(suggestions) > 0 {
-		job.AppendLog("info", "recon also suggests: "+strings.Join(suggestions, ", ")+" — review and run via Plan Preview (/plan-preview?job="+job.ID+")")
+		job.AppendLog("info", "recon also suggests: "+strings.Join(suggestions, ", ")+" — review and run via Suggested Checks (/plan-preview?job="+job.ID+")")
 	}
 }
 

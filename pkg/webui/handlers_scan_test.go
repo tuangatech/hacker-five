@@ -240,11 +240,12 @@ func TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps(t *testing.T) 
 	assert.NotContains(t, html, `id="recon-results"`)
 	assert.Contains(t, html, "running: misconfig")
 	assert.Contains(t, html, "example.com")
-	// LT-116: catchup also re-syncs the header's Plan Preview link as an OOB
-	// swap, so a client that connected before recon finished sees it without
-	// a manual reload.
+	// LT-116: catchup also re-syncs the header's Suggested Checks link as an
+	// OOB swap, so a client that connected before recon finished sees it
+	// without a manual reload.
 	assert.Contains(t, html, `id="plan-preview-link" hx-swap-oob="true"`)
 	assert.Contains(t, html, `href="/plan-preview?job=job1"`)
+	assert.Contains(t, html, ">Suggested Checks<")
 }
 
 // TestScanCatchup_PlanPreviewLink_AbsentUntilReconResult is LT-116's
