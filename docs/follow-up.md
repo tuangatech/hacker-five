@@ -349,6 +349,26 @@ Active recon + focused `misconfig` pass over the four owned demo domains
 `app_surface: full`, mostly un-CDN'd. `andertone.com`/`aalberts.com` thin
 (CDN + SSO), `aceautowreckers.com` fully Cloudflare-walled (every host 403).
 
+**Demo-target verdicts for `owned-sites/scope.txt` — do not re-evaluate these
+for a demo:**
+- **`nettix.com.pe` — ✅ the demo target.** Only one of the four with a
+  reachable, un-walled surface and a confirmed actionable finding.
+- **`aalberts.com` — ❌ non-viable.** Hardened estate (Cloudflare / M365 SSO /
+  HTTP Basic / S3 apex), ~3 scannable hosts, thin actionable set, several FPs,
+  source-IP-blocked mid-run on the 2026-09-09 full scan. FP-regression fixture
+  only. (Full record: § "Live Testing — www.aalberts.com".)
+- **`andertone.com` — ❌ non-viable.** Recon-rich (WP/WooCommerce/LiteSpeed, 196
+  endpoints) but the HTTP surface is CDN 403-walled and the one real exposure —
+  FTP :21 + MySQL :3306 on `staging.` (LT-23) — needs the still-unbuilt
+  network-service detector ([Phase 8](17-implementation-plan-ph8.md) Step 1);
+  today it can only produce a `StatusUnresolved` leaf. It was also the target
+  that surfaced the decision-engine noise problem (134 mostly-noise leaves).
+- **`aceautowreckers.com` — ❌ non-viable.** Fully Cloudflare-walled, every host
+  returns 403; same dead-end class as valmo / shopify / ALSCO.
+
+For an actionable end-to-end demo independent of these, crAPI (local lab) stays
+the strongest: 13 verified findings, 0 FP, full plan→execute.
+
 **Confirmed actionable finding (demo spine):** `www.nettix.com.pe` serves the
 full WordPress author list unauthenticated at `/wp-json/wp/v2/users/` — 200 +
 `application/json`, `X-Wp-Total: 3`, slugs `arodriguez` / **`admin`** /
