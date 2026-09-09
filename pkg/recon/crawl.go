@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/uniformwall"
 )
@@ -200,12 +201,45 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 // "a genuinely new external domain found mid-crawl... set aside into
 // OutOfScope, not silently followed" applies, so it's recorded there
 // instead of silently dropped.
+// effectiveHeadlessTimeout is the wall-clock cap for a --headless-crawl
+// katana invocation: the larger of DefaultHeadlessCrawlTimeout, any
+// HACKERFIVE_RECON_HEADLESS_TIMEOUT override, and an explicit WithWaveTimeout
+// the operator set higher still. A headless crawl is slower per page than
+// the link-following default, so it never runs under the tighter per-wave
+// timeout (LT-99, docs/follow-up.md).
+func (r *Recon) effectiveHeadlessTimeout() time.Duration {
+	ht := DefaultHeadlessCrawlTimeout
+	if env := envHeadlessCrawlTimeout(); env > 0 {
+		ht = env
+	}
+	if r.waveTimeout > ht {
+		ht = r.waveTimeout
+	}
+	return ht
+}
+
 func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) {
-	waveCtx, cancel := context.WithTimeout(ctx, r.waveTimeout)
-	defer cancel()
+	crawlTimeout := r.waveTimeout
+	crawlSource := "katana-crawl"
 	katanaArgs := []string{
 		"-silent", "-jsonl", "-jc", "-depth", itoa(r.crawlDepth), "-rate-limit", itoa(r.rateLimit), "-concurrency", itoa(r.concurrency),
 	}
+	if r.headlessCrawl {
+		// LT-99 (docs/follow-up.md): render every page in a real headless
+		// browser so a SPA's fetch()/XHR calls surface as endpoints; -xhr-extraction
+		// emits their url+method into the JSONL. -no-sandbox is required in the
+		// containerised/WSL dev env. Runs under the larger headless timeout.
+		crawlTimeout = r.effectiveHeadlessTimeout()
+		crawlSource = "katana-headless"
+		katanaArgs = append(katanaArgs, "-headless", "-no-sandbox", "-xhr-extraction")
+		if chrome, ok := resolveHeadlessChrome(); ok {
+			katanaArgs = append(katanaArgs, "-system-chrome-path", chrome)
+		} else {
+			agg.addWarning("wave3: headless crawl: no local Chrome/Chromium found — katana will download a one-time ~150 MB Chromium to ~/.cache/rod on first use")
+		}
+	}
+	waveCtx, cancel := context.WithTimeout(ctx, crawlTimeout)
+	defer cancel()
 	katanaArgs = append(katanaArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every crawl request
 	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana", katanaArgs...)
 	if err != nil && !isWaveTimeout(err) {
@@ -280,7 +314,7 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 		// along, this struct just never decoded it, silently discarding a
 		// real signal authbypass's recon-derived protected-path suggestion
 		// depends on.
-		ef := EndpointFact{URL: rec.Request.Endpoint, Method: method, StatusCode: rec.Response.StatusCode, Source: "katana-crawl", Confidence: ConfidenceMedium}
+		ef := EndpointFact{URL: rec.Request.Endpoint, Method: method, StatusCode: rec.Response.StatusCode, Source: crawlSource, Confidence: ConfidenceMedium}
 		if ef.StatusCode == http.StatusUnauthorized || ef.StatusCode == http.StatusForbidden {
 			// Held back for verifyAuthCandidates rather than added directly
 			// — see its own doc comment for why a single crawl-time 401/403
@@ -311,8 +345,21 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 // noise (contrast IsStaticAssetPath in suggest.go), so no downstream
 // consumer (the Endpoints table, JSON export, authbypass/idor/ssrf
 // suggesters) should ever see it.
+//
+// LT-99 (docs/follow-up.md): the headless crawl executes inline scripts, so a
+// mis-parsed "<script type=…" fragment reaches this output too — always
+// carrying an angle bracket or double-quote (raw or percent-encoded), neither
+// ever valid in a real URL. Live against crAPI, 2026-09-08: the headless pass
+// emitted "/static/js/%27%29,D=f%28%27%3Cscript%20type=" alongside the real
+// "/chatbot/genai/state" fetch endpoint it recovered.
 func looksLikeEscapedJSArtifact(endpoint string) bool {
-	return strings.ContainsRune(endpoint, '\\') || strings.Contains(strings.ToUpper(endpoint), "%5C")
+	up := strings.ToUpper(endpoint)
+	for _, marker := range []string{`\`, "%5C", "<", ">", `"`, "%3C", "%3E", "%22"} {
+		if strings.Contains(up, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyAuthCandidates re-issues one direct GET per katana-observed

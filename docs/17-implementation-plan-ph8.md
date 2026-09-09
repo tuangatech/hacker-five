@@ -40,7 +40,7 @@ inspection, never literal command execution on a target.
 3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
 4. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 1** — OOB blind-RCE verification (body retained below for provenance)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
-6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip). LT-40's YAML-body + spec-probe-path-widening tail (b)/(c) landed 2026-09-07 with the Phase 7 Step 6a batch. LT-89 (`recon --openapi-spec` ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf `Target` carries scheme+port) + LT-94 (endpoint-driven `authbypass`/`ssrf` leaf carries its recon fields, so `plan→execute` is self-sufficient) ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds — the pipeline now autonomously produces 13 verified actionable findings against crAPI, 0 FP). **Still open:** content-discovery wordlist, headless crawl, LT-63 (CT-log sibling-API), LT-40 (a) — GraphQL SDL/introspection, LT-92 (BFLA vs. token-reuse split), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection).
+6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip). LT-40's YAML-body + spec-probe-path-widening tail (b)/(c) landed 2026-09-07 with the Phase 7 Step 6a batch. LT-89 (`recon --openapi-spec` ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf `Target` carries scheme+port) + LT-94 (endpoint-driven `authbypass`/`ssrf` leaf carries its recon fields, so `plan→execute` is self-sufficient) ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds — the pipeline now autonomously produces 13 verified actionable findings against crAPI, 0 FP). LT-99 (opt-in `--headless-crawl` JS-rendered katana) ✅ done 2026-09-09. **Still open:** content-discovery wordlist, LT-63 (CT-log sibling-API), LT-40 (a) — GraphQL SDL/introspection, LT-92 (BFLA vs. token-reuse split), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection).
 7. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 2** — remaining template-format gaps (`xpath`, `flow:`, DSL functions) (body retained below)
 8. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 3** — AI-agent surface modeling (`llms.txt` / `SKILL.md` / MCP), closes LT-78 (body retained below)
 9. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 4** — WAF-aware probing + active injection / upload-bypass detectors, closes LT-87 (body retained below)
@@ -75,10 +75,9 @@ release steps as terminal gates of their phase. Current order:
 5. **Step 6 third tranche (6c)** — the two recon-surface items promoted from
    [follow-up.md](follow-up.md) on 2026-09-08 because each has a measured
    endpoint-yield gap, not just a hypothetical one:
-   - **LT-99** opt-in headless / JS-rendered katana (`--headless-crawl`). crAPI
-     Step E (2026-09-08): non-headless katana on the React root found 4
-     endpoints / 0 idor candidates vs. 40 routes from the ingested spec — the
-     whole XHR/`fetch` API surface of a SPA is invisible to a link crawl.
+   - **LT-99** opt-in headless / JS-rendered katana (`--headless-crawl`).
+     ✅ **done 2026-09-09** — CLI only (webui/mcp deferred); re-measured crAPI
+     `:8888` 4 → 7 endpoints incl. a real `fetch()` call. See § Step 6.
    - **LT-100** first-party hidden-parameter mining (`--param-mining`) — a
      curated candidate-name list + a multi-signal response-diff oracle over the
      existing rate-limited `httpclient`. Distinct from the ffuf-tool approach
@@ -342,7 +341,7 @@ different versions) and confirm they now get *different* template lists.
 
 ---
 
-## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07; third tranche (6c: LT-99, LT-100) scheduled 2026-09-08 — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86, LT-99, LT-100
+## Step 6: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07; 6c: LT-99 done 2026-09-09, LT-100 still open — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86, LT-99, LT-100
 
 **🟡 First tranche landed 2026-09-07** (build / `go vet` / `go test -race` / `golangci-lint` all clean):
 
@@ -367,22 +366,18 @@ different versions) and confirm they now get *different* template lists.
 - **LT-94 (Step E) ✅ done 2026-09-08.** `planexec.RunPlan` relied on the caller to pre-fill `baseCfg.ProtectedPaths`/`SSRFParams` from recon — the MCP `plan` tool does, the webui `executePlan` (Plan Preview → Approve) path does **not**, so its endpoint-driven `authbypass`/`ssrf` leaves were skipped. Symmetric with LT-91: `resolveEndpointFacts` stashes the derived paths/params on the leaf (`PlanNode.ProtectedPaths`/`SSRFParams`, additive), `planexec.applyLeafReconFields` fills a blank config pre-dispatch, and `dropBareCapabilityLeavesSupersededByEndpointDriven` removes the bare tech-capability leaf. Detail in [follow-up.md](follow-up.md) § "Step E".
 - Bounded content-discovery + embedded wordlist (`--content-discovery` — needs a vetted ~4-5k list with documented provenance/licence).
 - **LT-63** CT-log sibling-API discovery.
-- **LT-99 — opt-in headless / JS-rendered katana (scheduled 2026-09-08 as the
-  6c tranche).** katana's default crawl follows links only, so a SPA's
-  `fetch()`/XHR-built API surface is never seen. **Measured, not hypothetical:**
-  crAPI Step E (2026-09-08, [follow-up.md](follow-up.md) § "Step E") — non-headless
-  katana on crAPI's React web root produced **4 endpoints / 0 idor candidates**;
-  the same target's ingested OpenAPI spec produced 40 routes and 6 real BOLA idor
-  candidates. On a target that does *not* serve a spec (LT-89's fallback case),
-  a headless crawl is the only way to recover that surface. Direction is fixed:
-  katana's own headless mode (`-headless` / `-system-chrome` — Chromium is already
-  installed in the WSL test env, `~/.cache/ms-playwright`), behind an explicit
-  `--headless-crawl` flag, `--recon-depth full` only, with a per-host wall-clock
-  ceiling (the real cost LT-8 names). Output merges into the same Wave 3 endpoint
-  set, deduped like any other source. **Not** a second crawler, and it does **not**
-  relax the `headless:` template-rejection rule (that stays out, per the "Explicitly
-  out of scope" note above). Pairs with Step 3's JS static analysis (a rendered DOM
-  surfaces endpoints a static bundle scan can't). Supersedes LT-8's open tail.
+- **LT-99 — opt-in headless / JS-rendered katana. ✅ done 2026-09-09** (branch
+  `feat-lt99-headless-crawl`). `--headless-crawl` on `recon`/`plan` (effective at
+  `--recon-depth full` only) → `runKatana` runs `-headless -no-sandbox
+  -xhr-extraction` under `DefaultHeadlessCrawlTimeout` (180s / env / larger
+  `--wave-timeout`), passing `-system-chrome-path` when a local or Playwright
+  Chrome resolves (else katana self-provisions, logged). Replaces the link-crawl
+  pass (not a second crawler); hits tagged `katana-headless`. Does **not** relax
+  the `headless:` template-rejection rule. Re-measured against crAPI's `:8888`
+  React shell: 4 → 7 endpoints, incl. the real `/chatbot/genai/state` `fetch()`
+  call (the 4-vs-40 was OpenAPI-spec-wide, not one shell's JS). webui/mcp
+  toggle deferred — detail in [follow-up.md](follow-up.md) § LT-99. Supersedes
+  LT-8's open tail.
 - **LT-100 — first-party hidden-parameter mining (scheduled 2026-09-08 as the
   6c tranche).** HackerFive finds parameters only from what recon literally
   observes (crawled query strings, spec `parameters`, JS-extracted names); a
@@ -847,7 +842,7 @@ template-format, AI-agent-surface, and WAF/injection DoD lines moved to
 - [ ] `templates/index.json` carries optional `AffectedRange` data; `matchTemplateTags` drops an out-of-affected-range CVE template when the `TechFact` version is known, and real multi-version Nginx hosts get different template lists (LT-7 closed)
 - [ ] An unversioned WordPress plugin/theme slug gets a `readme.txt`/`style.css` version probe (P1-3 leftover closed)
 - [x] Crawl depth is configurable (default unchanged) — 2026-09-07, first tranche
-- [ ] **LT-99 (6c):** an opt-in JS-rendered crawl (`--headless-crawl`, `--recon-depth full` only) merges into the Wave 3 endpoint set with a per-host timeout ceiling; on an owned JS-heavy SPA it recovers `fetch()`/XHR-built endpoints the non-headless pass misses (re-measure the crAPI 4-vs-40 gap). Supersedes LT-8's open tail
+- [x] **LT-99 (6c):** an opt-in JS-rendered crawl (`--headless-crawl`, `--recon-depth full` only) runs Wave 3's katana in real-browser headless mode under a larger timeout ceiling (`DefaultHeadlessCrawlTimeout` 180s / `HACKERFIVE_RECON_HEADLESS_TIMEOUT`), recovering `fetch()`/XHR endpoints the link crawl misses; hits tagged `katana-headless`. Supersedes LT-8's open tail — **done 2026-09-09** (branch `feat-lt99-headless-crawl`). CLI (`recon`/`plan`) + `recon.WithHeadlessCrawl`; `-headless -no-sandbox -xhr-extraction`, `-system-chrome-path` when a local/Playwright Chrome resolves (else katana self-provisions with a logged one-time-download warning). Re-measured against crAPI's `:8888` React shell: 4 endpoints link-crawled → 7 headless, incl. the real `/chatbot/genai/state` fetch call (the doc's 4-vs-40 was OpenAPI-spec-wide; a headless crawl of one shell recovers what that shell's JS calls). `looksLikeEscapedJSArtifact` widened to drop mis-parsed inline-`<script>` fragments the headless pass surfaces. webui/mcp surface deferred (neither wires `--crawl-depth` today either — see follow-up.md LT-99)
 - [ ] An opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints
 - [ ] **LT-100 (6c):** an opt-in (`--param-mining`, `--recon-depth full` only) hidden-parameter pass over the rate-limited `httpclient` — curated `go:embed` candidate list, many-per-request batching, ≥2-signal corroboration gate, hard per-host request cap — emits a discovered undocumented parameter as a `wave3-param-mining` `EndpointFact` that reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`; its decoy-set false-positive rate is measured against the <5% target
 - [x] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed) — 2026-09-07, first tranche

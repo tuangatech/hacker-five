@@ -968,6 +968,32 @@ rounds.
   (Design + Files + Verification + DoD line) on the strength of the crAPI
   yield measurement; supersedes LT-8's open tail. Post-demo; real, high
   general value, zero nettix-demo value.
+  **Resolved 2026-09-09 (branch `feat-lt99-headless-crawl`).** `--headless-crawl`
+  on `recon` and `plan` (`recon.WithHeadlessCrawl`), effective only at
+  `--recon-depth full`; a no-op with a stderr note otherwise. `runKatana` then
+  appends `-headless -no-sandbox -xhr-extraction`, resolves a local Chrome
+  (`$PATH`, then the Playwright cache) and passes `-system-chrome-path` when one
+  is found — else katana self-provisions a Chromium into `~/.cache/rod` on first
+  use and a warning says so. The invocation runs under
+  `DefaultHeadlessCrawlTimeout` (180s, `HACKERFIVE_RECON_HEADLESS_TIMEOUT`, or a
+  larger `--wave-timeout` if set) instead of the per-wave timeout, since a
+  real-browser crawl is slower per page. Hits are tagged `katana-headless` (the
+  one downstream `strings.Contains(Source,"katana")` check still matches; it
+  replaces the link-crawl pass rather than running as a second one, so no
+  dedup). `looksLikeEscapedJSArtifact` widened to also drop mis-parsed
+  inline-`<script>` fragments (`<`/`>`/`"` raw or `%3C`/`%3E`/`%22`) — the
+  headless pass, executing JS, surfaces those. **Re-measured against crAPI**
+  (`:8888` React shell, `--recon-depth full`): 4 endpoints link-crawled → 7
+  headless, including the real `/chatbot/genai/state` `fetch()` call the link
+  crawl never saw (the doc's 4-vs-40 was OpenAPI-spec-wide across all backend
+  services; a headless crawl of one shell recovers what that shell's own JS
+  calls). Tests: `TestRunKatana_HeadlessCrawl`, `TestPlaywrightChrome`,
+  `TestResolveHeadlessChrome_FallsBackToSelfProvision`,
+  `TestRunKatana_EscapedJSArtifacts_Dropped` (extended).
+  **Deferred:** the webui Launch form and the MCP `recon` tool get no
+  `--headless-crawl` toggle in this pass — neither wires `--crawl-depth` today
+  either, so surfacing crawl-tuning on them is its own task, and a heavy
+  browser crawl triggered from a web form wants its own UX thought.
 - **LT-100 — no hidden-parameter mining (Arjun-style).** HackerFive discovers
   parameters only from what recon literally observes (crawled query strings,
   spec `parameters`, JS-extracted names); a param that the app honours but
@@ -1137,6 +1163,17 @@ run surfaced as fix opportunities.** LT-102/103/104 all behaved: `app_surface:
 full` despite the `agent` WAF wall, `misconfig-soft-404-catchall` on `tmo`,
 D6 corpus-skip on `agent`. The LT-74 adaptive throttle correctly aborted
 `aalberts.com` mid-scan on a source-IP block (~1528/3746 templates).
+
+**Demo verdict (2026-09-09): not a demo candidate — do not re-evaluate.**
+Hardened corporate estate (Cloudflare / M365 SSO gateways / HTTP Basic /
+S3-fronted apex), real scannable surface is 3 hosts, the actionable set is
+thin (1 `misconfig-cors` worth a manual look, ~3 valid missing-header rows),
+and the scan was source-IP-blocked mid-run. Same dead-end class as valmo
+(Akamai), shopify (Cloudflare), ALSCO (WAF + IP-block). Keep `*.aalberts.com`
+as an FP-regression fixture only. For an actionable end-to-end demo, crAPI
+(13 verified findings, 0 FP) stays the strongest; the 2026-09-10 Web UI demo
+uses `nettix.com.pe`. (Local scratch note: `.engagements/owned-sites/DEMO-TARGETS.md`,
+that dir is gitignored.)
 
 - **LT-119 — `/.well-known/security.txt` is flagged as
   `misconfig-exposed-path-.well-known-security.txt` (low).** RFC 9116 *requires*

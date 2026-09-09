@@ -37,6 +37,34 @@ const (
 	DefaultCrawlDepth = 2
 )
 
+// DefaultHeadlessCrawlTimeout is the wall-clock cap on the Wave 3 katana
+// invocation when --headless-crawl is set — larger than DefaultWaveTimeout
+// because a headless (real-browser, JS-rendering) crawl is materially slower
+// per page than the link-following default, and the first run on a host with
+// no local Chrome also pays a one-time Chromium download (LT-99,
+// docs/follow-up.md). An explicit WithWaveTimeout larger than this still
+// wins. Override process-wide with HACKERFIVE_RECON_HEADLESS_TIMEOUT (a Go
+// duration string, e.g. "300s"); an invalid or non-positive value is ignored.
+const DefaultHeadlessCrawlTimeout = 180 * time.Second
+
+// headlessCrawlTimeoutEnv is the process-wide override for
+// DefaultHeadlessCrawlTimeout.
+const headlessCrawlTimeoutEnv = "HACKERFIVE_RECON_HEADLESS_TIMEOUT"
+
+// envHeadlessCrawlTimeout returns the duration in headlessCrawlTimeoutEnv, or
+// 0 if it is unset, empty, unparseable, or non-positive.
+func envHeadlessCrawlTimeout() time.Duration {
+	v, ok := os.LookupEnv(headlessCrawlTimeoutEnv)
+	if !ok || strings.TrimSpace(v) == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
 // DefaultWaveTimeout bounds each external-binary invocation (subfinder,
 // tlsx, dnsx, naabu, httpx, katana) so one hung or slow wave can't stall
 // the whole Run past a caller's own context deadline unnoticed. It was a
@@ -103,6 +131,14 @@ type Recon struct {
 	concurrency int
 	crawlDepth  int
 	waveTimeout time.Duration // per external-binary invocation; DefaultWaveTimeout unless overridden (LT-111)
+
+	// headlessCrawl runs Wave 3's katana crawl in its real-browser headless
+	// mode so a SPA's fetch()/XHR API surface — invisible to a link-following
+	// crawl — is recovered (LT-99, docs/follow-up.md). Opt-in: heavy (renders
+	// every page, pulls a Chromium on first use), so it only ever moves off
+	// false when an operator passes --headless-crawl, and only takes effect at
+	// DepthFull.
+	headlessCrawl bool
 	runBinary   runFunc
 	progress    func(wave, status string)
 	headers     map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
@@ -150,6 +186,21 @@ func WithCrawlDepth(d int) Option {
 	return func(r *Recon) {
 		if d >= 1 {
 			r.crawlDepth = d
+		}
+	}
+}
+
+// WithHeadlessCrawl enables the real-browser (JS-rendering) katana mode for
+// Wave 3, recovering the fetch()/XHR endpoints a SPA never exposes as links
+// (LT-99, docs/follow-up.md — measured against crAPI: 4 endpoints
+// link-crawled vs 40 from the OpenAPI spec). false is the pre-knob default
+// crawl, byte-for-byte. Only takes effect at DepthFull; the katana
+// invocation then runs under DefaultHeadlessCrawlTimeout rather than the
+// per-wave timeout.
+func WithHeadlessCrawl(on bool) Option {
+	return func(r *Recon) {
+		if on {
+			r.headlessCrawl = true
 		}
 	}
 }

@@ -36,6 +36,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 		rateLimit           int
 		concurrency         int
 		crawlDepth          int
+		headlessCrawl       bool
 		waveTimeout         time.Duration
 		verbose             bool
 		policyFile          string
@@ -86,7 +87,11 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 				ProxyURL:            root.proxy,
 			}), httpclient.WithRateLimit(ratelimit.New(rateLimit)))
 
-			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency), recon.WithCrawlDepth(crawlDepth), recon.WithWaveTimeout(waveTimeout)}
+			if headlessCrawl && d != recon.DepthFull {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), `recon: --headless-crawl has no effect below --recon-depth full (Wave 3 doesn't run) — ignoring`)
+			}
+
+			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency), recon.WithCrawlDepth(crawlDepth), recon.WithHeadlessCrawl(headlessCrawl), recon.WithWaveTimeout(waveTimeout)}
 			if s != nil {
 				opts = append(opts, recon.WithScope(s))
 			}
@@ -131,6 +136,7 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", recon.DefaultRateLimit, "requests/sec passed to each external recon binary's own native rate-limit flag, and used for this package's own direct HTTP calls")
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
 	cmd.Flags().IntVar(&crawlDepth, "crawl-depth", recon.DefaultCrawlDepth, "Wave 3 katana crawl depth (--recon-depth full only); higher widens the idor/authbypass/ssrf candidate surface at a proportional request/time cost (LT-8)")
+	cmd.Flags().BoolVar(&headlessCrawl, "headless-crawl", false, "run the Wave 3 katana crawl in real-browser headless mode (--recon-depth full only) so a SPA's fetch()/XHR endpoints are recovered — heavy: renders every page and pulls a one-time Chromium if none is installed (LT-99)")
 	cmd.Flags().DurationVar(&waveTimeout, "wave-timeout", recon.DefaultWaveTimeout, "wall-clock cap on each external recon binary invocation (subfinder/tlsx/dnsx/naabu/httpx/katana); raise it when enumerating a broad apex where subfinder needs more than the default to finish (LT-111). Also settable via HACKERFIVE_RECON_WAVE_TIMEOUT")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
