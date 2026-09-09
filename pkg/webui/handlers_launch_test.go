@@ -270,6 +270,10 @@ func TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables(t *testing.T
 
 	assert.Contains(t, html, "Recon Results")
 	assert.Contains(t, html, "recon complete:")
+	// LT-116: once recon has a result, the header's Plan Preview link is
+	// rendered inline on the status page (the first-paint path, e.g. a
+	// reload after recon finished).
+	assert.Contains(t, html, `href="/plan-preview?job=`)
 
 	_ = h // silence unused-var if no direct use beyond newTestServerHandlers' construction
 }

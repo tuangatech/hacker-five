@@ -13,6 +13,7 @@
      block in the same order snapshotData paints it. */}}
 {{define "fragment_catchup"}}<div hx-swap-oob="innerHTML:#progress">{{.ProgressHTML}}</div>
 <div hx-swap-oob="innerHTML:#recon-results">{{.ReconHTML}}</div>
+{{template "fragment_plan_preview_link" .PlanPreviewLink}}
 {{if .LogsHTML}}<div hx-swap-oob="beforeend:#logs">{{.LogsHTML}}</div>{{end}}
 {{if .FindingsHTML}}<div hx-swap-oob="afterbegin:#findings">{{.FindingsHTML}}</div>{{end}}
 {{if .AgentHTML}}<div hx-swap-oob="beforeend:#agent">{{.AgentHTML}}</div>{{end}}

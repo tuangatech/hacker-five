@@ -20,7 +20,9 @@ type ReconResultView struct {
 	DisplayEndpoints []EndpointRow
 
 	// AssetEndpointCount is how many of ReconResult.Endpoints were static
-	// build/CDN assets (recon.IsStaticAssetPath) — omitted from
+	// build/CDN assets or build/vendor-tree files (recon.IsNonRouteAssetPath
+	// — plain .js/.css/… plus LT-117's *.js.php wrappers and
+	// node_modules/dist subtrees) — omitted from
 	// DisplayEndpoints, not the underlying ReconResult, so the JSON export
 	// and every detector/suggester that reads recon.ReconResult directly
 	// still sees every one of them; only this table's rendering is
@@ -101,7 +103,11 @@ func collapseEndpoints(facts []recon.EndpointFact) (rows []EndpointRow, assetCou
 			k.path = ep.URL // fallback: dedupe by the raw string verbatim
 		}
 
-		if recon.IsStaticAssetPath(classifyPath) {
+		if recon.IsNonRouteAssetPath(classifyPath) {
+			// LT-117: IsNonRouteAssetPath widens the plain-extension check
+			// with *.js.php-style wrappers and node_modules/dist tree files,
+			// the katana-crawled minified-JS noise that swamped this table on
+			// jQuery/Dolibarr stacks.
 			assetCount++
 			continue
 		}

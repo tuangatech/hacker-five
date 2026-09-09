@@ -107,6 +107,26 @@ func TestMisconfigExposedPath_CustomNotFoundPage_NoFinding(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// TestMisconfigExposedPath_WellKnownSecurityTxt_NotFlagged locks in LT-119:
+// RFC 9116 requires security.txt to be publicly served at exactly this
+// path, so a well-formed one (with the mandatory Contact: field) is the
+// opposite of an exposed sensitive resource — it must never appear as a
+// misconfig-exposed-path finding.
+func TestMisconfigExposedPath_WellKnownSecurityTxt_NotFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/security.txt" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Contact: mailto:security@example.com\nExpires: 2027-01-01T00:00:00Z\nPolicy: https://example.com/security-policy\n"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	assert.Empty(t, withPrefix(findings, "misconfig-exposed-path-"),
+		"a valid RFC 9116 security.txt is required to be public — never an exposed-path finding")
+}
+
 // TestMisconfigExposedPath_HtpasswdRealHash_Hit and
 // TestMisconfigExposedPath_HtpasswdSPAFallback_NoFinding lock in a real,
 // live-found false-positive fix: the .htpasswd rule's keyword used to be a
@@ -333,6 +353,21 @@ func TestMisconfigMethod_404RootNotFlagged(t *testing.T) {
 	}
 }
 
+// TestMisconfigDisallowedMethod_401AuthWall_NotFlagged locks in LT-120:
+// agent.aalberts.com sits behind HTTP Basic auth and returns 401 to every
+// request, PUT/DELETE/PATCH included — that is the auth layer refusing the
+// verb before the origin ever sees it, not the origin accepting a write.
+func TestMisconfigDisallowedMethod_401AuthWall_NotFlagged(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+
+	for _, method := range []string{"put", "delete", "patch"} {
+		assert.Empty(t, withPrefix(findings, "misconfig-method-"+method+"-"),
+			"method=%s: a uniform 401 auth wall must not be read as method acceptance", method)
+	}
+}
+
 func TestMisconfigCORS_WildcardWithCredentials(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" && r.Method == http.MethodGet {
@@ -361,6 +396,26 @@ func TestMisconfigCORS_WildcardWithoutCredentials_NoFinding(t *testing.T) {
 
 	got := withPrefix(findings, "misconfig-cors")
 	assert.Empty(t, got)
+}
+
+// TestMisconfigCORS_AuthWallResponse_DownRanked locks in LT-121: when the
+// arbitrary-origin-with-credentials headers are seen only on an auth-wall
+// response (401/403/407 — agent.aalberts.com's uniform Basic-auth 401), a
+// cross-origin caller still can't read that body, so the finding is
+// down-ranked to medium/medium with a "verify against an authenticated 200"
+// note rather than reported at high/high.
+func TestMisconfigCORS_AuthWallResponse_DownRanked(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+
+	got := withPrefix(findings, "misconfig-cors")
+	require.Len(t, got, 1)
+	assert.Equal(t, "medium", got[0].Severity)
+	assert.Equal(t, "medium", got[0].Confidence)
+	assert.Contains(t, got[0].Description, "auth-walled response (status 401)")
 }
 
 func TestMisconfigVerboseError_Matched(t *testing.T) {

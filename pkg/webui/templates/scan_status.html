@@ -1,5 +1,5 @@
 {{define "fragment_scan_status_body"}}<h1>Scan Activity: {{.JobID}}</h1>
-<p>Target: <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a>{{if .Snapshot.ReconResult}} — <a href="/plan-preview?job={{.JobID}}" title="Review and run decision-engine-ranked leaves beyond the detectors already checked">Plan Preview</a>{{end}}</p>
+<p>Target: <code>{{.Target}}</code> — <a href="/scans/{{.JobID}}/export.json">Download JSON</a>{{template "fragment_plan_preview_link" .PlanPreviewLink}}</p>
 
 <script>
 // hfMaxSeq returns the highest data-seq among the direct children of the

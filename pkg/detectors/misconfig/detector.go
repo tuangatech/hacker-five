@@ -605,10 +605,31 @@ func (d *Detector) methodResponseMatchesGET(ctx context.Context, target, host, p
 // consistent with "the app tried to handle this method and broke" (still
 // evidence it wasn't rejected outright, and arguably an interesting signal
 // in its own right) as with an infrastructure-level non-response.
+//
+// 401 and 407 count too, via isAuthWallStatus (docs/follow-up.md LT-120,
+// live-confirmed against agent.aalberts.com — HTTP Basic auth returning 401
+// to every request, PUT/DELETE/PATCH included): a 401/407 is the auth layer
+// refusing the request before the origin ever sees the verb, exactly the
+// same "not accepted" signal 403 already stood for here.
 func rejected(status int) bool {
+	if isAuthWallStatus(status) {
+		return true
+	}
 	return status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented ||
-		status == http.StatusForbidden || status == http.StatusNotFound ||
+		status == http.StatusNotFound ||
 		status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// isAuthWallStatus reports whether status is one an auth/proxy layer
+// returns to say "I refused this before the origin app handled it" —
+// 401 Unauthorized, 403 Forbidden, 407 Proxy Authentication Required.
+// Shared by rejected() (a verb drawing one of these was rejected, not
+// accepted — LT-120) and checkCORS's severity down-rank (a CORS finding
+// observed only on such a response can't be read cross-origin, so its
+// evidence doesn't support a high — LT-121).
+func isAuthWallStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden ||
+		status == http.StatusProxyAuthRequired
 }
 
 func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
@@ -625,13 +646,26 @@ func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string
 		return nil, nil
 	}
 
+	severity, confidence := "high", "high"
+	description := "target reflects an arbitrary Origin (or uses a wildcard) while also allowing credentials, letting any site make authenticated cross-origin requests"
+	// LT-121: the misconfigured headers were seen only on an auth-wall
+	// response (401/403/407 — e.g. agent.aalberts.com, uniformly HTTP Basic
+	// auth). A cross-origin caller still can't read that body, so this
+	// evidence doesn't support a high; down-rank and flag it for
+	// verification against an authenticated 200 rather than suppressing it —
+	// the same misconfig may well extend to the real API behind the wall.
+	if isAuthWallStatus(resp.StatusCode) {
+		severity, confidence = "medium", "medium"
+		description += fmt.Sprintf(" — but observed only on an auth-walled response (status %d), which a cross-origin caller cannot read; verify the same headers against an authenticated 200 before treating this as high", resp.StatusCode)
+	}
+
 	return []detectors.Finding{{
 		ID:          "misconfig-cors",
 		Type:        "misconfig",
-		Severity:    "high",
-		Confidence:  "high",
+		Severity:    severity,
+		Confidence:  confidence,
 		Target:      target,
-		Description: "target reflects an arbitrary Origin (or uses a wildcard) while also allowing credentials, letting any site make authenticated cross-origin requests",
+		Description: description,
 		Evidence: map[string]string{
 			"access_control_allow_origin":      allowOrigin,
 			"access_control_allow_credentials": resp.Header.Get("Access-Control-Allow-Credentials"),

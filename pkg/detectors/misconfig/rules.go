@@ -43,7 +43,12 @@ var ExposedPaths = []PathRule{
 	{Path: "/.aws/credentials", Keywords: []string{"aws_access_key_id", "aws_secret_access_key"}, Severity: "critical"},
 	{Path: "/debug", Keywords: []string{"debug", "trace"}, Severity: "medium"},
 	{Path: "/debug/pprof/", Keywords: []string{"profile", "goroutine"}, Severity: "medium"},
-	{Path: "/.well-known/security.txt", Keywords: []string{"Contact:"}, Severity: "low"},
+	// NB: /.well-known/ paths are deliberately NOT probed here (LT-119). RFC
+	// 9116's security.txt, MTA-STS's mta-sts.txt and OIDC's
+	// openid-configuration are all *required* to be publicly served — recon's
+	// own pkg/preflight fetches security.txt as a positive policy signal — so
+	// flagging one as an "exposed sensitive path" is a structural false
+	// positive, not a finding.
 	{Path: "/swagger", Keywords: []string{"swagger", "openapi"}, Severity: "medium"},
 	{Path: "/swagger.json", Keywords: []string{"swagger", "openapi"}, Severity: "medium"},
 	{Path: "/swagger-ui.html", Keywords: []string{"swagger"}, Severity: "medium"},

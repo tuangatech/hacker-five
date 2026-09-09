@@ -4,7 +4,7 @@
 
 Open enhancement items and unresolved review findings, organized by category rather than by when they were raised. Direction: HackerFive is expanding beyond HackerOne-program scanning, so categories here stay useful for detection/reporting work generally. Narrative-style research and decision write-ups live in [discussions.md](discussions.md); this doc is the open-items backlog.
 
-**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-88 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
+**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-121 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs; LT-106–110 split out of the 2026-09-08 demo-prep scan-engine / end-of-scan-loop review; LT-111–114 from the 2026-09-08 nettix.com.pe baseline run; LT-115–117 from the 2026-09-08 demo-prep Web UI Playwright check; LT-118 from the 2026-09-09 demo-prep `www.nettix.com.pe` Web UI run; LT-119–121 from the 2026-09-09 `www.aalberts.com` full recon+scan). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
 
 ## Near-term batch — "do now" (raised across the 2026-09-07 linkpop / shop.app / ALSCO runs)
 
@@ -713,6 +713,25 @@ webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
   `/wp-includes/version.php`-adjacent signals, not an httpx `-tech-detect`
   guess. **→ recon fingerprint correctness.** Re-confirmed live in the
   2026-09-08 baseline run (below).
+- **LT-118 — `misconfig-exposed-path-admin` is a structural false positive on
+  any app whose `/admin` redirects to a login page (every WordPress site).**
+  `ExposedPaths` carries `{Path: "/admin", Keywords: ["admin","login","dashboard"]}`
+  (`rules.go`). `checkExposedPaths` GETs `/admin` with the scan HTTP client's
+  redirect-following on, so on WordPress the chain `/admin → /wp-admin/ →
+  /wp-login.php` lands on a 200 login page whose body contains "login", the
+  keyword matches, and `looksLikeBaselinePage` / `looksLikeCatchAllServed`
+  don't suppress it (the login page is a real distinct page, not a soft-404).
+  Fires `misconfig-exposed-path-admin` medium/high. The rule's intent is
+  "`/admin` serves an admin panel *without auth*" — a redirect to a login page
+  is the opposite signal. Re-confirmed live 2026-09-09 on `www.nettix.com.pe`
+  ("borderline" note in the 2026-09-08 baseline inventory was this).
+  **Fix:** in `checkExposedPaths`, drop (or downgrade to `info`) when the
+  response is a login page — a redirect chain landed on a `*login*` URL, or the
+  body has a password input with no post-auth dashboard markers. Keep the
+  finding for a genuine unauthenticated panel. Small, well-contained; a
+  `TestMisconfigExposedPath_AdminRedirectsToLogin_NotFlagged` case.
+  **→ detector false-positive; demo-visible (shows in the nettix Findings
+  table); do before 2026-09-10.**
 
 ### Baseline run 2026-09-08 (pre-implementation, apex-seeded) — engine multi-host findings
 
@@ -933,6 +952,178 @@ rounds.
   or LT-98's per-target starvation. **→ Parked** (see the Parked section);
   un-parks only if a live engagement shows a concrete surface that LT-100 +
   `httpx -path` provably can't reach.
+
+### Web UI review 2026-09-08 (Playwright, demo-prep)
+
+Surfaced driving `hackerfive serve` through Playwright against a live
+`erp.nettix.com.pe` on `main` (post-PR-#5), to rehearse the 2026-09-10 demo.
+The scan itself was clean — `misconfig-dolibarr-outdated` fired end-to-end in
+the Web UI (LT-113 confirmed beyond the CLI), `misconfig-soft-404-catchall`
+present, the `nettix-demo-focus.txt` exact-host scope file bounded recon to the
+one host, 5 findings / 0 false positives. Three UI gaps noted:
+
+- **LT-115 — the Web UI Launch form has no multi-target input; a focused
+  N-host scan needs N separate launches.** The Target field is a single URL
+  (`launchTargetScheme(form.Target)`), and `--scope` is an allow-list *filter*,
+  not a *seed list* — `runWave1` seeds `candidates` from the one target host
+  only, and subdomain fan-out (subfinder/tlsx) runs solely when the scope
+  carries a `*.` wildcard (LT-35). So there is no way to point one Web UI job
+  at an operator-chosen set of hosts (e.g. the 7 nettix demo hosts): you either
+  run one launch per host, or one apex launch with a `*.` scope and take
+  whatever recon discovers (~24 for nettix). CLI `scan -t <file>` already
+  accepts a newline-delimited targets file — the gap is Web-UI-only (`recon -t`
+  is also single-URL). **Fix:** a multi-line targets textarea (or a
+  targets-file-path field) on the Launch form → one recon+scan per host inside
+  the same Job, mirroring `scan -t <file>`. The status page already groups
+  findings by host and `registry.Resolve` / Plan Preview already handle a
+  multi-host recon result (the apex sweep exercises both today). Design notes:
+  per-host recon vs. one shared recon pass; interaction with the shared
+  `--rate-limit` bucket across the now-N concurrent targets (LT-106); whether
+  each host gets its own Job row or all share one. **→ Web UI ergonomics; not
+  demo-blocking (workaround: per-host launches with
+  `.engagements/owned-sites/nettix-demo-focus.txt` as the scope filter). Post-demo.**
+- **LT-116 — the "Plan Preview" link is invisible during a running scan.**
+  `scan_status.html`'s header line renders it only `{{if .Snapshot.ReconResult}}`,
+  and that `<p>` is part of the initial server render, not any `sse-swap`
+  region — `ReconResult` is nil at submit time and never updated in place, so
+  the link only appears after a manual page reload once recon has finished. The
+  log line carrying the `/plan-preview?job=<id>` URL is the only in-run pointer.
+  **Fix:** move the link into an SSE-swapped block (it could ride the
+  `recon`-channel swap that already repaints `#recon-results`), or always
+  render it (GET `/plan-preview` already 409s cleanly before recon completes).
+  **→ Web UI correctness; ~half-hour fix; worth doing before the demo if Plan
+  Preview is shown.**
+  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
+  both halves. (1) The header link moved into a stable
+  `<span id="plan-preview-link">` rendered by a new `fragment_plan_preview_link`
+  (`PlanPreviewLinkData{JobID, ReconDone, OOB}`); it's re-rendered with
+  `hx-swap-oob` piggybacked on the recon SSE event (`renderRecon` closure in
+  `handlers_launch.go`) and on the catchup re-sync (`CatchupData.PlanPreviewLink`),
+  so the link appears the moment recon finishes with no reload. (2)
+  `fragment_plan_node.html` now renders `.Class` (`misconfig` / `templates` /
+  `recon-followup` + a "vuln class" badge) for a GroupIntoClassNodes
+  intermediate node instead of a second copy of the hostname — the "two same
+  www.nettix.com.pe" the operator saw. Tests: `TestScanCatchup_*PlanPreviewLink*`,
+  `TestStartLaunch_ReconOnly_*` link assertion, `TestPlanPreview_RendersNested*`
+  class-label assertion.
+- **LT-117 — the recon Endpoints table is swamped by katana-crawled JS-library
+  internals.** On `erp` the table carried ~50 rows of
+  `includes/jquery/plugins/select2/dist/js/i18n/*` and `*.js.php` fragments —
+  katana following minified-JS string literals as if they were routes. The
+  existing "N static build/CDN asset endpoint(s) omitted" collapse
+  (`recon_view.go`) keys off `IsStaticAssetPath`, which doesn't catch a `.php`
+  suffix on an asset path (`style.css.php`, `lib_head.js.php`) or a vendored
+  library subtree (`includes/jquery/…`, `node_modules/…`, `*/dist/js/*`,
+  `*/i18n/*`). **Fix:** widen the static-asset / vendor-path recognizer used by
+  both the endpoint-table collapse and the idor/authbypass/ssrf candidate
+  filters (`IsStaticAssetPath` / `IsPlausibleURLPath`) so these fold into the
+  "omitted" count. Read-only, display + candidate-quality only — see the
+  no-negative-impact analysis in the answer that logged this. **→ recon
+  signal-to-noise; helps every crawl-heavy target, worst on jQuery/Dolibarr
+  stacks like nettix.**
+  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
+  new `recon.derivedAssetPath` (unexported) recognizes a server-script wrapper
+  over a static asset (`lib_head.js.php`, `style.css.php`) and a
+  dependency-manager / build-output subtree (`/node_modules/`,
+  `/bower_components/`, `/dist/js/`, `/dist/css/`). Display half: the Endpoints
+  table collapse (`recon_view.go`) now calls the widened
+  `recon.IsNonRouteAssetPath` (`= IsStaticAssetPath || derivedAssetPath`).
+  Candidate half: `SuggestAuthBypassPathsFromRecon`'s `looksLikeStaticAssetOrJunk`
+  also drops them; `SuggestIDOREndpointCandidates` drops them **only when
+  inert** — a plain GET with no query string — so a real `foo.js.php?id=5`
+  still generates an `{{id}}` candidate. `IsStaticAssetPath` itself is
+  unchanged (kept narrow for its other callers). Tests:
+  `TestIsNonRouteAssetPath`, `TestSuggestIDOREndpointCandidates` (+3 cases),
+  `TestSuggestAuthBypassPathsFromRecon` (+2 facts),
+  `TestCollapseEndpoints_JsPhpWrappersAndVendorTree_CountedNotRendered`.
+
+## Live Testing — www.aalberts.com (2026-09-09)
+
+First full recon+scan (`recon --recon-depth full --wave-timeout 180s` →
+`scan --detector misconfig --recon-file --narrow-by-tech --rate-limit 20`)
+of an owned demo domain that had only ever been recon'd before (`.engagements/owned-sites/scope.txt`).
+Apex-seeded, 10 hosts. It's a hardened corporate estate — Cloudflare (`tmo`),
+M365/SharePoint SSO gateways (`intelligence`/`support`/`one` all redirect to
+`login.microsoftonline.com`), catch-all SPA shells (`tmo`/`videowall`/`one`),
+HTTP Basic auth (`agent`), S3/AWS-fronted apex — so the real scannable surface
+is `aalberts.com` / `www` / `brandhub` only. **17 findings post-dedup; the
+actionable set is thin** (1 `misconfig-cors` on `agent` worth a manual look;
+~3 valid missing-header findings) **and several are false positives that this
+run surfaced as fix opportunities.** LT-102/103/104 all behaved: `app_surface:
+full` despite the `agent` WAF wall, `misconfig-soft-404-catchall` on `tmo`,
+D6 corpus-skip on `agent`. The LT-74 adaptive throttle correctly aborted
+`aalberts.com` mid-scan on a source-IP block (~1528/3746 templates).
+
+- **LT-119 — `/.well-known/security.txt` is flagged as
+  `misconfig-exposed-path-.well-known-security.txt` (low).** RFC 9116 *requires*
+  this file to be publicly served at exactly this path — it is the opposite of
+  an exposed sensitive resource. The `ExposedPaths` rule matches it on its own
+  mandatory keyword content (`contact` / `policy` / …). Recon already fetches
+  and *uses* `security.txt` as a positive policy signal (`pkg/preflight`), so
+  the detector contradicting that is doubly wrong. **Fix:** drop
+  `/.well-known/security.txt` from `ExposedPaths` (and `/.well-known/` generally
+  — `security.txt`, `mta-sts.txt`, `openid-configuration` are all
+  meant-to-be-public). Trivial. **→ detector false-positive; demo-visible.**
+  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
+  the `/.well-known/security.txt` row is removed from `misconfig.ExposedPaths`
+  with a comment noting the whole `/.well-known/` namespace stays out.
+  Test `TestMisconfigExposedPath_WellKnownSecurityTxt_NotFlagged`.
+- **LT-120 — `checkDisallowedMethods` treats HTTP 401 as "method accepted".**
+  On `agent.aalberts.com` (HTTP Basic auth → every request 401) PUT / DELETE /
+  PATCH each produced a `misconfig-method-*-root` finding at **medium /
+  high**: *"PUT appears to be accepted (status 401) instead of rejected"*. Root
+  cause: `rejected()` (`detector.go:608`) lists `403` but **not `401`**, and
+  `methodResponseMatchesGET` bails at its `statusCode >= 400` guard before it
+  can compare the verb's 401 to a plain GET's identical 401. A 401 is the auth
+  layer refusing the request, not the origin accepting the verb. **Fix:** add
+  `http.StatusUnauthorized` to `rejected()` — it belongs there for the same
+  reason `403` does (a 401 to PUT is a correct rejection whether the endpoint
+  is 200-to-GET-but-auth-gated-for-writes or uniformly auth-walled). One line +
+  a `TestMisconfigDisallowedMethod_401AuthWall_NotFlagged` case. **→ detector
+  false-positive (3 medium/high FPs from one gap); demo-relevant (any
+  Basic-auth / 401-walled host trips it).**
+  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
+  new `isAuthWallStatus(status)` helper (`401` / `403` / `407`); `rejected()`
+  now returns true for any of them (folding in the `403` it already had and
+  adding `401` + `407`), so `checkDisallowedMethods` no longer reads a
+  uniform-401 auth wall as method acceptance. Test
+  `TestMisconfigDisallowedMethod_401AuthWall_NotFlagged`.
+- **LT-121 — `misconfig-cors` fires `high/high` off an auth-wall-only
+  response.** `agent.aalberts.com` returns 401 for every path and method; the
+  CORS check saw its 401 reflect the probe `Origin` with
+  `Access-Control-Allow-Credentials: true` and emitted a **high/high**
+  arbitrary-origin-with-credentials finding. A cross-origin caller still can't
+  read a 401 body, so the practical impact is far lower than the same config on
+  a 200 that returns authenticated data — the severity/confidence overstate it
+  on the evidence gathered. **Fix:** when every observed response on the host
+  is an auth-wall status (401/403/407) — the `misconfig-waf-blocked` /
+  `looksLikeInterceptedPage` signal the detector already computes — down-rank a
+  CORS finding to `medium/medium` with a "observed only on an auth-walled
+  response; verify against an authenticated 200" note, rather than suppressing
+  it (the misconfig may well extend to the real API behind the wall). **→
+  detector precision; fold into the LT-120 change (same file, same host class).**
+  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
+  `checkCORS` down-ranks a reflected-origin-with-credentials finding to
+  `medium/medium` and appends a "observed only on an auth-walled response
+  (status N); verify against an authenticated 200" note when the probe
+  response's own status is `isAuthWallStatus` (401/403/407) — not suppressed.
+  Test `TestMisconfigCORS_AuthWallResponse_DownRanked`
+  (`TestMisconfigCORS_WildcardWithCredentials`'s 200 case still asserts `high`).
+- **Datapoints for existing items (no new LT):**
+  - **LT-6 tail** — `tmo.aalberts.com` produced 5 separate
+    `nuclei-http-missing-security-headers-*` **info** rows (permissions-policy,
+    x-permitted-cross-domain-policies, COEP, COOP, CORP) plus
+    `nuclei-missing-cookie-samesite-strict-0`. On a target with real findings
+    this noise buries the signal. Reinforces the case for an info-severity
+    floor on missing-optional-header findings (drop unless `--include-info`), or
+    collapsing the COEP/COOP/CORP/permissions-policy set into one
+    "modern-isolation-headers absent" finding.
+  - **LT-26 / Phase 8 Step 3** — the `--narrow-by-tech` tag scope resolved to
+    `misconfig, exposure, config, default-login, panel, bot, linkedin` — the
+    `Amazon S3` / `Amazon Web Services` tech facts on the apex contributed **no**
+    `aws` / `s3` tag, so the S3-bucket / AWS-key templates the 2026-09-05
+    `plan` had ranked never ran. Re-confirms the "generic cloud-provider fact →
+    no usable product tag" gap.
 
 ## Scan-Engine Request Efficiency
 
