@@ -1041,6 +1041,37 @@ rounds.
   Step 4. Post-demo; arguably higher long-term actionable-finding value than
   LT-99. No nettix-demo value (the interesting params on WP/Dolibarr are
   auth-gated).
+  **Resolved 2026-09-09 (branch `feat-lt100-param-mining`).** `--param-mining`
+  on `recon`/`plan` (DepthFull only; no-op + stderr note otherwise),
+  `--param-mining-wordlist <path>` override, `--param-mining-request-cap`
+  override. `pkg/recon/parammine.go` mines the top `maxParamMineEndpoints` (6)
+  ranked GET endpoints (query-string / `/api`-ish paths rank up; 2xx/401/403
+  only; in-scope) through the **rate-limited `r.client`**, hard-capped at
+  `maxParamMineRequests` (160) for the whole run. Per endpoint: 2 control
+  requests set a baseline (status, body-length, and `statusNoisy`/`lenNoisy`
+  flags that disable those signals on a too-dynamic endpoint), then batches of
+  24 candidate names ride one request each with a unique per-name marker
+  value. **Corroboration gate (≥2 signals, same param):** `reflect` (marker
+  value in body, not baseline) and `nameEcho` (distinctive param name in body,
+  not baseline; stoplist for common words) pinpoint a param; `status-class
+  change` and a significant `body-length shift` (>64 B **and** >5%) each count
+  only when exactly one param in the batch was pinpointed. **FP guards:**
+  reflect-all endpoints (>8 markers echoed in a batch, or the baseline
+  reflecting an unsent marker, or >6 params corroborated) are dropped whole;
+  binary-search narrowing was **dropped** — a status/length-only isolate is 1
+  signal, which the gate rejects anyway, so it only cost requests.
+  `pkg/recon/wordlists/params.txt` (`go:embed`, ~239 names, provenance header
+  cites the public Arjun / SecLists lists). Hits → `EndpointFact{Source:
+  "wave3-param-mining", URL: "path?key=<v>"}` — `<v>=1` for id-shaped keys
+  (feeds `idShapedQueryCandidate` → IDOR), else value-less (feeds
+  `SuggestSSRFParamsFromRecon` on a keyword match). **webui/mcp toggle
+  deferred** (same reasoning as LT-99). Tests: `parammine_test.go` (7 —
+  emit-on-2-signals, decoys→nothing, reflect-all suppressed, request cap,
+  feeds SSRF+IDOR suggesters, off-by-default, wordlist override).
+  **Live:** crAPI `:8888` + `--headless-crawl` — 478 candidate probes over 2
+  genuinely-non-honoring endpoints, **0 emitted (decoy-set FP = 0%)**; Juice
+  Shop — **4 real undocumented params found** (`sort`, `scope` on the
+  auto-REST `/api/Challenges/` and `/api/Quantitys/`), 72 requests, within cap.
 - **ffuf-style multi-position fuzzing — reaffirmed out of scope** (was Phase 8
   Step 6's out-of-scope note; restated here so it isn't re-evaluated blind).
   Real capability gap, but deliberately deferred: (1) content discovery is

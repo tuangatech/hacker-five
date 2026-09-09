@@ -37,6 +37,9 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 		concurrency         int
 		crawlDepth          int
 		headlessCrawl       bool
+		paramMining         bool
+		paramMiningWordlist string
+		paramMiningReqCap   int
 		waveTimeout         time.Duration
 		verbose             bool
 		policyFile          string
@@ -90,8 +93,11 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 			if headlessCrawl && d != recon.DepthFull {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), `recon: --headless-crawl has no effect below --recon-depth full (Wave 3 doesn't run) — ignoring`)
 			}
+			if paramMining && d != recon.DepthFull {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), `recon: --param-mining has no effect below --recon-depth full (Wave 3 doesn't run) — ignoring`)
+			}
 
-			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency), recon.WithCrawlDepth(crawlDepth), recon.WithHeadlessCrawl(headlessCrawl), recon.WithWaveTimeout(waveTimeout)}
+			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency), recon.WithCrawlDepth(crawlDepth), recon.WithHeadlessCrawl(headlessCrawl), recon.WithParamMining(paramMining), recon.WithParamMiningWordlist(paramMiningWordlist), recon.WithParamMiningRequestCap(paramMiningReqCap), recon.WithWaveTimeout(waveTimeout)}
 			if s != nil {
 				opts = append(opts, recon.WithScope(s))
 			}
@@ -137,6 +143,9 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", recon.DefaultConcurrency, "concurrency passed to each external recon binary's own native concurrency flag")
 	cmd.Flags().IntVar(&crawlDepth, "crawl-depth", recon.DefaultCrawlDepth, "Wave 3 katana crawl depth (--recon-depth full only); higher widens the idor/authbypass/ssrf candidate surface at a proportional request/time cost (LT-8)")
 	cmd.Flags().BoolVar(&headlessCrawl, "headless-crawl", false, "run the Wave 3 katana crawl in real-browser headless mode (--recon-depth full only) so a SPA's fetch()/XHR endpoints are recovered — heavy: renders every page and pulls a one-time Chromium if none is installed (LT-99)")
+	cmd.Flags().BoolVar(&paramMining, "param-mining", false, "probe a curated hidden-parameter candidate list against the top endpoints (--recon-depth full only), emitting only params the app measurably honours; hard per-host request cap (LT-100)")
+	cmd.Flags().StringVar(&paramMiningWordlist, "param-mining-wordlist", "", "path to a hidden-parameter candidate list (one name per line) to use instead of the small built-in one (LT-100)")
+	cmd.Flags().IntVar(&paramMiningReqCap, "param-mining-request-cap", 0, "override the per-host request ceiling for --param-mining (default 160)")
 	cmd.Flags().DurationVar(&waveTimeout, "wave-timeout", recon.DefaultWaveTimeout, "wall-clock cap on each external recon binary invocation (subfinder/tlsx/dnsx/naabu/httpx/katana); raise it when enumerating a broad apex where subfinder needs more than the default to finish (LT-111). Also settable via HACKERFIVE_RECON_WAVE_TIMEOUT")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")

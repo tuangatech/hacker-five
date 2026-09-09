@@ -139,9 +139,18 @@ type Recon struct {
 	// false when an operator passes --headless-crawl, and only takes effect at
 	// DepthFull.
 	headlessCrawl bool
-	runBinary   runFunc
-	progress    func(wave, status string)
-	headers     map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
+
+	// paramMining runs Wave 3's hidden-parameter pass (LT-100,
+	// docs/follow-up.md): probe a curated candidate-name list against the most
+	// promising endpoints and emit the params the app measurably honours as
+	// wave3-param-mining EndpointFacts. Opt-in, DepthFull only, hard per-host
+	// request cap (paramMineRequestCap, 0 = maxParamMineRequests).
+	paramMining         bool
+	paramMiningWordlist string
+	paramMineRequestCap int
+	runBinary           runFunc
+	progress            func(wave, status string)
+	headers             map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
 
 	openAPISpecRefs []string // operator-supplied OpenAPI docs to walk into api-spec EndpointFacts (LT-89)
 }
@@ -201,6 +210,41 @@ func WithHeadlessCrawl(on bool) Option {
 	return func(r *Recon) {
 		if on {
 			r.headlessCrawl = true
+		}
+	}
+}
+
+// WithParamMining enables LT-100's hidden-parameter pass for Wave 3 —
+// probing a curated candidate-name list against the top endpoints and
+// emitting the params the app measurably honours (>= 2 diff-oracle signals)
+// as `wave3-param-mining` EndpointFacts. Opt-in, DepthFull only. false is a
+// no-op.
+func WithParamMining(on bool) Option {
+	return func(r *Recon) {
+		if on {
+			r.paramMining = true
+		}
+	}
+}
+
+// WithParamMiningWordlist points the LT-100 pass at an operator-supplied
+// candidate-name list (one name per line, `#` comments ok) instead of the
+// small built-in one. Empty keeps the built-in list.
+func WithParamMiningWordlist(path string) Option {
+	return func(r *Recon) {
+		if strings.TrimSpace(path) != "" {
+			r.paramMiningWordlist = path
+		}
+	}
+}
+
+// WithParamMiningRequestCap overrides the per-host request ceiling for the
+// LT-100 pass (default maxParamMineRequests). Values <= 0 keep the
+// default.
+func WithParamMiningRequestCap(n int) Option {
+	return func(r *Recon) {
+		if n > 0 {
+			r.paramMineRequestCap = n
 		}
 	}
 }
