@@ -65,6 +65,24 @@ func LoadDirDetailed(dir string) (templates []*Template, errs []LoadError) {
 	return templates, errs
 }
 
+// LoadFiles parses exactly the files named in relPaths (each resolved
+// against dir), skipping LoadDirDetailed's recursive walk — the native-format
+// counterpart to nuclei.LoadFiles, backing pkg/scanner's parse cache
+// (docs/follow-up.md LT-106). A missing or unparseable entry is collected in
+// errs, not fatal to the rest.
+func LoadFiles(dir string, relPaths []string) (templates []*Template, errs []LoadError) {
+	for _, rel := range relPaths {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		tmpl, err := loadFile(full)
+		if err != nil {
+			errs = append(errs, LoadError{Path: full, Err: err})
+			continue
+		}
+		templates = append(templates, tmpl)
+	}
+	return templates, errs
+}
+
 func loadFile(path string) (*Template, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

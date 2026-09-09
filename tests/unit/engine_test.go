@@ -244,6 +244,7 @@ http:
 // templates, one per format, tagged "wordpress" and "grafana" respectively —
 // requesting only "wordpress" must fire the first and skip the second.
 func TestEngineRun_TagsFilterTemplates(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // keep the LT-106 parse-cache sidecar this tag-scoped run writes out of the real user cache dir
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("hello-from-target"))
 	}))

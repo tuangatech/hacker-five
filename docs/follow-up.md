@@ -430,6 +430,46 @@ DokuWiki is current (`2026-07-14c "Mort"`); `soporte.nettix.com.pe` throwing
   per-target rate-limit share, or scan-one-target-at-a-time when the loaded
   set is large. **→ Phase 8/9 scan-engine-perf backlog; post-demo; not
   demo-blocking.**
+  **Resolved 2026-09-09 (branch `fix-lt106-parse-cache-and-rate-share`) —
+  both halves the user named:**
+  - *Per-target rate share (runtime half).* `pkg/scanner/targetshare.go`:
+    `effectiveTargetConcurrency(configured, rateLimit, nucleiCount, targets)`
+    caps the cross-target worker pool so each in-flight target keeps
+    ≥ `minPerTargetShareQPS` (5) of the shared `--rate-limit` bucket once
+    `largeCorpusShareThreshold` (500) nuclei templates are loaded — the LT's
+    "scan fewer targets at a time when the loaded set is large" option, and
+    the fix for LT-114 (8 hosts × `--rate-limit 10` → 1.25 req/s each →
+    ~0 templates dispatched before the per-target budget fired). Wired in
+    `Engine.Run` right after `loadTemplates`, with an `info` line naming the
+    old and new pool size. Small `--templates`/native-only runs and
+    single-target scans are untouched. Tests: `targetshare_test.go` (8 cases).
+  - *Parsed-corpus cache (load half).* `pkg/scanner/parsecache.go`: a
+    self-maintaining sidecar under `os.UserCacheDir()/hackerfive/parsecache/`,
+    keyed by a fingerprint of every template file's rel-path + size + mtime.
+    After any full parse the engine records each template's id / tags /
+    severity / format / rel-path; on the next **tag-scoped** run, if the
+    fingerprint still matches, `loadDirViaParseCache` resolves the wanted tags
+    to a file list from the sidecar and parses only those (~1.6k for
+    `--tags wp,wordpress`) via new `nuclei.LoadFiles` / `native.LoadFiles`,
+    skipping the full ~9.6k YAML-parse+DSL-typecheck. Pure optimisation: a
+    fingerprint match means the files — and therefore every `tags:` block —
+    are byte-identical to when the sidecar was built from an authoritative
+    parse, and `filterNucleiByTags`/`filterNativeByTags` still run on the
+    result as a backstop (can only narrow, never widen). Any mismatch
+    (missing/stale sidecar, an entry with no recorded path, a listed file
+    that no longer parses) falls back to a full parse and rewrites the
+    sidecar. Kill switch: `HACKERFIVE_DISABLE_PARSE_CACHE=1`. New
+    `nuclei.PeekDirIDs` backs the id→path rebuild. Tests:
+    `parsecache_test.go`, `tests/unit/loader_loadfiles_test.go`.
+  - *Still open (folded back into this LT, lower priority):* the sidecar
+    rebuild adds one extra whole-dir `os.ReadFile` pass (`PeekDirIDs`) on the
+    cache-**miss** path — cheap relative to the parse it accompanies, but
+    removable by threading the file path back through `LoadDirDetailed`; and
+    a full-corpus run (`--all-templates`, no tag scope) still can't use the
+    cache to narrow, only to warm it. The `templates/index.json` "on-disk
+    tag→file index" option was **not** taken — it can drift from the on-disk
+    corpus (only `IndexDriftWarning`'s ratio guards it), so it's weaker than
+    the fingerprinted sidecar's pure-optimisation guarantee.
 - **LT-107 — coverage-gap ledger (deterministic, no LLM).** After a
   recon+scan, emit a structured record per `(host, fingerprinted
   product/version)` that no loaded template tag and no native detector
@@ -873,6 +913,12 @@ demo-blocking on its own:
   shared `--rate-limit` token bucket — is still LT-106. Tests:
   `pkg/scanner/dispatchorder_test.go`,
   `tests/unit/engine_test.go` (`TestEngineRun_TimeBudgetFinding_ReportsDispatchedNotFindingCount`).
+  **Design half now done 2026-09-09 (branch `fix-lt106-parse-cache-and-rate-share`):**
+  the per-target rate share landed under LT-106 —
+  `effectiveTargetConcurrency` caps cross-target concurrency so each in-flight
+  target keeps ≥5 req/s of the shared bucket once a large corpus is loaded,
+  so an 8-host corpus scan now dispatches a real per-target slice instead of
+  ~0. See the LT-106 resolution note.
 
 **Baseline finding inventory (what the tool actually produced, 8-host corpus
 run, 20 findings post-dedup):** `www.nettix.com.pe` — `misconfig-wordpress-user-enumeration`
