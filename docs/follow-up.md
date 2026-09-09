@@ -1138,6 +1138,17 @@ full` despite the `agent` WAF wall, `misconfig-soft-404-catchall` on `tmo`,
 D6 corpus-skip on `agent`. The LT-74 adaptive throttle correctly aborted
 `aalberts.com` mid-scan on a source-IP block (~1528/3746 templates).
 
+**Demo verdict (2026-09-09): not a demo candidate — do not re-evaluate.**
+Hardened corporate estate (Cloudflare / M365 SSO gateways / HTTP Basic /
+S3-fronted apex), real scannable surface is 3 hosts, the actionable set is
+thin (1 `misconfig-cors` worth a manual look, ~3 valid missing-header rows),
+and the scan was source-IP-blocked mid-run. Same dead-end class as valmo
+(Akamai), shopify (Cloudflare), ALSCO (WAF + IP-block). Keep `*.aalberts.com`
+as an FP-regression fixture only. For an actionable end-to-end demo, crAPI
+(13 verified findings, 0 FP) stays the strongest; the 2026-09-10 Web UI demo
+uses `nettix.com.pe`. (Local scratch note: `.engagements/owned-sites/DEMO-TARGETS.md`,
+that dir is gitignored.)
+
 - **LT-119 — `/.well-known/security.txt` is flagged as
   `misconfig-exposed-path-.well-known-security.txt` (low).** RFC 9116 *requires*
   this file to be publicly served at exactly this path — it is the opposite of
