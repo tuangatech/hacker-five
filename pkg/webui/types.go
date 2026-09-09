@@ -18,6 +18,14 @@ type LaunchFormData struct {
 
 	Target string
 
+	// ExtraTargets is the raw content of the "additional targets" textarea
+	// (LT-115): zero or more hosts, one per line (blank lines and "#"
+	// comments ignored), each scanned in the same Job alongside Target via
+	// the engine's own per-target loop. Empty — the common case — is an
+	// ordinary single-target launch, byte-identical to before. Recon still
+	// runs once, against Target only; see runLaunchJob's multi-target note.
+	ExtraTargets string
+
 	RunMisconfig bool
 
 	RunIdor  bool

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -347,6 +348,184 @@ func TestParseLaunchSubmission_MultipleDetectorsChecked_TemplatesAttachedOnce(t 
 	assert.Equal(t, 1, withTemplates, "the template corpus must be attached to exactly one config, never once per checked detector")
 	assert.NotEmpty(t, cfgs[0].TemplatePaths, "misconfig is checked first and built first, so it should be the one carrying the templates")
 	assert.Equal(t, "misconfig", cfgs[0].Detector)
+}
+
+// --- LT-115: multi-target launch --------------------------------------------
+
+func TestParseExtraTargets(t *testing.T) {
+	cases := []struct {
+		name       string
+		primary    string
+		raw        string
+		wantTgts   []string
+		wantErrCnt int
+	}{
+		{name: "blank textarea yields nothing", primary: "https://a.example.com", raw: "", wantTgts: nil},
+		{name: "whitespace-only textarea yields nothing", primary: "https://a.example.com", raw: "  \n\t\n", wantTgts: nil},
+		{
+			name:     "one host per line, scheme defaulted",
+			primary:  "https://a.example.com",
+			raw:      "b.example.com\nhttps://c.example.com",
+			wantTgts: []string{"https://b.example.com", "https://c.example.com"},
+		},
+		{
+			name:     "comments and blank lines ignored",
+			primary:  "https://a.example.com",
+			raw:      "# the ERP host\nerp.example.com\n\n  # trailing note\ncloud01.example.com   # inline comment\n",
+			wantTgts: []string{"https://erp.example.com", "https://cloud01.example.com"},
+		},
+		{
+			name:     "comma separated on one line",
+			primary:  "https://a.example.com",
+			raw:      "x.example.com, y.example.com , z.example.com",
+			wantTgts: []string{"https://x.example.com", "https://y.example.com", "https://z.example.com"},
+		},
+		{
+			name:     "duplicates and the primary itself are dropped",
+			primary:  "https://a.example.com",
+			raw:      "a.example.com\nb.example.com\nB.EXAMPLE.COM\nhttps://b.example.com",
+			wantTgts: []string{"https://b.example.com"},
+		},
+		{
+			name:       "an unparseable entry is reported, the rest still parse",
+			primary:    "https://a.example.com",
+			raw:        "ok.example.com\nhttp://a b.example.com\nalso-ok.example.com",
+			wantTgts:   []string{"https://ok.example.com", "https://also-ok.example.com"},
+			wantErrCnt: 1,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, errs := parseExtraTargets(c.primary, c.raw)
+			assert.Equal(t, c.wantTgts, got)
+			assert.Len(t, errs, c.wantErrCnt)
+		})
+	}
+}
+
+// TestParseLaunchSubmission_ExtraTargets_MultiTargetConfig: the additional-
+// targets textarea puts every host on each detector's scanner.Config.Targets,
+// primary first, so the engine's own per-target loop scans them all in one
+// Job (LT-115).
+func TestParseLaunchSubmission_ExtraTargets_MultiTargetConfig(t *testing.T) {
+	form := url.Values{
+		"target":        {"https://www.example.com"},
+		"extra_targets": {"erp.example.com\n# a comment\n\nhttps://cloud01.example.com\nwww.example.com"},
+		"run_misconfig": {"on"},
+		"authorized":    {"on"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	require.NoError(t, req.ParseForm())
+
+	gotForm, cfgs, _, errs := parseLaunchSubmission(req)
+	require.Empty(t, errs)
+	require.Len(t, cfgs, 1)
+	assert.Equal(t, []string{
+		"https://www.example.com",
+		"https://erp.example.com",
+		"https://cloud01.example.com",
+	}, cfgs[0].Targets, "primary first, extras appended, the repeated primary dropped")
+	assert.Equal(t, form.Get("extra_targets"), gotForm.ExtraTargets, "raw textarea content is kept for error re-render")
+}
+
+// TestParseLaunchSubmission_ExtraTargets_InvalidLineRejected: a malformed
+// additional target is a form error, not a silent drop.
+func TestParseLaunchSubmission_ExtraTargets_InvalidLineRejected(t *testing.T) {
+	form := url.Values{
+		"target":        {"https://www.example.com"},
+		"extra_targets": {"good.example.com\nhttp://[bad"},
+		"run_misconfig": {"on"},
+		"authorized":    {"on"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	require.NoError(t, req.ParseForm())
+
+	_, _, _, errs := parseLaunchSubmission(req)
+	require.NotEmpty(t, errs)
+	assert.Contains(t, strings.Join(errs, " | "), "not a valid URL")
+}
+
+// TestParseLaunchSubmission_NoExtraTargets_SingleTargetUnchanged is the
+// regression guard: an empty textarea must leave Targets exactly as the
+// single-target path always produced it.
+func TestParseLaunchSubmission_NoExtraTargets_SingleTargetUnchanged(t *testing.T) {
+	form := url.Values{
+		"target":        {"https://only.example.com"},
+		"extra_targets": {""},
+		"run_misconfig": {"on"},
+		"authorized":    {"on"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	require.NoError(t, req.ParseForm())
+
+	_, cfgs, _, errs := parseLaunchSubmission(req)
+	require.Empty(t, errs)
+	require.Len(t, cfgs, 1)
+	assert.Equal(t, []string{"https://only.example.com"}, cfgs[0].Targets)
+}
+
+// TestStartLaunch_MultiTarget_ScansEveryHost drives POST /scans with two
+// live local targets in the additional-targets textarea and confirms both
+// are actually scanned in the one Job (LT-115).
+func TestStartLaunch_MultiTarget_ScansEveryHost(t *testing.T) {
+	ts, _ := newTestServerHandlers(t)
+
+	var hitA, hitB int32
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hitA, 1)
+		w.WriteHeader(http.StatusNotFound) // bare 404, no security headers -> misconfig findings
+	}))
+	t.Cleanup(srvA.Close)
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hitB, 1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srvB.Close)
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+	getResp, err := client.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.NoError(t, getResp.Body.Close())
+	csrfVal := cookieValue(t, jar, ts.URL, csrfCookieName)
+
+	form := url.Values{
+		"csrf_token":    {csrfVal},
+		"target":        {srvA.URL},
+		"extra_targets": {srvB.URL},
+		"run_misconfig": {"on"},
+		"authorized":    {"on"},
+	}
+	resp, err := client.PostForm(ts.URL+"/scans", form)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	redirect := resp.Header.Get("HX-Push-Url")
+	require.Regexp(t, `^/scans/[0-9a-f]+$`, redirect)
+
+	require.Eventually(t, func() bool {
+		r, err := client.Get(ts.URL + redirect)
+		if err != nil {
+			return false
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		return strings.Contains(string(b), "scan finished") || strings.Contains(string(b), "status-badge\">done")
+	}, 30*time.Second, 200*time.Millisecond, "expected the multi-target job to finish")
+
+	assert.Positive(t, atomic.LoadInt32(&hitA), "primary target must be scanned")
+	assert.Positive(t, atomic.LoadInt32(&hitB), "additional target must be scanned in the same job")
+
+	r, err := client.Get(ts.URL + redirect)
+	require.NoError(t, err)
+	b, err := io.ReadAll(r.Body)
+	require.NoError(t, err)
+	require.NoError(t, r.Body.Close())
+	assert.Contains(t, string(b), "multi-target scan (LT-115): 2 hosts", "the status page logs the multi-target fan-out")
 }
 
 // TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip checks
