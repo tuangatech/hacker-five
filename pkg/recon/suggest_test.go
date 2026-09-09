@@ -105,6 +105,21 @@ func TestSuggestIDOREndpointCandidates(t *testing.T) {
 			urls: []string{"https://example.com/api/accounts/{accountId}"},
 			want: []string{"/api/accounts/{{id}}"},
 		},
+		{
+			name: "a *.js.php asset wrapper with an ID-shaped segment and no query is not an IDOR candidate (LT-117)",
+			urls: []string{"https://example.com/includes/42/lib_head.js.php"},
+			want: nil,
+		},
+		{
+			name: "a dependency-tree file with an ID-shaped segment and no query is not an IDOR candidate (LT-117)",
+			urls: []string{"https://example.com/node_modules/select2/42/index.min"},
+			want: nil,
+		},
+		{
+			name: "a *.js.php path that still carries a real id query param IS a candidate — the LT-117 guard is inert-GET-no-query only",
+			urls: []string{"https://example.com/includes/lib_head.js.php?id=5"},
+			want: []string{"/includes/lib_head.js.php?id={{id}}"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -202,6 +217,11 @@ func TestSuggestAuthBypassPathsFromRecon(t *testing.T) {
 		// should ever be treated as a meaningful authbypass candidate.
 		{URL: "https://example.com/_next/static/chunks/660-d4913fd145d4d716.js", StatusCode: 401},
 		{URL: `https://example.com/\`, StatusCode: 403},
+		// LT-117: a *.js.php asset wrapper and a node_modules tree file
+		// carrying a katana-crawl 401/403 are the same class of noise —
+		// derivedAssetPath must keep them out of the protected set.
+		{URL: "https://example.com/htdocs/theme/eldy/style.css.php", StatusCode: 403},
+		{URL: "https://example.com/node_modules/jquery/dist/jquery.min", StatusCode: 401},
 	}}
 
 	protected, login, logout := SuggestAuthBypassPathsFromRecon(result)
@@ -239,6 +259,41 @@ func TestSuggestAuthBypassPathsFromRecon_NilResult(t *testing.T) {
 	protected, login, logout := SuggestAuthBypassPathsFromRecon(nil)
 	if protected != nil || login != nil || logout != nil {
 		t.Fatalf("got (%v, %v, %v), want (nil, nil, nil)", protected, login, logout)
+	}
+}
+
+func TestIsNonRouteAssetPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		// plain static-asset extensions — already covered by IsStaticAssetPath
+		{"/assets/app.js", true},
+		{"/css/site.css", true},
+		{"/logo.svg", true},
+		// LT-117: server-script wrappers over a static asset
+		{"/htdocs/core/js/lib_head.js.php", true},
+		{"/theme/eldy/style.css.php", true},
+		{"/scripts/bundle.js.aspx", true},
+		// LT-117: dependency-manager / build-output subtrees
+		{"/wp-content/themes/x/node_modules/select2/select2.full", true},
+		{"/bower_components/jquery/jquery", true},
+		{"/static/dist/js/app.min", true},
+		{"/static/dist/css/app.min", true},
+		// real application routes — must NOT be flagged
+		{"/", false},
+		{"/admin", false},
+		{"/api/v2/users", false},
+		{"/report.php", false},        // a bare .php route, no inner asset ext
+		{"/index.php", false},         // ditto
+		{"/download.aspx", false},     // ditto
+		{"/dist/report", false},       // "/dist/" alone is not enough — needs /dist/js|css/
+		{"/products/dist-belt", false}, // substring "dist" but not the "/dist/js/" segment
+	}
+	for _, tc := range cases {
+		if got := IsNonRouteAssetPath(tc.path); got != tc.want {
+			t.Errorf("IsNonRouteAssetPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }
 

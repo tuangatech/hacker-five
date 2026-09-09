@@ -105,6 +105,29 @@ type CatchupData struct {
 	LogsHTML     template.HTML
 	FindingsHTML template.HTML
 	AgentHTML    template.HTML
+	// PlanPreviewLink re-syncs the header's Plan Preview link (LT-116): it's
+	// part of scan_status.html's static header, not an sse-swap region, so a
+	// client that connected before recon finished would otherwise never see
+	// it appear without a manual reload. OOB is always true here.
+	PlanPreviewLink PlanPreviewLinkData
+}
+
+// PlanPreviewLinkData drives fragment_plan_preview_link — the header's
+// "Plan Preview" link, shown only once recon has produced a result (GET
+// /plan-preview 409s before that). Rendered inline in scan_status.html's
+// first paint and, live, as an hx-swap-oob update riding the recon SSE
+// event and the catchup re-sync, so the link appears the moment recon
+// finishes instead of only after a reload (LT-116).
+type PlanPreviewLinkData struct {
+	JobID     string
+	ReconDone bool // snap.ReconResult != nil
+	OOB       bool // render the wrapper <span> with hx-swap-oob (SSE/catchup); false for the inline first paint
+}
+
+// PlanPreviewLink is the header link state for scan_status.html's inline
+// first render — OOB stays false; the live updates set it true themselves.
+func (d ScanStatusData) PlanPreviewLink() PlanPreviewLinkData {
+	return PlanPreviewLinkData{JobID: d.JobID, ReconDone: d.Snapshot.ReconResult != nil}
 }
 
 // ScanStatusData is what scan_status.html renders — the job's snapshot at

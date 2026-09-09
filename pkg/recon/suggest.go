@@ -175,13 +175,25 @@ func SuggestIDOREndpointCandidates(result *ReconResult) []string {
 		// files, none of them a meaningful IDOR test target, surfaced as
 		// "4 candidates found, none auto-selected" instead of the more
 		// honest "recon found no candidate."
-		if IsStaticAssetPath(endpointPath(ep.URL)) {
+		p := endpointPath(ep.URL)
+		if IsStaticAssetPath(p) {
+			continue
+		}
+		// LT-117: a *.js.php asset wrapper or a dependency-tree file
+		// (node_modules/, dist/js/, …) isn't an IDOR target on its own.
+		// Unlike the bare .js/.css dropped just above, a server-rendered
+		// *.php that merely ends ".js.php" could still carry a real,
+		// tamperable id — so only drop the inert case here: a plain GET with
+		// no query string. A "?id=…" variant, or any non-GET, still flows
+		// through to idShapedCandidate below.
+		if derivedAssetPath(p) && !strings.Contains(ep.URL, "?") &&
+			(ep.Method == "" || strings.EqualFold(ep.Method, http.MethodGet)) {
 			continue
 		}
 		// A path scraped as a JavaScript string-concat fragment
 		// ("/library/video/'+D.prop(") is not a requestable endpoint —
 		// drop it before it can become an {{id}} candidate (LT-85).
-		if !IsPlausibleURLPath(endpointPath(ep.URL)) {
+		if !IsPlausibleURLPath(p) {
 			continue
 		}
 		tmpl, ok := idShapedCandidate(ep.URL)
@@ -413,6 +425,60 @@ func IsStaticAssetPath(p string) bool {
 	return staticAssetExtensions[strings.ToLower(path.Ext(p))]
 }
 
+// dynamicScriptWrapperExts are server-side-script extensions that, when
+// they wrap a static-asset name (lib_head.js.php, style.css.php), mark a
+// generated/concatenated asset rather than an application route. On
+// jQuery/Dolibarr-style stacks katana surfaces a lot of these by
+// following minified-JS string literals as if they were links (LT-117). A
+// bare "/report.php" with no inner asset extension is NOT matched — that's
+// a real endpoint.
+var dynamicScriptWrapperExts = map[string]bool{
+	".php": true, ".asp": true, ".aspx": true, ".jsp": true, ".jspx": true,
+	".cfm": true, ".cgi": true, ".ashx": true, ".pl": true,
+}
+
+// dependencyTreeSegments are path fragments that only ever appear inside a
+// package-manager download tree or a front-end build-output directory —
+// never a hand-authored application route. Matched as substrings of the
+// lower-cased path.
+var dependencyTreeSegments = []string{
+	"/node_modules/", "/bower_components/", "/dist/js/", "/dist/css/",
+}
+
+// derivedAssetPath reports whether p is a build/vendor artifact that
+// IsStaticAssetPath's plain-extension check misses (LT-117): a
+// server-script wrapper over a static asset (foo.js.php, style.css.php), or
+// a path inside a dependency-manager / build-output subtree
+// (node_modules/, bower_components/, dist/js/, dist/css/). High-precision
+// by construction — each pattern is one that has no legitimate
+// application-route meaning.
+func derivedAssetPath(p string) bool {
+	lower := strings.ToLower(p)
+	for _, seg := range dependencyTreeSegments {
+		if strings.Contains(lower, seg) {
+			return true
+		}
+	}
+	if outer := strings.ToLower(path.Ext(p)); dynamicScriptWrapperExts[outer] {
+		inner := strings.ToLower(path.Ext(strings.TrimSuffix(p, path.Ext(p))))
+		if staticAssetExtensions[inner] {
+			return true
+		}
+	}
+	return false
+}
+
+// IsNonRouteAssetPath is IsStaticAssetPath widened with derivedAssetPath's
+// build/vendor cases (LT-117) — used by pkg/webui's Endpoints table to keep
+// katana's minified-JS-literal noise (foo.js.php, node_modules/…, dist/js/…)
+// out of the displayed rows, folding it into the "static asset omitted"
+// count instead. The candidate suggesters deliberately use the narrower
+// IsStaticAssetPath plus their own guarded derivedAssetPath check, since a
+// *.js.php carrying a real id query param can still be a live target.
+func IsNonRouteAssetPath(p string) bool {
+	return IsStaticAssetPath(p) || derivedAssetPath(p)
+}
+
 // looksLikeStaticAssetOrJunk reports whether p is a front-end build
 // artifact (by extension) or too degenerate to be a real candidate (no
 // alphanumeric content at all — e.g. the lone "/\" a crawler occasionally
@@ -422,8 +488,8 @@ func IsStaticAssetPath(p string) bool {
 // IsStaticAssetPath above, which the Endpoints table display uses and
 // which must keep it.
 func looksLikeStaticAssetOrJunk(p string) bool {
-	if IsStaticAssetPath(p) {
-		return true
+	if IsStaticAssetPath(p) || derivedAssetPath(p) {
+		return true // LT-117: also a *.js.php wrapper or a node_modules/dist tree file
 	}
 	if !hasAlphanumeric(p) {
 		return true

@@ -1,0 +1,8 @@
+{{/* The header's "Suggested Checks" link (LT-116). Rendered inline by
+     scan_status.html on first paint, and re-rendered with hx-swap-oob set
+     as part of the recon SSE event / the catchup re-sync so it appears the
+     moment recon finishes rather than only after a manual reload. The
+     wrapper <span> keeps a stable id for the OOB swap to target; its
+     content is empty until ReconResult exists (GET /plan-preview 409s
+     before that). The route stays /plan-preview — only the label changed. */}}
+{{define "fragment_plan_preview_link"}}<span id="plan-preview-link"{{if .OOB}} hx-swap-oob="true"{{end}}>{{if .ReconDone}} &mdash; <a href="/plan-preview?job={{.JobID}}" title="Review and run decision-engine-ranked checks beyond the detectors the scan already ran — opt-in, nothing runs until you approve">Suggested Checks</a>{{end}}</span>{{end}}

@@ -142,6 +142,27 @@ func TestCollapseEndpoints_StaticAssets_CountedNotRendered(t *testing.T) {
 	assert.Equal(t, 2, assetCount)
 }
 
+// TestCollapseEndpoints_JsPhpWrappersAndVendorTree_CountedNotRendered guards
+// LT-117: on jQuery/Dolibarr-style stacks katana surfaces piles of
+// *.js.php-style asset wrappers and node_modules/dist library files by
+// following minified-JS string literals. IsNonRouteAssetPath folds these
+// into the omitted count instead of letting them swamp the table.
+func TestCollapseEndpoints_JsPhpWrappersAndVendorTree_CountedNotRendered(t *testing.T) {
+	facts := []recon.EndpointFact{
+		{URL: "https://erp.example.com/htdocs/core/js/lib_head.js.php", Method: "GET"},
+		{URL: "https://erp.example.com/htdocs/theme/eldy/style.css.php", Method: "GET"},
+		{URL: "https://erp.example.com/includes/jquery/plugins/select2/dist/js/select2.min", Method: "GET"},
+		{URL: "https://erp.example.com/node_modules/moment/moment", Method: "GET"},
+		{URL: "https://erp.example.com/facture/card", Method: "GET"},
+	}
+
+	rows, assetCount := collapseEndpoints(facts)
+
+	require.Len(t, rows, 1, "only the real application route survives")
+	assert.Equal(t, "https://erp.example.com/facture/card", rows[0].URL)
+	assert.Equal(t, 4, assetCount)
+}
+
 // TestCollapseEndpoints_RootPath_NotTreatedAsJunk guards against a
 // classifier regression: the homepage root ("/", no file extension, no
 // alphanumeric path content) must still render as a row — it's real

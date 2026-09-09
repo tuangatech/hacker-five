@@ -240,6 +240,34 @@ func TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps(t *testing.T) 
 	assert.NotContains(t, html, `id="recon-results"`)
 	assert.Contains(t, html, "running: misconfig")
 	assert.Contains(t, html, "example.com")
+	// LT-116: catchup also re-syncs the header's Suggested Checks link as an
+	// OOB swap, so a client that connected before recon finished sees it
+	// without a manual reload.
+	assert.Contains(t, html, `id="plan-preview-link" hx-swap-oob="true"`)
+	assert.Contains(t, html, `href="/plan-preview?job=job1"`)
+	assert.Contains(t, html, ">Suggested Checks<")
+}
+
+// TestScanCatchup_PlanPreviewLink_AbsentUntilReconResult is LT-116's
+// negative: a job still in recon has no ReconResult, so the OOB Plan
+// Preview span comes back empty (GET /plan-preview would 409).
+func TestScanCatchup_PlanPreviewLink_AbsentUntilReconResult(t *testing.T) {
+	ts, h := newTestServerHandlers(t)
+
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job.SetRunning()
+	job.SetPhase("recon")
+	h.store.Add(job)
+
+	resp, err := http.Get(ts.URL + "/scans/job1/catchup")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	html := string(body)
+	assert.Contains(t, html, `id="plan-preview-link" hx-swap-oob="true"`, "the OOB span still goes out so a later recon-complete swap has a target")
+	assert.NotContains(t, html, "/plan-preview?job=", "but with no link inside it yet")
 }
 
 // TestScanCatchup_ReplaysOnlyRowsPastTheClientSequence is C5's core

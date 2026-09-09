@@ -54,7 +54,15 @@ func TestPlanPreview_RendersNestedLeavesEveryConfidenceBandAndUnresolvedBadge(t 
 	require.NoError(t, resp.Body.Close())
 	html := string(body)
 
+	assert.Contains(t, html, "Suggested Checks") // renamed from "Plan Preview" (demo-prep)
+	assert.NotContains(t, html, "<h1>Plan Preview</h1>")
 	assert.Contains(t, html, "misconfig") // PHP's techRules match
+	// LT-116 half 2: the GroupIntoClassNodes intermediate node renders its
+	// vuln-class label, not a second copy of the hostname. The fixture's
+	// unmatched tech fact produces a detector-less leaf whose class is
+	// "recon-followup" — a label that only ever appears as a class node.
+	assert.Contains(t, html, "recon-followup")
+	assert.Contains(t, html, "vuln class")
 	assert.Contains(t, html, "confidence: high")
 	assert.Contains(t, html, "confidence: medium")
 	assert.Contains(t, html, "confidence: low")

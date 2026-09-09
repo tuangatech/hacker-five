@@ -148,7 +148,12 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 			return renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: status, Phase: phase, Err: err, Waves: waves, DetectorSteps: detectorSteps, Target: target, JobID: id, CSRFToken: csrfTok})
 		},
 		func(result *recon.ReconResult) template.HTML {
-			return renderFragment(h.tmpl, "fragment_recon_results", newReconView(result))
+			// The recon SSE event repaints #recon-results; piggyback an OOB
+			// re-render of the header's Plan Preview link so it appears the
+			// moment recon finishes rather than only after a reload (LT-116).
+			body := renderFragment(h.tmpl, "fragment_recon_results", newReconView(result))
+			link := renderFragment(h.tmpl, "fragment_plan_preview_link", PlanPreviewLinkData{JobID: id, ReconDone: result != nil, OOB: true})
+			return body + "\n" + link
 		},
 		func(e agenttask.SessionLogEntry) template.HTML {
 			return renderFragment(h.tmpl, "fragment_agent_entry", e)
@@ -750,7 +755,7 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 		selected[cfg.Detector] = true
 	}
 	if suggestions := suggestedDetectorNames(tree, selected); len(suggestions) > 0 {
-		job.AppendLog("info", "recon also suggests: "+strings.Join(suggestions, ", ")+" — review and run via Plan Preview (/plan-preview?job="+job.ID+")")
+		job.AppendLog("info", "recon also suggests: "+strings.Join(suggestions, ", ")+" — review and run via Suggested Checks (/plan-preview?job="+job.ID+")")
 	}
 }
 

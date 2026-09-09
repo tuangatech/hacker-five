@@ -323,6 +323,13 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 			d.looksLikeCatchAllServed(resp.StatusCode, body, rule.Path) {
 			continue
 		}
+		finalURL := req.URL.String()
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalURL = resp.Request.URL.String()
+		}
+		if looksLikeAuthLoginPage(finalURL, body) {
+			continue // LT-118: an auth form at a sensitive path (e.g. /admin -> wp-login.php) is the boundary working, not an exposure
+		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("misconfig-exposed-path-%s", sanitizeID(rule.Path)),
 			Type:        "misconfig",
@@ -339,6 +346,51 @@ func (d *Detector) checkExposedPaths(ctx context.Context, target, host, authToke
 		})
 	}
 	return findings, nil
+}
+
+// authLoginPathMarkers are lower-cased substrings of a conventional
+// authentication endpoint's URL. A GET of an ExposedPaths rule that
+// redirect-chains onto one of these landed on a login form, not the
+// resource the rule was probing for.
+var authLoginPathMarkers = []string{
+	"wp-login.php", "/login", "/signin", "/sign-in", "/sign_in",
+	"/session/new", "/users/sign_in", "/account/login", "/accounts/login",
+	"/auth/login", "/sso/", "/oauth/", "session_login.cgi", "/adfs/ls",
+}
+
+// postLoginMarkers separate "a page with a password field" that is just a
+// credential form (suppress) from an authenticated view that also happens
+// to contain one (keep) — the latter carries at least one of these.
+var postLoginMarkers = []string{
+	"logout", "log out", "sign out", "wp-admin", "adminmenu", "admin-bar",
+	"dashboard-widgets", "id=\"wpadminbar\"",
+}
+
+// looksLikeAuthLoginPage reports whether an ExposedPaths probe's response is
+// only an authentication form — the auth boundary doing its job — rather
+// than the sensitive resource the rule was looking for. LT-118: `/admin` on
+// any WordPress install 302s to `wp-login.php`, whose body carries the
+// "login" keyword the `/admin` rule matches on, so every WordPress site
+// produced a spurious medium finding. Two signals: the redirect chain
+// landed on a conventional auth path, or the body is a bare credential form
+// with none of the post-login markers a genuinely-exposed dashboard shows.
+func looksLikeAuthLoginPage(finalURL string, body []byte) bool {
+	lf := strings.ToLower(finalURL)
+	for _, seg := range authLoginPathMarkers {
+		if strings.Contains(lf, seg) {
+			return true
+		}
+	}
+	lb := strings.ToLower(string(body))
+	if !strings.Contains(lb, `type="password"`) && !strings.Contains(lb, "type='password'") {
+		return false
+	}
+	for _, m := range postLoginMarkers {
+		if strings.Contains(lb, m) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkDirListing probes DirListingPaths (root plus common subpaths) for
@@ -605,10 +657,31 @@ func (d *Detector) methodResponseMatchesGET(ctx context.Context, target, host, p
 // consistent with "the app tried to handle this method and broke" (still
 // evidence it wasn't rejected outright, and arguably an interesting signal
 // in its own right) as with an infrastructure-level non-response.
+//
+// 401 and 407 count too, via isAuthWallStatus (docs/follow-up.md LT-120,
+// live-confirmed against agent.aalberts.com — HTTP Basic auth returning 401
+// to every request, PUT/DELETE/PATCH included): a 401/407 is the auth layer
+// refusing the request before the origin ever sees the verb, exactly the
+// same "not accepted" signal 403 already stood for here.
 func rejected(status int) bool {
+	if isAuthWallStatus(status) {
+		return true
+	}
 	return status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented ||
-		status == http.StatusForbidden || status == http.StatusNotFound ||
+		status == http.StatusNotFound ||
 		status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// isAuthWallStatus reports whether status is one an auth/proxy layer
+// returns to say "I refused this before the origin app handled it" —
+// 401 Unauthorized, 403 Forbidden, 407 Proxy Authentication Required.
+// Shared by rejected() (a verb drawing one of these was rejected, not
+// accepted — LT-120) and checkCORS's severity down-rank (a CORS finding
+// observed only on such a response can't be read cross-origin, so its
+// evidence doesn't support a high — LT-121).
+func isAuthWallStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden ||
+		status == http.StatusProxyAuthRequired
 }
 
 func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
@@ -625,13 +698,26 @@ func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string
 		return nil, nil
 	}
 
+	severity, confidence := "high", "high"
+	description := "target reflects an arbitrary Origin (or uses a wildcard) while also allowing credentials, letting any site make authenticated cross-origin requests"
+	// LT-121: the misconfigured headers were seen only on an auth-wall
+	// response (401/403/407 — e.g. agent.aalberts.com, uniformly HTTP Basic
+	// auth). A cross-origin caller still can't read that body, so this
+	// evidence doesn't support a high; down-rank and flag it for
+	// verification against an authenticated 200 rather than suppressing it —
+	// the same misconfig may well extend to the real API behind the wall.
+	if isAuthWallStatus(resp.StatusCode) {
+		severity, confidence = "medium", "medium"
+		description += fmt.Sprintf(" — but observed only on an auth-walled response (status %d), which a cross-origin caller cannot read; verify the same headers against an authenticated 200 before treating this as high", resp.StatusCode)
+	}
+
 	return []detectors.Finding{{
 		ID:          "misconfig-cors",
 		Type:        "misconfig",
-		Severity:    "high",
-		Confidence:  "high",
+		Severity:    severity,
+		Confidence:  confidence,
 		Target:      target,
-		Description: "target reflects an arbitrary Origin (or uses a wildcard) while also allowing credentials, letting any site make authenticated cross-origin requests",
+		Description: description,
 		Evidence: map[string]string{
 			"access_control_allow_origin":      allowOrigin,
 			"access_control_allow_credentials": resp.Header.Get("Access-Control-Allow-Credentials"),
