@@ -12,6 +12,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
+	"github.com/tuangatech/hacker-five/pkg/reporter"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
@@ -205,6 +206,10 @@ func runScan(ctx context.Context, req *mcp.CallToolRequest, in scanInput, writes
 		out.Logs = append(out.Logs, fmt.Sprintf("info: template scope: recon classified %s as a %s — the template corpus will be skipped for it (D6)", in.UniformResponse.Host, in.UniformResponse.Kind))
 	}
 
+	// LT-107 (doc16 Phase 7 Step 7): pass the recon tech stack through so the
+	// engine's end-of-scan coverage-gap ledger can run.
+	cfg.TechStack = in.TechStack
+
 	// doc15 Step 6a: template scoping is on by default. An explicit Tags
 	// wins untouched; all_templates forces the full synced corpus;
 	// otherwise the scan is scoped to its detector's category floor
@@ -271,6 +276,11 @@ func runScan(ctx context.Context, req *mcp.CallToolRequest, in scanInput, writes
 	if _, err := engine.Run(ctx); err != nil {
 		return nil, out, err
 	}
+	// LT-6 tail (docs/follow-up.md): the CLI's `scan` command dedups a
+	// native+nuclei 1:1 pair (missing-header, weak-HSTS) before export; the
+	// MCP scan tool's output never did, so a downstream findings.export call
+	// echoing this list straight back would carry the duplicate pair.
+	out.Findings = reporter.Dedup(reporter.DropSupersededNucleiFindings(reporter.SplitAggregates(out.Findings)))
 	return nil, out, nil
 }
 

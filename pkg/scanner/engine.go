@@ -357,6 +357,20 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 	if errs := pool.Wait(); len(errs) > 0 {
 		return findings, fmt.Errorf("scan completed with %d error(s), first: %w", len(errs), errs[0])
 	}
+
+	// LT-107 (doc16 Phase 7 Step 7): after every target's finished, cross-
+	// reference recon's fingerprinted tech stack against the aggregate loaded
+	// template set and emit one coverage-gap-* info finding per fingerprinted
+	// product nothing covered. Aggregate-only (not per-target), since it
+	// needs the whole loaded set, not one target's view of it.
+	if len(e.cfg.TechStack) > 0 {
+		loaded := loadedTemplateEntries(nucleiTemplates, nativeTemplates)
+		for _, f := range coverageGapFindings(e.cfg.TechStack, loaded) {
+			e.emitFinding(f)
+			findings = append(findings, f)
+		}
+	}
+
 	return findings, nil
 }
 

@@ -427,17 +427,17 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [x] Aggregate per-target concurrency ceiling across concurrent `scan` calls in one session — D1, `pkg/mcpserver/scangate.go` (`ph7-step4c`)
 - [x] Executor response cache + recon-404 `path:` skip (D5 / follow-up.md LT-54 + LT-55) — `ph7-step4b`
 
-#### Week 54: OWASP Agentic Top 10 Mapping — ⬜ not started
-- [ ] All ten ASI01-10 risks checked against real shipped code (file/line cited), each mitigated or accepted as residual risk with a stated reason
+#### Week 54: OWASP Agentic Top 10 Mapping — moved to [Phase 9](18-implementation-plan-ph9.md) Step 5 (2026-09-10)
+- This was a dedicated Phase 7 step doing an "interim" pass against shipped Phase 5-7 code, ahead of a full re-walk already deferred to Phase 9 (which needs the agent-enumeration + active-injection surface Phase 9 Steps 3-4 add). Since Phase 9 was always going to re-walk the same ASI01-10 table in full shortly after, the interim pass was dropped rather than duplicating the work — this week's item and its whole step were removed from [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md); Phase 9 Step 5 is now the only OWASP pass. `v0.7.0` no longer carries this as a gate.
 
-#### Week 55: Template Ecosystem & Triage Support — 🟡 6a done 2026-09-07; 6b deferred to Phase 9 Step 5
+#### Week 55: Template Ecosystem & Triage Support — ✅ done 2026-09-07 (renumbered Step 5)
 - [ ] ~~Generated `templates/index.json`~~ — moved to Phase 5 Week 36-37 (doc14 R9); the decision engine needs it several phases earlier than this week
-- [ ] `templates/proposed/` staging directory, confirmed never auto-loaded — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5 (6b)
-- [ ] Triage-assist mode on `Exporter` output (annotation only, never mutates `Finding`) — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5 (6b)
-- [ ] Structured feedback capture on human override/dismissal of agent triage notes — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5 (6b)
-- [x] F3: gate response-grep secret/exposure templates on a real-app-content signal before emitting them (LT-67); F4: narrow corpus load for a small explicit template-ID/tag set (LT-71) — ✅ done 2026-09-07 (`ph7-step4` batch, [Phase 7](16-implementation-plan-ph7.md) Step 6a)
+- [ ] `templates/proposed/` staging directory, confirmed never auto-loaded — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5
+- [ ] Triage-assist mode on `Exporter` output (annotation only, never mutates `Finding`) — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5
+- [ ] Structured feedback capture on human override/dismissal of agent triage notes — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5
+- [x] F3: gate response-grep secret/exposure templates on a real-app-content signal before emitting them (LT-67); F4: narrow corpus load for a small explicit template-ID/tag set (LT-71) — ✅ done 2026-09-07 (`ph7-step4` batch, [Phase 7](16-implementation-plan-ph7.md) Step 5 — renumbered 2026-09-10 from "Step 6a")
 
-#### Week 56: Eval Maturity + Release — ⬜ not started
+#### Week 56: Eval Maturity + Release — ⬜ not started (renumbered Step 6)
 - [ ] Real agent-driven benchmark run against all four lab targets, fp/fn rate tracked separately from detector-level rate, full cost accounting recorded honestly
 - [ ] Release **v0.7.0**
 

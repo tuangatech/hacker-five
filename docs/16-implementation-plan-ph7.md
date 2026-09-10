@@ -6,7 +6,7 @@
 
 ## Objective
 
-[15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) builds the unsafe-to-skip backbone: the MCP server, the `elicitation`-based approval gate, the task tree wired to a live coordinator, and the hard safety blockers (program-policy pre-flight, hard-fail scope). This phase is everything [90-research-hackerbot.md](90-research-hackerbot.md)'s backlog still needs on top of that backbone to reach its own stated Definition of Done — rounding out approval coverage (`AllowWrites` attestation, scope-creep), upgrading observability from a queryable log into a live Web UI view, running the OWASP Agentic Top 10 mapping against a design that, by this point, actually exists, and closing out the template-ecosystem and eval-maturity items that don't block a first agent session but do block calling the feature actually trustworthy.
+[15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) builds the unsafe-to-skip backbone: the MCP server, the `elicitation`-based approval gate, the task tree wired to a live coordinator, and the hard safety blockers (program-policy pre-flight, hard-fail scope). This phase is everything [90-research-hackerbot.md](90-research-hackerbot.md)'s backlog still needs on top of that backbone to reach its own stated Definition of Done — rounding out approval coverage (`AllowWrites` attestation, scope-creep), upgrading observability from a queryable log into a live Web UI view, and closing out the template-ecosystem and eval-maturity items that don't block a first agent session but do block calling the feature actually trustworthy. (The OWASP Agentic Top 10 mapping was originally planned here too; it moved wholly to [Phase 9](18-implementation-plan-ph9.md) Step 5 on 2026-09-10 — see the renumbering note under the Scope list below.)
 
 **This phase depends on Phase 6 existing, not the other way around** — every step below assumes `pkg/mcpserver`, a live `Job.PlanTree`, and the `plan`/`elicitation` approval flow are already in place. It also depends on Phase 5's recon package and read-only Plan-preview UI existing, transitively through Phase 6.
 
@@ -16,12 +16,11 @@
 2. ✅ **Approval & compliance rounding** (Week 50) — B2, B3, B4 all done 2026-09-06
 3. ✅ **Observability upgrade: live Agent tab** (Weeks 51-52) — C6 ✅, C1/C2/C3/C5 ✅ 2026-09-07 (`ph7-step3a`), C7 ✅ 2026-09-07 (`ph7-step3b`)
 4. ✅ **Live log injection + concurrency ceilings + redundant-request elimination** (Week 53) — D6 ✅ 2026-09-07 (`ph7-step4a`), D5 ✅ 2026-09-07 (`ph7-step4b`), C4 + D1 + H4 ✅ 2026-09-07 (`ph7-step4c`)
-5. ⬜ **OWASP Agentic Top 10 mapping** (D4) — **interim pass now** against shipped Phase 5-7 code; the **full re-walk is deferred** to the [Phase 9](18-implementation-plan-ph9.md) window (it must cover the agent-enumeration + active-injection surface Phase 9 Steps 3-4 add). See Sequencing note in the step.
-6. 🟡 **Template ecosystem & triage support** — **split 2026-09-07**:
-   - **6a** ✅ **done 2026-09-07** — **F3** (content-gate response-grep secret templates, LT-67) + **F4** (narrow corpus load for a small leaf set, LT-71). Detection-quality + performance; small, independent.
-   - **6b** (deferred to the [Phase 9](18-implementation-plan-ph9.md) window, folded into that phase's Step 5) — **E2** (`templates/proposed/` staging), **F1** (triage-assist annotations), **F2** (structured feedback capture). No agent draft/annotation consumer exists yet, and E2 gates on D4's supply-chain rows.
-7. ⬜ **`v0.7.0` consolidation + release** (Week 56) — cut on **batch-readiness**, *not* gated on Step 5's full re-walk or Step 6b.
-8. ⬜ **End-of-scan re-plan loop** (LT-107 + LT-108) — deterministic coverage-gap ledger + a single-call `hackerfive suggest` (print-only, no auto-apply). Added 2026-09-08; not a `v0.7.0` blocker, folds into `v0.7.0` or `v0.8.0` on batch-readiness. Rungs 3–5 of the ladder (LT-109/LT-110) stay in [follow-up.md](follow-up.md).
+5. ✅ **Template ecosystem & triage support** (Week 55) — **F3** (content-gate response-grep secret templates, LT-67) + **F4** (narrow corpus load for a small leaf set, LT-71), done 2026-09-07. Detection-quality + performance; small, independent. **Renumbered 2026-09-10:** this was originally Step 6's "6a" sub-item; its sibling "6b" (E2/F1/F2, agent-output hygiene) and the former Step 5 (OWASP Agentic Top 10 mapping, D4) both moved wholesale to [Phase 9](18-implementation-plan-ph9.md) Step 5 — see the note below the scope list.
+6. ⬜ **`v0.7.0` consolidation + release** (Week 56) — cut on **batch-readiness**, *not* gated on the OWASP mapping (see below).
+7. ✅ **End-of-scan re-plan loop** (LT-107 + LT-108) — deterministic coverage-gap ledger + a single-call `hackerfive suggest` (print-only, no auto-apply), done 2026-09-10. Added 2026-09-08; not a `v0.7.0` blocker, folds into `v0.7.0` or `v0.8.0` on batch-readiness. Rungs 3–5 of the ladder (LT-109/LT-110) stay in [follow-up.md](follow-up.md).
+
+**Renumbering note (2026-09-10).** The OWASP Agentic Top 10 mapping (D4) was originally its own step here, doing an "interim pass" against shipped Phase 5-7 code, with the **full re-walk** already deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5 (it needs the agent-enumeration + active-injection surface Phase 9 Steps 3-4 add). Since Phase 9 was always going to re-walk the same ASI01-ASI10 table in full shortly after, doing a lighter pass here first just meant doing it twice — so the interim pass was dropped rather than kept as a `v0.7.0` gate, and the step was removed entirely (its ASI-row-by-row table moved to doc18's Step 5 as design residue). The former Step 6's "6b" sub-item (E2/F1/F2) was already deferred to that same Phase 9 Step 5 and is now folded in there too, with no separate mention here. `v0.7.0` therefore ships with no OWASP-mapping gate at all — Phase 9's Step 5 is the only pass.
 
 (⬜ = not yet implemented. Filled in with ✅/🟡 and a dated note as each step actually lands, same convention as doc09-15.)
 
@@ -30,9 +29,10 @@
 ordered by (value × independence), with each phase's eval/release step as its
 terminal gate — the full ordered list lives in
 [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) § "Execution order".
-Phase 7's place in it: **Step 6a is Tier 1 (do now)**; Step 5's interim pass is
-Tier 1; Step 5's full re-walk and Step 6b are Tier 3 (Phase 9 window). Version tags
-are cut on batch-readiness, not step number.
+Phase 7's place in it: **Step 5 (F3/F4) is Tier 1 (do now)**, done 2026-09-07. The
+OWASP mapping and the E2/F1/F2 trio (formerly this doc's Step 5 and Step 6b) are
+Tier 3, now scheduled solely as [Phase 9](18-implementation-plan-ph9.md) Step 5.
+Version tags are cut on batch-readiness, not step number.
 
 **Partial landing 2026-09-06 (`post-demo-batch` branch), after the demo dry-run:** the self-contained items from Steps 1–3 —
 - **A4** ✅ `hackerfive templates list --json` (`{"templates": [...], "rejected": N}`, `templatesync.Entry` shape).
@@ -55,7 +55,7 @@ are cut on batch-readiness, not step number.
 
 ## Dependencies used in this plan
 
-**No new dependency for any step in this plan.** Everything here extends types and packages Phase 5/6 (or earlier phases) already introduced: `pkg/mcpserver`, `pkg/webui`, `pkg/agenttask` (wherever Phase 5 Step 2 landed `PlanTree`), `pkg/templatesync`. The OWASP mapping (Step 5) is a documentation/review pass, not code. If Step 7's benchmark run surfaces a need for something beyond stdlib (e.g. statistical reporting beyond simple pass/fail counts), verify via pkg.go.dev at that point rather than assuming here — same discipline as every prior phase.
+**No new dependency for any step in this plan.** Everything here extends types and packages Phase 5/6 (or earlier phases) already introduced: `pkg/mcpserver`, `pkg/webui`, `pkg/agenttask` (wherever Phase 5 Step 2 landed `PlanTree`), `pkg/templatesync`. If Step 6's benchmark run surfaces a need for something beyond stdlib (e.g. statistical reporting beyond simple pass/fail counts), verify via pkg.go.dev at that point rather than assuming here — same discipline as every prior phase.
 
 ---
 
@@ -228,53 +228,23 @@ are cut on batch-readiness, not step number.
 
 ---
 
-## Step 5: OWASP Agentic Top 10 Mapping (Week 54) — ⬜ not yet implemented
+## Step 5: Template Ecosystem & Triage Support (Week 55) — ✅ done 2026-09-07
 
-> **Sequencing (2026-09-07).** Split into two passes:
-> - **Interim pass — do now (Tier 1).** Walk the ASI01-ASI10 table against the
->   *currently shipped* Phase 5-7 code, cheaply (the design-level table already
->   exists in [90-research-hackerbot.md](90-research-hackerbot.md) §3). Records each
->   row as mitigated-with-a-cite or accepted-residual today, so a `v0.7.0` release
->   does not go out with agent features and no security self-assessment at all.
-> - **Full re-walk — deferred to the [Phase 9](18-implementation-plan-ph9.md)
->   window (that phase's Step 5).** [Phase 9](18-implementation-plan-ph9.md) Step 3
->   (AI-agent-surface detector — an unauthenticated MCP `tools/list` enumeration)
->   and Step 4 (native active-injection detectors + WAF-bypass retry) each add
->   agent-reachable and active surface that changes the ASI02 / ASI04 / ASI05 /
->   ASI10 rows materially. Doing the definitive mapping before that surface exists
->   just means re-doing it.
->
-> The table and verification below are the *full re-walk*; the interim pass is a
-> lighter version of the same, scoped to what's shipped.
+> **Renumbering note (2026-09-10).** This step was originally split 2026-09-07 into
+> "6a" (F3 + F4, near-term) and "6b" (E2/F1/F2, deferred to the Phase 9 window). A
+> separate "Step 5" here also used to hold the OWASP Agentic Top 10 mapping (D4),
+> sequenced as an interim pass now plus a full re-walk deferred to
+> [Phase 9](18-implementation-plan-ph9.md) Step 5. Since the full re-walk was always
+> going to redo the same ASI01-ASI10 table shortly after (Phase 9 Steps 3-4 add
+> surface that changes several rows materially), the interim pass was dropped rather
+> than kept as a `v0.7.0` gate — see the note under the Scope list above. That freed
+> up this step's number: what was "6a" is now simply Step 5, and "6b" is folded into
+> [Phase 9](18-implementation-plan-ph9.md) Step 5 alongside the OWASP full re-walk.
+> The full ASI01-ASI10 table that used to live here (doc90 §3 Group D, confirmed
+> against real code) moved to doc18's Step 5 design section as reference material for
+> that full re-walk.
 
-### Design
-
-**D4.** OWASP published a peer-reviewed Top 10 for agentic applications in December 2025 (ASI01-ASI10). Doc90 §3 Group D already sketches HackerFive-specific mitigations for each risk against the *design*; this step re-walks that same table against the *actual shipped Phase 5-7 code* and records the result — mitigated (cite the file/mechanism), or explicitly accepted as residual risk with a stated reason — matching this project's own "revise down with reasoning, don't pad" discipline. **This pass must also cover the decision engine and tiered LLM fallback added 2026-08-30 (doc90 Decision 5/6, Group I)** — new surface that didn't exist when Group D was first drafted, called out specifically in ASI04/ASI05 below. Concretely, confirm or correct each row doc90 already drafted:
-
-| ASI risk | Doc90's proposed mitigation | Confirm against real code |
-|---|---|---|
-| ASI01 Agent Goal Hijack | Untrusted target data, never instructions; D3 hard-fail on missing scope | `pkg/mcpserver/tools_scan.go`'s D3 check (Phase 6 Step 3) |
-| ASI02 Tool Misuse & Exploitation | Decision 2 (no shell/exec tool) + schema-validated tools | `pkg/mcpserver` tool registrations (Phase 6 Step 1) |
-| ASI03 Identity & Privilege Abuse | Short-lived, per-call credentials, never baked into agent context | Confirm `--auth-token`-equivalent handling in `tools_scan.go` doesn't persist beyond one call |
-| ASI04 Agentic Supply Chain Vulnerabilities | Pinned-commit template sync + E2's staging directory; **new since I4**: an LLM-drafted template (Decision 5's frontier-tier fallback) is itself an untrusted-supply-chain input, not just a hazard from an external source | `pkg/templatesync` (existing) + Step 6's `templates/proposed/` (this phase) + confirm `pkg/llmfallback`'s drafted output is never loaded outside that same staging path (Phase 6 Step 2) |
-| ASI05 Unexpected Code Execution | No code-execution tool exists; **new since I4**: an LLM-drafted template must go through the same load-time block-rejection (`code:`/`javascript:`/`headless:`/`file:`) as any other untrusted template, no carve-out for being "agent-authored" | Confirm against the final Phase 6 tool list, and confirm `pkg/llmfallback`'s output path re-uses the existing template loader's rejection logic rather than a separate, possibly-laxer path |
-| ASI06 Memory & Context Poisoning | `PlanTree` is durable, refreshed state, not open-ended memory | `pkg/agenttask` (Phase 5 Step 2) |
-| ASI07 Insecure Inter-Agent Communication | Moot — single coordinator, no peer-agent channel | Confirm no peer-agent code was introduced anywhere in Phases 5-7 |
-| ASI08 Cascading Agent Failures | Host-error-cache circuit breaker + spend/attempt ceiling | Existing `pkg/scanner/hosterrors` + Phase 6 Step 2's `H5`/Step 3's `H4` |
-| ASI09 Human-Agent Trust Exploitation | Approvals only via audited Web UI controls or MCP `elicitation`, never the agent's own conversational assertion | Phase 6 Step 2's `plan` tool + this phase's Step 2 (`B2`) |
-| ASI10 Rogue Agents | Kill switch/pause (Agent tab) + policy pre-flight hard blocker | Step 3's Agent tab (does it need an explicit pause/cancel action? confirm and add if missing) + Phase 6 Step 3's `D2` |
-
-### Files (anticipated, confirm at implementation time)
-- `docs/90-research-hackerbot.md` — D4's row updated from "proposed mitigation" to "confirmed against `<file>`" or "residual risk: `<reason>`" per row.
-
-### Verification
-Every row in the table above is checked against real code (a file path and line, not a restated intention) and recorded with either a confirmation or a stated residual-risk reason. Pay particular attention to ASI10 — if the Agent tab (Step 3) doesn't yet have an explicit pause/cancel control, add one during this step rather than recording ASI10 as mitigated when it isn't.
-
----
-
-## Step 6: Template Ecosystem & Triage Support — split 2026-09-07 into 6a (near-term) / 6b (Phase 9 window)
-
-**6a — F3 + F4 — ✅ done 2026-09-07.** Detection-quality (F3) and performance (F4);
+**F3 + F4 — ✅ done 2026-09-07.** Detection-quality (F3) and performance (F4);
 both landed together with the LT-40 (b)/(c) spec-walker tail. Build / `go vet` /
 `go test -race` / `golangci-lint` all clean. What shipped:
 - **F3 (LT-67)** — `pkg/registry/decisionengine.go`: `isBodyGrepSecretTemplate`
@@ -295,73 +265,44 @@ both landed together with the LT-40 (b)/(c) spec-walker tail. Build / `go vet` /
   `TestLoadDirByIDs_*`, `TestEngineRun_TemplateID_FastLoadSkipsCorpusParse`,
   `TestLoadByIDs_*`.
 
-The original design + files + verification are below.
-
-**6b — E1 / E2 / F1 / F2, deferred to the [Phase 9](18-implementation-plan-ph9.md)
-window** (folded into that phase's Step 5). E1 is already a no-op (moved to Phase 5;
-kept as a history note). E2/F1/F2 are agent-output plumbing with no consumer until
-an agent actually drafts templates / annotates findings, and E2's isolation
-guarantee is confirmed against real code exactly when D4's supply-chain rows
-(ASI04/ASI05) are re-walked — i.e. in Phase 9. Their design text stays below for
-continuity; the forward plan and DoD lines move to
-[18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) Step 5.
+The original design + files + verification are below. (E1/E2/F1/F2 — formerly this
+step's "6b" sub-item — moved wholly to [Phase 9](18-implementation-plan-ph9.md)
+Step 5 on 2026-09-10, alongside the OWASP full re-walk; their design text now
+lives only there.)
 
 ### Design
-
-#### 6b (deferred — see [Phase 9](18-implementation-plan-ph9.md) Step 5)
-
-**E1 — generated `templates/index.json` — moved to Phase 5 (doc14 R9), not this step's job anymore.** Originally scheduled here, but doc14's decision engine (Group I, added 2026-08-30) needs this index to match template tags against a fingerprinted target *in Phase 5*, well before this phase exists — generating it here would leave Phase 5/6's decision engine and `templates.search` MCP tool with nothing to query. Noted here so a reader of this doc's history understands the move, not just finds it silently missing; nothing left for this step to do on E1 beyond confirming it's still current by this point.
-
-**E2 — agent-proposed templates land in a staging directory**, never directly in a trusted path (`./templates/` or the synced directory). A future "agent drafts a new detection template based on what it observed" capability — not built in this phase, but the staging convention is: any such template is written only there, requires explicit human promotion (a file move, or a `hackerfive templates promote <name>` command if that turns out to be worth building — that's LT-109) before it's ever loaded into a real scan. **As built (`pkg/llmfallback` I4, since 2026-08-30) the directory is `templates-proposed/`, a deliberate *sibling* of `templates/`, not `templates/proposed/`** — every existing loader walks `./templates/` recursively, so a `templates/proposed/` subdir would be silently swept into the live corpus the moment a draft landed. This design text's earlier `templates/proposed/` spelling (below and in the ASI04 row) predates that implementation; the sibling path is the real one.
-
-**F1 — triage-assist mode on the existing `Exporter` output.** A mode that annotates exported findings with the agent's own triage notes (severity-context, likely false-positive flags) as a clearly-labeled *additional* field, never altering the underlying deterministic `Finding.Severity`/`Confidence` — consistent with this phase's repeated theme of agent output being additive/advisory, never authoritative over detector-set fields.
-
-**F2 — structured feedback capture.** When a human overrides or dismisses an agent-surfaced finding/triage note during review, capture that decision in a structured, queryable form (not just "the user closed the tab") — useful raw material for the eval-maturity work and any future tuning of the coordinator's own prioritization logic.
-
-#### 6a (near-term — do now)
 
 **F3 — gate response-grep secret/exposure templates on real app content ([follow-up.md](follow-up.md) LT-67).** The `shopify-*` / generic secret-scanning templates grep a response body for leaked credentials; against a static error page or a storage-bucket 404 shell (linkpop's 746-byte SPA, 2026-09-07) that is structurally impossible, yet `registry.Resolve` still emits and `planexec` still fires those leaves — 8 of them on linkpop. Add a minimum-dynamic-content gate to template selection: a response-grep secret/exposure template is only emitted for a host whose recon shows app-generated markup — body size over a floor, a server-rendered/framework marker, or a non-catch-all canary (`ReconResult.UniformResponse.Kind != "catchall"`, D6). Fits this step because it's template-selection quality — the same surface F1's triage annotations describe. Keep the <5% false-positive discipline: a doubtful "is this app content" signal errs toward still emitting the leaf, not suppressing it.
 
 **F4 — "load only these template IDs/paths" fast path in the corpus loader ([follow-up.md](follow-up.md) LT-71).** `planexec.RunPlan`'s LT-18(c) logic forces a full ~9.5k-template corpus load/parse/filter for any specific-template leaf, and a narrow `--tags` scan pays the same cost to run a handful of matches (linkpop: 2,224 loaded + 201 rejected + 7,256 filtered to run 9 named leaves). Add an enumerable-ID/path load path in `pkg/templatesync` + the `pkg/template/nuclei` loader, used when the requested tag/ID set resolves to a small explicit list — skips parsing everything else. Speeds the plan-executor path and any narrow `--tags` scan; pairs with a future `scan --plan-file` that dispatches exactly the approved leaves. Originally slated for Step 4 with LT-54/55; re-homed here when Step 4 shipped without it. Pure performance — no behavior change to which templates match, verified by a before/after finding-set diff on a fixed target.
 
 ### Files (anticipated, confirm at implementation time)
-
-**6a (near-term):**
 - `pkg/registry/decisionengine.go` — F3's dynamic-content gate in `matchTemplateTags` / `resolveTechFact` for response-grep secret/exposure templates.
 - `pkg/templatesync/`, `pkg/template/nuclei/loader.go` — F4's enumerable-ID/path fast load path, taken when the requested set is small and explicit.
 - `pkg/planexec/executor.go` — F4: pass the specific-template leaf's ID set to the loader instead of forcing a full corpus load.
 - `tests/unit/template_select_content_gate_test.go`, `tests/unit/nuclei_loader_idlist_test.go`.
 
-**6b ([Phase 9](18-implementation-plan-ph9.md) Step 5):**
-- `templates/proposed/` — new, empty (gitkept) directory; `pkg/template` loader confirmed to never auto-load from it.
-- `pkg/reporter/triageassist.go` — F1's annotation layer.
-- `pkg/webui/handlers_scan.go` (or a new `feedback.go`) — F2's capture endpoint.
-- `tests/unit/proposed_dir_isolation_test.go`, `tests/unit/triage_assist_test.go`.
-
 ### Verification
 
-**6a.** F3: against a recon fixture whose host serves a static catch-all, no
+F3: against a recon fixture whose host serves a static catch-all, no
 response-grep secret/exposure leaf is emitted; against an app-content fixture they
 still are; measure the gate's decoy false-positive rate. F4: a plan naming N specific
 templates loads exactly those (assert the loader's parsed count), and a full
 before/after finding-set diff on a fixed lab target is empty.
 
-**6b** ([Phase 9](18-implementation-plan-ph9.md) Step 5). Unit test confirming
-`templates/proposed/` is never picked up by the default `--templates` load path
-(mirrors the isolation guarantee `templates/nuclei-samples/` already needs, but
-inverted — proposed is deliberately *excluded* by default). Triage-assist output
-verified to never mutate the underlying `Finding` struct it annotates.
-
 ---
 
-## Step 7: Eval Maturity + Release (Week 56) — ⬜ not yet implemented — `v0.7.0`
+## Step 6: Eval Maturity + Release (Week 56) — ✅ gate met 2026-09-10, tag pending — `v0.7.0`
 
 > **`v0.7.0` is cut on batch-readiness (2026-09-07 reprioritisation), not on a step
-> count.** It requires Steps 1-4 (all done), Step 6a (F3/F4), and Step 5's *interim*
-> OWASP pass — not Step 5's full re-walk or Step 6b, both of which are deferred to
-> the [Phase 9](18-implementation-plan-ph9.md) window and ship under a later tag.
+> count.** It requires Steps 1-4 (all done) and Step 5 (F3/F4) — the OWASP mapping
+> is no longer part of this gate at all (moved wholly to
+> [Phase 9](18-implementation-plan-ph9.md) Step 5, see the note under Step 5 above).
 > The integration/eval work below (auth-bypass tests, `--scope` live verification,
-> the crAPI credentialed round trip) is the real gate.
+> the crAPI credentialed round trip) is the real gate — **all done 2026-09-10**,
+> see the Definition of Done below for the real, honest numbers (including two
+> open agent-specific findings, LT-138, that don't block the tag). Tagging
+> itself is a separate, deliberate action, not automated by this doc.
 
 ### Design
 
@@ -388,12 +329,12 @@ The benchmark actually runs against all four lab targets with a real agent sessi
 
 ---
 
-## Step 8: End-of-scan re-plan loop — coverage-gap ledger + `suggest` ([follow-up.md](follow-up.md) LT-107, LT-108) — ⬜ not yet implemented
+## Step 7: End-of-scan re-plan loop — coverage-gap ledger + `suggest` ([follow-up.md](follow-up.md) LT-107, LT-108) — ✅ done 2026-09-10 (rungs 1-2 only; rungs 3-5 stay LT-109/LT-110)
 
-> **Ships on batch-readiness, not step order.** Listed after Step 7's `v0.7.0`
+> **Ships on batch-readiness, not step order.** Listed after Step 6's `v0.7.0`
 > gate because it is not a `v0.7.0` blocker; it folds into `v0.7.0` if green
-> before that batch closes, otherwise `v0.8.0`. Same convention as Step 6b / the
-> D4 full re-walk. In [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md)
+> before that batch closes, otherwise `v0.8.0`. Same convention as the items now
+> moved to Phase 9 Step 5. In [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md)
 > § "Execution order": **LT-107 is Tier 1**, LT-108 is Tier 1/2 boundary (it
 > consumes the ledger). This is doc90 Group E/I at minimal scope.
 
@@ -463,24 +404,40 @@ button, and any automated re-scan. This step stops at "the operator reads the
 printed suggestions and acts by hand" — the same stopping point `plan`'s
 field-suggestion misses and the "recon also suggests" log line already use.
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/coveragegap/` (new) — `Ledger(job *Job | *scanner.Result, recon *recon.ReconResult, loaded []templatesync.Entry) []GapRow`; pure function over already-collected data, imports `recon` + `registry` + `templatesync` only.
-- `pkg/scanner/engine.go` — call the ledger pass after `runTemplates` when a recon result is present; emit `coverage-gap-*` info findings.
-- `cmd/hackerfive/suggest.go` (new) — `hackerfive suggest <scan.json> [--llm-assist]`; deterministic ledger print always, the frontier call only under `--llm-assist`, against the per-plan spend ceiling.
-- `pkg/llmfallback/suggest.go` (new) — `Suggest(ctx, ledger, findings) (Suggestions, cost, err)`; schema-validated in/out, one call, degrades to an empty list on a bad response (never a fabricated action).
-- `pkg/reporter/` — a `coverage_gaps` section in the JSON/CLI report.
-- `tests/unit/coveragegap_test.go`, `tests/unit/suggest_cmd_test.go`, `pkg/llmfallback/suggest_test.go`.
+### Files
+
+Landed 2026-09-10, three deviations from the "anticipated" shape above,
+each because the concrete architecture didn't have what the sketch assumed:
+no `*Job`/`*scanner.Result` param exists for a pure post-scan pass, so
+`Ledger` takes `[]recon.TechFact` + the loaded index directly; there is no
+wrapper report type anywhere in `pkg/reporter` (every `Exporter` serializes
+a bare `[]detectors.Finding`), so a ledger row is an ordinary `Finding`
+(`coverage-gap-*` ID, `info` type) in that same array rather than a new
+`coverage_gaps` report section; and the two match signals the ledger needs
+(`matchTechRules`/`matchTemplateTags`) already existed in `pkg/registry` as
+unexported helpers, so they're exposed via one new `registry.CoverageStatus`
+rather than reimplemented.
+
+- `pkg/registry/coverage.go` (new) — `CoverageStatus(techName string, templateIndex []templatesync.Entry) (hasNative, hasTemplate, nonActionable bool)`.
+- `pkg/coveragegap/ledger.go` (new) — `Ledger(techStack []recon.TechFact, loaded []templatesync.Entry) []GapRow`; pure function, imports `recon` + `registry` + `templatesync` only.
+- `pkg/scanner/coveragegap.go` (new) + `pkg/scanner/engine.go` — `Config.TechStack []recon.TechFact` (new field), threaded in by `cmd/hackerfive/scan.go`, `pkg/mcpserver/tools_scan.go`, `pkg/webui/handlers_launch.go`; the ledger pass runs after `pool.Wait()` and emits `coverage-gap-*` info findings via the existing `emitFinding`.
+- `pkg/llmfallback/suggest.go` (new) — `Suggest(ctx, ledger []coveragegap.GapRow, findings []detectors.Finding) (SuggestResult, cost, err)`; mirrors `TriageFindings`'s shape exactly, validates each returned action's `kind` against a fixed 5-value allow-list, drops (never fabricates) anything outside it.
+- `cmd/hackerfive/suggest.go` (new) — `hackerfive suggest <scan.json> [--llm-assist]`; always prints the deterministic ledger (reconstructed from the scan output's own `coverage-gap-*` findings), the frontier call only under `--llm-assist`; a missing LLM tier or a failed call degrades to ledger-only output rather than failing the command.
+- Tests: `pkg/registry/coverage_test.go`, `pkg/coveragegap/ledger_test.go`, `tests/unit/engine_test.go` (`TestEngineRun_CoverageGap_EmitsFindingOnlyForUncoveredTech`), `pkg/llmfallback/suggest_test.go`, `cmd/hackerfive/suggest_test.go`.
 
 ### Verification
-LT-107: against a recon+scan fixture where a fingerprinted product's tags were
-narrowed out (or its templates never loaded under the time budget), the ledger
-has exactly the expected `(host, product, version, reason)` rows and no row for a
-product a native detector *did* cover. LT-108: with `--llm-assist` off, `suggest`
-prints the ledger and makes zero model calls; with it on, a stubbed frontier
-response yields a structured action list, a malformed response yields an empty
-list (not a guessed action), and the spend ceiling is respected. A full
-before/after on a fixed lab target: `suggest` changes nothing on disk and starts
-no scan.
+LT-107: `TestEngineRun_CoverageGap_EmitsFindingOnlyForUncoveredTech` confirms a
+fingerprinted product with no native-rule/template-tag match gets exactly one
+`coverage-gap-*` finding and a covered product gets none.
+LT-108: `TestSuggest_EmptyInput_NoCall` / `TestSuggestCmd_NoFlag_PrintsLedgerOnly_NoModelCall`
+confirm zero model calls without `--llm-assist`; `TestSuggest_ValidActions` /
+`TestSuggest_ModelInventsUnknownKind_Drops` confirm a valid response is passed
+through and an out-of-contract action kind is dropped, never fabricated;
+`TestSuggestCmd_LLMAssist_NoTierConfigured_DegradesToLedgerOnly` confirms a
+missing LLM tier degrades to ledger-only output rather than failing.
+`go build`/`go vet`/`go test ./... -race`/`golangci-lint run ./...` all clean.
+A live before/after against a lab target with `hackerfive suggest` is still
+worth doing but not yet run.
 
 ## Definition of Done (Phase 7, Weeks 49-56)
 
@@ -489,35 +446,34 @@ This phase, combined with Phases 5-6, closes out doc90's full "Hacker-in-the-Loo
 - [x] `hackerfive triage` + recon-field self-suggest (A6): `pkg/fieldsuggest.Deterministic` feeds `plan --llm-assist` and `scan --recon-file`; `plan` stdout is now `{tree, field_suggestions}` (2026-09-06)
 - [x] `AllowWrites` is only honored on a `scan` call once a human clears a two-round elicitation attestation (`approve` + `acknowledge_writes`), and on `plan` only with a per-plan `acknowledge_writes` when a businesslogic leaf exists — set by the round-2 handler from the elicitation response, never from the request body, so no code path lets an agent set it for itself (2026-09-06, `ph7-step2`)
 - [x] HackerOne submission's permanent human-in-the-loop invariant is documented in `docs/05-hackerone-and-legal.md` (§"Report submission is a permanent human-in-the-loop invariant (Phase 7 B3)")
-- [x] Scope-creep gate (Phase 6) rounded out 2026-09-06: out-of-scope observations recorded in the MCP `plan` session log (`planResultSummary`) and the Web UI job audit trail (`executePlan`); a full fresh-elicitation live re-run stays on the Step 7 integration pass
+- [x] Scope-creep gate (Phase 6) rounded out 2026-09-06: out-of-scope observations recorded in the MCP `plan` session log (`planResultSummary`) and the Web UI job audit trail (`executePlan`); a full fresh-elicitation live re-run stays on the Step 6 integration pass
 - [x] The Web UI's Agent section streams agent activity live, as the same `agenttask.SessionLogEntry` records `session.log` returns (C1, 2026-09-07, `ph7-step3a`) — in-process/job-scoped: the webui's own agent-like actions (`plan.resolve`/`plan.reject`/`plan.execute`), not an out-of-process MCP session's tool calls (separate processes, no shared store — a JSONL file-tail bridge is a named possible follow-on)
 - [x] SSE `/catchup` replays `#logs`/`#findings`/`#agent` a late/reconnecting client missed, sequence-gated so nothing duplicates (C5 / [follow-up.md](follow-up.md) LT-5) — 2026-09-07
 - [x] Agent-specific audit facts captured (C2, 2026-09-07): the `plan.execute` agent entry's params (approved-leaf count, `allow_writes`, scope-enforced/wildcard, out-of-scope count) and the elicitation grant reference on the MCP `plan`/`scan` round-2 session-log entry
-- [ ] A missing-header response yields one finding per absent header with no native/nuclei duplicate pair — the nuclei `http-missing-security-headers` aggregate is split into per-header sub-facts before `reporter.Dedup` (C6 / [follow-up.md](follow-up.md) LT-6 / doc15 Open Issue #6)
+- [x] A missing-header response yields one finding per absent header with no native/nuclei duplicate pair — the nuclei `http-missing-security-headers` aggregate is split into per-header sub-facts before `reporter.Dedup` (C6 / [follow-up.md](follow-up.md) LT-6 / doc15 Open Issue #6) — landed in `post-demo-batch`
 - [x] `findings.export` (and any future report-drafting surface, via `reporter.ValidateCitations`) rejects a draft whose `cited_finding_ids` names a `Finding.ID` absent from the finding set (C3, 2026-09-07)
 - [x] Aggregate per-target concurrency across concurrent `scan` calls in one session is throttled to a stated ceiling (D1, `ph7-step4c`) — `pkg/mcpserver/scangate.go`: `runScan` blocks at `maxConcurrentScansPerHost = 3` calls/host and each admitted call's `TemplateConcurrency` is `10 / active-calls-on-host` (floor 2)
 - [x] Cost/attempt-aware prioritization (H4, moved from Phase 6 Step 3, `ph7-step4c`): a `PlanTree` leaf at `MaxLeafResolveAttempts`/`MaxLeafResolveSpendUSD` flips to `agenttask.StatusEscalated` — `ResolveTreeLeaves` pre-filters it out before any model client is consulted, `planexec` skips it like `StatusVetoed`
 - [x] Live log injection (C4, `ph7-step4c`): `POST /scans/{id}/agent/note` appends an operator note as an `operator.note` `agenttask.SessionLogEntry` streamed over the `agent-event` SSE channel; `scan_status.html` has the injection textbox. (Note→coordinator-action effect is a manual check — the webui has no in-process coordinator loop.)
 - [x] Redundant per-target HTTP eliminated (D5 / [follow-up.md](follow-up.md) LT-54 + LT-55) — 2026-09-07 (`ph7-step4b`): `pkg/template/nuclei/respcache.go`'s `respCache` serves a repeat GET/HEAD `(method, URL, Host, header-fp, body)` from a 512-entry FIFO cache in `tryPath` — timing (`req.usesTiming`)/`interactsh_`/`pathCorrelated`/`payloads:`/non-GET-HEAD/`raw:` all carved out; `knownDeadSkip` fires no request for a lone matcher-only `path:` template a `--recon-file` marks 404 when the scan carries no `--header` (recon's posture), still firing it when a credential is present; the shared rate limiter is still the only throughput cap
 - [x] Uniform response wall handled (D6 / [follow-up.md](follow-up.md) LT-43(2) + LT-58 + LT-59 + LT-62) — 2026-09-07 (`ph7-step4a`): `pkg/uniformwall.Classify` runs in recon Wave 3 and records `ReconResult.UniformResponse`; `scanner.Engine` skips `runTemplates` for a `Config.UniformWallHosts` match (unless `--scan-uniform-anyway`/`--all-templates`), emitting one `misconfig-waf-blocked`/`misconfig-uniform-catchall`; `reconShowsAdminSurface` keeps `panel` behind a WAF wall only for a path-discriminating signal; recon warns and `plan` prints the blocked-probe-ratio note
-- [ ] **Interim** OWASP Agentic Top 10 pass (D4) against currently-shipped Phase 5-7 code (file/line cited), each row mitigated-with-a-cite or accepted-residual — the **full re-walk** (incl. Phase 9 Steps 3-4's new surface) is [Phase 9](18-implementation-plan-ph9.md) Step 5
-- [x] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content (Step 6a / F3 / [follow-up.md](follow-up.md) LT-67) — 2026-09-07: `isBodyGrepSecretTemplate` ∧ `hostServesDynamicContent`, biased toward emitting; unit-tested on catch-all / `AppSurface:none` / sub-floor-body hosts vs. a real-content host
-- [x] A specific-template leaf loads only its own template via `nuclei.LoadDirByIDs`' id:-peek fast path, not the full corpus, with an empty before/after finding-set diff (Step 6a / F4 / [follow-up.md](follow-up.md) LT-71) — 2026-09-07; falls back to a full parse on a peek miss so it can't change results. Pure-`--tags`-scan (no plan) still full-loads — follow-on
-- [ ] Coverage-gap ledger (Step 8 / LT-107): a recon-fed scan emits one deterministic `coverage-gap-*` row per `(host, fingerprinted product/version)` that no native detector fired on, no I3 leaf covered, and no tag-matching template was loaded — no LLM
-- [ ] `hackerfive suggest <scan-output>` (Step 8 / LT-108): one stateless frontier call (H5-capped, `--llm-assist`-gated) takes the ledger + findings and prints a structured action list; no auto-apply, no re-scan, nothing written to disk. Rungs 3–5 (promote command, "Apply and Run", closed loop) are LT-109/LT-110, out of scope for this step
-- [ ] Agent-driven false-positive/false-negative rate is measured live against all four lab targets, tracked separately from detector-level rate, with full cost accounting recorded
-- [ ] `authbypass_crapi_test.go`/`authbypass_vapi_test.go` land as reproducible tests against the compose stack, and the crAPI credentialed recon → plan → approve → scan → export round trip is live-verified (moved from Phase 6 Step 5)
-- [ ] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean
+- [x] Response-grep secret/exposure templates are only emitted for a host recon shows serving app-generated content (Step 5 / F3 / [follow-up.md](follow-up.md) LT-67) — 2026-09-07: `isBodyGrepSecretTemplate` ∧ `hostServesDynamicContent`, biased toward emitting; unit-tested on catch-all / `AppSurface:none` / sub-floor-body hosts vs. a real-content host
+- [x] A specific-template leaf loads only its own template via `nuclei.LoadDirByIDs`' id:-peek fast path, not the full corpus, with an empty before/after finding-set diff (Step 5 / F4 / [follow-up.md](follow-up.md) LT-71) — 2026-09-07; falls back to a full parse on a peek miss so it can't change results. Pure-`--tags`-scan (no plan) still full-loads — follow-on
+- [x] Coverage-gap ledger (Step 7 / LT-107) — 2026-09-10: `pkg/coveragegap.Ledger` cross-references `Config.TechStack` against the job's loaded template set (via `registry.CoverageStatus`) and `pkg/scanner/engine.go` emits one deterministic `coverage-gap-*` info finding per fingerprinted product neither a native rule nor a loaded template tag covers — no LLM
+- [x] `hackerfive suggest <scan-output>` (Step 7 / LT-108) — 2026-09-10: prints the deterministic ledger always (reconstructed from the scan output's own `coverage-gap-*` findings); `--llm-assist` makes one stateless frontier call (`llmfallback.Suggest`, global-spend-ceiling-capped) that prints a structured action list validated against a fixed kind allow-list; no auto-apply, no re-scan, nothing written to disk. Rungs 3–5 (promote command, "Apply and Run", closed loop) are LT-109/LT-110, out of scope for this step
+- [x] Agent-driven false-positive/false-negative rate is measured live against all four lab targets, tracked separately from detector-level rate, with full cost accounting recorded — **2026-09-10, real numbers, not padded**: see [90-research-hackerbot.md](90-research-hackerbot.md) §G1 for the full write-up. Headline: $0.0000 model spend across all 4 targets (neither gap below reached I4); DVWA 7 findings/0 unexpected, Juice Shop 4/1, vAPI 7/1, crAPI 5/5 (crAPI's idor/authbypass leaves were skipped at execution, not wrong — see below). One real bug found and fixed mid-run (**LT-137**: `plan` execution never applied doc15 Step 6a's tech-based template narrowing, causing the first run's timeouts); two genuine agent-specific gaps found and left open (**LT-138**: crAPI's idor/authbypass leaves resolve as pending but get skipped at execution — active-depth unauthenticated recon can't fill their required fields and I4 never gets a turn at it; and `misconfig-method-*`, a native check, silently didn't fire in the agent path against any of the 3 misconfig-only targets, root cause not yet found)
+- [x] `authbypass_crapi_test.go`/`authbypass_vapi_test.go` land as reproducible tests against the compose stack, and the crAPI credentialed recon → plan → approve → scan → export round trip is live-verified (moved from Phase 6 Step 5) — **2026-09-10**: both test files already existed (committed 2026-08-28 for Phase 2, but only ever live-verified against whatever instance was up that day); re-verified live today against a fresh crAPI + vAPI Docker Compose bring-up on this machine, all passing (`go test -tags=integration ./tests/integration/...`). The credentialed round trip separately live-verified via the CLI: `hackerfive recon` (active depth, owner token) → `hackerfive plan --recon-file` → `hackerfive scan --recon-file` with both crAPI tokens (7 real `idor-*` BOLA findings, 8 real `authbypass-*`/`coverage-gap-*` findings incl. 3 critical `alg:none` JWT bypasses and the LT-92 BFLA check) → `--format markdown` export — see [follow-up.md](follow-up.md)'s "Testing & Verification Gaps" section for detail
+- [x] `go build`/`go vet`/`go test -race`/`golangci-lint` all clean — 2026-09-10
 - [ ] `v0.7.0` tagged and released, or explicitly held with a stated reason
 
-**Moved to [Phase 9](18-implementation-plan-ph9.md) Step 5 (Step 6b + D4 full re-walk):**
+**Moved wholly to [Phase 9](18-implementation-plan-ph9.md) Step 5 (2026-09-10 renumbering — formerly this phase's Step 5 (D4) and Step 6b):**
 - [ ] All ten OWASP Agentic Top 10 risks re-walked against real shipped Phase 5-9 code (file/line cited), ASI02/ASI04/ASI05/ASI10 re-checked against the new agent-enumeration + active-injection surface
 - [ ] `templates/proposed/` exists, is confirmed never auto-loaded by the default `--templates` path, and requires explicit human promotion (E2)
 - [ ] Triage-assist annotations never mutate `Finding.Severity`/`Confidence` (F1); structured feedback on an overridden agent finding is captured queryably (F2)
 
 ## See also
-- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — detection-coverage breadth/precision; its § "Execution order" holds the single cross-phase backlog Phase 7's Steps 5/6a/6b sit in
-- [18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) — detection-coverage depth/active; absorbs this phase's Step 6b + the D4 full re-walk as its Step 5
+- [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — detection-coverage breadth/precision; its § "Execution order" holds the single cross-phase backlog Phase 7's Step 5 (F3/F4) sits in
+- [18-implementation-plan-ph9.md](18-implementation-plan-ph9.md) — detection-coverage depth/active; absorbs this phase's former Step 5 (D4, OWASP mapping) and former Step 6b (E2/F1/F2) wholly into its own Step 5
 - [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md) — the MCP server, approval gate, and task-tree backbone this phase hardens
 - [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md) — the recon/`PlanTree`/`Finding`-schema foundations and decision-engine registry (R9, `templates/index.json`) Phase 6 builds on and this phase's ASI04/ASI06 rows cite directly
 - [90-research-hackerbot.md](90-research-hackerbot.md) — the full research and backlog (Groups A-I, plus R for recon) this plan and doc14/doc15 together schedule

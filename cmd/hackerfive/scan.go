@@ -217,6 +217,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			// matching recon's own unauthenticated posture.
 			if reconResult != nil {
 				cfg.KnownDeadPaths = reconResult.DeadPaths()
+				cfg.TechStack = reconResult.TechStack
 			}
 
 			// doc15 Step 6a: template scoping is on by default. An explicit
@@ -347,8 +348,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			// LT-6 / doc16 C6: expand the nuclei http-missing-security-headers
 			// aggregate into per-header findings first, so Dedup's exact-ID key
 			// then collapses the native/nuclei overlap for the headers the
-			// native misconfig check also grades.
-			findings = reporter.Dedup(reporter.SplitAggregates(findings))
+			// native misconfig check also grades. LT-6 tail: the weak-HSTS
+			// native/nuclei pair isn't an aggregate, so it's dropped separately
+			// via DropSupersededNucleiFindings.
+			findings = reporter.Dedup(reporter.DropSupersededNucleiFindings(reporter.SplitAggregates(findings)))
 
 			exporter, err := reporter.ExporterFor(cfg.OutputFormat)
 			if err != nil {

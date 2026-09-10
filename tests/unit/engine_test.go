@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 )
 
@@ -181,6 +182,47 @@ http:
 		}
 	}
 	assert.True(t, haveTemplate, "--scan-uniform-anyway must run the template corpus even against a uniform-wall host")
+}
+
+// TestEngineRun_CoverageGap_EmitsFindingOnlyForUncoveredTech is LT-107
+// (docs/16-implementation-plan-ph7.md Step 7): a Config.TechStack entry that
+// no native detector rule and no loaded template tag covers gets one
+// coverage-gap-* info finding; a covered entry (a real techRules match)
+// gets none.
+func TestEngineRun_CoverageGap_EmitsFindingOnlyForUncoveredTech(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	u, err := url.Parse(server.URL)
+	require.NoError(t, err)
+
+	cfg := scanner.Config{
+		Targets:     []string{server.URL},
+		Concurrency: 5,
+		RateLimit:   50,
+		Timeout:     5 * time.Second,
+		Detector:    "misconfig",
+		TechStack: []recon.TechFact{
+			{Host: u.Host, Name: "WordPress 6.4"},  // native rule match -> not a gap
+			{Host: u.Host, Name: "Webmin 2.111"},   // nothing covers it -> a gap
+		},
+	}
+	require.NoError(t, cfg.Validate())
+
+	findings, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+
+	var gapFindings []detectors.Finding
+	for _, f := range findings {
+		if strings.HasPrefix(f.ID, "coverage-gap-") {
+			gapFindings = append(gapFindings, f)
+		}
+	}
+	require.Len(t, gapFindings, 1, "exactly one coverage-gap finding, for the uncovered tech only")
+	assert.Equal(t, "Webmin 2.111", gapFindings[0].Evidence["product"])
+	assert.Equal(t, u.Host, gapFindings[0].Target)
 }
 
 // TestEngineRun_RejectedCount_OnlyCountsFilesInvalidInBothFormats confirms

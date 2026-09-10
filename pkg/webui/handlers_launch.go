@@ -539,6 +539,34 @@ func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Co
 	mergeReconDerivedExecFields(job, cfgs)
 	cfgs = applyTechStackNarrowing(job, form, cfgs)
 
+	// LT-107 (doc16 Phase 7 Step 7): thread recon's tech stack through
+	// regardless of the NarrowByTech opt-in above — the end-of-scan
+	// coverage-gap ledger is informational, not a template-selection choice.
+	if result := job.Snapshot().ReconResult; result != nil {
+		for i := range cfgs {
+			cfgs[i].TechStack = result.TechStack
+		}
+
+		// LT-137 (docs/follow-up.md, found live 2026-09-10 running the G1
+		// agent eval): the Plan Preview execution path (job.ExecConfig(),
+		// consumed by planexec.RunPlan) never narrowed the template corpus
+		// by tech the way this same handler's checked-detector cfgs do just
+		// above via applyTechStackNarrowing — every plan-executed leaf ran
+		// the full synced corpus. Also unconditional (not gated on
+		// form.NarrowByTech, which governs the OTHER flow's default):
+		// there's no equivalent operator-facing checkbox for plan execution,
+		// and an unbounded full-corpus-per-leaf run is never the intended
+		// default there. planexec.runLeaf unions each leaf's own
+		// detector-category floor on top of this.
+		if len(result.TechStack) > 0 {
+			if index, warn := loadTemplateIndexOrWarn(); warn == "" {
+				execCfg := job.ExecConfig()
+				execCfg.DerivedTags = registry.TechStackTags(result.TechStack, index)
+				job.SetExecConfig(execCfg)
+			}
+		}
+	}
+
 	// Seed the detector chain only now, from cfgs *after* fillReconFields —
 	// that call can drop a detector entirely when recon couldn't resolve a
 	// field it needs (see fillReconFields), and seeding from the pre-recon

@@ -23,12 +23,19 @@ than left in Phase 8 because each one:
 - is the most likely to **grow after more live testing** — WAF-bypass and
   agent-surface work in particular are still short on real-world reference cases.
 
-It also absorbs the two [Phase 7](16-implementation-plan-ph7.md) trust items that
-gate on this phase's surface existing: the OWASP Agentic Top 10 **full** re-walk
-(Ph7 Step 5) and the agent-output-hygiene trio (Ph7 Step 6b — `templates/proposed/`,
-triage-assist annotations, structured feedback capture). Doing the OWASP mapping
-before Phase 9 Steps 3-4 add agent-reachable and active surface would only mean
-re-doing it.
+It also absorbs two trust items originally planned as their own steps in
+[Phase 7](16-implementation-plan-ph7.md): the OWASP Agentic Top 10 mapping (that
+doc's former Step 5, D4) and the agent-output-hygiene trio (that doc's former Step
+6b — `templates/proposed/`, triage-assist annotations, structured feedback
+capture). **2026-09-10 renumbering:** Phase 7 originally planned an "interim"
+OWASP pass against shipped Phase 5-7 code before this phase's full re-walk, so
+`v0.7.0` wouldn't ship with zero agent-security self-assessment. Since this phase
+was always going to re-walk the same ASI01-ASI10 table in full shortly after —
+doing it lightly first just means doing it twice — the interim pass was dropped
+and Phase 7's Step 5 removed entirely; this step is now the *only* OWASP pass.
+Phase 7's Step 6b was already deferred here and is unaffected by that change.
+Doing the OWASP mapping before Phase 9 Steps 3-4 add agent-reachable and active
+surface would only mean re-doing it.
 
 **Read/enumerate-only throughout** — the same boundary every prior phase held
 ([05-hackerone-and-legal.md](05-hackerone-and-legal.md)). An active injection or
@@ -313,21 +320,39 @@ reproducible request.
 
 ## Step 5: Trust & Agent-Output Hardening (Week 70) — ⬜ not yet implemented
 
-Absorbs [Phase 7](16-implementation-plan-ph7.md) Step 5 (**D4**, full re-walk) and
-Step 6b (**E2 / F1 / F2**). Deferred here because each one gates on surface this
-phase's Steps 3-4 add.
+Absorbs [Phase 7](16-implementation-plan-ph7.md)'s former Step 5 (**D4**, OWASP
+mapping — this is now the *only* pass, the interim pass having been dropped on
+2026-09-10, see this doc's Objective) and former Step 6b (**E2 / F1 / F2**).
+Deferred here because each one gates on surface this phase's Steps 3-4 add.
 
 ### Design
 
-**D4 — OWASP Agentic Top 10 mapping, full re-walk.** Phase 7 Step 5 does an *interim*
-pass now, against the shipped Phase 5-7 code (the design-level ASI01-ASI10 table
-already exists in [90-research-hackerbot.md](90-research-hackerbot.md) §3). This step
-re-walks the whole table again **after Steps 3 and 4** — because Step 3 adds an
-agent-reachable MCP-enumeration surface and Step 4 adds active injection detectors,
-both of which change the ASI02 (Tool Misuse) / ASI04 (Supply Chain) / ASI05
-(Unexpected Code Execution) / ASI10 (Rogue Agents) rows materially. Each row is
-recorded as mitigated (cite the file/mechanism) or explicitly accepted as residual
-risk with a stated reason, same "revise down with reasoning, don't pad" discipline.
+**D4 — OWASP Agentic Top 10 mapping.** Doc90 §3 Group D sketches HackerFive-specific
+mitigations for each ASI01-ASI10 risk against the *design*; this step re-walks that
+same table against the *actual shipped Phase 5-9 code* and records the result —
+mitigated (cite the file/mechanism), or explicitly accepted as residual risk with a
+stated reason — matching this project's own "revise down with reasoning, don't pad"
+discipline. Run **after Steps 3 and 4** — Step 3 adds an agent-reachable
+MCP-enumeration surface and Step 4 adds active injection detectors, both of which
+change the ASI02 (Tool Misuse) / ASI04 (Supply Chain) / ASI05 (Unexpected Code
+Execution) / ASI10 (Rogue Agents) rows materially versus doing this against Phase
+5-7 code alone. The table below is carried over from Phase 7's design (drafted
+2026-09-07, before that phase's own OWASP step was dropped) as a starting point —
+every row still needs re-confirming against whatever actually shipped by the time
+this step runs, not treated as already-settled:
+
+| ASI risk | Doc90's proposed mitigation | Confirm against real code |
+|---|---|---|
+| ASI01 Agent Goal Hijack | Untrusted target data, never instructions; D3 hard-fail on missing scope | `pkg/mcpserver/tools_scan.go`'s D3 check (Phase 6 Step 3) |
+| ASI02 Tool Misuse & Exploitation | Decision 2 (no shell/exec tool) + schema-validated tools | `pkg/mcpserver` tool registrations (Phase 6 Step 1) **plus this phase's Step 3 MCP-enumeration surface** |
+| ASI03 Identity & Privilege Abuse | Short-lived, per-call credentials, never baked into agent context | Confirm `--auth-token`-equivalent handling in `tools_scan.go` doesn't persist beyond one call |
+| ASI04 Agentic Supply Chain Vulnerabilities | Pinned-commit template sync + E2's staging directory; an LLM-drafted template (Decision 5's frontier-tier fallback) is itself an untrusted-supply-chain input, not just a hazard from an external source | `pkg/templatesync` (existing) + this step's `templates/proposed/` (E2, below) + confirm `pkg/llmfallback`'s drafted output is never loaded outside that same staging path (Phase 6 Step 2) |
+| ASI05 Unexpected Code Execution | No code-execution tool exists; an LLM-drafted template must go through the same load-time block-rejection (`code:`/`javascript:`/`headless:`/`file:`) as any other untrusted template, no carve-out for being "agent-authored" | Confirm against the final Phase 6 tool list, and confirm `pkg/llmfallback`'s output path re-uses the existing template loader's rejection logic rather than a separate, possibly-laxer path |
+| ASI06 Memory & Context Poisoning | `PlanTree` is durable, refreshed state, not open-ended memory | `pkg/agenttask` (Phase 5 Step 2) |
+| ASI07 Insecure Inter-Agent Communication | Moot — single coordinator, no peer-agent channel | Confirm no peer-agent code was introduced anywhere in Phases 5-9 |
+| ASI08 Cascading Agent Failures | Host-error-cache circuit breaker + spend/attempt ceiling | Existing `pkg/scanner/hosterrors` + Phase 6 Step 2's `H5`/Phase 7 Step 4's `H4` |
+| ASI09 Human-Agent Trust Exploitation | Approvals only via audited Web UI controls or MCP `elicitation`, never the agent's own conversational assertion | Phase 6 Step 2's `plan` tool + Phase 7 Step 2's `B2` |
+| ASI10 Rogue Agents | Kill switch/pause (Agent tab) + policy pre-flight hard blocker | Phase 7 Step 3's Agent tab (does it have an explicit pause/cancel action? confirm and add if missing) + Phase 6 Step 3's `D2` |
 
 **E2 — agent-proposed templates land in `templates/proposed/`**, never a trusted path
 (`./templates/` or the synced directory). No agent yet drafts a detection template,
@@ -402,7 +427,7 @@ stated reason.
 
 ## See also
 - [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) — the breadth/precision half of the detection-coverage expansion, and the "Execution order" backlog this phase's steps sit at the tail of
-- [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — the agent pipeline this phase's detectors feed into; its Steps 5 / 6b are absorbed into this phase's Step 5
+- [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — the agent pipeline this phase's detectors feed into; its former Steps 5 / 6b are absorbed into this phase's Step 5
 - [follow-up.md](follow-up.md) — LT-78 / LT-87 and the Detection Coverage table this phase closes out
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — the `code:`/`javascript:`/`headless:`/`file:` template-rejection boundary Steps 2 and 4 work within
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — the read/enumerate-only rule every step here holds to

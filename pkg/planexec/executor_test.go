@@ -26,11 +26,16 @@ import (
 func writeOneTemplate(t *testing.T, id string, status int) string {
 	t.Helper()
 	dir := t.TempDir()
+	// LT-137: tagged "misconfig" so it survives runLeaf's doc15 Step 6a
+	// detector-category-floor narrowing — every caller here dispatches a
+	// Detector: "misconfig" leaf (or a template-ID leaf, which matches by
+	// exact id: instead and ignores tags entirely).
 	body := fmt.Sprintf(`
 id: %s
 info:
   name: %s
   severity: info
+  tags: misconfig
 http:
   - method: GET
     path: ["{{BaseURL}}/"]

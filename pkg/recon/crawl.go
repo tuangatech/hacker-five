@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -452,6 +453,7 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 	suppressed := 0
 	timedOut := 0
 	blocked, answered := 0, 0
+	var commonPathHits []commonPathHit // LT-66 tail: this call's own wave3-common-path-probe endpoints, for the post-verdict catch-all cleanup below
 	for _, path := range commonPaths {
 		reqURL := base + path
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -485,17 +487,20 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		}
 		r.hostErrors.RecordSuccess(host)
 		// LT-40: a spec path's body is kept (bounded) so walkOpenAPISpec can
-		// parse its routes; every other path's body is measured for length
-		// and discarded exactly as before.
+		// parse its routes. Every other path's body is now also kept
+		// (bounded, same limit) rather than discarded — LT-66 tail needs it
+		// to hash-compare probed paths against each other below.
 		var (
 			n        int64
 			specBody []byte
+			bodyBuf  []byte
 		)
 		if isSpecPath {
 			specBody, _ = io.ReadAll(io.LimitReader(resp.Body, maxSpecBodyBytes))
 			n = int64(len(specBody))
 		} else {
-			n, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+			bodyBuf, _ = io.ReadAll(io.LimitReader(resp.Body, maxCanaryBodyRead))
+			n = int64(len(bodyBuf))
 		}
 		_ = resp.Body.Close()
 		answered++
@@ -517,6 +522,9 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 			URL: reqURL, Method: http.MethodGet, StatusCode: resp.StatusCode,
 			BodyLen: bodyLen, ContentType: resp.Header.Get("Content-Type"),
 			Source: "wave3-common-path-probe", Confidence: ConfidenceHigh,
+		})
+		commonPathHits = append(commonPathHits, commonPathHit{
+			url: reqURL, bodyHash: hashBody(bodyBuf), bucketMarker: hasBucketMarkerHeaders(resp.Header),
 		})
 		if kind, ok := specPaths[path]; ok && isStructuredSpecContentType(ctype) {
 			agg.addAPISpec(APISpecFact{Kind: kind, URL: reqURL})
@@ -560,7 +568,87 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		agg.addWarning("wave3: %s: %d common-path probe(s) timed out (host tarpits some paths) — counted as per-path skips, not toward the host-down breaker (LT-86)", host, timedOut)
 	}
 
-	r.recordUniformResponse(ctx, agg, base, host, canary, blocked, answered)
+	verdict := r.recordUniformResponse(ctx, agg, base, host, canary, blocked, answered)
+	if verdict == uniformwall.VerdictCatchall {
+		dropCatchallCommonPathEndpoints(agg, host, commonPathHits)
+	}
+}
+
+// commonPathHit is one probeCommonPaths hit recorded as a
+// wave3-common-path-probe endpoint, kept around only so
+// dropCatchallCommonPathEndpoints (LT-66 tail) can retroactively identify
+// which of them are actually catch-all noise once the whole probe's verdict
+// is known — the canary-only check above can't catch a bucket host whose
+// canary happened to 404 while other paths 200 on an identical body.
+type commonPathHit struct {
+	url          string
+	bodyHash     uint64
+	bucketMarker bool
+}
+
+// hashBody hashes a probed path's (bounded) response body for exact-
+// duplicate detection across paths — fnv is enough here, this is a
+// same-request-batch duplicate check, not a security boundary.
+func hashBody(body []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(body)
+	return h.Sum64()
+}
+
+// bucketMarkerHeaders are response headers a storage-bucket/object-CDN
+// origin (GCS, S3, ...) sends on essentially every response, regardless of
+// path — a strong independent signal that a 200 on an arbitrary common path
+// is the bucket's own fallback/listing page, not a real application route.
+var bucketMarkerHeaderPrefixes = []string{"x-goog-", "x-amz-", "x-guploader-uploadid"}
+
+func hasBucketMarkerHeaders(h http.Header) bool {
+	for name := range h {
+		lower := strings.ToLower(name)
+		for _, prefix := range bucketMarkerHeaderPrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// dropCatchallCommonPathEndpoints is LT-66 tail (docs/follow-up.md): the D6
+// catch-all verdict is host-level, but probeCommonPaths' own canary check
+// only suppresses a probed path that matches the *canary's* (status,
+// bodyLen, contentType) — it can't catch a bucket host whose canary probe
+// happened to 404 while other common paths (e.g. /robots.txt, /admin,
+// /graphql) all 200 on the bucket's own identical fallback body, which
+// otherwise survives as a fabricated confidence:high endpoint. Once this
+// call's own verdict is Classify'd as catchall, any of *this batch's* hits
+// whose body hash duplicates another hit's, or whose response carried a
+// bucket-storage marker header, is dropped from agg.endpoints — a hit with
+// neither signal (a body hash unique within this batch, no bucket header)
+// is left alone, since a real, distinct resource can coexist on an
+// otherwise-catchall host.
+func dropCatchallCommonPathEndpoints(agg *aggregator, host string, hits []commonPathHit) {
+	hashCount := make(map[uint64]int, len(hits))
+	for _, hit := range hits {
+		hashCount[hit.bodyHash]++
+	}
+	drop := make(map[string]bool, len(hits))
+	for _, hit := range hits {
+		if hit.bucketMarker || hashCount[hit.bodyHash] >= 2 {
+			drop[hit.url] = true
+		}
+	}
+	if len(drop) == 0 {
+		return
+	}
+	kept := agg.endpoints[:0]
+	for _, ep := range agg.endpoints {
+		if ep.Source == "wave3-common-path-probe" && drop[ep.URL] {
+			continue
+		}
+		kept = append(kept, ep)
+	}
+	agg.endpoints = kept
+	agg.addWarning("wave3: %s: dropped %d common-path probe endpoint(s) that share an identical body with another probed path (or carry a storage-bucket marker header) — this host is a catch-all/bucket origin, not real per-path routing (LT-66)", host, len(drop))
 }
 
 // recordUniformResponse classifies whether host is a uniform wall — a
@@ -580,7 +668,7 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 //     routed status code (a real 404 among 200s) — that combination is
 //     proof the "one page for every path" conclusion is wrong, and the
 //     scanner would otherwise short-circuit the whole corpus on it.
-func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base, host string, canary canaryResponse, blocked, answered int) {
+func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base, host string, canary canaryResponse, blocked, answered int) uniformwall.Verdict {
 	distinct, statuses, httpxRoot := hostEndpointEvidence(agg, host)
 
 	var canaryObs uniformwall.Observation
@@ -598,7 +686,7 @@ func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base
 			ContentType: httpxRoot.ContentType, Body: []byte(httpxRoot.Title),
 		}
 	default:
-		return
+		return uniformwall.VerdictNone
 	}
 
 	var rootObs *uniformwall.Observation
@@ -612,16 +700,16 @@ func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base
 	}
 	verdict := uniformwall.Classify(canaryObs, rootObs)
 	if verdict == uniformwall.VerdictNone {
-		return
+		return uniformwall.VerdictNone
 	}
 	if crawlEvidenceRefutesWall(distinct, statuses) {
 		agg.addWarning("wave3: %s: a uniform-wall signal (%s) was suppressed — recon already mapped %d distinct endpoints across %d routed status codes on this host, which contradicts it (LT-82)", host, verdict, distinct, countRoutedStatuses(statuses))
-		return
+		return uniformwall.VerdictNone
 	}
 	if verdict == uniformwall.VerdictCatchall {
 		if n := crawlRoutesRefuteCatchall(agg, host); n >= 2 {
 			agg.addWarning("wave3: %s: a catch-all signal was suppressed — katana crawled %d distinct non-asset route(s) linked from this host's own pages, so it serves real interlinked content, not one generic page for every path (LT-103)", host, n)
-			return
+			return uniformwall.VerdictNone
 		}
 	}
 	effCanaryStatus := canary.status
@@ -641,6 +729,7 @@ func (r *Recon) recordUniformResponse(ctx context.Context, agg *aggregator, base
 	case uniformwall.VerdictCatchall:
 		agg.addWarning("wave3: %s: host returns one generic catch-all page for every path (canary status %d) — no real routing to map from this vantage (D6/LT-43)", host, effCanaryStatus)
 	}
+	return verdict
 }
 
 // hostEndpointEvidence summarises what recon's other passes already recorded

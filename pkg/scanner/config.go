@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/scanner/scope"
 )
 
@@ -229,6 +230,17 @@ type Config struct {
 	// recon's own unauthenticated posture (no --header). Phase 7 Step 4 D5,
 	// docs/follow-up.md LT-55. nil/empty = no path skipping.
 	KnownDeadPaths []string
+
+	// TechStack is a prior recon pass's fingerprinted per-host tech facts
+	// (ReconResult.TechStack). A frontend (cmd/hackerfive/scan.go's
+	// --recon-file parse, pkg/webui, pkg/mcpserver) populates it from that
+	// recon result, same convention as UniformWallHosts/KnownDeadPaths
+	// above. Engine.Run cross-references it against the job's loaded
+	// template set (pkg/coveragegap, LT-107, docs/16-implementation-plan-ph7.md
+	// Step 7) and emits one coverage-gap-* info finding per fingerprinted
+	// product nothing covered. nil/empty = no recon result available, no
+	// ledger pass runs.
+	TechStack []recon.TechFact
 
 	// ScanUniformAnyway (from --scan-uniform-anyway, also implied by
 	// --all-templates) forces the full per-target template corpus to run even

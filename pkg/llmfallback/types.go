@@ -58,3 +58,19 @@ type TriageResult struct {
 	Ranked          []RankedFinding `json:"ranked,omitempty"`
 	EscalateToHuman string          `json:"escalate_to_human,omitempty"`
 }
+
+// SuggestedAction is one printed-only next-action LT-108's `hackerfive
+// suggest` proposes (docs/16-implementation-plan-ph7.md Step 7, rung 2 of
+// the end-of-scan re-plan ladder). Kind is always one of
+// suggestActionKinds (client.go's Suggest drops any other value rather than
+// trusting it) — never applied automatically, never a Finding mutation.
+type SuggestedAction struct {
+	Kind        string            `json:"kind"`
+	Description string            `json:"description"`
+	Detail      map[string]string `json:"detail,omitempty"`
+}
+
+// SuggestResult is I4's fourth caller's result.
+type SuggestResult struct {
+	Actions []SuggestedAction `json:"actions,omitempty"`
+}

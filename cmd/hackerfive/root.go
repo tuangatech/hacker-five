@@ -35,6 +35,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newReconCmd(flags))
 	cmd.AddCommand(newPlanCmd(flags))
 	cmd.AddCommand(newTriageCmd(flags))
+	cmd.AddCommand(newSuggestCmd(flags))
 	cmd.AddCommand(newMCPServeCmd())
 
 	return cmd

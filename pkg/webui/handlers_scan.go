@@ -171,7 +171,12 @@ func (h *handlers) exportJSON(w http.ResponseWriter, r *http.Request) {
 	snap := job.Snapshot()
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-findings.json"`, job.ID))
-	if err := reporter.WriteJSON(w, snap.Findings); err != nil {
+	// LT-6 tail (docs/follow-up.md): the CLI's `scan` command runs its
+	// findings through SplitAggregates/DropSupersededNucleiFindings/Dedup
+	// before exporting; the webui export never did, so a native+nuclei 1:1
+	// pair (missing-header, weak-HSTS) survived here uncollapsed.
+	exportFindings := reporter.Dedup(reporter.DropSupersededNucleiFindings(reporter.SplitAggregates(snap.Findings)))
+	if err := reporter.WriteJSON(w, exportFindings); err != nil {
 		log.Printf("webui: exporting job %s: %v", job.ID, err)
 	}
 }

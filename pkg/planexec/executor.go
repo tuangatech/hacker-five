@@ -22,6 +22,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
@@ -489,6 +490,18 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 
 	if recognizedDetectors[leaf.Detector] {
 		cfg.Detector = leaf.Detector
+		// LT-137 (docs/follow-up.md, found live 2026-09-10 running the G1
+		// agent eval): without this, every executed leaf ran the full synced
+		// template corpus (baseCfg.TemplatePaths, unfiltered) — minutes per
+		// leaf against a real target. Mirrors cmd/hackerfive/scan.go's own
+		// doc15 Step 6a narrowing: an explicit cfg.Tags (baseCfg's own,
+		// never widened) wins untouched; otherwise this leaf's own
+		// detector-category floor is unioned onto whatever tech-based
+		// "extras" baseCfg.DerivedTags already carries (tools_plan.go /
+		// pkg/webui compute those once, from the whole recon tech stack).
+		if len(cfg.Tags) == 0 {
+			cfg.DerivedTags = unionLeafTags(registry.DetectorTemplateTags(leaf.Detector), cfg.DerivedTags)
+		}
 	} else {
 		// A specific-template leaf, not a built-in detector — RunPlan's
 		// eligibility loop only lets a leaf reach here if leaf.Detector is
@@ -543,6 +556,27 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 // Priority comes first (C7a dispatch ordering). Stable: leaves that share a
 // priority — including the 0 default on a hand-built tree — keep their input
 // order.
+// unionLeafTags composes a leaf's detector-category floor with baseCfg's
+// tech-based extras — order-stable, de-duplicated, lower-cased (LT-137;
+// mirrors cmd/hackerfive's unionScanTags and pkg/webui's unionLaunchTags;
+// each package keeps its own copy rather than a shared util for one small
+// helper, same precedent those two already established).
+func unionLeafTags(floor, extras []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, group := range [][]string{floor, extras} {
+		for _, t := range group {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if t == "" || seen[t] {
+				continue
+			}
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func sortByPriorityDesc(leaves []*agenttask.PlanNode) {
 	sort.SliceStable(leaves, func(i, j int) bool {
 		return leaves[i].Priority > leaves[j].Priority

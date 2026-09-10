@@ -268,6 +268,14 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	if result.UniformResponse != nil {
 		baseCfg.UniformWallHosts = map[string]string{result.UniformResponse.Host: result.UniformResponse.Kind}
 	}
+	// LT-137 (docs/follow-up.md, found live 2026-09-10 running the G1 agent
+	// eval): unlike cmd/hackerfive/scan.go and pkg/webui, plan execution
+	// never narrowed the template corpus by tech — every executed leaf ran
+	// the full ~3,000+-template synced corpus (minutes per leaf) instead of
+	// doc15 Step 6a's tech-matched subset. baseCfg.DerivedTags carries the
+	// tech-based "extras" half (doc15 Step 6a); planexec.runLeaf unions in
+	// each leaf's own detector-category floor on top of this.
+	baseCfg.DerivedTags = registry.TechStackTags(result.TechStack, index)
 	// resolveFieldSuggestions applies only the deterministic (single- or
 	// multi-candidate, no-ambiguity) auto-fills directly to baseCfg — the
 	// same thing pkg/webui's fillReconFields already does unconditionally,
