@@ -389,6 +389,15 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 			notify(fmt.Sprintf("ssrf: probing recon-derived body param(s) %s (LT-96)", strings.Join(leaf.SSRFBodyParams, ", ")))
 		}
 	}
+	if leaf.CouponMintPath != "" && cfg.CouponMintPath == "" && cfg.CouponApplyPath == "" {
+		cfg.CouponMintPath = leaf.CouponMintPath
+		cfg.CouponApplyPath = leaf.CouponApplyPath
+		cfg.CouponCodeField = leaf.CouponCodeField
+		cfg.CouponAmountField = leaf.CouponAmountField
+		if notify != nil {
+			notify(fmt.Sprintf("businesslogic: probing recon-derived coupon mint %s / apply %s (LT-135)", leaf.CouponMintPath, leaf.CouponApplyPath))
+		}
+	}
 }
 
 func missingRequiredField(detector string, cfg scanner.Config) string {

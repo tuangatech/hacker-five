@@ -234,6 +234,39 @@ func TestApplyLeafReconFields_IntShapedLeaf_NoUUIDFieldsCopied(t *testing.T) {
 	}
 }
 
+// TestApplyLeafReconFields_CouponFieldsCopied is LT-135's regression: a
+// leaf carrying a spec-derived coupon mint/apply path + field-name pair
+// fills a blank Config, and an already-set CouponMintPath/CouponApplyPath
+// (an explicit --coupon-mint-path/--coupon-apply-path) is never overwritten.
+func TestApplyLeafReconFields_CouponFieldsCopied(t *testing.T) {
+	leaf := &agenttask.PlanNode{
+		Detector:          "businesslogic",
+		CouponMintPath:    "/api/v2/promo/new",
+		CouponApplyPath:   "/api/v1/promo/apply",
+		CouponCodeField:   "voucher_code",
+		CouponAmountField: "value",
+	}
+	var cfg scanner.Config
+	applyLeafReconFields(&cfg, leaf, nil)
+
+	if cfg.CouponMintPath != leaf.CouponMintPath || cfg.CouponApplyPath != leaf.CouponApplyPath {
+		t.Fatalf("got mint/apply %q/%q, want %q/%q", cfg.CouponMintPath, cfg.CouponApplyPath, leaf.CouponMintPath, leaf.CouponApplyPath)
+	}
+	if cfg.CouponCodeField != leaf.CouponCodeField || cfg.CouponAmountField != leaf.CouponAmountField {
+		t.Fatalf("got fields %q/%q, want %q/%q", cfg.CouponCodeField, cfg.CouponAmountField, leaf.CouponCodeField, leaf.CouponAmountField)
+	}
+
+	// An explicit flag already set must never be overwritten.
+	cfg2 := scanner.Config{CouponMintPath: "/manual/mint", CouponApplyPath: "/manual/apply"}
+	applyLeafReconFields(&cfg2, leaf, nil)
+	if cfg2.CouponMintPath != "/manual/mint" || cfg2.CouponApplyPath != "/manual/apply" {
+		t.Fatalf("an already-set coupon path must not be overwritten, got %q/%q", cfg2.CouponMintPath, cfg2.CouponApplyPath)
+	}
+	if cfg2.CouponCodeField != "" {
+		t.Fatalf("got CouponCodeField %q, want empty when the path pair was already set manually", cfg2.CouponCodeField)
+	}
+}
+
 // TestRunPlan_DispatchesKnownTemplateIDLeaf locks in the fix for what was
 // previously always-skipped: a leaf whose Detector matches a real
 // templatesync.Entry.ID (not a built-in detector name) now dispatches as a

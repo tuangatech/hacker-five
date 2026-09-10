@@ -20,6 +20,7 @@ type SpecIngestResult struct {
 	Endpoints      []EndpointFact
 	APISpec        *APISpecFact
 	SignupEndpoint *SignupFact
+	CouponEndpoint *CouponFact
 	OutOfScope     []string
 	Warnings       []string
 }
@@ -49,13 +50,16 @@ func IngestOpenAPISpecs(ctx context.Context, client *httpclient.Client, sc *scop
 			out.Warnings = append(out.Warnings, fmt.Sprintf("--openapi-spec %s: %v — skipped", ref, err))
 			continue
 		}
-		facts, truncated, signup := walkOpenAPISpec(specURL, body)
+		facts, truncated, signup, coupon := walkOpenAPISpec(specURL, body)
 		if len(facts) == 0 {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("--openapi-spec %s: not a recognisable OpenAPI 2.0/3.x document (no routes walked)", ref))
 			continue
 		}
 		if out.SignupEndpoint == nil {
 			out.SignupEndpoint = signup
+		}
+		if out.CouponEndpoint == nil {
+			out.CouponEndpoint = coupon
 		}
 		kept := 0
 		for _, ef := range facts {

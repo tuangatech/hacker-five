@@ -527,13 +527,19 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 			// observed endpoint. JSON and YAML spec bodies are both walked
 			// (LT-40(b)); a body that parses as neither stays the
 			// presence-only APISpecFact.
-			specEPs, truncated, signup := walkOpenAPISpec(reqURL, specBody)
+			specEPs, truncated, signup, coupon := walkOpenAPISpec(reqURL, specBody)
 			if signup != nil {
 				// Part B (--auto-provision-account): a spec-derived signup
 				// hint is higher precision than the path-guess fallback
 				// below, so it's recorded here regardless of whether the
 				// spec also yielded ordinary route facts.
 				agg.setSignupEndpoint(*signup)
+			}
+			if coupon != nil {
+				// LT-135: a spec-derived coupon mint+apply pair, recorded
+				// regardless of whether the spec also yielded ordinary route
+				// facts — same precedent as the signup hint above.
+				agg.setCouponEndpoint(*coupon)
 			}
 			if len(specEPs) > 0 {
 				for _, ef := range specEPs {

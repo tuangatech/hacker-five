@@ -159,6 +159,29 @@ type SignupFact struct {
 	Method string `json:"method"`
 }
 
+// CouponFact records a candidate coupon/promo mint-and-apply endpoint pair
+// recon found from an OpenAPI spec — LT-135, docs/follow-up.md.
+// pkg/detectors/businesslogic is otherwise hardcoded to crAPI's own coupon
+// routes and field names (DefaultCouponMintPath/ApplyPath, "coupon_code"/
+// "amount"); this fact carries both the real paths and the real request
+// field names a spec-documented target actually uses, so the detector can
+// fire against a non-crAPI target without an operator hand-supplying four
+// flags. CodeField/AmountField are matched by keyword against the mint
+// operation's own declared requestBody schema property names (specwalk.go's
+// BodyParamKeys machinery, LT-96) — never invented. Spec-derived only,
+// deliberately no path-guess fallback (unlike SignupFact): a coupon-mint
+// endpoint is POST-only and mutating, so guessing a path and firing a blind
+// POST during recon would violate the read-only recon invariant outright,
+// not just be lower-confidence.
+type CouponFact struct {
+	MintURL     string `json:"mint_url"`
+	MintMethod  string `json:"mint_method"`
+	ApplyURL    string `json:"apply_url"`
+	ApplyMethod string `json:"apply_method"`
+	CodeField   string `json:"code_field"`
+	AmountField string `json:"amount_field"`
+}
+
 // APISpecFact records that a machine-readable API spec was found publicly
 // reachable — presence only, never parsed; generic spec parsing is still an
 // explicit, named scope cut from docs/91-research-recon-phase.md §3's Wave
@@ -225,6 +248,7 @@ type ReconResult struct {
 	TechStack       []TechFact           `json:"tech_stack,omitempty"`
 	APISpec         *APISpecFact         `json:"api_spec,omitempty"`
 	SignupEndpoint  *SignupFact          `json:"signup_endpoint,omitempty"`
+	CouponEndpoint  *CouponFact          `json:"coupon_endpoint,omitempty"`
 	Secrets         []JSSecretFact       `json:"secrets,omitempty"`
 	UniformResponse *UniformResponseFact `json:"uniform_response,omitempty"`
 	AppSurface      *AppSurfaceFact      `json:"app_surface,omitempty"`

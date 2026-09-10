@@ -16,6 +16,16 @@ const (
 	DefaultCouponMintPath  = "/community/api/v2/coupon/new-coupon"
 	DefaultCouponApplyPath = "/workshop/api/shop/apply_coupon"
 
+	// DefaultCouponCodeField/DefaultCouponAmountField are crAPI's real
+	// request-body field names for the two routes above (both take
+	// {"coupon_code": ..., "amount": ...}). LT-135, docs/follow-up.md:
+	// overridable via WithCouponFields for a target whose coupon API uses
+	// different field names — recon can derive both automatically from an
+	// OpenAPI spec's documented requestBody schema (ReconResult.CouponEndpoint),
+	// same precedent as the paths above.
+	DefaultCouponCodeField   = "coupon_code"
+	DefaultCouponAmountField = "amount"
+
 	// DefaultRaceConcurrency is how many simultaneous apply requests
 	// checkCouponApplyRace fires via the last-byte-sync race client — enough
 	// to reliably land inside a real check-then-act window without being

@@ -88,6 +88,44 @@ func TestBusinessLogic_CouponSelfMintCredit_Hit(t *testing.T) {
 	assert.Equal(t, "high", got[0].Confidence)
 }
 
+// TestBusinessLogic_CouponSelfMintCredit_CustomFieldsAndNestedResponse_Hit is
+// LT-135's regression: a target using non-crAPI field names (WithCouponFields)
+// whose success response nests the granted amount under an object, and also
+// echoes an unrelated large number (a timestamp) that must not itself be
+// mistaken for the granted amount, must still be detected.
+func TestBusinessLogic_CouponSelfMintCredit_CustomFieldsAndNestedResponse_Hit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case businesslogic.DefaultCouponMintPath:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"created"}`))
+		case businesslogic.DefaultCouponApplyPath:
+			var body struct {
+				Value json.Number `json:"value"`
+			}
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &body)
+			amount, _ := body.Value.Float64()
+			w.WriteHeader(http.StatusOK)
+			// server_timestamp (1.7e9-ish) is a real-shaped unrelated large
+			// number that must not be mistaken for the granted amount — it's
+			// well outside the [90%,150%] window around injectedCreditAmount.
+			_, _ = fmt.Fprintf(w, `{"wallet":{"newBalance":%v},"server_timestamp":1732000000}`, amount+100)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := businesslogic.New(newBusinessLogicClient(), businesslogic.WithCouponFields("voucher_code", "value"))
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", true)
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "businesslogic-coupon-self-mint-credit")
+	require.Len(t, got, 1)
+	assert.Equal(t, "critical", got[0].Severity)
+}
+
 func TestBusinessLogic_CouponSelfMintCredit_ServerValidatesAmount_NoFinding(t *testing.T) {
 	// Safe: ignores the client-supplied amount entirely, always grants a
 	// small, fixed legitimate value — must NOT trigger the finding, or the

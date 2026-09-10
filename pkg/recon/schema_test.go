@@ -135,3 +135,30 @@ func TestReconResult_SchemaValidatesSignupEndpoint(t *testing.T) {
 	require.NotNil(t, roundTripped.SignupEndpoint)
 	assert.Equal(t, *result.SignupEndpoint, *roundTripped.SignupEndpoint)
 }
+
+// TestReconResult_SchemaValidatesCouponEndpoint covers v1.12 (LT-135): a
+// ReconResult carrying a CouponEndpoint must still satisfy the frozen schema
+// and round-trip without loss.
+func TestReconResult_SchemaValidatesCouponEndpoint(t *testing.T) {
+	schema := compileReconSchema(t)
+
+	result := ReconResult{
+		Target: "https://example.com",
+		CouponEndpoint: &CouponFact{
+			MintURL: "https://example.com/api/v2/promo/new", MintMethod: "POST",
+			ApplyURL: "https://example.com/api/v1/promo/apply", ApplyMethod: "POST",
+			CodeField: "voucher_code", AmountField: "value",
+		},
+	}
+	raw, err := json.Marshal(result)
+	require.NoError(t, err)
+
+	var asAny any
+	require.NoError(t, json.Unmarshal(raw, &asAny))
+	assert.NoError(t, schema.Validate(asAny), "a ReconResult with CouponEndpoint set must satisfy the schema: %s", raw)
+
+	var roundTripped ReconResult
+	require.NoError(t, json.Unmarshal(raw, &roundTripped))
+	require.NotNil(t, roundTripped.CouponEndpoint)
+	assert.Equal(t, *result.CouponEndpoint, *roundTripped.CouponEndpoint)
+}

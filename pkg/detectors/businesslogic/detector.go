@@ -3,8 +3,9 @@
 // mutating requests against a target, gated behind an explicit --allow-writes
 // flag (see CLAUDE.md's Rules and docs/13-implementation-plan-ph4.md Step 3).
 //
-// Both built-in checks target crAPI's real coupon flow, confirmed via source
-// and a live exploit chain (2026-08-29), not guessed:
+// Both built-in checks target the coupon mint/apply flow, and were confirmed
+// against crAPI's real coupon flow via source and a live exploit chain
+// (2026-08-29), not guessed:
 //   - checkCouponSelfMintCredit: any authenticated user can mint an
 //     arbitrary-value coupon (community service's AddNewCoupon has no
 //     admin/role check) and apply it for real, unearned credit (workshop
@@ -15,6 +16,17 @@
 //     transaction/locking — firing concurrent applies of the same coupon via
 //     a last-byte-sync raw connection (see raceclient.go) can win that race
 //     and apply a should-be-single-use coupon more than once.
+//
+// Paths and request-body field names both default to crAPI's exact shape
+// but are independently overridable (WithCouponPaths / WithCouponFields,
+// LT-135, docs/follow-up.md) — recon can derive both from a target's own
+// OpenAPI spec (ReconResult.CouponEndpoint) when one documents a
+// coupon/promo/voucher-shaped mint+apply pair, so this detector isn't
+// permanently limited to crAPI. checkCouponSelfMintCredit's success check
+// (responseGrantedAmount) is target-agnostic by construction — it scans the
+// apply response for any numeric field close to the injected amount, not a
+// hardcoded field name — so no response-schema signal is needed for that
+// half.
 //
 // Every check here needs --allow-writes; there is no read-only variant of
 // either (doc13's Step 3 Design originally hoped crAPI's validate-coupon
@@ -45,11 +57,13 @@ type Detector struct {
 	// for a stated, different reason).
 	hostErrors *hosterrors.Cache
 
-	authHeaderName   string
-	authHeaderFormat string
-	couponMintPath   string
-	couponApplyPath  string
-	raceConcurrency  int
+	authHeaderName    string
+	authHeaderFormat  string
+	couponMintPath    string
+	couponApplyPath   string
+	couponCodeField   string
+	couponAmountField string
+	raceConcurrency   int
 
 	// insecure mirrors httpclient.Config.InsecureSkipVerify, duplicated here
 	// because checkCouponApplyRace's raw net.Conn/tls.Dial path
@@ -91,6 +105,22 @@ func WithCouponPaths(mintPath, applyPath string) Option {
 	}
 }
 
+// WithCouponFields overrides DefaultCouponCodeField/DefaultCouponAmountField
+// for a target whose coupon API uses different request-body field names than
+// crAPI's own "coupon_code"/"amount" (LT-135, docs/follow-up.md). Either
+// argument left "" preserves that half's package default — same
+// left-""-preserves-default shape as WithCouponPaths.
+func WithCouponFields(codeField, amountField string) Option {
+	return func(d *Detector) {
+		if codeField != "" {
+			d.couponCodeField = codeField
+		}
+		if amountField != "" {
+			d.couponAmountField = amountField
+		}
+	}
+}
+
 // WithRaceConcurrency overrides DefaultRaceConcurrency. n <= 0 is a no-op,
 // preserving the package default.
 func WithRaceConcurrency(n int) Option {
@@ -112,13 +142,15 @@ func WithInsecure(insecure bool) Option {
 // New constructs a Detector.
 func New(client *httpclient.Client, opts ...Option) *Detector {
 	d := &Detector{
-		client:           client,
-		hostErrors:       hosterrors.New(hosterrors.DefaultThreshold),
-		authHeaderName:   DefaultAuthHeaderName,
-		authHeaderFormat: DefaultAuthHeaderFormat,
-		couponMintPath:   DefaultCouponMintPath,
-		couponApplyPath:  DefaultCouponApplyPath,
-		raceConcurrency:  DefaultRaceConcurrency,
+		client:            client,
+		hostErrors:        hosterrors.New(hosterrors.DefaultThreshold),
+		authHeaderName:    DefaultAuthHeaderName,
+		authHeaderFormat:  DefaultAuthHeaderFormat,
+		couponMintPath:    DefaultCouponMintPath,
+		couponApplyPath:   DefaultCouponApplyPath,
+		couponCodeField:   DefaultCouponCodeField,
+		couponAmountField: DefaultCouponAmountField,
+		raceConcurrency:   DefaultRaceConcurrency,
 	}
 	for _, opt := range opts {
 		opt(d)

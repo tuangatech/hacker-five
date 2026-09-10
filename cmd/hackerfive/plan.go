@@ -132,6 +132,9 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 					if result.SignupEndpoint == nil {
 						result.SignupEndpoint = ing.SignupEndpoint
 					}
+					if result.CouponEndpoint == nil {
+						result.CouponEndpoint = ing.CouponEndpoint
+					}
 					for _, w := range ing.Warnings {
 						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "plan: "+w)
 					}

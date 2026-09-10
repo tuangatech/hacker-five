@@ -163,6 +163,17 @@ type Config struct {
 	CouponMintPath  string
 	CouponApplyPath string
 
+	// CouponCodeField/CouponAmountField (from --coupon-code-field/
+	// --coupon-amount-field) override businesslogic.DefaultCouponCodeField/
+	// DefaultCouponAmountField for a target whose coupon API uses different
+	// request-body field names than crAPI's own (LT-135, docs/follow-up.md).
+	// "" preserves that half's package default. Like CouponMintPath/
+	// CouponApplyPath above, a `--recon-file` carrying a
+	// ReconResult.CouponEndpoint can fill these in automatically when both
+	// are still blank — see cmd/hackerfive/scan.go.
+	CouponCodeField   string
+	CouponAmountField string
+
 	// RaceConcurrency (from --race-concurrency) overrides
 	// businesslogic.DefaultRaceConcurrency — how many simultaneous requests
 	// the apply-race check's last-byte-sync client fires. 0 preserves the

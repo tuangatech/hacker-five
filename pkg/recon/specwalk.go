@@ -85,13 +85,13 @@ func specBodyToJSON(body []byte) (jsonBody []byte, ok bool) {
 // JSON once up front (specBodyToJSON) and walked by the identical code
 // path — the caller's structured-Content-Type gate already only lets a
 // genuine spec body reach here.
-func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncated bool, signup *SignupFact) {
+func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncated bool, signup *SignupFact, coupon *CouponFact) {
 	if len(body) == 0 {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	jsonBody, ok := specBodyToJSON(body)
 	if !ok {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	var doc struct {
 		Swagger  string `json:"swagger"` // "2.0" for OpenAPI 2
@@ -104,18 +104,18 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 		Paths    map[string]json.RawMessage   `json:"paths"`
 	}
 	if err := json.Unmarshal(jsonBody, &doc); err != nil {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	if doc.Swagger == "" && doc.OpenAPI == "" {
-		return nil, false, nil // has "paths" but no version key — not an OpenAPI/Swagger document
+		return nil, false, nil, nil // has "paths" but no version key — not an OpenAPI/Swagger document
 	}
 	if len(doc.Paths) == 0 {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 
 	base, err := url.Parse(specURL)
 	if err != nil || base.Host == "" {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 
 	// The route prefix: OpenAPI 2's basePath, else the path component of the
@@ -143,6 +143,10 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 
 	docRequiresAuth := securityListRequiresAuth(doc.Security)
 
+	var couponMintURL, couponMintMethod string
+	var couponMintBodyKeys []string
+	var couponApplyURL, couponApplyMethod string
+
 	seen := map[string]bool{}
 	for _, p := range rawPaths {
 		if !strings.HasPrefix(p, "/") {
@@ -155,6 +159,23 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 					su = "/" + su
 				}
 				signup = &SignupFact{URL: base.Scheme + "://" + base.Host + su, Method: m}
+			}
+		}
+		if kind, m, bodyKeys, hit := couponOperationHint(p, doc.Paths[p]); hit {
+			cu := prefix + p
+			if !strings.HasPrefix(cu, "/") {
+				cu = "/" + cu
+			}
+			full := base.Scheme + "://" + base.Host + cu
+			switch kind {
+			case "mint":
+				if couponMintURL == "" {
+					couponMintURL, couponMintMethod, couponMintBodyKeys = full, m, bodyKeys
+				}
+			case "apply":
+				if couponApplyURL == "" {
+					couponApplyURL, couponApplyMethod = full, m
+				}
 			}
 		}
 		method, queryKeys, bodyParamKeys, authRequired := walkPathItem(doc.Paths[p], docRequiresAuth)
@@ -188,7 +209,106 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 			BodyParamKeys: bodyParamKeys,
 		})
 	}
-	return facts, truncated, signup
+	if couponMintURL != "" && couponApplyURL != "" {
+		codeField, amountField := couponFieldNames(couponMintBodyKeys)
+		if codeField != "" && amountField != "" {
+			coupon = &CouponFact{
+				MintURL: couponMintURL, MintMethod: couponMintMethod,
+				ApplyURL: couponApplyURL, ApplyMethod: couponApplyMethod,
+				CodeField: codeField, AmountField: amountField,
+			}
+		}
+	}
+	return facts, truncated, signup, coupon
+}
+
+// couponNounKeywords / couponMintVerbs / couponApplyVerbs identify a
+// coupon/promo mint-and-apply endpoint pair from path/operationId/summary
+// text — LT-135, docs/follow-up.md. Mint and apply are distinguished by verb
+// so one spec walk finds both halves of the pair.
+var (
+	couponNounKeywords = []string{"coupon", "promo", "voucher"}
+	couponMintVerbs    = []string{"new", "create", "mint", "generate", "add"}
+	couponApplyVerbs   = []string{"apply", "redeem"}
+)
+
+// couponOperationHint reports whether path-item raw documents a POST
+// operation shaped like a coupon mint or apply route — kind is "mint" or
+// "apply" — and if so returns its method and its requestBody's declared JSON
+// field names (requestBodyPropertyNames, LT-96), so the caller doesn't have
+// to re-parse the operation. Only POST is considered: both mint and apply
+// are mutating actions, never a GET. Apply is checked before mint so an
+// operation matching both verb lists (unlikely, but "reapply" would) isn't
+// misclassified as a mint.
+func couponOperationHint(path string, raw json.RawMessage) (kind, method string, bodyKeys []string, ok bool) {
+	var item map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return "", "", nil, false
+	}
+	lowerPath := strings.ToLower(path)
+	for k, v := range item {
+		if strings.ToUpper(k) != http.MethodPost {
+			continue
+		}
+		var op struct {
+			OperationID string          `json:"operationId"`
+			Summary     string          `json:"summary"`
+			RequestBody json.RawMessage `json:"requestBody"`
+		}
+		if json.Unmarshal(v, &op) != nil {
+			continue
+		}
+		text := lowerPath + " " + strings.ToLower(op.OperationID) + " " + strings.ToLower(op.Summary)
+		if !textContainsAny(text, couponNounKeywords) {
+			continue
+		}
+		switch {
+		case textContainsAny(text, couponApplyVerbs):
+			return "apply", http.MethodPost, requestBodyPropertyNames(op.RequestBody), true
+		case textContainsAny(text, couponMintVerbs):
+			return "mint", http.MethodPost, requestBodyPropertyNames(op.RequestBody), true
+		}
+	}
+	return "", "", nil, false
+}
+
+// couponCodeFieldKeywords / couponAmountFieldKeywords match a mint
+// endpoint's own declared requestBody field names (never invented) against
+// which one carries the coupon code and which carries the credit amount —
+// the same "keyword substring against a spec's real declared names" idiom
+// SuggestSSRFBodyParamsFromRecon (LT-96) already uses for a different field
+// class.
+var (
+	couponCodeFieldKeywords   = []string{"code", "coupon", "voucher"}
+	couponAmountFieldKeywords = []string{"amount", "value", "credit", "discount", "price"}
+)
+
+// couponFieldNames picks the code-shaped and amount-shaped field name out of
+// a mint endpoint's declared requestBody property names. Returns ("", "")
+// when either half can't be identified — the caller then leaves CouponFact
+// unset rather than guessing.
+func couponFieldNames(bodyKeys []string) (codeField, amountField string) {
+	for _, k := range bodyKeys {
+		lower := strings.ToLower(k)
+		if codeField == "" && textContainsAny(lower, couponCodeFieldKeywords) {
+			codeField = k
+		}
+		if amountField == "" && textContainsAny(lower, couponAmountFieldKeywords) {
+			amountField = k
+		}
+	}
+	return codeField, amountField
+}
+
+// textContainsAny reports whether text contains any of keywords as a
+// substring.
+func textContainsAny(text string, keywords []string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(text, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // signupOperationKeywords are lowercase substrings of an operation's

@@ -1263,6 +1263,46 @@ func TestResolve_CartEndpoint_ProducesBusinessLogicLeaf(t *testing.T) {
 	assert.Contains(t, leaf.Rationale, "--allow-writes", "the leaf's own rationale must be honest that a human gate still applies")
 }
 
+// TestResolve_CouponEndpoint_ProducesEndpointDrivenBusinessLogicLeaf is
+// LT-135's regression: a spec-derived ReconResult.CouponEndpoint produces a
+// businesslogic leaf carrying the real mint/apply paths and field names, and
+// supersedes the generic cart-keyword-only leaf a plain endpoint on the same
+// host would otherwise also produce (dropBareCapabilityLeavesSupersededByEndpointDriven).
+func TestResolve_CouponEndpoint_ProducesEndpointDrivenBusinessLogicLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			// a generic cart-keyword endpoint on the same host — would produce
+			// its own low-confidence bare leaf if the coupon fact didn't
+			// supersede it.
+			{URL: "http://example.test/cart", Method: "GET", StatusCode: 200, Source: "wave3-crawl"},
+		},
+		CouponEndpoint: &recon.CouponFact{
+			MintURL: "http://example.test/api/v2/promo/new", MintMethod: "POST",
+			ApplyURL: "http://example.test/api/v1/promo/apply", ApplyMethod: "POST",
+			CodeField: "voucher_code", AmountField: "value",
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	var leaves []*agenttask.PlanNode
+	for _, l := range hostLeaves(t, tree, "example.test") {
+		if l.Detector == "businesslogic" {
+			leaves = append(leaves, l)
+		}
+	}
+	require.Len(t, leaves, 1, "the spec-derived leaf must supersede the generic cart-keyword leaf, not add a second one")
+
+	leaf := leaves[0]
+	assert.Equal(t, "/api/v2/promo/new", leaf.CouponMintPath)
+	assert.Equal(t, "/api/v1/promo/apply", leaf.CouponApplyPath)
+	assert.Equal(t, "voucher_code", leaf.CouponCodeField)
+	assert.Equal(t, "value", leaf.CouponAmountField)
+	assert.Equal(t, agenttask.ConfidenceMedium, leaf.Confidence)
+	assert.Contains(t, leaf.Rationale, "--allow-writes")
+}
+
 // TestResolve_HostnameProductHint_ProducesLeaves is LT-9's (docs/follow-up.md)
 // regression guard: a host whose first DNS label names a known product
 // (guacamole01 -> guacamole) gets that product's template-tag leaves even

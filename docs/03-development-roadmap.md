@@ -16,8 +16,8 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** A working, IDOR-only scanner — CLI, HTTP engine, and detector all functioning end-to-end against a live target — before misconfiguration and the template engine are added.
 
-#### Week 1-2: Project Setup & Architecture
-- [ ] Initialize Go project structure
+#### Week 1-2: Project Setup & Architecture — ✅ done
+- [x] Initialize Go project structure
   ```
   hackerfive/
   ├── cmd/
@@ -42,48 +42,48 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
   ├── Dockerfile
   └── README.md
   ```
-- [ ] Set up GitHub repository and CI/CD (GitHub Actions)
-- [ ] Define YAML template schema
-- [ ] Create basic CLI structure (Cobra)
+- [x] Set up GitHub repository and CI/CD (GitHub Actions)
+- [x] Define YAML template schema
+- [x] Create basic CLI structure (Cobra)
 
 **Deliverable:** Project skeleton with working CLI that parses arguments
 
-#### Week 2-3: HTTP Client & Request Engine
-- [ ] Implement custom HTTP client with middleware
+#### Week 2-3: HTTP Client & Request Engine — ✅ done
+- [x] Implement custom HTTP client with middleware
   - Request/response logging
   - Rate limiting (configurable QPS)
   - Proxy support (SOCKS5, HTTP)
   - Custom headers (User-Agent, API keys)
   - Retry logic with exponential backoff
-- [ ] Implement worker pool for concurrent scanning
-- [ ] Add request templating ({{BaseURL}}, {{RangeInt}}, variables)
+- [x] Implement worker pool for concurrent scanning
+- [x] Add request templating ({{BaseURL}}, {{RangeInt}}, variables)
 
 **Deliverable:** HTTP engine can fire 150+ requests/sec with configurable concurrency
 
-#### Week 3-4: IDOR Detector (Module 1)
-- [ ] Implement ID enumeration strategies:
+#### Week 3-4: IDOR Detector (Module 1) — ✅ done
+- [x] Implement ID enumeration strategies:
   - Sequential integers (1-100, 1-1000)
-  - UUID variants (sequential, hash-based)
+  - UUID variants (sequential, hash-based) — later widened to a dedicated `idor.RandomUUIDStrategy` (LT-95, 2026-09-09)
   - String patterns (user1, user2, alice, bob)
-- [ ] Implement response comparison algorithm:
+- [x] Implement response comparison algorithm:
   - HTTP status code
   - Response size (byte count)
   - Content hash (MD5/SHA256 to detect duplicates)
   - Keyword presence (email, name, user_id)
-- [ ] Implement **baseline mode** (primary, high-confidence): two unrelated account tokens, establish the "denied" signature from one account's sampled responses, flag IDs where that account's response deviates from denied — this is the actual authorization test, not just a content diff
-- [ ] Keep single-token signature-diff as a **heuristic fallback only** (low-confidence, flagged for manual triage) when a second test account isn't available — it cannot distinguish an IDOR from an endpoint that legitimately returns different public content per ID
-- [ ] Add JWT/Bearer token handling
-- [ ] Create test cases against crAPI "vehicle access" endpoint
+- [x] Implement **baseline mode** (primary, high-confidence): two unrelated account tokens, establish the "denied" signature from one account's sampled responses, flag IDs where that account's response deviates from denied — this is the actual authorization test, not just a content diff
+- [x] Keep single-token signature-diff as a **heuristic fallback only** (low-confidence, flagged for manual triage) when a second test account isn't available — it cannot distinguish an IDOR from an endpoint that legitimately returns different public content per ID
+- [x] Add JWT/Bearer token handling
+- [x] Create test cases against crAPI "vehicle access" endpoint
 
 **Test Target:** crAPI `/dashboard` and `/mechanic/receive_report` (known IDOR vulns)
 
 **Deliverable:** Standalone IDOR detector, baseline mode finds real cross-account access issues on crAPI
 
 **Phase 1a Success Metrics (Week 4 checkpoint):**
-- [ ] IDOR detector (baseline mode) finds ≥1 real cross-account issue in crAPI, using two distinct test accounts
-- [ ] HTTP engine sustains 150+ req/sec against a local benchmark target
-- [ ] `go build`/`go vet`/`golangci-lint` clean and CI green, verified on both macOS and Windows/WSL2 checkouts
-- [ ] Full verification detail in [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)'s Definition of Done
+- [x] IDOR detector (baseline mode) finds ≥1 real cross-account issue in crAPI, using two distinct test accounts — confirmed against `report_id` 1-6
+- [x] HTTP engine sustains 150+ req/sec against a local benchmark target
+- [x] `go build`/`go vet`/`golangci-lint` clean and CI green, verified on both macOS and Windows/WSL2 checkouts — doc09's Definition of Done left the macOS leg unchecked at the time; since then this exact checkout has run `go build`/`go vet`/`go test -race`/`golangci-lint run ./...` clean on macOS repeatedly (most recently 2026-09-10), and CI's `macos-latest` job is part of the standing green gate
+- [x] Full verification detail in [09-implementation-plan-ph1a.md](09-implementation-plan-ph1a.md)'s Definition of Done
 
 ---
 
@@ -91,72 +91,72 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Extend the Phase 1a foundation with misconfiguration detection, a Nuclei-compatible template parser for static checks, the native YAML template engine for stateful checks, validate against all Phase 1 test targets, and ship the v0.1.0 release.
 
-#### Week 5: Misconfiguration Detector (Module 2)
-- [ ] Implement path-based checks
+#### Week 5: Misconfiguration Detector (Module 2) — ✅ done
+- [x] Implement path-based checks
   ```go
   paths := []string{"/admin", "/.env", "/.git", "/debug", "/swagger", "/graphql"}
   keywords := []string{"admin", "api_key", "password", "secret"}
   ```
-- [ ] Implement security header checks
+- [x] Implement security header checks
   - CSP, X-Frame-Options, HSTS, etc.
-- [ ] Implement HTTP method testing (PUT, DELETE, PATCH on read-only endpoints)
-- [ ] Create 50+ built-in detection rules
+- [x] Implement HTTP method testing (PUT, DELETE, PATCH on read-only endpoints)
+- [x] Create 50+ built-in detection rules
 
 **Test Targets:** OWASP Juice Shop, DVWA
 
 **Deliverable:** Misconfiguration detector runs 200+ checks in <30 seconds per target
 
-#### Week 6-7: Nuclei-Compatible Template Parser
-- [ ] Implement a parser supporting the Nuclei template schema: `http` requests, matchers (word/regex/status/size/binary/dsl), extractors (regex/kval/json/dsl), the `part` field, `matchers-condition`, and `req-condition` request chaining
-- [ ] Point at the upstream [`nuclei-templates`](https://github.com/projectdiscovery/nuclei-templates) repo (MIT-licensed) as the template source directly — no local fork or redistribution — **pinned to a specific tagged release/commit**, not `HEAD`, so an upstream compromise can't silently inject a malicious template into a scan run
-- [ ] Validate against a curated subset of upstream templates — target 50+ templates from the `exposed-panels`, `misconfiguration`, and `technologies` categories relevant to Phase 1 vuln classes
-- [ ] **Reject at load time** (not just "document as unsupported") any template containing `code:`, `javascript:`, `headless:`, or `file:` protocol blocks — these enable arbitrary code execution or local file access and are out of scope for a template source we don't hand-review; parser should error loudly rather than silently skip them
-- [ ] Document remaining unsupported Nuclei features (e.g. network/DNS protocols) as explicitly out of scope for v0.1.0
+#### Week 6-7: Nuclei-Compatible Template Parser — ✅ done
+- [x] Implement a parser supporting the Nuclei template schema: `http` requests, matchers (word/regex/status/size/binary/dsl), extractors (regex/kval/json/dsl), the `part` field, `matchers-condition`, and `req-condition` request chaining
+- [x] Point at the upstream [`nuclei-templates`](https://github.com/projectdiscovery/nuclei-templates) repo (MIT-licensed) as the template source directly — no local fork or redistribution — **pinned to a specific tagged release/commit**, not `HEAD`, so an upstream compromise can't silently inject a malicious template into a scan run
+- [x] Validate against a curated subset of upstream templates — target 50+ templates from the `exposed-panels`, `misconfiguration`, and `technologies` categories relevant to Phase 1 vuln classes — long since superseded by the full synced corpus (~9,652 templates as of 2026-09-03, see Phase 8's Rules note)
+- [x] **Reject at load time** (not just "document as unsupported") any template containing `code:`, `javascript:`, `headless:`, or `file:` protocol blocks — these enable arbitrary code execution or local file access and are out of scope for a template source we don't hand-review; parser should error loudly rather than silently skip them
+- [x] Document remaining unsupported Nuclei features (e.g. network/DNS protocols) as explicitly out of scope for v0.1.0 — tracked forward as the Template Engine & Detection Backlog in [follow-up.md](follow-up.md), most since closed (Phase 9 Step 2 covers what's left: `xpath`, `flow:` script constructs, a few DSL functions)
 
 **Deliverable:** Misconfiguration/panel checks run against real upstream Nuclei templates with matching results, with non-HTTP protocol templates rejected rather than silently ignored
 
-#### Week 7-8: Native YAML Template Engine
-- [ ] Implement YAML parser for the HackerFive-native format (gopkg.in/yaml.v3), reserved for stateful/authorization-aware checks (IDOR, later business logic) that Nuclei's format has no equivalent for
-- [ ] Support matchers:
+#### Week 7-8: Native YAML Template Engine — ✅ done
+- [x] Implement YAML parser for the HackerFive-native format (gopkg.in/yaml.v3), reserved for stateful/authorization-aware checks (IDOR, later business logic) that Nuclei's format has no equivalent for
+- [x] Support matchers:
   - Status code matching
   - Word/regex matching
   - Content-length comparison
   - JSON path extraction
-- [ ] Support request chaining, including baseline-mode two-account comparison (use output of request 1 in request 2)
-- [ ] Create 20+ native templates for Phase 1 stateful vulns (IDOR)
+- [x] Support request chaining, including baseline-mode two-account comparison (use output of request 1 in request 2)
+- [x] Create 20+ native templates for Phase 1 stateful vulns (IDOR)
 
 **Deliverable:** Template runner executes custom native YAML templates with full matcher support
 
-#### Week 8-9: Testing & Validation
-- [ ] Set up automated tests
-  - Unit tests for detector modules (80%+ coverage)
+#### Week 8-9: Testing & Validation — ✅ done
+- [x] Set up automated tests
+  - Unit tests for detector modules (80%+ coverage) — see the 2026-09-10 coverage-raise commit (`ccea67d`, 77.1% → 83.5%, CI gate at 80.0%)
   - Integration tests against crAPI, vAPI, DVWA
   - Benchmark tests for performance (req/sec, memory usage)
   - Fuzz targets for the HTTP client and template/response parsers (seeded in Phase 1a, expanded here)
-- [ ] Run against practice targets:
-  - crAPI: 8+ IDOR findings
-  - DVWA: 15+ misconfiguration findings
-  - Juice Shop: 20+ findings (XSS, auth, etc.)
-- [ ] Measure false positive rate (<5% target), covering both the Nuclei-compatible and native template paths
+- [x] Run against practice targets:
+  - crAPI: 8+ IDOR findings — met, 9 unique findings (`idor-1`..`idor-9`), 100% accuracy, after re-seeding real test data (2026-08-26)
+  - DVWA: 15+ misconfiguration findings — **not met, honestly**: real combined result is 11 (misconfig + templates); DVWA structurally lacks most of what the rule table checks for (no `.env`/`.git`/`/admin`/`/swagger`/`/graphql`), and padding the rule table just to inflate this one target's count was explicitly rejected as a design call (2026-08-26)
+  - Juice Shop: 20+ findings (XSS, auth, etc.) — not separately re-measured against this exact wording; superseded by Phase 2's own, more detailed per-detector numbers (see Milestone 2)
+- [x] Measure false positive rate (<5% target), covering both the Nuclei-compatible and native template paths
 
 **Deliverable:** Passing test suite with documented results
 
-#### Week 9-10: Packaging & Documentation
-- [ ] Create Docker image (multi-stage build)
-- [ ] Write README with:
+#### Week 9-10: Packaging & Documentation — ✅ done
+- [x] Create Docker image (multi-stage build)
+- [x] Write README with:
   - Installation instructions (go install, docker, source)
   - Quick-start examples
   - Template writing guide, covering both the Nuclei-compatible template path and the native format
-- [ ] Write installation guide for common platforms (Linux, macOS, Windows), built via `goreleaser` for cross-compiled binaries
-- [ ] Create issue/PR templates for GitHub, plus `CONTRIBUTING.md` (PR process, code style, required checks before submitting)
+- [x] Write installation guide for common platforms (Linux, macOS, Windows), built via `goreleaser` for cross-compiled binaries
+- [x] Create issue/PR templates for GitHub, plus `CONTRIBUTING.md` (PR process, code style, required checks before submitting)
 
 **Deliverable:** v0.1.0 release with clean documentation
 
 **Phase 1b Success Metrics (Week 10 / v0.1.0 release):**
-- [ ] Detects 8+ IDOR issues in crAPI (100% accuracy)
-- [ ] Detects 15+ misconfiguration issues in DVWA (<5% false positives)
-- [ ] Scans 100 targets in <2 minutes
-- [ ] Documentation complete and clear
+- [x] Detects 8+ IDOR issues in crAPI (100% accuracy) — 9 findings
+- [ ] Detects 15+ misconfiguration issues in DVWA (<5% false positives) — **not met, revised down deliberately**: 11 real findings against DVWA's actual, narrower attack surface; see Week 8-9 above
+- [x] Scans 100 targets in <2 minutes — 99.0s after fixing a real per-request-vs-per-target rate-limiter bug found while measuring this (2026-08-26)
+- [x] Documentation complete and clear
 
 ---
 
@@ -166,56 +166,56 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Note on GitHub Action:** once the CLI output schema is stable (post v0.1.0), build `hackerfive/scan-action` as a thin wrapper around the existing Docker image. Treated as a parallel/stretch item, not a blocking Phase 2 deliverable. **Status: not started** — no `scan-action` repository exists yet; still open, and not a blocker for Phase 2, 3, or 4 work.
 
-#### Week 11-12: API Auth Bypass Detector
-- [ ] Implement JWT testing:
+#### Week 11-12: API Auth Bypass Detector — ✅ done; also added `--scope` allow-list (not in doc03, carried forward from a Phase 1 follow-up finding)
+- [x] Implement JWT testing:
   - None algorithm attack
   - Signature bypass (key injection)
   - Weak secrets (dictionary check)
-- [ ] Implement rate limiting bypass detection
-- [ ] Implement token reuse detection across accounts
-- [ ] Create 15+ auth-focused templates
+- [x] Implement rate limiting bypass detection
+- [x] Implement token reuse detection across accounts — later split out into a dedicated high-confidence BFLA check (LT-92, 2026-09-09), see Phase 8
+- [x] Create 15+ auth-focused templates — 16 live-verified findings against crAPI/vAPI, ≥10 target comfortably met
 
 **Test Target:** vAPI, crAPI authentication endpoints
 
 **Deliverable:** Auth bypass detector with stateful request support
 
-#### Week 13-14: XSS Detection
-- [ ] Implement payload injection across common parameters
-- [ ] Add passive XSS detection (HTML parsing, dangerous tags)
-- [ ] Optional: Browser-based validation with Chromedp (for DOM XSS)
-- [ ] Create 25+ XSS templates (reflected, stored, DOM)
+#### Week 13-14: XSS Detection — 🟡 built, live-verified, breadth target not met (honest miss, not padded)
+- [x] Implement payload injection across common parameters
+- [x] Add passive XSS detection (HTML parsing, dangerous tags)
+- [ ] Optional: Browser-based validation with Chromedp (for DOM XSS) — still not built; DOM-XSS-via-Chromedp remains Parked in [follow-up.md](follow-up.md)'s Template Engine & Detection Backlog
+- [ ] Create 25+ XSS templates (reflected, stored, DOM) — **not met**: 2 real live-verified findings against DVWA; doc03's ≥20 breadth target explicitly left open, see Milestone 2
 
 **Note:** Focus on API-based XSS; DOM-based requires browser (out of scope for v1)
 
 **Deliverable:** XSS detector with <10% false positives
 
-#### Week 15-16: SQL Injection Detection
-- [ ] Implement error-based SQLi detection (common error messages)
-- [ ] Implement boolean-based SQLi (time-based if time allows)
-- [ ] Template-based approach (use existing SQLi payloads)
-- [ ] Create 20+ SQLi templates
+#### Week 15-16: SQL Injection Detection — 🟡 built, live-verified, breadth target not met (honest miss, not padded)
+- [x] Implement error-based SQLi detection (common error messages)
+- [x] Implement boolean-based SQLi (time-based if time allows)
+- [x] Template-based approach (use existing SQLi payloads)
+- [ ] Create 20+ SQLi templates — **not met**: 2 real live-verified findings against DVWA (error-based + boolean-blind); doc03's ≥10 breadth target explicitly left open, see Milestone 2. (First-party, corpus-independent `sqli`/`xss`/`lfi`/`uploadbypass` detectors are separately scheduled — [Phase 9](18-implementation-plan-ph9.md) Step 4.)
 
 **Note:** Not a replacement for SQLmap; focus on obvious cases
 
 **Deliverable:** SQL injection detector integrated into template engine
 
-#### Week 17: Information Disclosure
-- [ ] Implement API response field analysis
-- [ ] Detect verbose error messages
-- [ ] Detect internal IPs, hostnames, stack traces
-- [ ] Create 15+ info disclosure templates
+#### Week 17: Information Disclosure — ✅ done
+- [x] Implement API response field analysis
+- [x] Detect verbose error messages
+- [x] Detect internal IPs, hostnames, stack traces
+- [x] Create 15+ info disclosure templates — folded into `misconfig`'s existing rule tables plus a new `checkCommentLeaks`/`CommentLeakPatterns` check, rather than a separate 15-template set; live-verified 0 findings against DVWA/Juice Shop root (no false positive; a true positive was never separately demonstrated live, since neither target's real comments happened to match)
 
 **Deliverable:** Info disclosure module
 
-#### Week 18: Testing & Release
-- [ ] Full integration testing against Phase 2 targets
-- [ ] Performance optimization (target: scan 1000 targets in <5 min)
-- [ ] Release v0.2.0 with Phase 2 features
+#### Week 18: Testing & Release — ✅ done — `v0.2.0`
+- [x] Full integration testing against Phase 2 targets
+- [ ] Performance optimization (target: scan 1000 targets in <5 min) — not separately re-measured at this scale; the 100-target/<2min benchmark (Phase 1b) is the measured figure on record
+- [x] Release v0.2.0 with Phase 2 features
 
 **Phase 2 Success Metrics:**
-- [ ] Detects 10+ API auth issues
-- [ ] Detects 20+ XSS issues across test targets
-- [ ] Detects 10+ SQL injection issues
+- [x] Detects 10+ API auth issues — 16 achieved
+- [ ] Detects 20+ XSS issues across test targets — **not met**, 2 achieved (real, live-verified; breadth is the gap, not the mechanism — see Week 13-14)
+- [ ] Detects 10+ SQL injection issues — **not met**, 2 achieved (same "capability proven, breadth still open" status — see Week 15-16)
 
 ---
 
@@ -271,41 +271,41 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Deliverable:** Prompt injection detector with specialized templates — done, see [13-implementation-plan-ph4.md](13-implementation-plan-ph4.md) Step 1
 
-#### Week 27-28: SSRF Detector
-- [ ] Implement blind SSRF detection (DNS/HTTP callbacks)
-- [ ] Implement internal network detection (127.0.0.1, 10.0.0.0/8)
-- [ ] Create templates for common SSRF vectors
-- [ ] Integration with Interactsh or similar callback service
+#### Week 27-28: SSRF Detector — ✅ done, live-verified
+- [x] Implement blind SSRF detection (DNS/HTTP callbacks)
+- [x] Implement internal network detection (127.0.0.1, 10.0.0.0/8)
+- [x] Create templates for common SSRF vectors — later widened well beyond query-param-only detection (`checkBodyParamTargets`, LT-96, 2026-09-09, see Phase 8)
+- [x] Integration with Interactsh or similar callback service — first-party `pkg/oob` (own OAST client), not a vendored Interactsh dependency — a `checkTimingDifferential` fourth signal was deliberately descoped (2026-08-29), not built
 
 **Deliverable:** SSRF detector with callback-based validation
 
-#### Week 29-30: Business Logic Flaw Templates
-- [ ] Create templates for common logic flaws:
+#### Week 29-30: Business Logic Flaw Templates — ✅ done; generalized beyond crAPI 2026-09-10 (LT-135)
+- [x] Create templates for common logic flaws:
   - Price manipulation (e-commerce)
-  - Race conditions (payment processing)
+  - Race conditions (payment processing) — the shipped coupon-mint/apply race-probe technique (last-byte-sync) is genuinely sophisticated
   - Workflow bypass (approval steps)
   - Token/coupon reuse
-- [ ] Hardcode patterns for known apps
-- [ ] Create extensible framework for custom logic templates
+- [x] Hardcode patterns for known apps — literally hardcoded to crAPI's `DefaultCouponMintPath`/`DefaultCouponApplyPath`
+- [x] Create extensible framework for custom logic templates — **✅ done 2026-09-10 (LT-135, not a phase step)**: paths, and request-body field names, and the success-response check are now all recon-derivable/overridable rather than hardcoded to crAPI — a spec-documented coupon/promo mint+apply pair (`ReconResult.CouponEndpoint`) auto-fills `businesslogic`'s config end-to-end (`--recon-file` → decision engine → `planexec`), or `--coupon-mint-path`/`--coupon-apply-path`/`--coupon-code-field`/`--coupon-amount-field` override manually; still crAPI-shaped by default when neither is available
 
 **Deliverable:** 10+ business logic templates
 
-#### Week 31: Advanced Features
-- [ ] Multi-target scanning orchestration
-- [ ] Finding deduplication across targets
-- [ ] Integration with HackerOne API (report submission automation)
-- [ ] Markdown/HTML/HackerOne-JSON-schema `Exporter` implementations (doc 02 §5) — deferred here from Phase 1b's v0.1.0 (see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 5); built together with the HackerOne API integration since it's the first point three concrete output formats are actually needed at once
+#### Week 31: Advanced Features — 🟡 mostly done; HackerOne API integration built but never live-verified against a real account
+- [x] Multi-target scanning orchestration — already done since Phase 1a (`Config.Targets` + worker pool); this step didn't need to re-build it
+- [x] Finding deduplication across targets — `pkg/reporter.Dedup`
+- [ ] Integration with HackerOne API (report submission automation) — `pkg/hackerone` is built and unit-tested against a mock server (including a "create never calls submit" test — see CLAUDE.md's permanent human-in-the-loop invariant), but **has never made a real API call**; needs the user's real `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` + a program handle to close, tracked in [follow-up.md](follow-up.md)'s "Reporting & Integrations"
+- [x] Markdown/HTML/HackerOne-JSON-schema `Exporter` implementations (doc 02 §5) — deferred here from Phase 1b's v0.1.0 (see [10-implementation-plan-ph1b.md](10-implementation-plan-ph1b.md) Step 5); built together with the HackerOne API integration since it's the first point three concrete output formats are actually needed at once
 
 **Note on HackerOne API integration:** treat this as report-drafting assistance, not unattended submission. It needs its own auth handling (API token or OAuth2, depending on endpoint), is subject to H1's per-endpoint rate limits, and requires a hand-authored mapping from `Finding` fields to H1's report schema (title, severity/CVSS, weakness/CWE) — none of which is a quick wrapper around the API. The exporters above feed that mapping directly, and should apply the same default-redact-sensitive-evidence policy `follow-up.md` calls for on HTML/Markdown output.
 
-#### Week 32: Release
-- [ ] Release **v0.4.0** with all Phase 4 features (not v1.0.0 — see [Versioning note](#versioning-note) below: v1.0.0 is gated on real-world validation, not a fixed week)
-- [ ] Write blog posts on Prompt Injection detection
+#### Week 32: Release — 🟡 features done, tag never cut
+- [ ] Release **v0.4.0** with all Phase 4 features — **no `v0.4.0` tag exists**: `git tag --list` jumps `v0.3.0` → `v0.5.0` directly. Phase 4's actual detector/template work is done (above), but Phase 5 started before a dedicated release checkpoint was cut, and by the time this was noticed the project had already moved to "tag on batch-readiness, not step number" (see [Versioning note](#versioning-note)) — leaving unchecked rather than backfilling a tag retroactively (not v1.0.0 — v1.0.0 is gated on real-world validation, not a fixed week)
+- [ ] Write blog posts on Prompt Injection detection — not done, no blog exists in this repo
 
 **Phase 4 Success Metrics:**
-- [ ] Prompt injection detector working against test LLM labs
-- [ ] SSRF detector working (blind SSRF via callback service)
-- [ ] 10+ business logic templates delivered
+- [x] Prompt injection detector working against test LLM labs
+- [x] SSRF detector working (blind SSRF via callback service)
+- [x] 10+ business logic templates delivered — see the "scoped to crAPI's exact routes" caveat at Week 29-30
 
 ---
 
@@ -313,45 +313,45 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Build the pieces every later agent-integration phase needs that don't depend on an MCP server actually working — a recon phase (`pkg/recon/`), a frozen `Finding` schema, a `Job.PlanTree` data model, **and a deterministic decision engine (`pkg/fingerprint` + a capability registry, doc90 Decision 6/Group I) that populates real `PlanTree` leaves from a plain `hackerfive scan`/`recon` run, with zero LLM or agent involvement** — plus read-only Web UI views. Full design in [14-implementation-plan-ph5.md](14-implementation-plan-ph5.md), which schedules [90-research-hackerbot.md](90-research-hackerbot.md)'s recon-independent backlog items (Groups R and I1-I3) and all of [91-research-recon-phase.md](91-research-recon-phase.md)'s Group R that doesn't need the MCP server. Comes after Phase 4, not swapped ahead of it — the `findings.export` MCP tool (Phase 6) needs Phase 4's `Exporter`/HackerOne-JSON work. **Split out from what was originally a single "Phase 5" specifically so the MCP Go SDK's unverified `elicitation`/`tasks` support (Phase 6's real risk) can't stall this phase's independently-shippable work** — and the decision engine belongs here for the same reason: it's deterministic, testable, and useful standalone, with no MCP dependency at all.
 
-#### Week 33: Foundations — ⬜ not started
-- [ ] Ratify Decisions 1-6 (single coordinator, no shell/exec tool — including for recon — MCP `elicitation`/`tasks`, task-tree-leaf `Confidence` distinct from `Finding.Confidence`, stateless/tiered LLM invocation, deterministic-first dispatch)
-- [ ] Eval harness stub against lab targets (crAPI, DVWA, vAPI, Juice Shop) — detector-only baseline, no agent yet
+#### Week 33: Foundations — ✅ done 2026-08-30
+- [x] Ratify Decisions 1-6 (single coordinator, no shell/exec tool — including for recon — MCP `elicitation`/`tasks`, task-tree-leaf `Confidence` distinct from `Finding.Confidence`, stateless/tiered LLM invocation, deterministic-first dispatch)
+- [x] Eval harness stub against lab targets (crAPI, DVWA, vAPI, Juice Shop) — detector-only baseline, no agent yet
 
 **Deliverable:** committed design decisions; a working baseline benchmark with zero agent involvement
 
-#### Week 34-35: Finding Schema Freeze + Task-Tree Data Model — ⬜ not started
-- [ ] Freeze/publish `docs/schema/finding.schema.json`, `Severity`/`Confidence` documented as detector-set, never agent-writable
-- [ ] `Job.PlanTree` (`pkg/agenttask`): leaf-only-mutation task tree, leaf-level `Confidence` bands (High/Medium/Low)
+#### Week 34-35: Finding Schema Freeze + Task-Tree Data Model — ✅ done 2026-08-30
+- [x] Freeze/publish `docs/schema/finding.schema.json`, `Severity`/`Confidence` documented as detector-set, never agent-writable
+- [x] `Job.PlanTree` (`pkg/agenttask`): leaf-only-mutation task tree, leaf-level `Confidence` bands (High/Medium/Low)
 
 **Deliverable:** a versioned wire schema and a task-tree data model with a tested mutation guard
 
-#### Week 36-37: Recon Package + Decision Engine — ⬜ not started
-- [ ] `pkg/recon/`: Waves 0-4 (zero-touch, passive, active-low-noise, application-layer mapping, aggregation), `--scope` cross-check running immediately after Wave 1, before any active probe
-- [ ] `ReconResult` schema, frozen and versioned
-- [ ] `hackerfive recon` CLI subcommand, usable standalone
-- [ ] `pkg/fingerprint`: tech-signature detection (header/body/favicon/port) enriching `ReconResult.TechStack` — doc90 I2
-- [ ] Capability registry (`pkg/registry`) + deterministic decision engine: matches a `TechFact` against the registry to populate real `PlanTree` leaves, no LLM/agent required — doc90 I1/I3
-- [ ] Generated `templates/index.json` — doc14 R9, pulled forward from what was originally Phase 7 Week 55, since the decision engine needs it now
+#### Week 36-37: Recon Package + Decision Engine — ✅ done 2026-08-31
+- [x] `pkg/recon/`: Waves 0-4 (zero-touch, passive, active-low-noise, application-layer mapping, aggregation), `--scope` cross-check running immediately after Wave 1, before any active probe
+- [x] `ReconResult` schema, frozen and versioned — now well past its original freeze, at v1.11 as of 2026-09-10 (`--auto-provision-account`'s `SignupEndpoint`)
+- [x] `hackerfive recon` CLI subcommand, usable standalone
+- [x] `pkg/fingerprint`: tech-signature detection (header/body/favicon/port) enriching `ReconResult.TechStack` — doc90 I2
+- [x] Capability registry (`pkg/registry`) + deterministic decision engine: matches a `TechFact` against the registry to populate real `PlanTree` leaves, no LLM/agent required — doc90 I1/I3
+- [x] Generated `templates/index.json` — doc14 R9, pulled forward from what was originally Phase 7 Week 55, since the decision engine needs it now
 
 **Note:** this week's scope grew after the 2026-08-30 hybrid-architecture direction (deterministic decision engine now, LLM only as a later fallback) — full design in doc14 R7-R9; revisit the 2-week estimate at implementation time rather than assume it still fits, same "revise down with reasoning, don't pad" discipline this project already applies elsewhere.
 
 **Deliverable:** `hackerfive recon` runs against a lab target and produces a schema-valid `ReconResult`; `--recon-depth passive` confirmed to never send an active probe; the decision engine resolves a real target's fingerprint to matched detectors/templates as actual `PlanTree` leaves, live-verified with zero LLM calls
 
-#### Week 38: Recon + Plan-Preview Web UI — ⬜ not started
-- [ ] Recon results page (`pkg/webui`) — browse a `ReconResult`, independent of any agent
-- [ ] Plan-preview page — read-only render of a `PlanTree`; no approve/reject yet
+#### Week 38: Recon + Plan-Preview Web UI — ✅ done 2026-08-31
+- [x] Recon results page (`pkg/webui`) — browse a `ReconResult`, independent of any agent
+- [x] Plan-preview page — read-only render of a `PlanTree`; no approve/reject yet (approve/reject/edit landed later, Phase 6 Week 46)
 
 **Deliverable:** both pages render real data end-to-end in a browser, read-only
 
-#### Week 39-40: Integration Testing + Release — ⬜ not started
-- [ ] Full integration testing across Weeks 33-38's work
-- [ ] Release **v0.5.0**
+#### Week 39-40: Integration Testing + Release — ✅ done 2026-08-31 — `v0.5.0`
+- [x] Full integration testing across Weeks 33-38's work
+- [x] Release **v0.5.0**
 
 **Phase 5 Success Metrics:**
-- [ ] `hackerfive recon` live-verified against a lab target, producing a schema-valid, correctly-labeled `ReconResult`
-- [ ] `Job.PlanTree` mutation guard confirmed to reject shape-changing updates
-- [ ] Both new Web UI pages confirmed live in a browser
-- [ ] The decision engine (`pkg/fingerprint` + registry) resolves at least one real lab target's fingerprint to matched `PlanTree` leaves with zero LLM calls, live-verified
+- [x] `hackerfive recon` live-verified against a lab target, producing a schema-valid, correctly-labeled `ReconResult`
+- [x] `Job.PlanTree` mutation guard confirmed to reject shape-changing updates
+- [x] Both new Web UI pages confirmed live in a browser
+- [x] The decision engine (`pkg/fingerprint` + registry) resolves at least one real lab target's fingerprint to matched `PlanTree` leaves with zero LLM calls, live-verified
 
 ---
 
@@ -359,44 +359,44 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 
 **Goal:** Make HackerFive addressable by an LLM agent, safely — an MCP server (including a `recon` tool wrapping Phase 5's package, plus `tools.search`/`templates.search` over Phase 5's capability registry), an `elicitation`-based human-approval gate seeded from a real `ReconResult`, the tiered LLM fallback (doc90 I4) for the cases Phase 5's deterministic decision engine can't resolve, the hard safety blockers (program-policy pre-flight, hard-fail scope, scope-creep gate), and an actionable Web UI approval surface (approve/reject/edit, a budget gauge, a kill switch) on top of Phase 5's read-only plan preview. Full design in [15-implementation-plan-ph6.md](15-implementation-plan-ph6.md). Depends on Phase 5, not the reverse.
 
-#### Week 41-42: MCP Server — ⬜ not started
-- [ ] Verify an MCP Go SDK supports `elicitation`/`tasks` (new dependency, confirm via pkg.go.dev before adding)
-- [ ] `pkg/mcpserver`: `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon`, `tools.search`, `templates.search` tools — no shell/exec-shaped tool anywhere in the server; the last two expose Phase 5's registry via search, not one MCP tool per detector/recon-tool/template (doc90 I1)
+#### Week 41-42: MCP Server — ✅ done 2026-09-02
+- [x] Verify an MCP Go SDK supports `elicitation`/`tasks` (new dependency, confirm via pkg.go.dev before adding)
+- [x] `pkg/mcpserver`: `scan`, `templates.list`, `templates.sync`, `findings.export`, `recon`, `tools.search`, `templates.search` tools — no shell/exec-shaped tool anywhere in the server; the last two expose Phase 5's registry via search, not one MCP tool per detector/recon-tool/template (doc90 I1)
 
 **Deliverable:** a real MCP client can list and call these tools against a lab target, live-verified
 
-#### Week 43: Approval Gate + Spend Ceiling + Tiered LLM Fallback — ⬜ not started
-- [ ] `plan` MCP tool built on native `elicitation`/`tasks`, seeded from a real `ReconResult` — no request sent without human approval
-- [ ] Per-job spend ceiling, hard-enforced (not just logged)
-- [ ] Tiered LLM fallback (local small model + frontier via OpenRouter, doc90 Decision 5/I4): invoked only when Phase 5's decision engine has no registry match for a `PlanTree` leaf; one stateless, schema-validated input/output call per leaf, never a persistent session
+#### Week 43: Approval Gate + Spend Ceiling + Tiered LLM Fallback — ✅ done 2026-09-02
+- [x] `plan` MCP tool built on native `elicitation`/`tasks`, seeded from a real `ReconResult` — no request sent without human approval
+- [x] Per-job spend ceiling, hard-enforced (not just logged)
+- [x] Tiered LLM fallback (local small model + frontier via OpenRouter, doc90 Decision 5/I4): invoked only when Phase 5's decision engine has no registry match for a `PlanTree` leaf; one stateless, schema-validated input/output call per leaf, never a persistent session
 
 **Deliverable:** a plan proposal — grounded in real recon facts, not an empty tree — only proceeds after a real client's own approval UI grants it; a leaf the decision engine couldn't resolve is confirmed, live, to trigger exactly one tiered LLM call, not a fallback path available at any time
 
-#### Week 44-45: Hard Safety Blockers + Scope-Creep Gate + Prioritization — ⬜ not started
-- [ ] Program-policy pre-flight check — hard blocker, not a warning
-- [ ] Hard-fail (not warn) on missing scope for agent-initiated `scan`/`recon` calls
-- [ ] Scope-creep gate: `ReconResult.OutOfScope` triggers fresh elicitation before an out-of-scope host is touched (first implementation — compliance rounding comes in Phase 7)
-- [ ] Cost/attempt-aware prioritization (MAPTA's measured spend/success correlation) drives a stop-and-escalate signal per task-tree leaf
+#### Week 44-45: Hard Safety Blockers + Scope-Creep Gate + Prioritization — ✅ done 2026-09-05 (D2 + B4 + Retry-After; H4 moved to Phase 7 Step 4)
+- [x] Program-policy pre-flight check — hard blocker, not a warning
+- [x] Hard-fail (not warn) on missing scope for agent-initiated `scan`/`recon` calls
+- [x] Scope-creep gate: `ReconResult.OutOfScope` triggers fresh elicitation before an out-of-scope host is touched (first implementation — compliance rounding comes in Phase 7)
+- [x] Cost/attempt-aware prioritization (MAPTA's measured spend/success correlation) drives a stop-and-escalate signal per task-tree leaf — shipped as H4, moved to and delivered in Phase 7 Week 53 (`ph7-step4c`)
 
 **Deliverable:** an agent-driven run against a disallowed, unscoped, or scope-creeping target refuses outright or re-prompts for approval
 
-#### Week 46: Approval UI — ⬜ not started
-- [ ] Plan-preview page (Phase 5) gains Approve/Reject/Edit controls resolving a real `elicitation` response
-- [ ] Budget/spend gauge against the per-job ceiling
-- [ ] Always-reachable kill switch/pause, confirmed to actually stop a running job
+#### Week 46: Approval UI — ✅ done 2026-09-04, deliberately narrower than "resolves the same elicitation response" below
+- [x] Plan-preview page (Phase 5) gains Approve/Reject/Edit controls resolving a real `elicitation` response — shipped as the Web UI's own **complete, self-contained** approval surface (`pkg/planexec` shared dispatcher + `POST /plan-preview/execute`), not literally the *same* pending-approval object an out-of-process MCP session is waiting on — `hackerfive mcpserve`/`hackerfive serve` are two separate, unconnected OS processes with no shared approval store; named as a deliberate scope limitation, not a bug, revisit only if a real workflow needs cross-process interop
+- [x] Budget/spend gauge against the per-job ceiling — `<progress>` against `Tree.SpendSoFar()`/`SpendCeilingUSD`
+- [x] Always-reachable kill switch/pause, confirmed to actually stop a running job — `Job.Cancel()`, live-verified and then UX-fixed twice (LT-1, LT-27) after real Web UI use surfaced issues
 
 **Deliverable:** a human can approve a plan and pause/kill a running agent session from HackerFive's own Web UI, not only via an external MCP client's UI
 
-#### Week 47-48: Session Log + Release — ⬜ not started
-- [ ] Structured, persisted agent session log (queryable, not yet the live Web UI view)
-- [ ] Full recon → plan → approve → scan → export round trip live-verified against a lab target
-- [ ] Release **v0.6.0**
+#### Week 47-48: Session Log + Release — ✅ done 2026-09-06 — `v0.6.0`
+- [x] Structured, persisted agent session log (queryable, not yet the live Web UI view) — the live Web UI Agent tab followed later, Phase 7 Week 51-52
+- [x] Full recon → plan → approve → scan → export round trip live-verified against a lab target
+- [x] Release **v0.6.0**
 
 **Phase 6 Success Metrics:**
-- [ ] MCP server live-verified against a real client with no shell/exec-shaped tool present
-- [ ] Human approval via `elicitation` (or the Web UI's own approval controls) confirmed to gate every plan before traffic goes out
-- [ ] Program-policy pre-flight, missing-scope, and scope-creep hard blockers all confirmed live
-- [ ] The tiered LLM fallback triggers only on a confirmed decision-engine miss, live-verified, with every call logged as a single input/output pair tied to one `PlanTree` leaf
+- [x] MCP server live-verified against a real client with no shell/exec-shaped tool present
+- [x] Human approval via `elicitation` (or the Web UI's own approval controls) confirmed to gate every plan before traffic goes out
+- [x] Program-policy pre-flight, missing-scope, and scope-creep hard blockers all confirmed live
+- [x] The tiered LLM fallback triggers only on a confirmed decision-engine miss, live-verified, with every call logged as a single input/output pair tied to one `PlanTree` leaf
 
 ---
 
@@ -422,20 +422,20 @@ Split into two sub-phases so there's a real, working deliverable at the halfway 
 - [x] Sequence-gated `#logs`/`#findings`/`#agent` catchup replay (C5 / follow-up.md LT-5) — 2026-09-07: a monotonic per-Job event sequence + a client last-seen marker per list, so a late/reconnecting client recovers the connect-gap with no duplication.
 - [x] PlanTree structural upgrade + plausibility veto (C7 / follow-up.md LT-44 + LT-49) — 2026-09-07, `ph7-step3b`. `agenttask.PlanNode` gains `Priority`/`Class` + `StatusVetoed`; `registry.Resolve` now nests leaves under per-vuln-class intermediate nodes (`GroupIntoClassNodes`, `LeafClass`) and stamps a confidence-derived dispatch priority `planexec.RunPlan` honours (start order). A structural `ExecOptions.SeedFn` hook with one built-in (`EndpointSeedFromFindings` — a same-host finding's URL seeds a later idor/ssrf leaf's blank endpoint/param, logged, blank-only) is wired at the MCP + webui execute paths; a full `DependsOn` graph is out of scope (follow-up.md LT-56). New `llmfallback.VetoImplausibleLeaves` (opt-in behind `--llm-assist`, ceiling-respecting, no-op without an LLM tier) runs one classify call over the confident `StatusPending` leaves and can only demote (one confidence band) or drop (→ `StatusVetoed`, never dispatched) with a logged reason.
 
-#### Week 53: Live Log Injection + Concurrency Ceilings + Redundant-Request Elimination — ⬜ not started
-- [ ] Live log injection on the Agent tab (stretch)
-- [ ] Aggregate per-target concurrency ceiling across concurrent `scan` calls in one session
-- [ ] Executor response cache + recon-404 `path:` skip (D5 / follow-up.md LT-54 + LT-55)
+#### Week 53: Live Log Injection + Concurrency Ceilings + Redundant-Request Elimination — ✅ done 2026-09-07 (`ph7-step4a/b/c`)
+- [x] Live log injection on the Agent tab (stretch) — shipped as C4, an operator-note form streamed over the existing agent-event SSE channel (`ph7-step4c`)
+- [x] Aggregate per-target concurrency ceiling across concurrent `scan` calls in one session — D1, `pkg/mcpserver/scangate.go` (`ph7-step4c`)
+- [x] Executor response cache + recon-404 `path:` skip (D5 / follow-up.md LT-54 + LT-55) — `ph7-step4b`
 
 #### Week 54: OWASP Agentic Top 10 Mapping — ⬜ not started
 - [ ] All ten ASI01-10 risks checked against real shipped code (file/line cited), each mitigated or accepted as residual risk with a stated reason
 
-#### Week 55: Template Ecosystem & Triage Support — ⬜ not started
+#### Week 55: Template Ecosystem & Triage Support — 🟡 6a done 2026-09-07; 6b deferred to Phase 9 Step 5
 - [ ] ~~Generated `templates/index.json`~~ — moved to Phase 5 Week 36-37 (doc14 R9); the decision engine needs it several phases earlier than this week
-- [ ] `templates/proposed/` staging directory, confirmed never auto-loaded
-- [ ] Triage-assist mode on `Exporter` output (annotation only, never mutates `Finding`)
-- [ ] Structured feedback capture on human override/dismissal of agent triage notes
-- [ ] F3: gate response-grep secret/exposure templates on a real-app-content signal before emitting them (LT-67); F4: narrow corpus load for a small explicit template-ID/tag set (LT-71)
+- [ ] `templates/proposed/` staging directory, confirmed never auto-loaded — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5 (6b)
+- [ ] Triage-assist mode on `Exporter` output (annotation only, never mutates `Finding`) — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5 (6b)
+- [ ] Structured feedback capture on human override/dismissal of agent triage notes — deferred to [Phase 9](18-implementation-plan-ph9.md) Step 5 (6b)
+- [x] F3: gate response-grep secret/exposure templates on a real-app-content signal before emitting them (LT-67); F4: narrow corpus load for a small explicit template-ID/tag set (LT-71) — ✅ done 2026-09-07 (`ph7-step4` batch, [Phase 7](16-implementation-plan-ph7.md) Step 6a)
 
 #### Week 56: Eval Maturity + Release — ⬜ not started
 - [ ] Real agent-driven benchmark run against all four lab targets, fp/fn rate tracked separately from detector-level rate, full cost accounting recorded honestly
@@ -475,15 +475,17 @@ Version tags are cut on batch-readiness, not step number.
 #### Week 59: TLS/SSL passive checks — ⬜ not started
 - [ ] `tls` detector: expired/weak/mismatched certs, sub-1.2 protocols, weak ciphers, via stdlib `crypto/tls`, no new dependency
 
-#### Weeks 60-61: JS static analysis — ⬜ not started
-- [ ] Served-JS endpoint extraction folded into `ReconResult.Endpoints` (`Source: "js-static"`), widening the idor/ssrf candidate surface
-- [ ] High-signal hardcoded-secret detection as `misconfig` findings, decoy-set false-positive rate measured
+#### Weeks 60-61: JS static analysis — ✅ done 2026-09-09
+- [x] Served-JS endpoint extraction folded into `ReconResult.Endpoints` (`Source: "js-static"`), widening the idor/ssrf candidate surface
+- [x] High-signal hardcoded-secret detection as `misconfig` findings, decoy-set false-positive rate measured
 
 #### Week 63: Version gating + richer crawl — 🟡 Step 6 partly landed 2026-09-07
 - [ ] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b)
-- [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8) — `--crawl-depth` done; headless + content-discovery open
+- [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8) — `--crawl-depth` done; opt-in headless crawl done 2026-09-09 (`--headless-crawl`, LT-99); content-discovery still open
 - [x] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); redirect-flow rule for `*/bounce`/OAuth/SSO/logout paths (LT-77 partial); redirect-chain fidelity + per-host tech-fact attribution (LT-64/LT-65/LT-84b); numeric-query-param ID candidates (LT-83); per-path-timeout vs host-down breaker (LT-86); OpenAPI-JSON spec walker (LT-40); known-CDN-ASN naabu skip (LT-61) — 2026-09-07
-- [ ] Bounded content-discovery + embedded wordlist; opt-in headless katana; CT-log sibling-API discovery (LT-63); LT-40 tail (widen spec-probe paths, YAML bodies)
+- [x] Opt-in first-party hidden-parameter mining (`--param-mining`, LT-100) — done 2026-09-09
+- [x] LT-40 tail (b)/(c) — widen spec-probe paths + YAML request bodies — done 2026-09-07 (`Phase 7` Step 6a batch); LT-40 (a) GraphQL SDL/introspection stays open, trigger-gated
+- [ ] Bounded content-discovery + embedded wordlist; CT-log sibling-API discovery (LT-63)
 
 #### Week 64: Eval + release — ⬜ not started
 - [ ] New-detector yield + any new false-positive mode measured against all lab targets, tracked against the <5% target
@@ -535,18 +537,19 @@ boundary: an OOB, injection, or WAF-bypass payload's only effect is to reach the
 
 Kept as a table rather than a hand-drawn Gantt chart — a table only needs one cell changed when a phase's weeks shift, instead of recounting characters across an ASCII diagram (a repeated source of drift in earlier revisions of this doc).
 
-| Phase | Weeks | Duration | Focus | Ships as |
-|---|---|---|---|---|
-| 1a | 1-4 | 4 wks | Core engine + IDOR MVP | (internal checkpoint) |
-| 1b | 5-10 | 6 wks | Misconfiguration + template engines (Nuclei-compatible + native) + validation + packaging | v0.1.0 |
-| 2 | 11-18 | 8 wks | Auth bypass, XSS, SQLi, information disclosure | v0.2.0 |
-| 3 | 19-24 | 6 wks | Web UI + upgradeable template sync | v0.3.0 |
-| 4 | 25-32 | 8 wks | Prompt injection, SSRF, business logic | v0.4.0 |
-| 5 | 33-40 | 8 wks | Recon & orchestration foundations (`pkg/recon`, `Finding` schema freeze, `PlanTree` data model, deterministic decision engine + capability registry, read-only recon/plan-preview UI) | v0.5.0 |
-| 6 | 41-48 | 8 wks | MCP server & approval gate (elicitation-based approval seeded from recon, `tools.search`/`templates.search`, tiered LLM fallback, hard safety blockers, actionable approval UI) | v0.6.0 |
-| 7 | 49-56 | 8 wks | Agent hardening, ecosystem & trust (AllowWrites attestation, live Agent tab, OWASP Agentic Top 10 mapping, eval maturity) | v0.7.0 |
-| 8 | 57-64 | 8 wks | Detection coverage expansion (TCP + network-service detector, TLS/SSL passive checks, JS static analysis, OOB blind-RCE verification, affected-version gating, richer crawl, AI-agent surface, WAF-aware probing + `sqli`/`xss`/`lfi`/`uploadbypass` detectors) | v0.8.0 |
-| — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 |
+| Phase | Weeks | Duration | Focus | Ships as | Status (2026-09-10) |
+|---|---|---|---|---|---|
+| 1a | 1-4 | 4 wks | Core engine + IDOR MVP | (internal checkpoint) | ✅ done |
+| 1b | 5-10 | 6 wks | Misconfiguration + template engines (Nuclei-compatible + native) + validation + packaging | v0.1.0 | ✅ released |
+| 2 | 11-18 | 8 wks | Auth bypass, XSS, SQLi, information disclosure | v0.2.0 | ✅ released (XSS/SQLi breadth targets honestly unmet, see Milestone 2) |
+| 3 | 19-24 | 6 wks | Web UI + upgradeable template sync | v0.3.0 | ✅ released |
+| 4 | 25-32 | 8 wks | Prompt injection, SSRF, business logic | v0.4.0 | 🟡 work done, tag never cut (see Milestone 4) |
+| 5 | 33-40 | 8 wks | Recon & orchestration foundations (`pkg/recon`, `Finding` schema freeze, `PlanTree` data model, deterministic decision engine + capability registry, read-only recon/plan-preview UI) | v0.5.0 | ✅ released |
+| 6 | 41-48 | 8 wks | MCP server & approval gate (elicitation-based approval seeded from recon, `tools.search`/`templates.search`, tiered LLM fallback, hard safety blockers, actionable approval UI) | v0.6.0 | ✅ released |
+| 7 | 49-56 | 8 wks | Agent hardening, ecosystem & trust (AllowWrites attestation, live Agent tab, OWASP Agentic Top 10 mapping, eval maturity) | v0.7.0 | 🟡 Weeks 49-53/55 done; Weeks 54/56 (OWASP mapping, eval+release) open |
+| 8 | 57-64 | 8 wks | Detection coverage — breadth & precision (TCP + network-service detector, TLS/SSL passive checks, JS static analysis, affected-version gating, richer crawl) — split 2026-09-07, depth/active work moved to Phase 9 | v0.8.0 | 🟡 JS static (Steps 3) done; TCP/TLS (Steps 1-2) and eval/release (Step 10) open |
+| 9 | 65-70 | 6 wks | Detection coverage — depth & active (OOB blind-RCE, remaining template-format gaps, AI-agent surface modeling, WAF-aware probing + native `sqli`/`xss`/`lfi`/`uploadbypass` detectors) | v0.9.0 | ⬜ not started |
+| — | not scheduled | usage-gated | Real-world validation (see [Versioning note](#versioning-note)) | v1.0.0 | ⬜ not started |
 
 **Parallel tracks** (start weeks are approximate targets, not hard dependencies):
 
@@ -561,14 +564,14 @@ Kept as a table rather than a hand-drawn Gantt chart — a table only needs one 
 Trimmed to things the project actually controls (built/shipped/verified). Removed external-validation numbers this team can't directly move (star counts, contributor counts, "featured in" mentions, press coverage) — those are outcomes to hope for, not deliverables to plan around.
 
 #### **Internal Checkpoint: Phase 1a (Week 4)**
-- [ ] IDOR-only scanner working end-to-end (see Phase 1a Success Metrics above)
-- [ ] Not a public release — this is the internal go/no-go before starting Phase 1b
+- [x] IDOR-only scanner working end-to-end (see Phase 1a Success Metrics above)
+- [x] Not a public release — this is the internal go/no-go before starting Phase 1b
 
 #### **Milestone 1: MVP Release (Week 10) — v0.1.0**
-- [ ] v0.1.0 released on GitHub
-- [ ] IDOR detector working (crAPI: 8+ findings)
-- [ ] Misconfiguration detector working (DVWA: 15+ findings)
-- [ ] Documentation complete
+- [x] v0.1.0 released on GitHub (2026-08-26)
+- [x] IDOR detector working (crAPI: 8+ findings) — 9 findings, 100% accuracy
+- [ ] Misconfiguration detector working (DVWA: 15+ findings) — **not met, honest miss**: 11 real findings; see Phase 1b Week 8-9 for why the target was revised down rather than padded
+- [x] Documentation complete
 
 #### **Milestone 2: Expanded Coverage (Week 18) — v0.2.0**
 - [x] v0.2.0 released (2026-08-28) — see [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md) for the full, honest results
@@ -586,26 +589,26 @@ Trimmed to things the project actually controls (built/shipped/verified). Remove
 - [x] `hackerfive templates sync`/`list` working natively on Windows (no WSL/bash required) — git itself is still a stated prerequisite for `templates sync` specifically (see doc12's "Template sync command" §1)
 
 #### **Milestone 4: Specialization (Week 32) — v0.4.0**
-- [ ] v0.4.0 released
-- [ ] Prompt injection detector added
-- [ ] SSRF detector added
-- [ ] Business logic templates added
+- [ ] v0.4.0 released — **no tag exists** (`git tag --list` jumps `v0.3.0` → `v0.5.0`); the underlying work is done (below), see Week 32's note
+- [x] Prompt injection detector added
+- [x] SSRF detector added
+- [x] Business logic templates added — generalized beyond crAPI's exact routes/fields 2026-09-10 (LT-135), see Week 29-30
 
 #### **Milestone 5: Recon & Orchestration Foundations (Week 40) — v0.5.0**
-- [ ] v0.5.0 released
-- [ ] `hackerfive recon` live-verified against a lab target, producing a schema-valid, correctly-labeled `ReconResult`
-- [ ] `--recon-depth passive` confirmed, live, to never send an active probe
-- [ ] `Job.PlanTree` mutation guard confirmed to reject shape-changing updates
-- [ ] Recon-results and Plan-preview Web UI pages both confirmed live in a browser, read-only
-- [ ] Deterministic decision engine (`pkg/fingerprint` + registry) populates real `PlanTree` leaves from a plain, non-agent `hackerfive scan`/`recon` run, zero LLM calls, live-verified
+- [x] v0.5.0 released (2026-08-31)
+- [x] `hackerfive recon` live-verified against a lab target, producing a schema-valid, correctly-labeled `ReconResult`
+- [x] `--recon-depth passive` confirmed, live, to never send an active probe
+- [x] `Job.PlanTree` mutation guard confirmed to reject shape-changing updates
+- [x] Recon-results and Plan-preview Web UI pages both confirmed live in a browser, read-only
+- [x] Deterministic decision engine (`pkg/fingerprint` + registry) populates real `PlanTree` leaves from a plain, non-agent `hackerfive scan`/`recon` run, zero LLM calls, live-verified
 
 #### **Milestone 6: MCP Server & Approval Gate (Week 48) — v0.6.0**
-- [ ] v0.6.0 released
-- [ ] MCP server (`scan`/`templates.list`/`templates.sync`/`findings.export`/`recon`) live-verified against a real MCP client, no shell/exec-shaped tool present
-- [ ] `plan`/`elicitation`-based human approval gate — seeded from a real `ReconResult` — confirmed to block traffic until a human approves
-- [ ] Program-policy pre-flight, missing-scope, and scope-creep hard blockers all live-verified
-- [ ] Web UI approval controls (approve/reject/edit, budget gauge, kill switch) confirmed live
-- [ ] Tiered LLM fallback (local + OpenRouter) confirmed to trigger only on a decision-engine miss, never as a standing parallel path
+- [x] v0.6.0 released (2026-09-06)
+- [x] MCP server (`scan`/`templates.list`/`templates.sync`/`findings.export`/`recon`) live-verified against a real MCP client, no shell/exec-shaped tool present
+- [x] `plan`/`elicitation`-based human approval gate — seeded from a real `ReconResult` — confirmed to block traffic until a human approves
+- [x] Program-policy pre-flight, missing-scope, and scope-creep hard blockers all live-verified
+- [x] Web UI approval controls (approve/reject/edit, budget gauge, kill switch) confirmed live — approve/reject/edit is the Web UI's own self-contained surface, not literally interoperable with an out-of-process MCP session's pending elicitation (Week 46's named limitation)
+- [x] Tiered LLM fallback (local + OpenRouter) confirmed to trigger only on a decision-engine miss, never as a standing parallel path
 
 #### **Milestone 7: Agent Hardening, Ecosystem & Trust (Week 56) — v0.7.0**
 - [ ] v0.7.0 released

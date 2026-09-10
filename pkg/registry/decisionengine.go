@@ -1139,7 +1139,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 			}
 		}
 		resolveAPISpecFact(host, result.APISpec, templateIndex, &leafIdx, addLeaf)
-		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, templateByID, &leafIdx) {
+		for _, leaf := range resolveEndpointFacts(host, result.Endpoints, result.CouponEndpoint, templateByID, &leafIdx) {
 			// LT-91 / LT-94: an endpoint-driven idor/authbypass/ssrf leaf
 			// carries its own recon-derived required field(s) and must not
 			// collapse into the bare tech-capability leaf of the same
@@ -1152,7 +1152,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 			switch {
 			case leaf.EndpointTemplate != "":
 				key += "\x00" + leaf.EndpointTemplate
-			case len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0 || len(leaf.SSRFBodyParams) > 0:
+			case len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0 || len(leaf.SSRFBodyParams) > 0 || leaf.CouponMintPath != "":
 				key += "\x00endpoint-driven"
 			}
 			addLeaf(leaf, key)
@@ -1334,7 +1334,7 @@ func apiRouteConfidence(hostEndpoints []recon.EndpointFact) agenttask.Confidence
 	return agenttask.ConfidenceMedium
 }
 
-func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateByID map[string]templatesync.Entry, leafIdx *int) []*agenttask.PlanNode {
+func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, coupon *recon.CouponFact, templateByID map[string]templatesync.Entry, leafIdx *int) []*agenttask.PlanNode {
 	hostEndpoints := endpointsForHost(host, endpoints)
 	if len(hostEndpoints) == 0 {
 		return nil
@@ -1425,6 +1425,21 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 			break // one is enough to justify the leaf; not every matching endpoint
 		}
 	}
+	// LT-135 (docs/follow-up.md): a spec-derived coupon mint+apply pair is a
+	// much stronger signal than the generic cart-keyword heuristic above —
+	// it carries real paths and real request field names, so this leaf can
+	// actually run against a non-crAPI target once --allow-writes is set.
+	// dropBareCapabilityLeavesSupersededByEndpointDriven removes the bare
+	// keyword-only leaf above once this one exists (leafCarriesReconField).
+	if coupon != nil && endpointHostname(coupon.MintURL) == host {
+		leaf := newEndpointLeaf(host, "businesslogic", agenttask.ConfidenceMedium,
+			fmt.Sprintf("recon's OpenAPI spec documents a coupon mint (%s) + apply (%s) endpoint pair, with real request field names — still requires --allow-writes", endpointURLPath(coupon.MintURL), endpointURLPath(coupon.ApplyURL)), leafIdx)
+		leaf.CouponMintPath = endpointURLPath(coupon.MintURL)
+		leaf.CouponApplyPath = endpointURLPath(coupon.ApplyURL)
+		leaf.CouponCodeField = coupon.CodeField
+		leaf.CouponAmountField = coupon.AmountField
+		leaves = append(leaves, leaf)
+	}
 
 	for _, sig := range endpointSignals {
 		for _, ep := range hostEndpoints {
@@ -1489,7 +1504,7 @@ func firstRedirectFlowEndpoint(endpoints []recon.EndpointFact) (string, bool) {
 // idor/authbypass/ssrf leaf (LT-91/LT-94) — it carries the recon-derived
 // required field on the PlanNode, so it is directly runnable.
 func leafCarriesReconField(leaf *agenttask.PlanNode) bool {
-	return leaf.EndpointTemplate != "" || len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0 || len(leaf.SSRFBodyParams) > 0
+	return leaf.EndpointTemplate != "" || len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0 || len(leaf.SSRFBodyParams) > 0 || leaf.CouponMintPath != ""
 }
 
 // dropBareCapabilityLeavesSupersededByEndpointDriven removes the bare

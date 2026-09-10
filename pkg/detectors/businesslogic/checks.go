@@ -1,6 +1,7 @@
 package businesslogic
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -25,7 +26,7 @@ func (d *Detector) checkCouponSelfMintCredit(ctx context.Context, target, host, 
 		return nil, nil
 	}
 	code := "hf-blf-" + randomHex(8)
-	mintBody := fmt.Sprintf(`{"coupon_code":%q,"amount":%q}`, code, injectedCreditAmount)
+	mintBody := fmt.Sprintf(`{%q:%q,%q:%q}`, d.couponCodeField, code, d.couponAmountField, injectedCreditAmount)
 
 	mintReq, mintResp, mintRespBody, err := d.doJSONRequest(ctx, http.MethodPost, target, host, d.couponMintPath, authToken, mintBody)
 	if err != nil {
@@ -35,7 +36,7 @@ func (d *Detector) checkCouponSelfMintCredit(ctx context.Context, target, host, 
 		return nil, nil // target may not have this endpoint at all, or rejected it — no finding
 	}
 
-	applyBody := fmt.Sprintf(`{"coupon_code":%q,"amount":%s}`, code, injectedCreditAmount)
+	applyBody := fmt.Sprintf(`{%q:%q,%q:%s}`, d.couponCodeField, code, d.couponAmountField, injectedCreditAmount)
 	applyReq, applyResp, applyRespBody, err := d.doJSONRequest(ctx, http.MethodPost, target, host, d.couponApplyPath, authToken, applyBody)
 	if err != nil {
 		return nil, nil
@@ -72,14 +73,14 @@ func (d *Detector) checkCouponApplyRace(ctx context.Context, target, host, authT
 		return nil, nil
 	}
 	code := "hf-blf-race-" + randomHex(8)
-	mintBody := fmt.Sprintf(`{"coupon_code":%q,"amount":%q}`, code, injectedCreditAmount)
+	mintBody := fmt.Sprintf(`{%q:%q,%q:%q}`, d.couponCodeField, code, d.couponAmountField, injectedCreditAmount)
 
 	_, mintResp, _, err := d.doJSONRequest(ctx, http.MethodPost, target, host, d.couponMintPath, authToken, mintBody)
 	if err != nil || mintResp.StatusCode != http.StatusOK {
 		return nil, nil
 	}
 
-	applyBody := []byte(fmt.Sprintf(`{"coupon_code":%q,"amount":%s}`, code, injectedCreditAmount))
+	applyBody := []byte(fmt.Sprintf(`{%q:%q,%q:%s}`, d.couponCodeField, code, d.couponAmountField, injectedCreditAmount))
 	results, err := fireRace(ctx, target, d.couponApplyPath, raceRequestOptions{
 		Method: http.MethodPost,
 		Headers: map[string]string{
@@ -122,39 +123,73 @@ func (d *Detector) checkCouponApplyRace(ctx context.Context, target, host, authT
 	}}, nil
 }
 
-// responseGrantedAmount reports whether body looks like crAPI's real
-// apply-coupon success shape (a JSON object with a numeric "credit" field)
-// AND that field's value is close to injectedAmount — not just present.
-// Exact equality would miss the real shape (live-confirmed 2026-08-29: an
-// account's real credit balance is its pre-existing balance *plus* the
-// injected amount, e.g. "1000099.0" for a ~100 baseline + 999999 injected,
-// never exactly "999999"), but a bare presence check would flag any
-// successful apply at all, including a server that correctly ignores the
-// client-supplied amount and grants its own small, legitimate value — a real
-// false-positive risk caught before this shipped. A threshold well below the
-// injected amount (90%) distinguishes "the server added roughly what was
-// injected" from "the server added something else entirely," without
-// requiring exact-match precision this project's own live evidence shows
-// doesn't hold. Hardcoded to crAPI's real response shape, not generic — this
-// check is explicitly crAPI-shaped per
-// docs/13-implementation-plan-ph4.md Step 3's "hardcode patterns for known
-// apps" scoping, same as its coupon paths.
+// maxGrantedAmountScanDepth bounds how deep responseGrantedAmount recurses
+// into a nested JSON object/array — a real "wallet"/"balance" object nested
+// a level or two under the top-level response (e.g.
+// {"user":{"wallet":{"credit":...}}}) is common; unbounded recursion is not
+// needed and would let a hostile/huge body do needless work.
+const maxGrantedAmountScanDepth = 4
+
+// responseGrantedAmount reports whether body's apply-coupon response
+// contains any numeric JSON field whose value is close to injectedAmount —
+// generalized (LT-135, docs/follow-up.md) from an earlier version hardcoded
+// to crAPI's own "credit" field name, since a real target's success response
+// can name this field anything (or nest it). Exact equality would miss the
+// real shape (live-confirmed 2026-08-29 against crAPI: an account's real
+// credit balance is its pre-existing balance *plus* the injected amount,
+// e.g. "1000099.0" for a ~100 baseline + 999999 injected, never exactly
+// "999999"), but a bare presence check would flag any successful apply at
+// all, including a server that correctly ignores the client-supplied amount
+// and grants its own small, legitimate value. A bounded range — [90%,
+// 150%] of the injected amount — distinguishes "the server added roughly
+// what was injected (plus a plausible small baseline)" from both "granted
+// something else entirely" and an unrelated large number the response
+// happens to also carry (a timestamp, a big object ID); injectedCreditAmount
+// is deliberately huge (999999) specifically so this window rarely
+// collides with an ordinary field's real range. Named, accepted limitation:
+// this is a heuristic, not a guarantee — a target whose real baseline
+// exceeds 50% of the injected amount, or whose response coincidentally
+// carries an unrelated number in this exact window, could mislead it either
+// way; revisit only if live testing shows it matters.
 func responseGrantedAmount(body []byte, injectedAmount string) bool {
-	var parsed struct {
-		Credit json.Number `json:"credit"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Credit == "" {
-		return false
-	}
-	credit, err := parsed.Credit.Float64()
-	if err != nil {
-		return false
-	}
 	injected, err := strconv.ParseFloat(injectedAmount, 64)
 	if err != nil {
 		return false
 	}
-	return credit >= injected*0.9
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var parsed any
+	if err := dec.Decode(&parsed); err != nil {
+		return false
+	}
+	return anyNumericFieldInRange(parsed, injected*0.9, injected*1.5, 0)
+}
+
+// anyNumericFieldInRange recursively scans parsed (the output of a
+// json.Decoder with UseNumber) for any numeric leaf value within [lo, hi],
+// bounded to maxGrantedAmountScanDepth levels of object/array nesting.
+func anyNumericFieldInRange(v any, lo, hi float64, depth int) bool {
+	if depth > maxGrantedAmountScanDepth {
+		return false
+	}
+	switch val := v.(type) {
+	case json.Number:
+		f, err := val.Float64()
+		return err == nil && f >= lo && f <= hi
+	case map[string]any:
+		for _, child := range val {
+			if anyNumericFieldInRange(child, lo, hi, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range val {
+			if anyNumericFieldInRange(child, lo, hi, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // doJSONRequest fires one JSON-body request and records the outcome against

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -52,6 +53,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		allowWrites          bool
 		couponMintPath       string
 		couponApplyPath      string
+		couponCodeField      string
+		couponAmountField    string
 		raceConcurrency      int
 		format               string
 		reconFile            string
@@ -157,6 +160,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				AllowWrites:             allowWrites,
 				CouponMintPath:          couponMintPath,
 				CouponApplyPath:         couponApplyPath,
+				CouponCodeField:         couponCodeField,
+				CouponAmountField:       couponAmountField,
 				RaceConcurrency:         raceConcurrency,
 				Verbose:                 verbose,
 				LogRejectedPath:         logRejected,
@@ -261,6 +266,36 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				}
 			}
 
+			// LT-135 (docs/follow-up.md): auto-fill businesslogic's coupon
+			// mint/apply paths and request-body field names from a
+			// spec-derived recon signal, mirroring A6's "recon self-fills a
+			// required field" pattern above. An explicit
+			// --coupon-mint-path/--coupon-apply-path/--coupon-code-field/
+			// --coupon-amount-field always wins (checked as a set, not
+			// per-field, since the four values are only meaningful
+			// together); a target with no CouponEndpoint fact keeps
+			// businesslogic's crAPI-shaped package defaults exactly as
+			// today.
+			if reconResult != nil && reconResult.CouponEndpoint != nil &&
+				cfg.CouponMintPath == "" && cfg.CouponApplyPath == "" &&
+				cfg.CouponCodeField == "" && cfg.CouponAmountField == "" {
+				ce := reconResult.CouponEndpoint
+				var mintPath, applyPath string
+				if mp, perr := url.Parse(ce.MintURL); perr == nil {
+					mintPath = mp.Path
+				}
+				if ap, perr := url.Parse(ce.ApplyURL); perr == nil {
+					applyPath = ap.Path
+				}
+				if mintPath != "" && applyPath != "" {
+					cfg.CouponMintPath = mintPath
+					cfg.CouponApplyPath = applyPath
+					cfg.CouponCodeField = ce.CodeField
+					cfg.CouponAmountField = ce.AmountField
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "scan: auto-filled businesslogic coupon mint/apply paths and fields from --recon-file (LT-135): %s -> %s\n", mintPath, applyPath)
+				}
+			}
+
 			// Part B (--auto-provision-account): register a throwaway second
 			// account so idor's baseline mode / authbypass's token-reuse/BFLA
 			// checks get a second account's token without --other-auth-token
@@ -358,6 +393,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks (coupon self-mint/apply, apply-race) to run — the one explicit exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a warning")
 	cmd.Flags().StringVar(&couponMintPath, "coupon-mint-path", "", `endpoint path the businesslogic detector mints a coupon against (default: crAPI's real "/community/api/v2/coupon/new-coupon")`)
 	cmd.Flags().StringVar(&couponApplyPath, "coupon-apply-path", "", `endpoint path the businesslogic detector applies a coupon against (default: crAPI's real "/workshop/api/shop/apply_coupon")`)
+	cmd.Flags().StringVar(&couponCodeField, "coupon-code-field", "", `request-body field name the businesslogic detector sends the coupon code under (default: crAPI's real "coupon_code"; LT-135)`)
+	cmd.Flags().StringVar(&couponAmountField, "coupon-amount-field", "", `request-body field name the businesslogic detector sends the coupon amount under (default: crAPI's real "amount"; LT-135)`)
 	cmd.Flags().IntVar(&raceConcurrency, "race-concurrency", 0, "simultaneous requests the businesslogic detector's apply-race check fires via last-byte-sync (default: 15)")
 	cmd.Flags().StringVar(&format, "format", "json", `output format: "json", "markdown", "html", or "hackerone-json" (an offline, best-effort HackerOne report_intent draft — see "hackerfive report" for the live API workflow)`)
 	cmd.Flags().StringVar(&reconFile, "recon-file", "", "path to a prior 'hackerfive recon --output <path>' JSON result — when given, its detected tech stack adds product-specific template tags on top of the --detector category floor (LT-16/LT-17, docs/follow-up.md)")

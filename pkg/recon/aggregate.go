@@ -21,6 +21,7 @@ type aggregator struct {
 	techSources    map[techKey][]string
 	apiSpec        *APISpecFact
 	signupEndpoint *SignupFact
+	couponEndpoint *CouponFact
 	secrets        []JSSecretFact
 	outOfScope     []string
 	warnings       []string
@@ -180,6 +181,16 @@ func (a *aggregator) setSignupEndpoint(f SignupFact) {
 	}
 }
 
+// setCouponEndpoint records the first spec-derived coupon mint+apply
+// candidate found (LT-135, docs/follow-up.md) — spec-only, no path-guess
+// fallback (see CouponFact's doc comment for why), so first writer wins
+// across every seed's spec walk.
+func (a *aggregator) setCouponEndpoint(f CouponFact) {
+	if a.couponEndpoint == nil {
+		a.couponEndpoint = &f
+	}
+}
+
 // addSecret records a JS-static-analysis secret hit (Phase 8 Step 3),
 // capped at maxJSStaticSecrets total across a run — jsstatic.go enforces the
 // cap so a truncation warning can name how many were dropped.
@@ -214,6 +225,7 @@ func (a *aggregator) finalize() *ReconResult {
 		TechStack:       a.techStack,
 		APISpec:         a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
 		SignupEndpoint:  a.signupEndpoint,
+		CouponEndpoint:  a.couponEndpoint,
 		Secrets:         a.secrets,
 		UniformResponse: a.uniformResponse,
 		AppSurface:      classifyAppSurface(a.endpoints, a.techStack, a.uniformResponse),

@@ -26,7 +26,7 @@ func TestWalkOpenAPISpec_V3(t *testing.T) {
 	    "/health": {"get": {}}
 	  }
 	}`)
-	facts, truncated, _ := walkOpenAPISpec("https://target.example/openapi.json", body)
+	facts, truncated, _, _ := walkOpenAPISpec("https://target.example/openapi.json", body)
 	assert.False(t, truncated)
 
 	got := map[string]string{}
@@ -55,7 +55,7 @@ func TestWalkOpenAPISpec_V2BasePath(t *testing.T) {
 	    }
 	  }
 	}`)
-	facts, _, _ := walkOpenAPISpec("https://target.example/swagger.json", body)
+	facts, _, _, _ := walkOpenAPISpec("https://target.example/swagger.json", body)
 	require.Len(t, facts, 1)
 	assert.Equal(t, "https://target.example/api/v2/orders/{orderId}?trace=", facts[0].URL)
 	assert.Equal(t, "GET", facts[0].Method)
@@ -90,7 +90,7 @@ func TestWalkOpenAPISpec_RequestBodyProperties(t *testing.T) {
 	    "/health": {"get": {}}
 	  }
 	}`)
-	facts, _, _ := walkOpenAPISpec("https://target.example/openapi.json", body)
+	facts, _, _, _ := walkOpenAPISpec("https://target.example/openapi.json", body)
 
 	got := map[string][]string{}
 	for _, f := range facts {
@@ -114,7 +114,7 @@ func TestWalkOpenAPISpec_SignupHint(t *testing.T) {
 	    "/health": {"get": {}}
 	  }
 	}`)
-	_, _, signup := walkOpenAPISpec("https://target.example/openapi.json", body)
+	_, _, signup, _ := walkOpenAPISpec("https://target.example/openapi.json", body)
 	require.NotNil(t, signup)
 	assert.Equal(t, "https://target.example/identity/auth/signup", signup.URL)
 	assert.Equal(t, "POST", signup.Method)
@@ -124,20 +124,84 @@ func TestWalkOpenAPISpec_SignupHint(t *testing.T) {
 // anywhere yields a nil SignupFact.
 func TestWalkOpenAPISpec_NoSignupHint(t *testing.T) {
 	body := []byte(`{"openapi":"3.0.0","paths":{"/health":{"get":{}},"/users/{id}":{"get":{}}}}`)
-	_, _, signup := walkOpenAPISpec("https://target.example/openapi.json", body)
+	_, _, signup, _ := walkOpenAPISpec("https://target.example/openapi.json", body)
 	assert.Nil(t, signup)
+}
+
+// TestWalkOpenAPISpec_CouponHint covers LT-135: a spec documenting a
+// coupon-mint and a coupon-apply POST operation is captured into a
+// CouponFact carrying the real paths and the real request-body field names
+// (matched from the mint operation's own declared requestBody schema, never
+// invented).
+func TestWalkOpenAPISpec_CouponHint(t *testing.T) {
+	body := []byte(`{
+	  "openapi": "3.0.1",
+	  "servers": [{"url": "https://api.example.com/shop"}],
+	  "paths": {
+	    "/promo/new": {
+	      "post": {
+	        "operationId": "createPromoCode",
+	        "summary": "Create a new promo code",
+	        "requestBody": {
+	          "content": {
+	            "application/json": {
+	              "schema": {"properties": {"promo_code": {"type": "string"}, "discount_value": {"type": "number"}}}
+	            }
+	          }
+	        }
+	      }
+	    },
+	    "/promo/apply": {"post": {"operationId": "applyPromoCode", "summary": "Apply a promo code to the cart"}},
+	    "/health": {"get": {}}
+	  }
+	}`)
+	_, _, _, coupon := walkOpenAPISpec("https://target.example/openapi.json", body)
+	require.NotNil(t, coupon)
+	assert.Equal(t, "https://target.example/shop/promo/new", coupon.MintURL)
+	assert.Equal(t, "POST", coupon.MintMethod)
+	assert.Equal(t, "https://target.example/shop/promo/apply", coupon.ApplyURL)
+	assert.Equal(t, "POST", coupon.ApplyMethod)
+	assert.Equal(t, "promo_code", coupon.CodeField)
+	assert.Equal(t, "discount_value", coupon.AmountField)
+}
+
+// TestWalkOpenAPISpec_NoCouponHint_MissingHalf: a spec documenting only a
+// mint-shaped operation (no apply) — or only field names that don't clearly
+// map to code/amount — yields a nil CouponFact rather than a guess.
+func TestWalkOpenAPISpec_NoCouponHint_MissingHalf(t *testing.T) {
+	body := []byte(`{
+	  "openapi": "3.0.0",
+	  "paths": {
+	    "/coupon/new": {
+	      "post": {
+	        "operationId": "createCoupon",
+	        "requestBody": {"content": {"application/json": {"schema": {"properties": {"description": {"type": "string"}}}}}}
+	      }
+	    }
+	  }
+	}`)
+	_, _, _, coupon := walkOpenAPISpec("https://target.example/openapi.json", body)
+	assert.Nil(t, coupon, "no apply-shaped operation anywhere — no pair to record")
+}
+
+// TestWalkOpenAPISpec_NoCouponHint: a spec with nothing coupon/promo/voucher
+// -shaped anywhere yields a nil CouponFact.
+func TestWalkOpenAPISpec_NoCouponHint(t *testing.T) {
+	body := []byte(`{"openapi":"3.0.0","paths":{"/health":{"get":{}},"/users/{id}":{"get":{}}}}`)
+	_, _, _, coupon := walkOpenAPISpec("https://target.example/openapi.json", body)
+	assert.Nil(t, coupon)
 }
 
 // TestWalkOpenAPISpec_NotASpec: a JSON body with no version key, a
 // non-JSON body, and an empty body all walk to nothing.
 func TestWalkOpenAPISpec_NotASpec(t *testing.T) {
-	facts, _, _ := walkOpenAPISpec("https://x/openapi.json", []byte(`{"foo": "bar", "paths": {"/a": {}}}`))
+	facts, _, _, _ := walkOpenAPISpec("https://x/openapi.json", []byte(`{"foo": "bar", "paths": {"/a": {}}}`))
 	assert.Nil(t, facts, "a JSON doc with no swagger/openapi version key is not an OpenAPI document")
 
-	facts, _, _ = walkOpenAPISpec("https://x/openapi.json", []byte(`<html>not json</html>`))
+	facts, _, _, _ = walkOpenAPISpec("https://x/openapi.json", []byte(`<html>not json</html>`))
 	assert.Nil(t, facts)
 
-	facts, _, _ = walkOpenAPISpec("https://x/openapi.json", nil)
+	facts, _, _, _ = walkOpenAPISpec("https://x/openapi.json", nil)
 	assert.Nil(t, facts)
 }
 
@@ -162,7 +226,7 @@ paths:
         - name: url
           in: query
 `)
-	facts, truncated, _ := walkOpenAPISpec("https://target.example/v3/api-docs", body)
+	facts, truncated, _, _ := walkOpenAPISpec("https://target.example/v3/api-docs", body)
 	assert.False(t, truncated)
 
 	got := map[string]string{}
@@ -178,10 +242,10 @@ paths:
 // TestWalkOpenAPISpec_YAMLNotASpec: a YAML scalar / sequence body, and a
 // YAML mapping with no version key, all walk to nothing.
 func TestWalkOpenAPISpec_YAMLNotASpec(t *testing.T) {
-	facts, _, _ := walkOpenAPISpec("https://x/api-docs", []byte("- one\n- two\n"))
+	facts, _, _, _ := walkOpenAPISpec("https://x/api-docs", []byte("- one\n- two\n"))
 	assert.Nil(t, facts, "a top-level YAML sequence is not a spec document")
 
-	facts, _, _ = walkOpenAPISpec("https://x/api-docs", []byte("foo: bar\npaths:\n  /a: {}\n"))
+	facts, _, _, _ = walkOpenAPISpec("https://x/api-docs", []byte("foo: bar\npaths:\n  /a: {}\n"))
 	assert.Nil(t, facts, "a YAML mapping with no swagger/openapi key is not an OpenAPI document")
 }
 
@@ -199,7 +263,7 @@ func TestWalkOpenAPISpec_AuthRequired(t *testing.T) {
 	    "/admin/keys": {"get": {"security": [{"bearerAuth": []}]}}
 	  }
 	}`)
-	facts, _, _ := walkOpenAPISpec("https://api.example.com/openapi.json", body)
+	facts, _, _, _ := walkOpenAPISpec("https://api.example.com/openapi.json", body)
 
 	got := map[string]bool{}
 	for _, f := range facts {
@@ -214,7 +278,7 @@ func TestWalkOpenAPISpec_AuthRequired(t *testing.T) {
 // TestWalkOpenAPISpec_NoSecurity: a spec with no security anywhere marks
 // nothing auth-required.
 func TestWalkOpenAPISpec_NoSecurity(t *testing.T) {
-	facts, _, _ := walkOpenAPISpec("https://x/openapi.json",
+	facts, _, _, _ := walkOpenAPISpec("https://x/openapi.json",
 		[]byte(`{"openapi":"3.0.0","paths":{"/a":{"get":{}},"/b":{"get":{}}}}`))
 	require.NotEmpty(t, facts)
 	for _, f := range facts {
@@ -235,7 +299,7 @@ func TestWalkOpenAPISpec_Truncates(t *testing.T) {
 	}
 	sb.WriteString(`}}`)
 
-	facts, truncated, _ := walkOpenAPISpec("https://t.example/openapi.json", []byte(sb.String()))
+	facts, truncated, _, _ := walkOpenAPISpec("https://t.example/openapi.json", []byte(sb.String()))
 	assert.True(t, truncated)
 	assert.Len(t, facts, maxSpecEndpoints)
 }
@@ -245,7 +309,7 @@ func TestWalkOpenAPISpec_Truncates(t *testing.T) {
 // with no concrete id invented.
 func TestWalkOpenAPISpec_FeedsIDORCandidates(t *testing.T) {
 	body := []byte(`{"openapi":"3.0.0","paths":{"/api/accounts/{accountId}":{"get":{}}}}`)
-	facts, _, _ := walkOpenAPISpec("https://t.example/openapi.json", body)
+	facts, _, _, _ := walkOpenAPISpec("https://t.example/openapi.json", body)
 	require.NotEmpty(t, facts)
 
 	cands := SuggestIDOREndpointCandidates(&ReconResult{Endpoints: facts})

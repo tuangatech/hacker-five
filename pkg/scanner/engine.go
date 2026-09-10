@@ -1115,6 +1115,7 @@ func (e *Engine) businesslogicOptions() []businesslogic.Option {
 		businesslogic.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat),
 		businesslogic.WithInsecure(e.cfg.Insecure),
 		businesslogic.WithCouponPaths(e.cfg.CouponMintPath, e.cfg.CouponApplyPath),
+		businesslogic.WithCouponFields(e.cfg.CouponCodeField, e.cfg.CouponAmountField),
 	}
 	if e.cfg.RaceConcurrency > 0 {
 		opts = append(opts, businesslogic.WithRaceConcurrency(e.cfg.RaceConcurrency))

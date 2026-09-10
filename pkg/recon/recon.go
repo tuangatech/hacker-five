@@ -440,6 +440,9 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 		if ing.SignupEndpoint != nil {
 			agg.setSignupEndpoint(*ing.SignupEndpoint)
 		}
+		if ing.CouponEndpoint != nil {
+			agg.setCouponEndpoint(*ing.CouponEndpoint)
+		}
 		for _, h := range ing.OutOfScope {
 			agg.addOutOfScope(h)
 		}
