@@ -84,9 +84,11 @@ func New(opts Options) (*Server, error) {
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	// Browsers probe GET /favicon.ico at the root regardless of the <link
-	// rel="icon"> tags in layout.html — serving it directly avoids a 404 on
-	// every page load's own request log.
-	mux.Handle("GET /favicon.ico", http.FileServer(http.FS(staticFS)))
+	// rel="icon"> tags in layout.html — serve the PNG icon directly so that
+	// probe doesn't 404 on every page load's own request log.
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, staticFS, "favicon.png")
+	})
 
 	// Order matters: CSRF checks the form field ParseForm() just populated;
 	// auth gates access before any of that, since an unauthenticated
