@@ -143,8 +143,9 @@ type Recon struct {
 	// paramMining runs Wave 3's hidden-parameter pass (LT-100,
 	// docs/follow-up.md): probe a curated candidate-name list against the most
 	// promising endpoints and emit the params the app measurably honours as
-	// wave3-param-mining EndpointFacts. Opt-in, DepthFull only, hard per-host
-	// request cap (paramMineRequestCap, 0 = maxParamMineRequests).
+	// wave3-param-mining EndpointFacts. Opt-in, DepthFull only, hard per-run
+	// request cap shared across every target (paramMineRequestCap, 0 =
+	// maxParamMineRequests).
 	paramMining         bool
 	paramMiningWordlist string
 	paramMineRequestCap int
@@ -238,9 +239,9 @@ func WithParamMiningWordlist(path string) Option {
 	}
 }
 
-// WithParamMiningRequestCap overrides the per-host request ceiling for the
-// LT-100 pass (default maxParamMineRequests). Values <= 0 keep the
-// default.
+// WithParamMiningRequestCap overrides the per-run request ceiling (shared
+// across every target) for the LT-100 pass (default maxParamMineRequests).
+// Values <= 0 keep the default.
 func WithParamMiningRequestCap(n int) Option {
 	return func(r *Recon) {
 		if n > 0 {

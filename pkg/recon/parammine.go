@@ -25,9 +25,9 @@ var embeddedParamWordlist string
 
 const (
 	// maxParamMineRequests is the hard ceiling on requests the whole
-	// hidden-parameter pass issues in one recon run — it can't starve the
-	// shared --rate-limit bucket (LT-98, docs/follow-up.md).
-	// --param-mining-request-cap overrides it.
+	// hidden-parameter pass issues in one recon run, shared across every
+	// target — it can't starve the shared --rate-limit bucket (LT-98,
+	// docs/follow-up.md). --param-mining-request-cap overrides it.
 	maxParamMineRequests = 160
 	// maxParamMineEndpoints bounds how many seed endpoints get mined so the
 	// request cap buys real depth on a few endpoints rather than a shallow
@@ -45,7 +45,7 @@ const (
 	// many distinct markers is a reflect-all endpoint.
 	paramMineReflectAllThreshold = 8
 	// paramMineMaxNames caps a large --param-mining-wordlist so it can't blow
-	// past the per-host request-cap intent.
+	// past the per-run request-cap intent.
 	paramMineMaxNames = 2000
 )
 
@@ -72,7 +72,8 @@ var paramNameEchoStoplist = map[string]bool{
 	"user": true, "account": true, "email": true, "lang": true, "language": true,
 }
 
-// reqBudget is a simple shared request counter for the per-host cap.
+// reqBudget is a simple shared request counter for the per-run cap, shared
+// across every target endpoint mined in one runParamMining call.
 type reqBudget struct {
 	n   int
 	max int
@@ -90,7 +91,8 @@ func (b *reqBudget) inc() { b.n++ }
 // measurably honours (>= 2 independent diff-oracle signals) as
 // wave3-param-mining EndpointFacts, which SuggestSSRFParamsFromRecon /
 // SuggestIDOREndpointCandidates then read like any other observed param.
-// Bounded by a hard per-host request cap so it can't starve --rate-limit.
+// Bounded by a hard per-run request cap, shared across every target, so it
+// can't starve --rate-limit.
 func (r *Recon) runParamMining(ctx context.Context, agg *aggregator, seeds []string) {
 	if !r.paramMining {
 		return

@@ -178,7 +178,7 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 		seeds = []string{target}
 	}
 
-	r.runKatana(ctx, agg, seeds)
+	jsAssets := r.runKatana(ctx, agg, seeds)
 
 	for _, seed := range seeds {
 		r.probeCommonPaths(ctx, agg, seed)
@@ -193,6 +193,12 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	// LT-100 (docs/follow-up.md): opt-in hidden-parameter mining over the
 	// endpoints gathered above — a no-op unless --param-mining is set.
 	r.runParamMining(ctx, agg, seeds)
+
+	// Phase 8 Step 3 (docs/17-implementation-plan-ph8.md): endpoint/secret/
+	// cloud-provider extraction over the JS bodies runKatana already fetched
+	// above — no new request, always on (unlike the two opt-in passes above,
+	// this adds zero traffic so there is no cost to gate behind a flag).
+	r.runJSStaticAnalysis(agg, jsAssets)
 }
 
 // runKatana crawls seeds. katana's own default scope ("-fs rdn", confirmed
@@ -222,7 +228,7 @@ func (r *Recon) effectiveHeadlessTimeout() time.Duration {
 	return ht
 }
 
-func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) {
+func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) []jsAsset {
 	crawlTimeout := r.waveTimeout
 	crawlSource := "katana-crawl"
 	katanaArgs := []string{
@@ -252,7 +258,7 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 		} else {
 			agg.addWarning("wave3: katana: %v", err)
 		}
-		return
+		return nil
 	}
 	if isWaveTimeout(err) {
 		// katana has no depth/rate visibility and a silent internal cap; a
@@ -267,6 +273,7 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	}
 
 	var authCandidates []EndpointFact
+	var jsAssets []jsAsset
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -280,7 +287,9 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 				Method   string `json:"method"`
 			} `json:"request"`
 			Response struct {
-				StatusCode int `json:"status_code"`
+				StatusCode int               `json:"status_code"`
+				Headers    map[string]string `json:"headers"`
+				Body       string            `json:"body"`
 			} `json:"response"`
 			Error string `json:"error"`
 		}
@@ -308,6 +317,17 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 		if looksLikeEscapedJSArtifact(rec.Request.Endpoint) {
 			continue // see looksLikeEscapedJSArtifact's own doc comment
 		}
+		// Phase 8 Step 3 (docs/17-implementation-plan-ph8.md): katana's own
+		// -jsonl output already carries the fetched body (no -omit-body flag
+		// is passed) — keep it for a .js response so runJSStaticAnalysis has
+		// something to read, with no separate fetch.
+		if len(jsAssets) < maxJSStaticAssets && rec.Response.Body != "" && looksLikeJSAsset(rec.Request.Endpoint, rec.Response.Headers) {
+			body := rec.Response.Body
+			if len(body) > maxJSStaticBodyBytes {
+				body = body[:maxJSStaticBodyBytes]
+			}
+			jsAssets = append(jsAssets, jsAsset{URL: rec.Request.Endpoint, Body: body})
+		}
 		method := rec.Request.Method
 		if method == "" {
 			method = http.MethodGet
@@ -330,6 +350,7 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	}
 
 	r.verifyAuthCandidates(waveCtx, agg, authCandidates)
+	return jsAssets
 }
 
 // looksLikeEscapedJSArtifact reports whether endpoint carries a literal

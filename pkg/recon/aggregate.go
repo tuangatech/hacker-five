@@ -20,6 +20,7 @@ type aggregator struct {
 	techIndex   map[techKey]int
 	techSources map[techKey][]string
 	apiSpec     *APISpecFact
+	secrets     []JSSecretFact
 	outOfScope  []string
 	warnings    []string
 	outOfScopeM map[string]bool
@@ -167,6 +168,13 @@ func (a *aggregator) addAPISpec(spec APISpecFact) {
 	a.apiSpec = &spec
 }
 
+// addSecret records a JS-static-analysis secret hit (Phase 8 Step 3),
+// capped at maxJSStaticSecrets total across a run — jsstatic.go enforces the
+// cap so a truncation warning can name how many were dropped.
+func (a *aggregator) addSecret(s JSSecretFact) {
+	a.secrets = append(a.secrets, s)
+}
+
 func (a *aggregator) addOutOfScope(host string) {
 	if a.outOfScopeM == nil {
 		a.outOfScopeM = make(map[string]bool)
@@ -193,6 +201,7 @@ func (a *aggregator) finalize() *ReconResult {
 		Endpoints:       a.endpoints,
 		TechStack:       a.techStack,
 		APISpec:         a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
+		Secrets:         a.secrets,
 		UniformResponse: a.uniformResponse,
 		AppSurface:      classifyAppSurface(a.endpoints, a.techStack, a.uniformResponse),
 		OutOfScope:      a.outOfScope,

@@ -37,7 +37,7 @@ inspection, never literal command execution on a target.
 
 1. ⬜ **TCP protocol support + network-service exposure detector** (Weeks 57-58)
 2. ⬜ **TLS/SSL passive checks** (Week 59)
-3. ⬜ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61)
+3. ✅ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61) — done 2026-09-09
 4. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 1** — OOB blind-RCE verification (body retained below for provenance)
 5. ⬜ **Affected-version (semver) gating for template selection** (Week 63) — closes P0-1b / LT-7
 6. 🟡 **Recon-depth, bounded content discovery & JS-rendered crawl** (Week 63) — closes LT-8; also robots/sitemap endpoint probing (LT-76) + an open-redirect/OAuth-flow rule (LT-77) + redirect-chain fidelity & per-host fact attribution (LT-64/LT-65/LT-84) + numeric-query-param ID candidates (LT-83) + per-path-timeout vs host-breaker tuning (LT-86). First tranche landed 2026-09-07 (crawl-depth flag, LT-76, LT-77 partial, LT-64/65/84b, LT-83, LT-50, LT-86b); second tranche landed 2026-09-07 (LT-40 OpenAPI-JSON spec walker, LT-61 known-CDN-ASN naabu skip). LT-40's YAML-body + spec-probe-path-widening tail (b)/(c) landed 2026-09-07 with the Phase 7 Step 6a batch. LT-89 (`recon --openapi-spec` ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf `Target` carries scheme+port) + LT-94 (endpoint-driven `authbypass`/`ssrf` leaf carries its recon fields, so `plan→execute` is self-sufficient) ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds — the pipeline now autonomously produces 13 verified actionable findings against crAPI, 0 FP). LT-99 (opt-in `--headless-crawl` JS-rendered katana) + LT-100 (opt-in `--param-mining` hidden-parameter oracle) ✅ both done 2026-09-09. **Still open:** content-discovery wordlist, LT-63 (CT-log sibling-API), LT-40 (a) — GraphQL SDL/introspection, LT-92 (BFLA vs. token-reuse split), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection).
@@ -69,7 +69,7 @@ release steps as terminal gates of their phase. Current order:
 
 **Tier 2 — Phase 8 (breadth & precision; each near self-contained, dependencies already satisfied):**
 1. **Step 1** — TCP + `netservice` detector. Biggest single new class, live-confirmed on a real target (LT-23). Fully independent.
-2. **Step 3** — JS static analysis + cloud-provider fingerprinting. Directly widens the thin idor/ssrf endpoint surface every live run has complained about; closes P1-5. Minor `resolveTechFact` merge overlap with Step 6 / LT-84.
+2. **Step 3** ✅ **done 2026-09-09** — JS static analysis + cloud-provider fingerprinting. Directly widens the thin idor/ssrf endpoint surface every live run has complained about; closes P1-5. Minor `resolveTechFact` merge overlap with Step 6 / LT-84 still open (unaffected by Step 3's own changes).
 3. **Step 5** — affected-version (semver) gating. Removes a concrete false-positive class (LT-7); `staleCVEPenalty` is only a stopgap today. Minor `matchTemplateTags` merge overlap with Phase 7 F3.
 4. **Step 2** — TLS/SSL passive checks. Small, clean, fully independent.
 5. **Step 6 third tranche (6c)** — the two recon-surface items promoted from
@@ -95,10 +95,13 @@ release steps as terminal gates of their phase. Current order:
 11. Phase 9 **Step 5** — full OWASP Agentic Top 10 re-walk + Phase 7's E2/F1/F2 (deferred here because they gate on Steps 3-4's new agent + active surface).
 12. Phase 9 **Step 6** — eval + `v0.9.0`.
 
-**Independence caveats (merge-coordination, not ordering):** Step 3's cloud-provider
-fact extraction and Step 6 / LT-84's CDN-attribution guard both touch
-`resolveTechFact`. Step 5's semver gate and Phase 7 F3's content-gate both touch
-`matchTemplateTags` / `scoreTemplateForTech`. Neither pair is a sequencing
+**Independence caveats (merge-coordination, not ordering):** as-built, Step 3's
+cloud-provider fact extraction landed in `pkg/fingerprint`'s signature table and
+`pkg/recon/jsstatic.go`, touching `canonicalTechTags`/`primaryTechWord` derivation
+in `matchTemplateTags` rather than `resolveTechFact` directly — so the caveat below
+now applies to Step 3 alongside Step 5 / Phase 7 F3, not to Step 6 / LT-84's
+(unrelated) `resolveTechFact` CDN-attribution guard. Step 5's semver gate and Phase 7
+F3's content-gate both touch `matchTemplateTags` / `scoreTemplateForTech`. Neither pair is a sequencing
 constraint — whichever lands first, the second rebases onto it.
 
 **Explicitly out of scope for this plan, named rather than silently dropped:**
@@ -213,7 +216,7 @@ weak lab endpoint (findings match the fixture expectations).
 
 ---
 
-## Step 3: JS Static Analysis — Secrets, Endpoints & Cloud-Provider Signals (Weeks 60-61) — ⬜ not yet implemented
+## Step 3: JS Static Analysis — Secrets, Endpoints & Cloud-Provider Signals (Weeks 60-61) — ✅ done 2026-09-09
 
 ### Design
 
@@ -257,6 +260,79 @@ no new dependency.
 Unit tests with planted-secret / planted-decoy fixtures (measure the false-positive
 rate against the decoys explicitly). Live: run Wave 3 against a JS-heavy owned target
 and confirm the new endpoints reach the plan tree's idor/ssrf candidate lists.
+
+### As-built (2026-09-09)
+
+All three sub-items shipped roughly as designed, plus one implementation-time
+correction and one real scoring bug the tests caught before it shipped broken:
+
+- **No new katana flag was needed.** katana's own `-jsonl` output already
+  carries `response.headers`/`response.body` by default (confirmed against
+  upstream source, not assumed — no `-omit-body`/`-omit-raw` flag was ever
+  passed). `runKatana` (`pkg/recon/crawl.go`) now decodes both and keeps a
+  bounded set of `.js`-content bodies (`maxJSStaticAssets` = 25, each capped
+  at `maxJSStaticBodyBytes` = 512 KiB) for `runJSStaticAnalysis` to read — a
+  genuine "no re-fetch" pass, exactly as scoped.
+- **Endpoint extraction** (`extractJSEndpoints`) is quoted-string-first
+  (LinkFinder-style: pull every quoted literal, then filter in Go) rather
+  than trying to encode "looks like a URL" into the regex itself — reuses
+  the existing `IsPlausibleURLPath` (LT-85) / `IsNonRouteAssetPath` (LT-117)
+  helpers the recon-derived candidate suggesters already hold themselves to,
+  rather than inventing a second FP bar.
+- **Secret detection** shipped the five patterns named in the design (AWS
+  access/session keys, Google API keys, Slack tokens, GitHub tokens,
+  private-key headers) plus the one shape-only pattern (`Authorization:
+  Bearer` literal), gated by a Shannon-entropy floor + placeholder-word
+  screen. **Correction from the design's anticipated files**: secrets don't
+  route through a new `pkg/detectors/misconfig` rule or a `jssecret`
+  detector — neither's `Run()` shape naturally accepts "here are pre-found
+  facts, no request needed." Instead `ReconResult` gains a frozen `secrets`
+  field (schema v1.9) carrying only a redacted match (never the real
+  value), and `cmd/hackerfive/scan.go`'s existing `--recon-file` path
+  (`jsSecretFindings`) converts them straight into `misconfig`-typed
+  Findings before `Dedup` — a direct conversion, not a detector re-deriving
+  something it can't independently confirm. Same "CLI (`recon`/`plan`/
+  `scan --recon-file`) first, webui/mcp wiring deferred" scoping LT-99/100
+  already established for this phase.
+- **Cloud-provider fingerprinting** also split from the design's anticipated
+  shape once the actual dispatch mechanics were traced through:
+  header-based signals (`x-amzn-requestid`, `x-amz-cf-id`, `x-amz-bucket-
+  region`, `x-goog-generation`, ...) landed as new `pkg/fingerprint`
+  signatures — zero new code path, just table entries, firing through the
+  same `runHTTPX` loop every existing signature already does. Bucket-URL-
+  shape signals (`extractCloudBucketRefs`, S3 host-/path-style and GCS
+  host-/path-style) attach their `aws`/`s3`/`gcp` `TechFact` to **the
+  bucket's own host**, not the referencing page's host as first drafted —
+  the corpus's real bucket-exposure templates (`aws-object-listing`,
+  `s3-username-disclosure`) need to run *against the bucket* to mean
+  anything, and a page can reference any third party's bucket with nothing
+  to do with the target, so a mention alone earns neither a scan nor a fact
+  about the referencing host. Gated on the bucket's own `--scope` check;
+  out-of-scope goes to `OutOfScope` only, mirroring `runKatana`'s existing
+  LT-52 cross-host handling.
+- **Real bug caught by the tests, fixed before shipping**: `canonicalTechTags`
+  pinning `"aws"`/`"s3"`/`"gcp"` to their real corpus tags wasn't sufficient
+  on its own — `"aws"` is itself listed in `genericTechWords` (a bare
+  hosting-brand word carries no product identity alone, the same reasoning
+  `nonActionableTech`'s "Google Cloud" entry documents), so `primaryTechWord`
+  returned `""` for it and it could never earn the 100-point exact-tag
+  bonus in `scoreTemplateForTech` — capped at 50 (word-tag-only), which sits
+  below `minTemplateLeafScore` (60, LT-48) for the mostly low/info-severity
+  real AWS bucket-exposure templates. Fixed in `matchTemplateTags`: a
+  canonical entry now derives its `primary` word directly from its own
+  `q.include[0]` rather than re-running it through the generic-word filter —
+  behavior-neutral for every pre-existing canonical entry
+  (nginx/jquery/mysql/wordpress/woocommerce/litespeed), since each of those
+  keys already equals what the filter would have derived anyway.
+- Tests: `pkg/recon/jsstatic_test.go` (unit-level extraction/decoy coverage
+  for all three sub-passes, plus two end-to-end `recon.Run` tests — one
+  proving the whole pipeline populates `Secrets`/`Endpoints`/`TechStack`
+  and round-trips the frozen schema, one proving an out-of-scope bucket
+  mention produces neither a scan nor a fact); `pkg/fingerprint/
+  detector_test.go` (each new header signature + a no-false-positive
+  case); `pkg/registry/decisionengine_test.go` (the aws/s3/gcp dispatch,
+  which is what caught the scoring bug above); `cmd/hackerfive/scan_test.go`
+  (the secrets→Finding conversion never leaks the real value).
 
 ---
 
@@ -450,7 +526,7 @@ three sub-items below widen the same Wave 3 endpoint set that `resolveEndpointFa
 - **First-party hidden-parameter mining (LT-100, 6c tranche)** — a curated
   candidate-name list + a corroboration-gated response-diff oracle over the existing
   rate-limited `httpclient`, behind `--param-mining`, `--recon-depth full` only, with
-  a hard per-host request cap. Finds parameters the app honours but never advertises
+  a hard per-run request cap shared across every target. Finds parameters the app honours but never advertises
   (reflected-XSS / LFI / SSRF / IDOR surface). Distinct from ffuf-as-a-tool (still
   out of scope) — targeted enumeration bounded like content discovery, not generic
   multi-position fuzzing. Full scheduled write-up in the "Still open in this step /
@@ -572,12 +648,12 @@ neither adds a dependency.
 - `pkg/recon/passive.go` / `crawl.go` — LT-63's CT-log sibling-API pass (subfinder `crtsh` source, `api.`/`gw.`/`mobile.` labels), scope-checked, `--recon-depth full` only.
 - `pkg/recon/wordlists/common.txt` (new, `go:embed`) — the curated default content-discovery list; header comment records its source and licence.
 - `pkg/recon/crawl.go` — **LT-99**: `runKatana` gains a headless bool + a per-host `context.WithTimeout`; headless katana args (`-headless -no-incognito` / `-system-chrome`) added only when the flag is set; hits fold in as `wave3-headless-crawl` (or merge into the existing katana source), deduped.
-- `pkg/recon/parammine.go` (new) — **LT-100**: the candidate-name diff-oracle pass — many-per-request batching, binary-search narrowing, the ≥2-signal corroboration gate, the per-host request cap; emits `EndpointFact{Source: "wave3-param-mining"}` with the discovered key keyless on the URL.
+- `pkg/recon/parammine.go` (new) — **LT-100**: the candidate-name diff-oracle pass — many-per-request batching, binary-search narrowing, the ≥2-signal corroboration gate, the per-run request cap shared across every target; emits `EndpointFact{Source: "wave3-param-mining"}` with the discovered key keyless on the URL.
 - `pkg/recon/wordlists/params.txt` (new, `go:embed`) — the curated default hidden-parameter candidate list (hundreds of high-signal names); header comment records provenance/licence; `--param-mining-wordlist` overrides.
 - `pkg/recon/recon.go` — `ClientConfig`/`Option`s for the new knobs (crawl depth, headless, content-discovery on/off + wordlist override, param-mining on/off + wordlist override + request cap).
 - `cmd/hackerfive/{recon,plan}.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_recon.go` — surface the flags/fields (`--headless-crawl`, `--param-mining`, `--param-mining-wordlist`).
 - `tests/unit/crawl_test.go` — depth threaded through to the katana arg list; headless flag gated correctly (LT-99); `httpx -path` present only when `--content-discovery` is set; a hit becomes a `wave3-content-discovery` `EndpointFact` and reaches `resolveEndpointFacts`.
-- `tests/unit/parammine_test.go` (new) — **LT-100**: a fixture endpoint that reflects an undocumented `?debug=` yields exactly one discovered-param `EndpointFact`; one that reflects nothing yields none; a single weak signal (length shift only) is not enough; the per-host request cap is honoured; the discovered param reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`.
+- `tests/unit/parammine_test.go` (new) — **LT-100**: a fixture endpoint that reflects an undocumented `?debug=` yields exactly one discovered-param `EndpointFact`; one that reflects nothing yields none; a single weak signal (length shift only) is not enough; the per-run request cap shared across every target is honoured; the discovered param reaches `SuggestSSRFParamsFromRecon` / `SuggestIDOREndpointCandidates`.
 
 ### Verification
 Unit: the katana arg list reflects the configured depth/headless; the httpx arg list

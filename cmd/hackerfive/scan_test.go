@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
+	"github.com/tuangatech/hacker-five/pkg/recon"
 )
 
 func TestResolveTargets_Empty(t *testing.T) {
@@ -31,6 +32,33 @@ func TestResolveTargets_FileWithMultipleTargets(t *testing.T) {
 	targets, err := resolveTargets(path)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"http://a.example", "http://b.example"}, targets, "blank lines must be skipped")
+}
+
+// TestJSSecretFindings_ConvertsAndNeverLeaksRealValue guards Phase 8 Step 3
+// (docs/17-implementation-plan-ph8.md): a recon-derived JSSecretFact must
+// convert into a real, evidence-carrying Finding, never with the unredacted
+// secret anywhere in the result.
+func TestJSSecretFindings_ConvertsAndNeverLeaksRealValue(t *testing.T) {
+	secrets := []recon.JSSecretFact{
+		{URL: "https://target.example/app.js", Line: 42, Kind: "aws-access-key", Severity: "high", Redacted: "AKIA...MNOP"},
+	}
+	got := jsSecretFindings(secrets)
+	require.Len(t, got, 1)
+	f := got[0]
+	assert.Equal(t, "misconfig", f.Type)
+	assert.Equal(t, "high", f.Severity)
+	assert.Equal(t, "high", f.Confidence)
+	assert.Equal(t, "https://target.example/app.js", f.Target)
+	assert.Contains(t, f.Description, "app.js:42")
+	assert.Equal(t, "AKIA...MNOP", f.Evidence["match"])
+	assert.NotContains(t, f.ID, "AKIA", "the Finding ID must never embed the actual secret")
+}
+
+func TestJSSecretID_StableAndIDSafe(t *testing.T) {
+	id := jsSecretID("aws-access-key", "https://target.example/static/app.js", 3)
+	assert.Equal(t, id, jsSecretID("aws-access-key", "https://target.example/static/app.js", 3), "the same fact must always produce the same ID")
+	assert.NotContains(t, id, "/", "a Finding ID must not carry raw URL punctuation")
+	assert.NotContains(t, id, ":")
 }
 
 func TestParseTags_Empty(t *testing.T) {

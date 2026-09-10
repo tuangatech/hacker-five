@@ -118,6 +118,19 @@ type TechFact struct {
 	Confidence string `json:"confidence"`
 }
 
+// JSSecretFact is a hardcoded secret found in a served JavaScript bundle
+// (Phase 8 Step 3, docs/follow-up.md: LinkFinder/SecretFinder-style static
+// analysis over Wave 3's already-fetched .js bodies — no re-fetch). Redacted
+// keeps only enough of the match to confirm the finding without ever
+// carrying the real secret value in the ReconResult / a JSON export.
+type JSSecretFact struct {
+	URL      string `json:"url"`      // the JS bundle it was found in
+	Line     int    `json:"line"`     // 1-based line number within that bundle
+	Kind     string `json:"kind"`     // "aws-access-key" | "google-api-key" | "slack-token" | "github-token" | "private-key" | "hardcoded-bearer-token"
+	Severity string `json:"severity"` // mirrors detectors.Finding.Severity's vocabulary
+	Redacted string `json:"redacted"` // first/last few characters only — never the full secret
+}
+
 // APISpecFact records that a machine-readable API spec was found publicly
 // reachable — presence only, never parsed; generic spec parsing is still an
 // explicit, named scope cut from docs/91-research-recon-phase.md §3's Wave
@@ -183,6 +196,7 @@ type ReconResult struct {
 	Endpoints       []EndpointFact       `json:"endpoints,omitempty"`
 	TechStack       []TechFact           `json:"tech_stack,omitempty"`
 	APISpec         *APISpecFact         `json:"api_spec,omitempty"`
+	Secrets         []JSSecretFact       `json:"secrets,omitempty"`
 	UniformResponse *UniformResponseFact `json:"uniform_response,omitempty"`
 	AppSurface      *AppSurfaceFact      `json:"app_surface,omitempty"`
 	OutOfScope      []string             `json:"out_of_scope,omitempty"`
