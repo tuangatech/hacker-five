@@ -154,6 +154,9 @@ func (d *Detector) checkMissingAuth(ctx context.Context, target, host, _, _ stri
 		if resp.StatusCode != http.StatusOK {
 			continue
 		}
+		if redirectedAwayFrom(req, resp) {
+			continue // LT-124: 200 belongs to whatever the redirect landed on, not path itself
+		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("authbypass-missing-auth-%s", sanitizeID(path)),
 			Type:        "authbypass",
@@ -192,6 +195,9 @@ func (d *Detector) checkJWTAlgNone(ctx context.Context, target, host, ownerToken
 			}
 			if resp.StatusCode != http.StatusOK {
 				continue
+			}
+			if redirectedAwayFrom(req, resp) {
+				continue // LT-124: 200 belongs to whatever the redirect landed on, not path itself
 			}
 			findings = append(findings, detectors.Finding{
 				ID:          fmt.Sprintf("authbypass-jwt-%s-%s", variant, sanitizeID(path)),
@@ -334,6 +340,23 @@ func (d *Detector) checkRateLimitSignal(ctx context.Context, target, host, _, _ 
 	}}, nil
 }
 
+// redirectedAwayFrom reports whether resp is the result of the shared
+// client (pkg/scanner/engine.go's maxRedirects) following one or more
+// redirects away from req's originally-requested path — LT-124, live-found:
+// GET https://nettix.com.pe/wp-admin/ really returns 302 to
+// wp-login.php (WordPress correctly gating its admin panel), but the
+// client transparently follows that redirect, so a bare
+// resp.StatusCode == 200 check reports the *login page's* 200 as evidence
+// /wp-admin/ itself has no auth. Mirrors misconfig.Detector's existing
+// resp.Request.URL pattern (detector.go's checkExposedPaths/loginSucceeded)
+// rather than inventing a new one.
+func redirectedAwayFrom(req *http.Request, resp *http.Response) bool {
+	if resp.Request == nil || resp.Request.URL == nil {
+		return false
+	}
+	return resp.Request.URL.Path != req.URL.Path
+}
+
 // distinctAccountIdentifiers returns the set of distinct per-account
 // identifier-shaped values (emails, id/user_id/userId/phone JSON field
 // values) found in body. See rules.go's emailRe/idKeyRe doc comment.
@@ -389,6 +412,9 @@ func (d *Detector) checkBFLA(ctx context.Context, target, host, ownerToken, othe
 		if resp.StatusCode != http.StatusOK {
 			continue
 		}
+		if redirectedAwayFrom(req, resp) {
+			continue // LT-124: 200 belongs to whatever the redirect landed on, not path itself
+		}
 		identifiers := distinctAccountIdentifiers(body)
 		if len(identifiers) <= 1 {
 			continue
@@ -430,7 +456,7 @@ func (d *Detector) checkTokenReuse(ctx context.Context, target, host, ownerToken
 	}
 	var findings []detectors.Finding
 	for _, path := range protectedPaths {
-		_, ownerResp, ownerBody, err := d.doRequest(ctx, http.MethodGet, target, host, path, ownerToken)
+		ownerReq, ownerResp, ownerBody, err := d.doRequest(ctx, http.MethodGet, target, host, path, ownerToken)
 		if err != nil {
 			continue
 		}
@@ -440,6 +466,9 @@ func (d *Detector) checkTokenReuse(ctx context.Context, target, host, ownerToken
 		}
 		if ownerResp.StatusCode != http.StatusOK || otherResp.StatusCode != http.StatusOK {
 			continue
+		}
+		if redirectedAwayFrom(ownerReq, ownerResp) || redirectedAwayFrom(otherReq, otherResp) {
+			continue // LT-124: 200 belongs to whatever the redirect landed on, not path itself — an "identical response" here is just the same login page both tokens got bounced to
 		}
 		if string(ownerBody) != string(otherBody) {
 			continue // expected/safe: each account sees its own distinct content
@@ -499,6 +528,9 @@ func (d *Detector) checkBrokenSession(ctx context.Context, target, host, ownerTo
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil
+	}
+	if redirectedAwayFrom(req, resp) {
+		return nil, nil // LT-124: 200 belongs to whatever the redirect landed on (e.g. a login page) — not evidence the dead token was still accepted
 	}
 	return []detectors.Finding{{
 		ID:          fmt.Sprintf("authbypass-broken-session-%s", sanitizeID(path)),

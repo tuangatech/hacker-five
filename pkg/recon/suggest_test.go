@@ -331,6 +331,26 @@ func TestSuggestAuthBypassPathsFromRecon(t *testing.T) {
 // parameterless api-spec route the OpenAPI doc marks auth-required becomes a
 // protected-path candidate; a {param} route does not (no id to invent), and
 // a spec route the doc leaves open does not.
+// TestSuggestAuthBypassPathsFromRecon_RedirectToLoginBoundary is LT-125's
+// regression: a redirect-to-login path (WordPress /wp-admin/ -> wp-login.php
+// is the live-observed shape) must be bucketed as protected even though it
+// never itself returned 401/403 — recon only ever saw the redirect. A 3xx
+// whose target has nothing login-shaped about it (a plain cross-host
+// redirect) and a 3xx with no observed destination at all must not be
+// swept in.
+func TestSuggestAuthBypassPathsFromRecon_RedirectToLoginBoundary(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/wp-admin/", StatusCode: 302, FinalURL: "https://example.com/wp-login.php?redirect_to=%2Fwp-admin%2F"},
+		{URL: "https://example.com/account/", StatusCode: 301, RedirectChain: []string{"301 https://example.com/account/", "https://example.com/signin"}},
+		{URL: "https://example.com/old-blog", StatusCode: 301, FinalURL: "https://example.com/blog"},
+		{URL: "https://example.com/no-destination-observed", StatusCode: 302},
+	}}
+
+	protected, _, _ := SuggestAuthBypassPathsFromRecon(result)
+
+	assertStringSlice(t, "protected", protected, []string{"/wp-admin/", "/account/"})
+}
+
 func TestSuggestAuthBypassPathsFromRecon_SpecDeclaredAuth(t *testing.T) {
 	result := &ReconResult{Endpoints: []EndpointFact{
 		{URL: "https://api.example.com/identity/api/v2/user/dashboard", Source: "api-spec", AuthRequired: true},

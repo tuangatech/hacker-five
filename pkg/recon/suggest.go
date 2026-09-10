@@ -365,6 +365,30 @@ func IsRedirectFlowPath(p string) bool {
 	return false
 }
 
+// redirectsToLoginBoundary reports whether ep is a 3xx whose redirect
+// target looks like a login/sign-in page — LT-125's signal, checked against
+// FinalURL (set by probeUnprobedEndpoints/analyzeRedirect) or, failing
+// that, the last hop recorded in RedirectChain. A path recon never actually
+// observed following anywhere (no FinalURL, no chain) can't be judged, so
+// it returns false rather than guessing.
+func redirectsToLoginBoundary(ep EndpointFact) bool {
+	switch ep.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+	default:
+		return false
+	}
+	dest := ep.FinalURL
+	if dest == "" && len(ep.RedirectChain) > 0 {
+		dest = ep.RedirectChain[len(ep.RedirectChain)-1]
+	}
+	if dest == "" {
+		return false
+	}
+	lower := strings.ToLower(dest)
+	return strings.Contains(lower, "login") || strings.Contains(lower, "signin") || strings.Contains(lower, "sign-in")
+}
+
 // SuggestAuthBypassPathsFromRecon buckets result's EndpointFacts into
 // protected/login/logout path candidates for authbypass's own three config
 // fields — extracted from pkg/webui's original private suggestPathsFromRecon
@@ -390,6 +414,20 @@ func SuggestAuthBypassPathsFromRecon(result *ReconResult) (protected, login, log
 		lower := strings.ToLower(path)
 		switch {
 		case ep.StatusCode == http.StatusUnauthorized || ep.StatusCode == http.StatusForbidden:
+			if !seenProtected[path] {
+				seenProtected[path] = true
+				protected = append(protected, path)
+			}
+		case redirectsToLoginBoundary(ep):
+			// LT-125: a redirect to a login page is the dominant
+			// access-control shape for session-cookie apps (WordPress
+			// /wp-admin/ -> wp-login.php, and most web apps generally) —
+			// a 401/403-equivalent "should reject me" signal that the
+			// switch above never saw. Must ship together with/after
+			// LT-124's authbypass redirect-blindness fix: widening this
+			// net without it would turn every correctly-secured
+			// redirect-gated page into a guaranteed false "missing auth"
+			// finding.
 			if !seenProtected[path] {
 				seenProtected[path] = true
 				protected = append(protected, path)

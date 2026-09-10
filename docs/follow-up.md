@@ -368,62 +368,60 @@ That negative-path behavior is itself the correct, intended outcome — not a bu
 digging into *why* authbypass got zero leaves surfaced LT-124/125 below, the most
 valuable findings of this round.
 
-- **LT-124 — `authbypass.checkMissingAuth` (and likely `checkBFLA`/`checkTokenReuse`/
-  `checkBrokenSession`, same pattern) blindly trusts `resp.StatusCode` after the
-  shared client transparently follows a redirect — a live, reproduced FALSE POSITIVE
+- **LT-124 ✅ done 2026-09-10 — `authbypass.checkMissingAuth` (and, confirmed on
+  inspection, `checkJWTAlgNone`/`checkBFLA`/`checkTokenReuse`/`checkBrokenSession`,
+  same pattern) blindly trusted `resp.StatusCode` after the shared client
+  transparently follows a redirect — a live, reproduced FALSE POSITIVE
   on a correctly-secured endpoint.** `pkg/scanner/engine.go:33`'s `maxRedirects = 5`
   means every detector's `d.client.Do(req)` silently follows up to 5 redirect hops;
-  `checkMissingAuth` (`pkg/detectors/authbypass/detector.go:147-166`) only checks
-  `resp.StatusCode != http.StatusOK` and reports `Target: req.URL.String()` — the
-  *original*, pre-redirect URL — with no check on `resp.Request.URL` to notice a
-  redirect happened at all. Live-reproduced: `GET https://nettix.com.pe/wp-admin/`
-  really returns `302` + `x-redirect-by: WordPress` + `location:
-  https://www.nettix.com.pe/wp-login.php?redirect_to=...` (confirmed via manual
-  `curl -D -`, no `-L`) — WordPress correctly protecting its admin panel. But
-  `hackerfive scan --detector authbypass --protected-paths /wp-admin/` against the
-  same host produced `authbypass-missing-auth-wp-admin`, **high/high**: `"/wp-admin/
-  returned status 200 with no Authorization header at all — endpoint accepts
-  unauthenticated requests"` — the client followed the redirect to the login page,
-  saw its `200`, and the check reported that as evidence `/wp-admin/` itself has no
-  auth. The exact same "did this response come from a different URL than I asked
-  for" check already exists elsewhere in this codebase — `pkg/detectors/misconfig/
-  detector.go:327-328,1363-1381` reads `resp.Request.URL` for precisely this reason
-  — it just was never propagated to authbypass/idor/ssrf. `idor`'s baseline mode
-  (`pkg/detectors/idor/detector.go:254-260`) and `ssrf`'s diff-based checks share the
-  identical blind-`StatusCode` pattern but are less exposed in practice (a
-  consistently-redirecting endpoint becomes part of the *baseline itself* under
-  idor's majority-vote `Establish`, so it mostly self-corrects there — `checkMissingAuth`
-  has no such baseline to fall back on, a single request is a verdict). **Fix:** every
-  check that fires an unauthenticated/other-account request and treats
-  `StatusCode == 200` as "access granted" must first confirm `resp.Request == nil ||
-  resp.Request.URL.Path == the requested path` (or disable redirect-following for
-  this class of probe entirely, via a `MaxRedirects: 0` variant client, and treat any
-  3xx as "still protected" rather than silently resolving it) — port `misconfig`'s
-  existing pattern rather than inventing a new one. **Top priority: this is a real,
-  live false positive directly contradicting the <5% FP target.**
-- **LT-125 — `recon.SuggestAuthBypassPathsFromRecon` only recognizes `401`/`403` as
-  "protected path" evidence, missing the extremely common "3xx redirect to a login
-  page" access-control shape — which is *why* this round's plan tree had zero
-  authbypass leaves despite the target's most textbook admin-panel candidate sitting
-  right there.** `pkg/recon/suggest.go:377-417`'s `switch` only buckets a path into
-  `protected` on `ep.StatusCode == http.StatusUnauthorized || ...Forbidden` or an
-  `api-spec` auth-required route; a `302`/`301` is never considered, even though
-  WordPress (`/wp-admin/` → `wp-login.php`), and most session-cookie web apps
-  generally, gate access with a redirect rather than a 401/403. Live-confirmed:
-  recon recorded `https://nettix.com.pe/wp-admin/` as an `EndpointFact` (`status_code:
-  302`, `source: robots-txt`) but it never reached `protected`, so `authbypass` never
-  got a leaf at all on this run — the single highest-value, most standard "should
-  reject me" check on the whole target silently never ran. **Fix — add the redirect
-  case:** when a non-static-asset path's `EndpointFact.StatusCode` is `301`/`302`/`303`/
-  `307`/`308` and (heuristically) its `RedirectChain`/response shape suggests a login
-  boundary (matches recon's own existing `wave3-auth-boundary-heuristic` keyword list:
-  "login"/"signin" in the redirect target, or an X-Redirect-By-style header worth
-  recording on the fact), add it to `protected` too. **Sequencing constraint: land
-  this only together with or strictly after LT-124** — widening the protected-path
-  net to include redirect-shaped endpoints, without first fixing `checkMissingAuth`'s
-  redirect-blindness, would turn every correctly-secured redirect-gated admin panel
-  on the internet into a guaranteed false "missing auth" finding (exactly LT-124's
-  bug, just triggered automatically instead of by hand).
+  `checkMissingAuth` only checked `resp.StatusCode != http.StatusOK` and reported
+  `Target: req.URL.String()` — the *original*, pre-redirect URL — with no check on
+  `resp.Request.URL` to notice a redirect happened at all. Live-reproduced:
+  `GET https://nettix.com.pe/wp-admin/` really returns `302` + `x-redirect-by:
+  WordPress` + `location: https://www.nettix.com.pe/wp-login.php?redirect_to=...`
+  (confirmed via manual `curl -D -`, no `-L`) — WordPress correctly protecting its
+  admin panel. But `hackerfive scan --detector authbypass --protected-paths
+  /wp-admin/` against the same host produced `authbypass-missing-auth-wp-admin`,
+  **high/high**: `"/wp-admin/ returned status 200 with no Authorization header at
+  all — endpoint accepts unauthenticated requests"` — the client followed the
+  redirect to the login page, saw its `200`, and the check reported that as
+  evidence `/wp-admin/` itself has no auth. **Fix:** a new
+  `redirectedAwayFrom(req, resp)` helper (`pkg/detectors/authbypass/detector.go`,
+  porting `misconfig.Detector`'s existing `resp.Request.URL` pattern —
+  `detector.go:327-328,1363-1381` — rather than inventing a new one) — every one
+  of the five checks now skips a `StatusCode == 200` verdict when the response
+  actually came from a different path than the one requested. `idor`'s baseline
+  mode (`pkg/detectors/idor/detector.go:254-260`) and `ssrf`'s diff-based checks
+  share the identical blind-`StatusCode` pattern but were left as-is in this
+  pass — less exposed in practice, since a consistently-redirecting endpoint
+  becomes part of the *baseline itself* under idor's majority-vote `Establish`,
+  so it mostly self-corrects there; `checkMissingAuth` had no such baseline to
+  fall back on, a single request was a verdict. Tests: five new
+  `TestAuthBypass*_RedirectToLoginPage_NoFalsePositive` cases in
+  `tests/unit/detector_authbypass_test.go`, one per check, reproducing the exact
+  `/wp-admin/` → `wp-login.php` shape found live.
+- **LT-125 ✅ done 2026-09-10 — `recon.SuggestAuthBypassPathsFromRecon` only
+  recognized `401`/`403` as "protected path" evidence, missing the extremely
+  common "3xx redirect to a login page" access-control shape — which is *why*
+  this round's plan tree had zero authbypass leaves despite the target's most
+  textbook admin-panel candidate sitting right there.** Fixed via a new
+  `redirectsToLoginBoundary(ep)` helper (`pkg/recon/suggest.go`) added as a new
+  `switch` case ahead of the api-spec/login/logout cases: a `301`/`302`/`303`/
+  `307`/`308` fact whose `FinalURL` (falling back to `RedirectChain`'s last hop)
+  contains `login`/`signin`/`sign-in` is now bucketed into `protected` alongside
+  observed `401`/`403`s. Landed together with LT-124 in the same commit, per
+  that finding's own sequencing constraint — the redirect-blindness fix above
+  ships first in file order so a redirect-shaped `protected` entry can never
+  reach `checkMissingAuth` without the guard already in place. Test:
+  `TestSuggestAuthBypassPathsFromRecon_RedirectToLoginBoundary` (`pkg/recon/
+  suggest_test.go`) — the `/wp-admin/` shape via `FinalURL`, a `RedirectChain`-
+  only variant, and two negative cases (a plain cross-host redirect with
+  nothing login-shaped in its destination; a 3xx recon never actually observed
+  a destination for). Live-confirmed gap this closes: recon recorded
+  `https://nettix.com.pe/wp-admin/` as an `EndpointFact` (`status_code: 302`,
+  `source: robots-txt`) but it never reached `protected`, so `authbypass` never
+  got a leaf at all on that run — the single highest-value, most standard
+  "should reject me" check on the whole target silently never ran.
 - **LT-126 — `probeCommonPaths` records a probed path's pre-redirect URL alongside a
   post-redirect (same-host) response's status/body/content-type, silently
   misattributing one URL's content to a different URL.** `pkg/recon/crawl.go`'s
