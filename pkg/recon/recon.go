@@ -437,6 +437,9 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 		if ing.APISpec != nil {
 			agg.addAPISpec(*ing.APISpec)
 		}
+		if ing.SignupEndpoint != nil {
+			agg.setSignupEndpoint(*ing.SignupEndpoint)
+		}
 		for _, h := range ing.OutOfScope {
 			agg.addOutOfScope(h)
 		}

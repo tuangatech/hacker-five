@@ -125,6 +125,36 @@ func TestAuthBypassMissingAuth_TrailingSlashTarget_NoDoubleSlash(t *testing.T) {
 	assert.Equal(t, srv.URL+"/admin", got[0].Target)
 }
 
+// TestAuthBypassMissingAuth_RedirectToLoginPage_NoFalsePositive is LT-124's
+// regression: a live, reproduced false positive against nettix.com.pe. The
+// shared client transparently follows a redirect (pkg/scanner/engine.go's
+// maxRedirects), so a naive resp.StatusCode == 200 check misreads a
+// correctly-secured /wp-admin/ (302 -> wp-login.php, which itself answers
+// 200) as "accepts unauthenticated requests". This mock reproduces that
+// exact shape: the protected path never itself returns 200, only its
+// login-page redirect target does.
+func TestAuthBypassMissingAuth_RedirectToLoginPage_NoFalsePositive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/wp-admin/":
+			http.Redirect(w, r, "/wp-login.php?redirect_to=%2Fwp-admin%2F", http.StatusFound)
+		case "/wp-login.php":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>login form</html>"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", "", []string{"/wp-admin/"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-missing-auth-"),
+		"a redirect-to-login endpoint must not be reported as accepting unauthenticated requests")
+}
+
 func TestAuthBypassJWTAlgNone_Hit(t *testing.T) {
 	owner := signedJWT(t, "realsecret")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +217,33 @@ func TestAuthBypassJWTAlgNone_NoFinding(t *testing.T) {
 // rateLimitProbeBodies) per authbypass.LoginPaths entry, all 404. If the
 // weak-secret check made even one network call, the count would be higher
 // than 2*len(authbypass.LoginPaths).
+// TestAuthBypassJWTAlgNone_RedirectToLoginPage_NoFalsePositive is LT-124's
+// checkJWTAlgNone counterpart: a tampered token that gets bounced to a
+// login page (which itself answers 200) must not be reported as an
+// accepted signature bypass.
+func TestAuthBypassJWTAlgNone_RedirectToLoginPage_NoFalsePositive(t *testing.T) {
+	owner := signedJWT(t, "realsecret")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/profile":
+			http.Redirect(w, r, "/login", http.StatusFound)
+		case "/login":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>login form</html>"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, owner, "", []string{"/profile"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-jwt-alg-none"))
+	assert.Empty(t, withPrefix(findings, "authbypass-jwt-signature-stripped"))
+}
+
 func TestAuthBypassJWTWeakSecret_Hit(t *testing.T) {
 	owner := signedJWT(t, "secret") // "secret" is in authbypass.WeakJWTSecrets
 
@@ -312,7 +369,7 @@ func TestAuthBypassTokenReuse_Hit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/me" {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("same content regardless of account"))
+			_, _ = w.Write([]byte(`{"plan":"free","user_id":"12345"}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -326,6 +383,167 @@ func TestAuthBypassTokenReuse_Hit(t *testing.T) {
 	got := withPrefix(findings, "authbypass-token-reuse-")
 	require.Len(t, got, 1)
 	assert.Equal(t, "low", got[0].Confidence)
+}
+
+// TestAuthBypassTokenReuse_NoFinding_EmptySharedBody and
+// TestAuthBypassTokenReuse_NoFinding_NonPersonalizedBody guard LT-92's
+// docs/follow-up.md tightening: an identical response is only meaningful
+// token-reuse signal when it's non-empty and actually carries a
+// per-account-shaped field — an empty list or a plain shared/non-personalized
+// page (this project's own live testing found both to be common, benign
+// cases) must not flag.
+func TestAuthBypassTokenReuse_NoFinding_EmptySharedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/orders" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "other-token", []string{"/orders"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-token-reuse-"))
+}
+
+func TestAuthBypassTokenReuse_NoFinding_NonPersonalizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/catalog" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("same content regardless of account"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "other-token", []string{"/catalog"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-token-reuse-"))
+}
+
+// TestAuthBypassBFLA_Hit reproduces LT-92's real crAPI finding: a plain
+// non-privileged token GETting a list/admin-shaped path back gets every
+// account's PII, not just its own — a broken-function-level-authorization
+// bug in its own right, previously only surfaced as an undersold
+// checkTokenReuse "may not differentiate by account" hit.
+func TestAuthBypassBFLA_Hit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/workshop/api/management/users/all" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"email":"alice@example.com"},{"email":"bob@example.com"}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "low-priv-token", "", []string{"/workshop/api/management/users/all"})
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "authbypass-bfla-")
+	require.Len(t, got, 1)
+	assert.Equal(t, "high", got[0].Severity)
+	assert.Equal(t, "high", got[0].Confidence)
+	assert.Equal(t, "2", got[0].Evidence["distinct_identifiers"])
+}
+
+func TestAuthBypassBFLA_NoFinding_SingleAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin/profile" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"email":"alice@example.com"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "", []string{"/admin/profile"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-bfla-"))
+}
+
+// TestAuthBypassBFLA_NoFinding_PathNotShaped confirms checkBFLA only
+// evaluates bflaPathHints-shaped paths — a multi-account response on an
+// ordinary path is checkTokenReuse's job (when both tokens are supplied),
+// not checkBFLA's.
+func TestAuthBypassBFLA_NoFinding_PathNotShaped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/directory" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"email":"alice@example.com"},{"email":"bob@example.com"}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "", []string{"/directory"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-bfla-"))
+}
+
+// TestAuthBypassTokenReuse_RedirectToLoginPage_NoFalsePositive is LT-124's
+// checkTokenReuse counterpart: two unrelated tokens both bounced to the same
+// login page would otherwise look like "identical response for two
+// accounts" — but it's the login page's content being compared, not the
+// protected path's, so it must not fire.
+func TestAuthBypassTokenReuse_RedirectToLoginPage_NoFalsePositive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/me":
+			http.Redirect(w, r, "/login", http.StatusFound)
+		case "/login":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"shared-login-page"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "other-token", []string{"/me"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-token-reuse-"))
+}
+
+// TestAuthBypassBFLA_RedirectToLoginPage_NoFalsePositive is LT-124's
+// checkBFLA counterpart: a list/admin-shaped path that's actually
+// redirect-gated must not have its login page's content mistaken for the
+// protected endpoint's own (multi-account) data.
+func TestAuthBypassBFLA_RedirectToLoginPage_NoFalsePositive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin/users/all":
+			http.Redirect(w, r, "/login", http.StatusFound)
+		case "/login":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"email":"alice@example.com"},{"email":"bob@example.com"}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "low-priv-token", "", []string{"/admin/users/all"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-bfla-"))
 }
 
 func TestAuthBypassTokenReuse_NoFinding_DifferentContent(t *testing.T) {
@@ -376,6 +594,33 @@ func TestAuthBypassBrokenSession_Hit(t *testing.T) {
 	got := withPrefix(findings, "authbypass-broken-session-")
 	require.Len(t, got, 1)
 	assert.Equal(t, "high", got[0].Severity)
+}
+
+// TestAuthBypassBrokenSession_RedirectToLoginPage_NoFalsePositive is
+// LT-124's checkBrokenSession counterpart: a protected path that correctly
+// bounces the dead token to a login page (itself a 200) must not be
+// reported as "still accepted after logout".
+func TestAuthBypassBrokenSession_RedirectToLoginPage_NoFalsePositive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/logout":
+			w.WriteHeader(http.StatusOK)
+		case "/profile":
+			http.Redirect(w, r, "/login", http.StatusFound)
+		case "/login":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>login form</html>"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "", []string{"/profile"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-broken-session-"))
 }
 
 // TestAuthBypassLoginPaths_Override proves WithLoginPaths actually changes

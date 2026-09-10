@@ -37,6 +37,16 @@ type Config struct {
 	Insecure           bool   // maps to httpclient.Config.InsecureSkipVerify; default false
 	HostErrorThreshold int    // 0 = use hosterrors.DefaultThreshold
 
+	// IDORSeedID / IDOREndpointIsUUID are LT-95's (docs/follow-up.md)
+	// UUID-keyed-BOLA counterpart to EndpointTemplate: a real, concrete ID
+	// value recon observed for EndpointTemplate's {{id}} position
+	// (recon.SuggestIDORSeedIDs), and whether it's UUID-shaped. When
+	// IDOREndpointIsUUID is true, pkg/scanner/engine.go dispatches
+	// idor.RandomUUIDStrategy with this seed instead of the default
+	// SequentialIntStrategy, which can never reach a UUID-keyed route.
+	IDORSeedID         string
+	IDOREndpointIsUUID bool
+
 	AuthToken      string // primary/"owner" account token — from --auth-token or HACKERFIVE_AUTH_TOKEN, never hardcoded
 	OtherAuthToken string // second, unrelated account token used for IDOR baseline comparison; optional, but required for high-confidence IDOR findings
 
@@ -102,6 +112,15 @@ type Config struct {
 	// (StringArrayVar), not a single comma-separated flag — see
 	// docs/13-implementation-plan-ph4.md Step 2.
 	SSRFParams []string
+
+	// SSRFBodyParams are candidate JSON request-body field names (recon-
+	// derived via SuggestSSRFBodyParamsFromRecon, LT-96) the ssrf detector's
+	// body-injection check fires against — additive to SSRFParams, not a
+	// replacement: a target may take the attacker-controlled URL in a query
+	// param, a body field, or both. Optional even for --detector ssrf, since
+	// SSRFParams alone remains a valid, required-field-satisfying
+	// configuration.
+	SSRFBodyParams []string
 
 	// OOBServers are the base URL(s) of Interactsh-protocol server(s) (from
 	// repeatable --oob-server) the ssrf detector's blind callback check
@@ -225,6 +244,26 @@ type Config struct {
 	// escape hatch for an operator who has authorised a hard hammer.
 	DisableAdaptiveThrottle bool
 
+	// AutoProvisionAccount (from --auto-provision-account) and
+	// ProvisionEmailTemplate (from --provision-email, required alongside it)
+	// gate pkg/provision.ProvisionAccount — registering a throwaway second
+	// account against a recon-observed signup endpoint
+	// (recon.ReconResult.SignupEndpoint) so idor's baseline mode and
+	// authbypass's token-reuse/BFLA checks get a second account's token
+	// without an operator finding/creating one by hand. This is a *second*,
+	// independently-scoped exception to this tool's read/enumerate-only
+	// default — deliberately not --allow-writes, which CLAUDE.md scopes
+	// specifically to pkg/detectors/businesslogic's mutating checks; creating
+	// a persistent account is its own distinct class of side effect. Absent
+	// (the default, false), no account is provisioned and OtherAuthToken
+	// stays whatever --other-auth-token/its env var supplied (possibly
+	// empty), same as before this flag existed. No default/fabricated email
+	// domain is ever synthesised: ProvisionEmailTemplate empty while
+	// AutoProvisionAccount is true is a Validate()-time error, not a silent
+	// no-op.
+	AutoProvisionAccount   bool
+	ProvisionEmailTemplate string
+
 	// IDORPreview (from --idor-preview) fires one extra preflight GET against
 	// the resolved --endpoint before idor's real ID-enumeration loop begins,
 	// logging its status/body-length — closes the "a wrong EndpointTemplate
@@ -309,11 +348,14 @@ func (c Config) validate(opts ValidateOptions) error {
 	if c.Detector == "authbypass" && len(c.ProtectedPaths) == 0 && !opts.SkipProtectedPathsRequired {
 		return fmt.Errorf("validating config: authbypass detector requires --protected-paths")
 	}
-	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 && !opts.SkipSSRFParamsRequired {
-		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param")
+	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 && len(c.SSRFBodyParams) == 0 && !opts.SkipSSRFParamsRequired {
+		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param (query) or a recon-derived body param (LT-96)")
 	}
 	if c.Detector == "businesslogic" && c.AuthToken == "" {
 		return fmt.Errorf("validating config: businesslogic detector requires --auth-token (or its env var equivalent)")
+	}
+	if c.AutoProvisionAccount && c.ProvisionEmailTemplate == "" {
+		return fmt.Errorf("validating config: --auto-provision-account requires --provision-email (no default/fabricated email domain is ever used)")
 	}
 	if c.AuthHeaderFormat != "" && !strings.Contains(c.AuthHeaderFormat, "{token}") {
 		return fmt.Errorf("validating config: --auth-header-format must contain a {token} placeholder, got %q", c.AuthHeaderFormat)

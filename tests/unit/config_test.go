@@ -98,8 +98,12 @@ func TestConfigValidate(t *testing.T) {
 			},
 		},
 		{
-			name:    "authbypass without auth token",
-			mutate:  func(c scanner.Config) scanner.Config { c.Detector = "authbypass"; c.ProtectedPaths = []string{"/admin"}; return c },
+			name: "authbypass without auth token",
+			mutate: func(c scanner.Config) scanner.Config {
+				c.Detector = "authbypass"
+				c.ProtectedPaths = []string{"/admin"}
+				return c
+			},
 			wantErr: "authbypass detector requires --auth-token",
 		},
 		{
@@ -113,6 +117,19 @@ func TestConfigValidate(t *testing.T) {
 				c.Detector = "authbypass"
 				c.AuthToken = "tok"
 				c.ProtectedPaths = []string{"/admin"}
+				return c
+			},
+		},
+		{
+			name:    "auto-provision-account without provision-email",
+			mutate:  func(c scanner.Config) scanner.Config { c.AutoProvisionAccount = true; return c },
+			wantErr: "--auto-provision-account requires --provision-email",
+		},
+		{
+			name: "auto-provision-account with provision-email is valid",
+			mutate: func(c scanner.Config) scanner.Config {
+				c.AutoProvisionAccount = true
+				c.ProvisionEmailTemplate = "you+{{rand}}@yourdomain.com"
 				return c
 			},
 		},

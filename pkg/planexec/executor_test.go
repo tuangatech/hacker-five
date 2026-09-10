@@ -175,6 +175,7 @@ func TestMissingRequiredField(t *testing.T) {
 		{"authbypass has protected paths", "authbypass", scanner.Config{ProtectedPaths: []string{"/admin"}}, false},
 		{"ssrf missing params", "ssrf", scanner.Config{}, true},
 		{"ssrf has params", "ssrf", scanner.Config{SSRFParams: []string{"url"}}, false},
+		{"ssrf has body params only", "ssrf", scanner.Config{SSRFBodyParams: []string{"repair_url"}}, false},
 		{"misconfig has no requirement", "misconfig", scanner.Config{}, false},
 		{"businesslogic neither set", "businesslogic", scanner.Config{}, true},
 		{"businesslogic allow-writes only", "businesslogic", scanner.Config{AllowWrites: true}, true},
@@ -191,6 +192,45 @@ func TestMissingRequiredField(t *testing.T) {
 				t.Fatalf("got missing-field reason %q, want none", reason)
 			}
 		})
+	}
+}
+
+// TestApplyLeafReconFields_UUIDSeedCopiedAlongsideTemplate covers LT-95
+// (docs/follow-up.md): EndpointSeedID/EndpointIDIsUUID must copy into cfg
+// only together with EndpointTemplate, and only when the leaf actually
+// marks the candidate UUID-shaped — a sibling int-shaped leaf (no
+// EndpointIDIsUUID) must leave cfg.IDOREndpointIsUUID false.
+func TestApplyLeafReconFields_UUIDSeedCopiedAlongsideTemplate(t *testing.T) {
+	leaf := &agenttask.PlanNode{
+		Detector:         "idor",
+		EndpointTemplate: "/vehicle/{{id}}/location",
+		EndpointSeedID:   "1b4e28ba-2fa1-11d2-883f-0016d3cca427",
+		EndpointIDIsUUID: true,
+	}
+	var cfg scanner.Config
+	applyLeafReconFields(&cfg, leaf, nil)
+
+	if cfg.EndpointTemplate != leaf.EndpointTemplate {
+		t.Fatalf("got EndpointTemplate %q, want %q", cfg.EndpointTemplate, leaf.EndpointTemplate)
+	}
+	if !cfg.IDOREndpointIsUUID {
+		t.Fatal("got IDOREndpointIsUUID false, want true")
+	}
+	if cfg.IDORSeedID != leaf.EndpointSeedID {
+		t.Fatalf("got IDORSeedID %q, want %q", cfg.IDORSeedID, leaf.EndpointSeedID)
+	}
+}
+
+func TestApplyLeafReconFields_IntShapedLeaf_NoUUIDFieldsCopied(t *testing.T) {
+	leaf := &agenttask.PlanNode{Detector: "idor", EndpointTemplate: "/orders/{{id}}"}
+	var cfg scanner.Config
+	applyLeafReconFields(&cfg, leaf, nil)
+
+	if cfg.IDOREndpointIsUUID {
+		t.Fatal("got IDOREndpointIsUUID true, want false for a plain int-shaped leaf")
+	}
+	if cfg.IDORSeedID != "" {
+		t.Fatalf("got IDORSeedID %q, want empty", cfg.IDORSeedID)
 	}
 }
 

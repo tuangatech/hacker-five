@@ -76,13 +76,18 @@ func New(client *httpclient.Client, opts ...Option) *Detector {
 
 // Run checks target for SSRF via each of params — candidate query
 // parameter names the target accepts a URL through (e.g. "url", "webhook",
-// "callback"). authToken, if non-empty, is sent on every probe request per
-// the configured auth header. If oobServers is non-empty (Interactsh-
-// protocol server URLs, tried in order — see oob.NewClientWithFallback), the
-// blind OOB check additionally runs; left empty, it's silently skipped — no
-// warning, since omitting --oob-server is a normal, documented mode, unlike
-// --scope's warn-on-absence.
-func (d *Detector) Run(ctx context.Context, target, authToken string, params []string, oobServers []string) ([]detectors.Finding, error) {
+// "callback") — and, additively, each of bodyParams — candidate JSON
+// request-body field names (LT-96, docs/follow-up.md) for a target that
+// takes the attacker-controlled URL there instead (e.g. crAPI's
+// contact_mechanic). authToken, if non-empty, is sent on every probe
+// request per the configured auth header. If oobServers is non-empty
+// (Interactsh-protocol server URLs, tried in order — see
+// oob.NewClientWithFallback), the blind OOB check additionally runs (query
+// params only for now — bodyParams' blind-callback mode is not yet built);
+// left empty, it's silently skipped — no warning, since omitting
+// --oob-server is a normal, documented mode, unlike --scope's
+// warn-on-absence.
+func (d *Detector) Run(ctx context.Context, target, authToken string, params, bodyParams []string, oobServers []string) ([]detectors.Finding, error) {
 	if _, err := hostOf(target); err != nil {
 		return nil, fmt.Errorf("ssrf: %w", err)
 	}
@@ -119,6 +124,14 @@ func (d *Detector) Run(ctx context.Context, target, authToken string, params []s
 			return findings, ctx.Err()
 		}
 		fs, err := check(ctx, target, authToken, params, baselines)
+		if err != nil {
+			return findings, err
+		}
+		findings = append(findings, fs...)
+	}
+
+	if len(bodyParams) > 0 && ctx.Err() == nil {
+		fs, err := d.checkBodyParamTargets(ctx, target, authToken, bodyParams)
 		if err != nil {
 			return findings, err
 		}

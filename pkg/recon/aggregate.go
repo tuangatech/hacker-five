@@ -13,17 +13,18 @@ import (
 // before handing anything here, per the corrected ordering; aggregator only
 // collects what earlier waves already decided.
 type aggregator struct {
-	target      string
-	hosts       []HostFact
-	endpoints   []EndpointFact
-	techStack   []TechFact
-	techIndex   map[techKey]int
-	techSources map[techKey][]string
-	apiSpec     *APISpecFact
-	secrets     []JSSecretFact
-	outOfScope  []string
-	warnings    []string
-	outOfScopeM map[string]bool
+	target         string
+	hosts          []HostFact
+	endpoints      []EndpointFact
+	techStack      []TechFact
+	techIndex      map[techKey]int
+	techSources    map[techKey][]string
+	apiSpec        *APISpecFact
+	signupEndpoint *SignupFact
+	secrets        []JSSecretFact
+	outOfScope     []string
+	warnings       []string
+	outOfScopeM    map[string]bool
 
 	// uniformResponse is set by probeCommonPaths (Wave 3) when a host answers
 	// every probe with one generic page — see UniformResponseFact. First
@@ -168,6 +169,17 @@ func (a *aggregator) addAPISpec(spec APISpecFact) {
 	a.apiSpec = &spec
 }
 
+// setSignupEndpoint records the first signup/registration candidate found —
+// a spec-derived hint (walkOpenAPISpec) and a path-guess probe
+// (probeSignupCandidates) can both call this; first writer wins, and a
+// spec-derived hint is always tried first per seed (higher precision than a
+// path guess) so it naturally wins the race.
+func (a *aggregator) setSignupEndpoint(f SignupFact) {
+	if a.signupEndpoint == nil {
+		a.signupEndpoint = &f
+	}
+}
+
 // addSecret records a JS-static-analysis secret hit (Phase 8 Step 3),
 // capped at maxJSStaticSecrets total across a run — jsstatic.go enforces the
 // cap so a truncation warning can name how many were dropped.
@@ -201,6 +213,7 @@ func (a *aggregator) finalize() *ReconResult {
 		Endpoints:       a.endpoints,
 		TechStack:       a.techStack,
 		APISpec:         a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
+		SignupEndpoint:  a.signupEndpoint,
 		Secrets:         a.secrets,
 		UniformResponse: a.uniformResponse,
 		AppSurface:      classifyAppSurface(a.endpoints, a.techStack, a.uniformResponse),

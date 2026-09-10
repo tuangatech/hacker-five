@@ -153,6 +153,16 @@ type PlanNode struct {
 	// every other leaf; planexec.runLeaf copies a non-empty value into a
 	// blank scanner.Config.EndpointTemplate just before dispatch.
 	EndpointTemplate string `json:"endpoint_template,omitempty"`
+	// EndpointSeedID / EndpointIDIsUUID are LT-95's (docs/follow-up.md)
+	// UUID-keyed-BOLA counterpart to EndpointTemplate: a real, concrete ID
+	// value recon actually observed for this leaf's {{id}} position
+	// (recon.SuggestIDORSeedIDs), and whether that ID is UUID-shaped.
+	// idor.SequentialIntStrategy can never reach a UUID-keyed route by
+	// brute-forcing a numeric range; when EndpointIDIsUUID is true,
+	// pkg/scanner/engine.go dispatches idor.RandomUUIDStrategy with this
+	// seed instead. Empty/false on every int-keyed or seedless leaf.
+	EndpointSeedID   string `json:"endpoint_seed_id,omitempty"`
+	EndpointIDIsUUID bool   `json:"endpoint_id_is_uuid,omitempty"`
 	// ProtectedPaths / SSRFParams are the recon-derived required-field values
 	// for an endpoint-driven authbypass / ssrf leaf (LT-94, docs/follow-up.md),
 	// set by registry.resolveEndpointFacts from the same Suggest*FromRecon
@@ -163,12 +173,17 @@ type PlanNode struct {
 	// a "missing" field recon had already derived). Empty on every other leaf.
 	ProtectedPaths []string `json:"protected_paths,omitempty"`
 	SSRFParams     []string `json:"ssrf_params,omitempty"`
+	// SSRFBodyParams is SSRFParams' JSON-body-field counterpart (LT-96,
+	// docs/follow-up.md), populated from SuggestSSRFBodyParamsFromRecon
+	// alongside SSRFParams on the same endpoint-driven ssrf leaf — additive,
+	// not a replacement; a leaf may carry either, both, or neither.
+	SSRFBodyParams []string `json:"ssrf_body_params,omitempty"`
 	// Attempts/SpendUSD accrue per-leaf across LLM-fallback resolution
 	// passes (H4, doc16 Phase 7 Step 4) — incremented by
 	// PlanTree.RecordLeafAttempt, read by ShouldEscalate. Both 0 on a leaf
 	// the resolver never touched.
-	Attempts int     `json:"attempts,omitempty"`
-	SpendUSD float64 `json:"spend_usd,omitempty"`
+	Attempts int         `json:"attempts,omitempty"`
+	SpendUSD float64     `json:"spend_usd,omitempty"`
 	Children []*PlanNode `json:"children,omitempty"`
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,53 +16,57 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/fieldsuggest"
+	"github.com/tuangatech/hacker-five/pkg/provision"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
 	"github.com/tuangatech/hacker-five/pkg/reporter"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
+	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
 func newScanCmd(root *rootFlags) *cobra.Command {
 	var (
-		targets             string
-		templatesPaths      []string
-		tags                string
-		concurrency         int
-		templateConcurrency int
-		rateLimit           int
-		detector            string
-		endpointTemplate    string
-		idorPreview         bool
-		authToken           string
-		otherAuthToken      string
-		authHeaderName      string
-		authHeaderFormat    string
-		insecure            bool
-		scopeFile           string
-		protectedPaths      string
-		loginPaths          string
-		logoutPaths         string
-		headers             []string
-		ssrfParams          []string
-		oobServers          []string
-		noOOB               bool
-		allowWrites         bool
-		couponMintPath      string
-		couponApplyPath     string
-		raceConcurrency     int
-		format              string
-		reconFile           string
-		narrowByTech        bool
-		allTemplates        bool
-		templateIndex       string
-		verbose             bool
-		logRejected         string
-		policyFile          string
-		allowPolicyOverride bool
-		scanUniformAnyway   bool
-		maxTargetDuration   time.Duration
-		noAdaptiveThrottle  bool
+		targets              string
+		templatesPaths       []string
+		tags                 string
+		concurrency          int
+		templateConcurrency  int
+		rateLimit            int
+		detector             string
+		endpointTemplate     string
+		idorPreview          bool
+		authToken            string
+		otherAuthToken       string
+		authHeaderName       string
+		authHeaderFormat     string
+		insecure             bool
+		scopeFile            string
+		protectedPaths       string
+		loginPaths           string
+		logoutPaths          string
+		headers              []string
+		ssrfParams           []string
+		oobServers           []string
+		noOOB                bool
+		allowWrites          bool
+		couponMintPath       string
+		couponApplyPath      string
+		raceConcurrency      int
+		format               string
+		reconFile            string
+		narrowByTech         bool
+		allTemplates         bool
+		templateIndex        string
+		verbose              bool
+		logRejected          string
+		policyFile           string
+		allowPolicyOverride  bool
+		scanUniformAnyway    bool
+		maxTargetDuration    time.Duration
+		noAdaptiveThrottle   bool
+		autoProvisionAccount bool
+		provisionEmail       string
 	)
 
 	cmd := &cobra.Command{
@@ -158,6 +163,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				ScanUniformAnyway:       scanUniformAnyway,
 				MaxTargetDuration:       maxTargetDuration,
 				DisableAdaptiveThrottle: noAdaptiveThrottle,
+				AutoProvisionAccount:    autoProvisionAccount,
+				ProvisionEmailTemplate:  provisionEmail,
 			}
 			// LT-34 / A6 (doc16 Phase 7 Step 1): parse --recon-file once, up
 			// front — it feeds both the template scoping below and the
@@ -254,6 +261,27 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				}
 			}
 
+			// Part B (--auto-provision-account): register a throwaway second
+			// account so idor's baseline mode / authbypass's token-reuse/BFLA
+			// checks get a second account's token without --other-auth-token
+			// supplied by hand. Runs after runPreflight (D2's policy hard-block
+			// already covers whether automated interaction with this target is
+			// allowed at all).
+			if cfg.AutoProvisionAccount {
+				provisionFn := func(ctx context.Context, signupURL, method, emailTemplate string) (provision.Result, error) {
+					provClient := httpclient.New(httpclient.Config{
+						Timeout:            root.timeout,
+						MaxRedirects:       5,
+						InsecureSkipVerify: insecure,
+						ProxyURL:           root.proxy,
+					})
+					return provision.ProvisionAccount(ctx, provClient, signupURL, method, emailTemplate)
+				}
+				if err := provisionSecondAccount(cmd.Context(), provisionFn, &cfg, reconResult, provisionEmail, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+			}
+
 			// LT-45 (docs/follow-up.md): authbypass's highest-value case on a
 			// bounty target — "this endpoint should require auth and doesn't"
 			// — is by definition one you have no token for. The planexec/MCP
@@ -343,6 +371,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&logRejected, "log-rejected", "", "write the full per-file rejected-template list to this path (keeps the compact summary on stderr); overrides --verbose for that detail (doc15 Step 6d)")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")
 	cmd.Flags().BoolVar(&allowPolicyOverride, "allow-policy-override", false, "downgrade a policy.yaml automated_scanning: disallowed verdict from a hard block to a warning — only for an operator holding out-of-band authorization that contradicts a stale file (doc15 Step 3)")
+	cmd.Flags().BoolVar(&autoProvisionAccount, "auto-provision-account", false, "register a throwaway second account against a recon-observed signup endpoint (requires --recon-file and --provision-email) so idor's baseline mode / authbypass's token-reuse check get a second account's token without --other-auth-token supplied by hand. A second, independently-scoped exception to this tool's read/enumerate-only default — never --allow-writes. No cleanup/deprovisioning is attempted; the created email is logged so you can close the account manually if a program's ToS requires it")
+	cmd.Flags().StringVar(&provisionEmail, "provision-email", "", `email template for --auto-provision-account, e.g. "you+{{rand}}@yourdomain.com" — "{{rand}}" is replaced with a fresh random token per run. Required alongside --auto-provision-account; there is no default/fabricated domain`)
 
 	return cmd
 }
@@ -377,6 +407,41 @@ func jsSecretFindings(secrets []recon.JSSecretFact) []detectors.Finding {
 		})
 	}
 	return findings
+}
+
+// provisionSecondAccount implements --auto-provision-account's decision
+// logic: given the CLI's already-parsed inputs, it either fills
+// cfg.OtherAuthToken from a freshly provisioned account or explains via one
+// stderr line why it didn't — an already-set --other-auth-token always wins
+// (never overwritten), and a target with no --recon-file or no recon-
+// observed SignupEndpoint is handled explicitly rather than silently
+// guessing a signup URL of its own. provisionFn is
+// provision.ProvisionAccount, injected so this branching logic is
+// unit-testable without a real HTTP round trip. Only returns an error for
+// the one case that should abort the scan outright: --auto-provision-account
+// without --recon-file at all, since there is then no possible signal to
+// check.
+func provisionSecondAccount(ctx context.Context, provisionFn func(ctx context.Context, signupURL, method, emailTemplate string) (provision.Result, error), cfg *scanner.Config, reconResult *recon.ReconResult, emailTemplate string, stderr io.Writer) error {
+	if reconResult == nil {
+		return fmt.Errorf("--auto-provision-account requires --recon-file (a signup-endpoint candidate can only come from a recon result)")
+	}
+	if cfg.OtherAuthToken != "" {
+		_, _ = fmt.Fprintln(stderr, "scan: --auto-provision-account set, but --other-auth-token is already supplied — using it as-is, not provisioning a new account")
+		return nil
+	}
+	if reconResult.SignupEndpoint == nil {
+		_, _ = fmt.Fprintln(stderr, "scan: --auto-provision-account set, but recon found no signup-endpoint candidate — proceeding without a second account")
+		return nil
+	}
+	sig := reconResult.SignupEndpoint
+	res, err := provisionFn(ctx, sig.URL, sig.Method, emailTemplate)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "scan: --auto-provision-account: %v — proceeding without a second account\n", err)
+		return nil
+	}
+	cfg.OtherAuthToken = res.Token
+	_, _ = fmt.Fprintf(stderr, "scan: --auto-provision-account: registered %s at %s — close this account manually later if your program's ToS requires it\n", res.Email, sig.URL)
+	return nil
 }
 
 // unionTags returns the de-duplicated, order-stable union of two tag slices

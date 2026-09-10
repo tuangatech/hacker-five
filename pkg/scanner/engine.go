@@ -38,6 +38,11 @@ const (
 	// enumeration in Phase 1a — no wordlist/config surface for this yet.
 	idEnumRangeStart = 1
 	idEnumRangeEnd   = 100
+	// idorUUIDFillerCount is idor.RandomUUIDStrategy's FillerCount for a
+	// UUID-shaped endpoint (LT-95, docs/follow-up.md) — enough samples to
+	// satisfy idor.MinBaselineSamples/BaselineMajorityThreshold with real
+	// margin, without turning a single-seed test into hundreds of requests.
+	idorUUIDFillerCount = 20
 
 	// promptInjectionTag/promptInjectionSafeConcurrency back loadTemplates'
 	// cost/latency guardrail (see docs/13-implementation-plan-ph4.md Step
@@ -1028,7 +1033,15 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		return nil, nil
 	case "idor":
 		endpointTemplate := strings.TrimRight(target, "/") + e.cfg.EndpointTemplate
-		strategy := idor.SequentialIntStrategy{Start: idEnumRangeStart, End: idEnumRangeEnd}
+		// LT-95 (docs/follow-up.md): a UUID-keyed route (e.g.
+		// vehicle/{vehicleId}/location) is unreachable by brute-forcing
+		// idEnumRangeStart..idEnumRangeEnd — RandomUUIDStrategy instead
+		// mixes the one real, recon-observed seed ID into a synthetic
+		// denial baseline.
+		var strategy idor.Strategy = idor.SequentialIntStrategy{Start: idEnumRangeStart, End: idEnumRangeEnd}
+		if e.cfg.IDOREndpointIsUUID {
+			strategy = idor.RandomUUIDStrategy{Seed: e.cfg.IDORSeedID, FillerCount: idorUUIDFillerCount}
+		}
 		// WithTemplatePreview/WithLogCallback are appended here, not folded
 		// into idorOptions() — that set is also shared with the idor-tagged
 		// native-template path (native.Executor.runIDOR), which shouldn't
@@ -1049,7 +1062,7 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.ProtectedPaths)
 	case "ssrf":
 		detector := ssrf.New(e.client, e.ssrfOptions()...)
-		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.OOBServers)
+		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.SSRFBodyParams, e.cfg.OOBServers)
 	case "businesslogic":
 		detector := businesslogic.New(e.client, e.businesslogicOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.AllowWrites)

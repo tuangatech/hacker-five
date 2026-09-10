@@ -100,6 +100,17 @@ type EndpointFact struct {
 	// reason. An empty pair is the common case (no cross-host redirect).
 	RedirectChain []string `json:"redirect_chain,omitempty"`
 	FinalURL      string   `json:"final_url,omitempty"`
+
+	// BodyParamKeys is set (LT-96, docs/follow-up.md) only on a Source
+	// "api-spec" fact whose documented operation has a `requestBody` JSON
+	// schema: the request-body property names the spec declares, names
+	// only — no values invented, same principle GET's keyless query-key
+	// folding already uses. SuggestSSRFBodyParamsFromRecon matches these
+	// against a curated keyword set the same way SuggestSSRFParamsFromRecon
+	// does for query params, closing the gap where an attacker-controlled
+	// URL is taken in a JSON body field (e.g. crAPI's contact_mechanic)
+	// rather than a query string.
+	BodyParamKeys []string `json:"body_param_keys,omitempty"`
 }
 
 // TechFact is one technology/framework signal observed on the target.
@@ -129,6 +140,23 @@ type JSSecretFact struct {
 	Kind     string `json:"kind"`     // "aws-access-key" | "google-api-key" | "slack-token" | "github-token" | "private-key" | "hardcoded-bearer-token"
 	Severity string `json:"severity"` // mirrors detectors.Finding.Severity's vocabulary
 	Redacted string `json:"redacted"` // first/last few characters only — never the full secret
+}
+
+// SignupFact records a candidate account-registration endpoint recon found —
+// presence and shape only, like APISpecFact: recon never confirms the route
+// actually creates an account, just that it looks like one exists.
+// pkg/provision (--auto-provision-account) decides what to do with it. Set
+// either from an OpenAPI operation whose operationId/summary names it as a
+// signup route (specwalk.go's signupOperationHint, higher precision — Method
+// is the operation's own documented method) or, when no spec is available, a
+// path-guess probe against a curated candidate list (crawl.go's
+// signupPathCandidates, lower precision — Method defaults to POST, since a
+// real signup route is virtually always POST). First one found wins; a
+// spec-derived hint is tried before the path-guess fallback per host, so it
+// naturally takes precedence.
+type SignupFact struct {
+	URL    string `json:"url"`
+	Method string `json:"method"`
 }
 
 // APISpecFact records that a machine-readable API spec was found publicly
@@ -196,6 +224,7 @@ type ReconResult struct {
 	Endpoints       []EndpointFact       `json:"endpoints,omitempty"`
 	TechStack       []TechFact           `json:"tech_stack,omitempty"`
 	APISpec         *APISpecFact         `json:"api_spec,omitempty"`
+	SignupEndpoint  *SignupFact          `json:"signup_endpoint,omitempty"`
 	Secrets         []JSSecretFact       `json:"secrets,omitempty"`
 	UniformResponse *UniformResponseFact `json:"uniform_response,omitempty"`
 	AppSurface      *AppSurfaceFact      `json:"app_surface,omitempty"`

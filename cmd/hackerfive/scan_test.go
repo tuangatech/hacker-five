@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
+	"github.com/tuangatech/hacker-five/pkg/provision"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/scanner"
 )
 
 func TestResolveTargets_Empty(t *testing.T) {
@@ -117,6 +122,104 @@ func TestNewScanCmd_NoOOBFlagRegistered(t *testing.T) {
 	flag := cmd.Flags().Lookup("no-oob")
 	require.NotNil(t, flag, "--no-oob must be registered")
 	assert.Equal(t, "false", flag.DefValue)
+}
+
+// TestNewScanCmd_AutoProvisionAccountFlagsRegistered covers Part B's two new
+// flags, both defaulting off/empty so an existing scripted invocation sees
+// no behavior change unless it opts in.
+func TestNewScanCmd_AutoProvisionAccountFlagsRegistered(t *testing.T) {
+	cmd := newScanCmd(&rootFlags{})
+
+	apFlag := cmd.Flags().Lookup("auto-provision-account")
+	require.NotNil(t, apFlag, "--auto-provision-account must be registered")
+	assert.Equal(t, "false", apFlag.DefValue)
+
+	emailFlag := cmd.Flags().Lookup("provision-email")
+	require.NotNil(t, emailFlag, "--provision-email must be registered")
+	assert.Equal(t, "", emailFlag.DefValue, "no default/fabricated email domain, ever")
+}
+
+// TestProvisionSecondAccount_NoReconResult_ReturnsError: --auto-provision-
+// account has nothing to check without a --recon-file at all — this is the
+// one case that aborts the scan outright rather than warning and continuing.
+func TestProvisionSecondAccount_NoReconResult_ReturnsError(t *testing.T) {
+	cfg := &scanner.Config{}
+	failIfCalled := func(ctx context.Context, signupURL, method, emailTemplate string) (provision.Result, error) {
+		t.Fatal("provisionFn must not be called when reconResult is nil")
+		return provision.Result{}, nil
+	}
+	err := provisionSecondAccount(context.Background(), failIfCalled, cfg, nil, "you+{{rand}}@example.com", &bytes.Buffer{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires --recon-file")
+}
+
+// TestProvisionSecondAccount_OtherAuthTokenAlreadySet_NeverOverwritten: an
+// operator-supplied --other-auth-token always wins — provisioning must not
+// run at all, let alone overwrite it.
+func TestProvisionSecondAccount_OtherAuthTokenAlreadySet_NeverOverwritten(t *testing.T) {
+	cfg := &scanner.Config{OtherAuthToken: "hand-supplied-token"}
+	rr := &recon.ReconResult{SignupEndpoint: &recon.SignupFact{URL: "https://x/signup", Method: "POST"}}
+	failIfCalled := func(ctx context.Context, signupURL, method, emailTemplate string) (provision.Result, error) {
+		t.Fatal("provisionFn must not be called when --other-auth-token is already set")
+		return provision.Result{}, nil
+	}
+	var stderr bytes.Buffer
+	err := provisionSecondAccount(context.Background(), failIfCalled, cfg, rr, "you+{{rand}}@example.com", &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, "hand-supplied-token", cfg.OtherAuthToken)
+	assert.Contains(t, stderr.String(), "already supplied")
+}
+
+// TestProvisionSecondAccount_NoSignupEndpoint_WarnsAndContinues: recon ran
+// but found no signup-endpoint candidate — proceed without a second account,
+// same as if --auto-provision-account had never been passed.
+func TestProvisionSecondAccount_NoSignupEndpoint_WarnsAndContinues(t *testing.T) {
+	cfg := &scanner.Config{}
+	rr := &recon.ReconResult{}
+	failIfCalled := func(ctx context.Context, signupURL, method, emailTemplate string) (provision.Result, error) {
+		t.Fatal("provisionFn must not be called when SignupEndpoint is nil")
+		return provision.Result{}, nil
+	}
+	var stderr bytes.Buffer
+	err := provisionSecondAccount(context.Background(), failIfCalled, cfg, rr, "you+{{rand}}@example.com", &stderr)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.OtherAuthToken)
+	assert.Contains(t, stderr.String(), "no signup-endpoint candidate")
+}
+
+// TestProvisionSecondAccount_Success_FillsOtherAuthToken is the golden path:
+// a SignupEndpoint is present, provisionFn succeeds, and cfg.OtherAuthToken
+// is filled from the result.
+func TestProvisionSecondAccount_Success_FillsOtherAuthToken(t *testing.T) {
+	cfg := &scanner.Config{}
+	rr := &recon.ReconResult{SignupEndpoint: &recon.SignupFact{URL: "https://x/signup", Method: "POST"}}
+	provisionFn := func(ctx context.Context, signupURL, method, emailTemplate string) (provision.Result, error) {
+		assert.Equal(t, "https://x/signup", signupURL)
+		assert.Equal(t, "POST", method)
+		assert.Equal(t, "you+{{rand}}@example.com", emailTemplate)
+		return provision.Result{Email: "you+abc123@example.com", Token: "fresh-token"}, nil
+	}
+	var stderr bytes.Buffer
+	err := provisionSecondAccount(context.Background(), provisionFn, cfg, rr, "you+{{rand}}@example.com", &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, "fresh-token", cfg.OtherAuthToken)
+	assert.Contains(t, stderr.String(), "you+abc123@example.com")
+}
+
+// TestProvisionSecondAccount_ProvisionFails_WarnsAndContinuesWithoutToken:
+// ProvisionAccount's own fail-closed error (e.g. an email-verification gate)
+// must not abort the scan — it degrades to no second account, same as today.
+func TestProvisionSecondAccount_ProvisionFails_WarnsAndContinuesWithoutToken(t *testing.T) {
+	cfg := &scanner.Config{}
+	rr := &recon.ReconResult{SignupEndpoint: &recon.SignupFact{URL: "https://x/signup", Method: "POST"}}
+	provisionFn := func(ctx context.Context, signupURL, method, emailTemplate string) (provision.Result, error) {
+		return provision.Result{}, errors.New("registration succeeded but no token was found")
+	}
+	var stderr bytes.Buffer
+	err := provisionSecondAccount(context.Background(), provisionFn, cfg, rr, "you+{{rand}}@example.com", &stderr)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.OtherAuthToken)
+	assert.Contains(t, stderr.String(), "no token was found")
 }
 
 // TestNewScanCmd_TemplateScopeFlagsRegistered covers doc15 Step 6a's

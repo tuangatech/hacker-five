@@ -85,13 +85,13 @@ func specBodyToJSON(body []byte) (jsonBody []byte, ok bool) {
 // JSON once up front (specBodyToJSON) and walked by the identical code
 // path — the caller's structured-Content-Type gate already only lets a
 // genuine spec body reach here.
-func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncated bool) {
+func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncated bool, signup *SignupFact) {
 	if len(body) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	jsonBody, ok := specBodyToJSON(body)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	var doc struct {
 		Swagger  string `json:"swagger"` // "2.0" for OpenAPI 2
@@ -104,18 +104,18 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 		Paths    map[string]json.RawMessage   `json:"paths"`
 	}
 	if err := json.Unmarshal(jsonBody, &doc); err != nil {
-		return nil, false
+		return nil, false, nil
 	}
 	if doc.Swagger == "" && doc.OpenAPI == "" {
-		return nil, false // has "paths" but no version key — not an OpenAPI/Swagger document
+		return nil, false, nil // has "paths" but no version key — not an OpenAPI/Swagger document
 	}
 	if len(doc.Paths) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 
 	base, err := url.Parse(specURL)
 	if err != nil || base.Host == "" {
-		return nil, false
+		return nil, false, nil
 	}
 
 	// The route prefix: OpenAPI 2's basePath, else the path component of the
@@ -148,7 +148,16 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 		if !strings.HasPrefix(p, "/") {
 			continue // a relative or server-templated path — skip
 		}
-		method, queryKeys, authRequired := walkPathItem(doc.Paths[p], docRequiresAuth)
+		if signup == nil {
+			if m, hit := signupOperationHint(doc.Paths[p]); hit {
+				su := prefix + p
+				if !strings.HasPrefix(su, "/") {
+					su = "/" + su
+				}
+				signup = &SignupFact{URL: base.Scheme + "://" + base.Host + su, Method: m}
+			}
+		}
+		method, queryKeys, bodyParamKeys, authRequired := walkPathItem(doc.Paths[p], docRequiresAuth)
 		full := prefix + p
 		if !strings.HasPrefix(full, "/") {
 			full = "/" + full
@@ -171,28 +180,70 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 			break
 		}
 		facts = append(facts, EndpointFact{
-			URL:          full,
-			Method:       method,
-			Source:       "api-spec",
-			Confidence:   ConfidenceLow,
-			AuthRequired: authRequired,
+			URL:           full,
+			Method:        method,
+			Source:        "api-spec",
+			Confidence:    ConfidenceLow,
+			AuthRequired:  authRequired,
+			BodyParamKeys: bodyParamKeys,
 		})
 	}
-	return facts, truncated
+	return facts, truncated, signup
+}
+
+// signupOperationKeywords are lowercase substrings of an operation's
+// operationId/summary text that indicate it registers a new account — Part
+// B's higher-precision counterpart to crawl.go's path-guess fallback
+// (signupPathCandidates): an OpenAPI document's own operation metadata is a
+// much stronger signal than guessing at a path shape.
+var signupOperationKeywords = []string{"signup", "sign-up", "sign_up", "register", "registration", "createaccount", "create-account", "create_account"}
+
+// signupOperationHint reports whether a path-item object documents an
+// operation whose operationId/summary text names it as an account-signup
+// route, and if so which HTTP method it's declared under. Checked across
+// every operation on the path-item rather than walkPathItem's own
+// "representative" method (which prefers GET when present) since a signup
+// route is virtually always POST and rarely also documents a GET.
+func signupOperationHint(raw json.RawMessage) (method string, ok bool) {
+	var item map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return "", false
+	}
+	for k, v := range item {
+		up := strings.ToUpper(k)
+		if !openAPIMethods[up] {
+			continue
+		}
+		var op struct {
+			OperationID string `json:"operationId"`
+			Summary     string `json:"summary"`
+		}
+		if json.Unmarshal(v, &op) != nil {
+			continue
+		}
+		text := strings.ToLower(op.OperationID + " " + op.Summary)
+		for _, kw := range signupOperationKeywords {
+			if strings.Contains(text, kw) {
+				return up, true
+			}
+		}
+	}
+	return "", false
 }
 
 // walkPathItem pulls the representative method, the set of documented
-// query-parameter names, and whether the representative operation requires
-// authentication (LT-90) out of one path-item object. The method is GET when
-// the path documents one, else the first documented operation
+// query-parameter names, the representative operation's requestBody JSON
+// schema property names (LT-96), and whether the representative operation
+// requires authentication (LT-90) out of one path-item object. The method is
+// GET when the path documents one, else the first documented operation
 // alphabetically (deterministic); it falls back to GET for a path-item that
 // is all $ref/parameters and no operation. docRequiresAuth is the
 // document-level default, used unless the operation declares its own
 // `security`.
-func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, queryKeys []string, authRequired bool) {
+func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, queryKeys, bodyParamKeys []string, authRequired bool) {
 	var item map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &item); err != nil {
-		return http.MethodGet, nil, docRequiresAuth
+		return http.MethodGet, nil, nil, docRequiresAuth
 	}
 
 	qk := map[string]bool{}
@@ -212,6 +263,7 @@ func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, que
 	}
 
 	ops := map[string]json.RawMessage{}
+	bodyKeysByOp := map[string][]string{}
 	var methods []string
 	for k, v := range item {
 		up := strings.ToUpper(k)
@@ -221,10 +273,16 @@ func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, que
 		methods = append(methods, up)
 		ops[up] = v
 		var op struct {
-			Parameters json.RawMessage `json:"parameters"`
+			Parameters  json.RawMessage `json:"parameters"`
+			RequestBody json.RawMessage `json:"requestBody"`
 		}
-		if json.Unmarshal(v, &op) == nil && len(op.Parameters) > 0 {
-			collect(op.Parameters)
+		if json.Unmarshal(v, &op) == nil {
+			if len(op.Parameters) > 0 {
+				collect(op.Parameters)
+			}
+			if len(op.RequestBody) > 0 {
+				bodyKeysByOp[up] = requestBodyPropertyNames(op.RequestBody)
+			}
 		}
 	}
 	sort.Strings(methods)
@@ -250,7 +308,37 @@ func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, que
 	for k := range qk {
 		queryKeys = append(queryKeys, k)
 	}
-	return method, queryKeys, authRequired
+	sort.Strings(queryKeys)
+	bodyParamKeys = bodyKeysByOp[method]
+	sort.Strings(bodyParamKeys)
+	return method, queryKeys, bodyParamKeys, authRequired
+}
+
+// requestBodyPropertyNames reads an OpenAPI 3 `requestBody` object's
+// top-level JSON schema property names — `content["application/json"].
+// schema.properties` only (LT-96, docs/follow-up.md); no nested-object
+// recursion and no other media type in v1, matching this walker's existing
+// "names only, no values invented" scope for query parameters.
+func requestBodyPropertyNames(raw json.RawMessage) []string {
+	var rb struct {
+		Content map[string]struct {
+			Schema struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"schema"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &rb) != nil {
+		return nil
+	}
+	media, ok := rb.Content["application/json"]
+	if !ok {
+		return nil
+	}
+	var names []string
+	for name := range media.Schema.Properties {
+		names = append(names, name)
+	}
+	return names
 }
 
 // operationSecurity reports whether an operation object declares a `security`
