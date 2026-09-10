@@ -4,7 +4,7 @@
 
 Open enhancement items and unresolved review findings, organized by category rather than by when they were raised. Direction: HackerFive is expanding beyond HackerOne-program scanning, so categories here stay useful for detection/reporting work generally. Narrative-style research and decision write-ups live in [discussions.md](discussions.md); this doc is the open-items backlog.
 
-**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-122 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs; LT-106–110 split out of the 2026-09-08 demo-prep scan-engine / end-of-scan-loop review; LT-111–114 from the 2026-09-08 nettix.com.pe baseline run; LT-115–117 from the 2026-09-08 demo-prep Web UI Playwright check; LT-118 from the 2026-09-09 demo-prep `www.nettix.com.pe` Web UI run; LT-119–121 from the 2026-09-09 `www.aalberts.com` full recon+scan; LT-122 from the 2026-09-09 post-LT-115 form-persistence question). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
+**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-122 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs; LT-106–110 split out of the 2026-09-08 demo-prep scan-engine / end-of-scan-loop review; LT-111–114 from the 2026-09-08 nettix.com.pe baseline run; LT-115–117 from the 2026-09-08 demo-prep Web UI Playwright check; LT-118 from the 2026-09-09 demo-prep `www.nettix.com.pe` Web UI run; LT-119–121 from the 2026-09-09 `www.aalberts.com` full recon+scan; LT-122 from the 2026-09-09 post-LT-115 form-persistence question; LT-123 from the 2026-09-10 design review that shipped `--auto-provision-account`; LT-124–131 from the 2026-09-10 live Part A/B verification round against `nettix.com.pe`). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
 
 ## Near-term batch — "do now" (raised across the 2026-09-07 linkpop / shop.app / ALSCO runs)
 
@@ -339,7 +339,215 @@ The whole loop, no manual per-leaf `scan`: `recon --openapi-spec` → `registry.
 - **LT-95 ✅ done 2026-09-09.** Two sub-fixes. (1) `idShapedQueryCandidate` now templates a documented-but-**empty** ID-shaped query param (`?report_id=`, the spec walker's own keyless encoding) as `?report_id={{id}}` — same tolerance `isSpecPathParam` already gives a valueless path `{id}`. (2) New `idor.RandomUUIDStrategy{Seed, FillerCount}` reuses `runBaseline`/`Establish` completely unchanged: `FillerCount` fresh v4 UUIDs (never invented targets, just denial-baseline noise — real records can't collide with them) establish the "denied" signature, and one real `Seed` ID — a concrete UUID recon actually observed in an authenticated crawl, very likely that account's own resource ID — is evaluated against it like any other sample. `idShapedCandidate`/`idShapedPathCandidate`/`idShapedQueryCandidate` now also return the concrete value + whether it was UUID-shaped (previously computed then discarded); new `recon.SuggestIDORSeedIDs` exposes it keyed by `{{id}}`-template, additive and non-breaking to `SuggestIDOREndpointCandidates`'s existing 4 callers. New additive `PlanNode.EndpointSeedID`/`EndpointIDIsUUID` and `scanner.Config.IDORSeedID`/`IDOREndpointIsUUID`, threaded `resolveEndpointFacts` → `applyLeafReconFields` → `engine.go`'s idor dispatch (mirrors LT-91/94's leaf-field-carrying convention exactly). `pkg/recon/{suggest.go,suggest_test.go}`, `pkg/detectors/idor/{strategy.go,strategy_test.go}`, `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`, `pkg/scanner/{config.go,engine.go}`. Tests: `TestSuggestIDORSeedIDs*`, `TestRandomUUIDStrategy_*`, `TestIDORDetector_RandomUUIDStrategy_{Hit,NoFinding_ProperlyProtected}`, `TestResolve_IdorEndpointCandidates_UUIDCandidateCarriesSeed`, `TestApplyLeafReconFields_*`. **→ Phase 8 Step 6.**
 - **LT-96 ✅ done 2026-09-09.** `walkOpenAPISpec`/`walkPathItem` now also read an operation's `requestBody.content["application/json"].schema.properties` (names only, no values invented, same principle as the existing keyless query-key folding) onto new additive `EndpointFact.BodyParamKeys`. New `recon.SuggestSSRFBodyParamsFromRecon` matches those against `ssrfParamKeywords` by **substring** (not `SuggestSSRFParamsFromRecon`'s exact-key lookup — a real body field is typically compound, e.g. `repair_url`). New additive `PlanNode.SSRFBodyParams`/`scanner.Config.SSRFBodyParams`, threaded the same way as `SSRFParams` through `resolveEndpointFacts`/`applyLeafReconFields`/`missingRequiredField`. `ssrf.Detector.Run` gained a `bodyParams []string` parameter and a new `checkBodyParamTargets` (POST `{"<field>":"<payload>"}`, same scheme/internal payload tables + baseline-diff FP guard as the query-mode checks). Known, named limitation: the probe body carries only the SSRF-candidate field, not a route's other possibly-required fields, so strict body validation could 400 before the payload is evaluated — not solved in v1, revisit only if live testing shows it matters. `docs/schema/recon-result.schema.json` bumped to v1.10. `pkg/recon/{types.go,specwalk.go,suggest.go}`, `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`, `pkg/scanner/{config.go,engine.go}`, `pkg/detectors/ssrf/{detector.go,checks.go}`. Tests: `TestWalkOpenAPISpec_RequestBodyProperties`, `TestSuggestSSRFBodyParamsFromRecon*`, `TestSSRFBodyParamTarget_*`, `TestResolve_SSRFBodyParamEndpoint_ProducesSsrfLeafWithBodyParams`. **→ Phase 8 Step 6.**
 
-## Live Testing — nettix.com.pe demo-prep (2026-09-08)
+- **LT-123 ✅ done 2026-09-10 (design review, not a live round).** `--auto-provision-account` + `--provision-email <template>`: registers a throwaway second account against a recon-observed signup endpoint so `idor`'s baseline mode / `authbypass`'s token-reuse/BFLA checks (LT-92 above) get a second account's token without an operator finding/creating one by hand and passing `--other-auth-token`. A **second, independently-scoped exception** to the read/enumerate-only default — deliberately not `--allow-writes` (CLAUDE.md scopes that to `pkg/detectors/businesslogic`'s mutating checks only; creating a persistent account is its own class of side effect). New read-only recon signal `ReconResult.SignupEndpoint` (`recon-result.schema.json` v1.11): a spec-derived hint (`specwalk.go`'s `signupOperationHint`, matching an operation's `operationId`/`summary` against signup/register keywords — higher precision, checked across every operation on a path-item rather than the GET-preferring "representative method") or, when no spec is reachable, a path-guess fallback (`crawl.go`'s `probeSignupCandidates` against a curated candidate list, accepting a `405` as "route exists, wrong verb" or a JSON-typed `2xx`). New package `pkg/provision` (`ProvisionAccount`): POSTs a synthesized throwaway email/username/password, extracts a token from the signup response or a login fallback (the same signup→login shape `tests/integration/scripts/crapi_setup.sh` already proves live against crAPI), and **fails closed** — a target that never returns a token (most commonly an email-verification gate) returns a clear error instead of hanging or fabricating one, and the scan proceeds without a second account exactly as it does today. No cleanup/deprovisioning is attempted (accepted limitation, same class as `--allow-writes`' coupon-mint side effect); the created email is logged so the operator can close the account manually if a program's ToS requires it. Wired in `cmd/hackerfive/scan.go` after `runPreflight`, only when `--recon-file` is given; an already-set `--other-auth-token` always wins and is never overwritten. `pkg/recon/{types.go,aggregate.go,crawl.go,specwalk.go,specingest.go,recon.go}`, `cmd/hackerfive/{scan.go,plan.go}`, `pkg/provision/provision.go` (new), `pkg/scanner/config.go`. Tests: `pkg/provision/provision_test.go` (direct-token, login-fallback, nested-token-field, email-verification-gated-fails-closed, non-2xx-signup, empty-template cases), `TestWalkOpenAPISpec_{Signup,NoSignup}Hint`, `TestRunWave3_SignupEndpoint_{FromOpenAPISpec,PathGuessFallback}`, `TestRunWave3_NoSignupCandidate_SignupEndpointStaysNil`, `TestReconResult_SchemaValidatesSignupEndpoint`, `TestConfigValidate/auto-provision-account_*`, `TestProvisionSecondAccount_*` (`cmd/hackerfive/scan_test.go` — the CLI wiring's branching pulled into a directly-testable `provisionSecondAccount` helper). CLI-only for v1; MCP/webui elicitation wiring is a named follow-up, not built now (keeps this pass bounded). **CLAUDE.md Rules section updated** to name both `--allow-writes` and `--auto-provision-account` as this tool's two explicit exceptions.
+
+## Live Testing — nettix.com.pe Part A/B verification (2026-09-10)
+
+Built the binary and re-ran a full recon (`hackerfive recon -t https://nettix.com.pe
+--recon-depth full`, apex-seeded per LT-101's still-open workaround) plus targeted
+`scan` invocations against the real, owned `nettix.com.pe` estate, to check whether
+LT-92/95/96 (Part A's authbypass-BFLA / idor-UUID / ssrf-body-param precision fixes)
+and LT-123 (`--auto-provision-account`) actually engage on a real target, and to
+watch live request/response traffic through `pkg/recon`/`pkg/detectors`/
+`pkg/fingerprint`/`pkg/preflight`/`pkg/scanner`/`pkg/mcpserver` for further gaps
+(per CLAUDE.md's detection-philosophy mandate). This checkout is a fresh macOS
+clone with no `.engagements/` (gitignored, lives only on the machine the earlier
+nettix rounds ran from) — recreated `.engagements/owned-sites/scope.txt` with
+`nettix.com.pe` / `*.nettix.com.pe` to match the documented prior authorization.
+
+**Part A/B verdict: the fixes are real and already proven correct (crAPI live round,
+`pkg/provision`'s own tests, and a local fake-signup-server smoke test — see LT-123)
+but this specific target has none of the endpoint shapes that would exercise them.**
+`nettix.com.pe` is a misconfig/CMS-version-disclosure estate (WordPress+WooCommerce,
+Dolibarr ERP, Nextcloud, DokuWiki, phpMyAdmin, Webmin) with no discovered `{id}`-shaped
+route, SSRF-able param, or self-service signup flow — the 241-leaf plan tree this
+round produced has **zero** idor/authbypass/ssrf leaves (all misconfig + generic
+template dispatch), and `--auto-provision-account` correctly, cleanly failed closed
+("recon found no signup-endpoint candidate — proceeding without a second account").
+That negative-path behavior is itself the correct, intended outcome — not a bug — but
+digging into *why* authbypass got zero leaves surfaced LT-124/125 below, the most
+valuable findings of this round.
+
+- **LT-124 — `authbypass.checkMissingAuth` (and likely `checkBFLA`/`checkTokenReuse`/
+  `checkBrokenSession`, same pattern) blindly trusts `resp.StatusCode` after the
+  shared client transparently follows a redirect — a live, reproduced FALSE POSITIVE
+  on a correctly-secured endpoint.** `pkg/scanner/engine.go:33`'s `maxRedirects = 5`
+  means every detector's `d.client.Do(req)` silently follows up to 5 redirect hops;
+  `checkMissingAuth` (`pkg/detectors/authbypass/detector.go:147-166`) only checks
+  `resp.StatusCode != http.StatusOK` and reports `Target: req.URL.String()` — the
+  *original*, pre-redirect URL — with no check on `resp.Request.URL` to notice a
+  redirect happened at all. Live-reproduced: `GET https://nettix.com.pe/wp-admin/`
+  really returns `302` + `x-redirect-by: WordPress` + `location:
+  https://www.nettix.com.pe/wp-login.php?redirect_to=...` (confirmed via manual
+  `curl -D -`, no `-L`) — WordPress correctly protecting its admin panel. But
+  `hackerfive scan --detector authbypass --protected-paths /wp-admin/` against the
+  same host produced `authbypass-missing-auth-wp-admin`, **high/high**: `"/wp-admin/
+  returned status 200 with no Authorization header at all — endpoint accepts
+  unauthenticated requests"` — the client followed the redirect to the login page,
+  saw its `200`, and the check reported that as evidence `/wp-admin/` itself has no
+  auth. The exact same "did this response come from a different URL than I asked
+  for" check already exists elsewhere in this codebase — `pkg/detectors/misconfig/
+  detector.go:327-328,1363-1381` reads `resp.Request.URL` for precisely this reason
+  — it just was never propagated to authbypass/idor/ssrf. `idor`'s baseline mode
+  (`pkg/detectors/idor/detector.go:254-260`) and `ssrf`'s diff-based checks share the
+  identical blind-`StatusCode` pattern but are less exposed in practice (a
+  consistently-redirecting endpoint becomes part of the *baseline itself* under
+  idor's majority-vote `Establish`, so it mostly self-corrects there — `checkMissingAuth`
+  has no such baseline to fall back on, a single request is a verdict). **Fix:** every
+  check that fires an unauthenticated/other-account request and treats
+  `StatusCode == 200` as "access granted" must first confirm `resp.Request == nil ||
+  resp.Request.URL.Path == the requested path` (or disable redirect-following for
+  this class of probe entirely, via a `MaxRedirects: 0` variant client, and treat any
+  3xx as "still protected" rather than silently resolving it) — port `misconfig`'s
+  existing pattern rather than inventing a new one. **Top priority: this is a real,
+  live false positive directly contradicting the <5% FP target.**
+- **LT-125 — `recon.SuggestAuthBypassPathsFromRecon` only recognizes `401`/`403` as
+  "protected path" evidence, missing the extremely common "3xx redirect to a login
+  page" access-control shape — which is *why* this round's plan tree had zero
+  authbypass leaves despite the target's most textbook admin-panel candidate sitting
+  right there.** `pkg/recon/suggest.go:377-417`'s `switch` only buckets a path into
+  `protected` on `ep.StatusCode == http.StatusUnauthorized || ...Forbidden` or an
+  `api-spec` auth-required route; a `302`/`301` is never considered, even though
+  WordPress (`/wp-admin/` → `wp-login.php`), and most session-cookie web apps
+  generally, gate access with a redirect rather than a 401/403. Live-confirmed:
+  recon recorded `https://nettix.com.pe/wp-admin/` as an `EndpointFact` (`status_code:
+  302`, `source: robots-txt`) but it never reached `protected`, so `authbypass` never
+  got a leaf at all on this run — the single highest-value, most standard "should
+  reject me" check on the whole target silently never ran. **Fix — add the redirect
+  case:** when a non-static-asset path's `EndpointFact.StatusCode` is `301`/`302`/`303`/
+  `307`/`308` and (heuristically) its `RedirectChain`/response shape suggests a login
+  boundary (matches recon's own existing `wave3-auth-boundary-heuristic` keyword list:
+  "login"/"signin" in the redirect target, or an X-Redirect-By-style header worth
+  recording on the fact), add it to `protected` too. **Sequencing constraint: land
+  this only together with or strictly after LT-124** — widening the protected-path
+  net to include redirect-shaped endpoints, without first fixing `checkMissingAuth`'s
+  redirect-blindness, would turn every correctly-secured redirect-gated admin panel
+  on the internet into a guaranteed false "missing auth" finding (exactly LT-124's
+  bug, just triggered automatically instead of by hand).
+- **LT-126 — `probeCommonPaths` records a probed path's pre-redirect URL alongside a
+  post-redirect (same-host) response's status/body/content-type, silently
+  misattributing one URL's content to a different URL.** `pkg/recon/crawl.go`'s
+  `probeCommonPaths` builds `EndpointFact{URL: reqURL, ...}` from the *requested*
+  `reqURL`, but `resp` comes from `r.client.Do(req)`, which (like every other
+  detector) transparently follows same-host redirects. LT-64 already solves this for
+  a *cross-host* redirect (`RedirectChain`/`FinalURL`, `StatusCode` pinned to the
+  first-hop 3xx) — a *same-host* redirect gets none of that treatment. Live-confirmed:
+  the recon JSON for this run records `{"url": "https://erp.nettix.com.pe/api",
+  "status_code": 200, "content_type": "text/html; charset=UTF-8", "body_len": 178}` —
+  but `curl -D - https://erp.nettix.com.pe/api` (no `-L`) returns a **`301`** to
+  `/api/`; the `200`/178-byte body actually belongs to `/api/`, Dolibarr's own
+  "El módulo Api debe ser activado" ("the API module must be activated") message
+  (confirmed by hand). Same for `ixn.nettix.com.pe/api`. Cost: any downstream
+  `Suggest*` helper building an idor/ssrf/authbypass candidate from this fact would
+  target the literally-wrong URL (a `301`, not the real resource), and a report citing
+  `"https://erp.nettix.com.pe/api → 200"` is unreproducible by a triager who curls
+  that exact URL. **Fix:** same shape as LT-64 but for the same-host case — either
+  rewrite `EndpointFact.URL` to `resp.Request.URL.String()` when it differs from
+  `reqURL` (simplest), or carry the redirect chain the same way LT-64 already does
+  regardless of host.
+- **LT-127 — a wiki/CMS whose "page doesn't exist yet" response is HTTP 200 with a
+  page-name-templated title defeats LT-30's canary-suppression, fabricating
+  ConfidenceHigh "real API surface" endpoints out of nonexistent paths.** DokuWiki
+  (`wiki.nettix.com.pe`) answers *any* path with `200` and `<title>{page} [Wiki
+  Nettix]</title>` — confirmed live: `curl https://wiki.nettix.com.pe/doesnotexist123456xyz`
+  → `200`, title `doesnotexist123456xyz [Wiki Nettix]`. Because the title (and thus
+  body length) differs by design for every distinct requested path, `probeCommonPaths`'
+  `sameAsCanary` (`pkg/recon/crawl.go`, length-within-tolerance + status + content-type)
+  never matches it against the canary, so **three fabricated endpoints** were recorded
+  this round at `ConfidenceHigh`/`wave3-common-path-probe`:
+  `wiki.nettix.com.pe/api`, `/.well-known/openapi.json`, `/api-docs` — none of which
+  are real API routes, all three are the same DokuWiki "no such page" template. Worse,
+  `classifyAppSurface`'s `endpointShowsRealApp` (`pkg/recon/aggregate.go:288-297`)
+  counts any non-root, non-asset 2xx path as "real app" evidence regardless of title,
+  so these three fake hits also inflate the `app_surface` verdict. This is the same
+  problem class LT-30 was built for (a catch-all defeating naive 2xx-checking) but a
+  *templated* soft-200 (body differs *by design* per request) evades LT-30's
+  length-tolerance dedup entirely. **Fix:** fetch a *second*, differently-named canary
+  path per host and diff it against the first — if the two canaries differ only in the
+  substring that echoes back the requested path name (not in overall structure/length
+  beyond the substitution), classify the host as templated-catch-all the same way a
+  byte-identical canary already triggers `VerdictCatchall`.
+- **LT-128 — Part B's `signupPathCandidates` (LT-123) is too narrow for the CMS
+  platforms actually seen live, so `--auto-provision-account` never got a chance to
+  attempt provisioning on this run.** `pkg/recon/crawl.go`'s curated list
+  (`/register`, `/signup`, `/auth/register`, `/auth/signup`, `/api/auth/signup`,
+  `/api/register`, `/users/register`, `/account/register`) matches API-shaped apps
+  like crAPI but not WordPress (self-registration is `/wp-login.php?action=register`
+  — a query-string action on an existing path, not a distinct guessable path) or
+  WooCommerce (account creation is a form embedded in `/my-account/`'s own GET page,
+  not a POST-only endpoint at a predictable name) — both confirmed present on
+  `nettix.com.pe`'s tech stack this round. The fail-closed behavior itself worked
+  correctly (`scan: --auto-provision-account set, but recon found no signup-endpoint
+  candidate — proceeding without a second account`) — this is a coverage gap, not a
+  bug. **Fix:** widen `signupPathCandidates` with `/wp-login.php?action=register`
+  (WordPress, extremely high-value given how common WordPress is) and consider a
+  body-marker check (a `name="user_login"` + `name="user_email"` form pair, the way
+  `checkPhpMyAdmin` already gates on its own form-field pair) for CMS platforms whose
+  registration is a GET-rendered form rather than a POST-only route.
+- **LT-129 — `pkg/fingerprint`'s signature table has no entries for Dolibarr,
+  Nextcloud, Webmin, or DokuWiki, all four confirmed live on this exact target, and
+  `Signature`/`Match` have no version-capture mechanism at all.** `pkg/fingerprint/
+  signatures.go`'s `signatures` slice covers WordPress/phpMyAdmin/generic
+  servers/cloud-provider headers but nothing for these four — each was instead
+  reverse-engineered into a bespoke one-off `pkg/detectors/misconfig` check
+  (`checkDolibarrOutdated`/`checkNextcloudStatus`/`checkWebmin`) with its own ad hoc
+  version-regex, rather than feeding the shared, general-purpose fingerprint layer
+  once (which would also make the product visible to `registry.hostnameProductHints`/
+  `TechStackTags` for template-corpus scoping, not just to one hand-written check).
+  Live-confirmed a ready-made, near-zero-FP-risk signature is sitting in plain sight:
+  `erp.nettix.com.pe/api/`'s own response sends `Access-Control-Allow-Headers:
+  Content-Type, Authorization, api_key, DOLAPIKEY, DOLAPIENTITY` —
+  `DOLAPIKEY`/`DOLAPIENTITY` are Dolibarr-specific REST API header names, unlikely to
+  appear on anything else. **Fix:** add header/body signatures for all four (Dolibarr:
+  the `DOLAPIKEY` header, or `<meta name="author" content="Dolibarr` body match;
+  Nextcloud: `"productname":"Nextcloud"` in a `/status.php` body; Webmin: `Server:
+  MiniServ`; DokuWiki: `content="DokuWiki"` generator meta) plus matching
+  `hostnameProductHints` tokens; separately, add an optional `VersionRegex` (one
+  capture group) to `Signature`, surfaced as `Match.Version`, so future versioned
+  products get CVE-correlation for free instead of requiring a bespoke detector each
+  time.
+- **LT-130 — the D2 program-policy pre-flight (`pkg/preflight.Check`) is only ever
+  run against the CLI's initial seed target(s), never against the hosts recon
+  actually fans out to.** `cmd/hackerfive/recon.go:69` and `plan.go:70` both call
+  `runPreflight([]string{target}, ...)` — literally a one-element slice of the
+  `-t` value — *before* `recon.Run` executes Wave 1's `subfinder`-driven host
+  discovery. Live-confirmed: this round's apex-seeded recon fanned out to 24 real
+  hosts (`erp`/`ixn`/`cloud01`/`cloud02`/`wiki`/`soporte`/…), none of which were
+  individually policy-checked — only `nettix.com.pe` itself was. A `policy.yaml`
+  entry declaring, say, `erp.nettix.com.pe: disallowed` (a program plausibly carving
+  its ERP system out as off-limits while the main site stays fair game) would never
+  be enforced once recon fans out past the seed — Wave 1/3 requests reach that host
+  with zero further D2 check. `scan` itself is unaffected (its `--targets` list is
+  always the exact, explicit host set, never discovery-expanded). **Fix:** re-run
+  (or defer) the D2 policy check per newly-discovered host before Wave 2/3 probes it
+  — cheapest version: after Wave 1 finishes, call `preflight.Check` again over the
+  full in-scope host list and abort/warn exactly as the upfront call does today.
+- **LT-131 — `pkg/mcpserver` has zero wiring for any of Part A/B's new
+  recon-derived fields — an MCP-driven agent cannot reach LT-95/96's UUID-idor/
+  SSRF-body-param detection or LT-123's `--auto-provision-account` at all, only the
+  CLI got them.** `grep -rn "SSRFBodyParams\|IDORSeedID\|AutoProvisionAccount\|
+  SignupEndpoint\|ProvisionEmailTemplate" pkg/mcpserver/` returns **zero hits**.
+  `scanInput`/`runScan` (`pkg/mcpserver/tools_scan.go`) build `scanner.Config`
+  without ever setting `SSRFBodyParams`/`IDORSeedID`/`AutoProvisionAccount`/
+  `ProvisionEmailTemplate`, and `planInput`/`handlePlan`/`RunPlan`'s `baseCfg`
+  (`tools_plan.go`) never set `AutoProvisionAccount` either — even though the `plan`
+  tool's own `ReconResult` (when recon ran as part of the same call) already carries
+  `SignupEndpoint`/`BodyParamKeys`/UUID-seed data the CLI path derives these from via
+  `fieldsuggest`/`applyLeafReconFields`. Concretely: an agent driving the intended
+  autonomous `plan → approve → execute` loop against a POST-body-only SSRF candidate,
+  or a target needing a provisioned second account for `idor`/`authbypass`, has no
+  tool-surface field to ask for either — it would have to fall back to manually
+  supplying `other_auth_token`, defeating the point of the autonomous workflow this
+  server exists to support. (Already named as a scoped-out "CLI-only for v1" cut in
+  LT-123's own entry; this confirms it's a real, concrete gap rather than a
+  hypothetical one.) **Fix:** add these fields to `scanInput`/`planInput`, thread them
+  into `cfg`/`baseCfg` the same way the CLI does. **Minor, same area:** `handlePlan`
+  (`tools_plan.go:227`) discards a template-index load error silently
+  (`index, _ := templatesync.LoadIndex(...)`) while `runScan`'s identical failure
+  (`tools_scan.go:219-223`) appends an explicit `warn:` line to its output — worth
+  making `handlePlan` do the same for consistency, low priority.
+
+
 
 Active recon + focused `misconfig` pass over the four owned demo domains
 (`*.andertone.com`, `*.aalberts.com`, `*.nettix.com.pe`, `*.aceautowreckers.com`;
@@ -1378,7 +1586,7 @@ measurement. Not scheduled into any phase; each entry names what would un-park i
 - **DOM-based XSS via Chromedp.** Passive/reflected template XSS covers the bulk at far lower cost; Chromedp adds a dependency + a sandboxing burden, and [Phase 8](17-implementation-plan-ph8.md) / [Phase 9](18-implementation-plan-ph9.md) explicitly keep it out (first-party DOM-XSS validation stays its own sandboxed item). Un-parks when [Phase 7](16-implementation-plan-ph7.md) Step 7 / [Phase 9](18-implementation-plan-ph9.md) Step 4 eval numbers show reflected-XSS live yield justifies the cost.
 - **Playwright/Caido-style richer recon signal** (JS-rendered DOM crawl + traffic analysis as a passive recon wave). Largely overlaps [Phase 8](17-implementation-plan-ph8.md) Step 3 (JS static analysis) + Step 6 (katana JS-rendered crawl). Un-parks when those land and a concrete residual delta (full request/response capture, real browser automation) is worth sizing.
 - **ffuf-style multi-position fuzzing as its own tool.** Reaffirmed out of scope 2026-09-08 (detail in the "Capability-gap review" above): content discovery already rides `httpx -path`; parameter discovery is better served first-party by LT-100's diff-oracle; and true multi-position `FUZZ` volume doesn't reconcile with the shared rate limiter / LT-98. Un-parks only if a live engagement surfaces something LT-100 + `httpx -path` provably cannot reach.
-- **Baseline-mode account provisioning guidance** for a real bounty/VDP target — only lab-target-specific steps exist ([20-setup-testing-targets.md](20-setup-testing-targets.md)). Un-parks when a real engagement needs it — write the guidance from that engagement.
+- **Baseline-mode account provisioning guidance** for a real bounty/VDP target — only lab-target-specific steps exist ([20-setup-testing-targets.md](20-setup-testing-targets.md)). LT-123 (above) now automates this for the common case (`--auto-provision-account`); this item is narrower — operator-facing guidance for the residual manual cases (e.g. an email-verification-gated signup LT-123 fails closed on). Un-parks when a real engagement needs it — write the guidance from that engagement.
 - **Self-hosted `interactsh-server`.** The public-server default (retry-hardened, `pkg/oob`) covers owned-site scanning. Un-parks when a real third-party engagement needs a private OOB server (operational, not code).
 
 ## Reporting & Integrations

@@ -142,6 +142,23 @@ type JSSecretFact struct {
 	Redacted string `json:"redacted"` // first/last few characters only — never the full secret
 }
 
+// SignupFact records a candidate account-registration endpoint recon found —
+// presence and shape only, like APISpecFact: recon never confirms the route
+// actually creates an account, just that it looks like one exists.
+// pkg/provision (--auto-provision-account) decides what to do with it. Set
+// either from an OpenAPI operation whose operationId/summary names it as a
+// signup route (specwalk.go's signupOperationHint, higher precision — Method
+// is the operation's own documented method) or, when no spec is available, a
+// path-guess probe against a curated candidate list (crawl.go's
+// signupPathCandidates, lower precision — Method defaults to POST, since a
+// real signup route is virtually always POST). First one found wins; a
+// spec-derived hint is tried before the path-guess fallback per host, so it
+// naturally takes precedence.
+type SignupFact struct {
+	URL    string `json:"url"`
+	Method string `json:"method"`
+}
+
 // APISpecFact records that a machine-readable API spec was found publicly
 // reachable — presence only, never parsed; generic spec parsing is still an
 // explicit, named scope cut from docs/91-research-recon-phase.md §3's Wave
@@ -207,6 +224,7 @@ type ReconResult struct {
 	Endpoints       []EndpointFact       `json:"endpoints,omitempty"`
 	TechStack       []TechFact           `json:"tech_stack,omitempty"`
 	APISpec         *APISpecFact         `json:"api_spec,omitempty"`
+	SignupEndpoint  *SignupFact          `json:"signup_endpoint,omitempty"`
 	Secrets         []JSSecretFact       `json:"secrets,omitempty"`
 	UniformResponse *UniformResponseFact `json:"uniform_response,omitempty"`
 	AppSurface      *AppSurfaceFact      `json:"app_surface,omitempty"`

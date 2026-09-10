@@ -112,3 +112,26 @@ func TestReconResult_SchemaRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, string(raw), string(rawAgain), "ReconResult must round-trip through the frozen schema without loss")
 }
+
+// TestReconResult_SchemaValidatesSignupEndpoint covers v1.11 (Part B,
+// --auto-provision-account): a ReconResult carrying a SignupEndpoint must
+// still satisfy the frozen schema and round-trip without loss.
+func TestReconResult_SchemaValidatesSignupEndpoint(t *testing.T) {
+	schema := compileReconSchema(t)
+
+	result := ReconResult{
+		Target:         "https://example.com",
+		SignupEndpoint: &SignupFact{URL: "https://example.com/api/auth/signup", Method: "POST"},
+	}
+	raw, err := json.Marshal(result)
+	require.NoError(t, err)
+
+	var asAny any
+	require.NoError(t, json.Unmarshal(raw, &asAny))
+	assert.NoError(t, schema.Validate(asAny), "a ReconResult with SignupEndpoint set must satisfy the schema: %s", raw)
+
+	var roundTripped ReconResult
+	require.NoError(t, json.Unmarshal(raw, &roundTripped))
+	require.NotNil(t, roundTripped.SignupEndpoint)
+	assert.Equal(t, *result.SignupEndpoint, *roundTripped.SignupEndpoint)
+}

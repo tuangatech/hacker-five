@@ -368,6 +368,74 @@ func TestRunWave3_MultipleRealSpecPathsExposed_FirstOneWins(t *testing.T) {
 	assert.Equal(t, srv.URL+"/swagger.json", result.APISpec.URL, "commonPaths checks /swagger.json before /.well-known/openapi.json")
 }
 
+// TestRunWave3_SignupEndpoint_FromOpenAPISpec covers Part B
+// (--auto-provision-account): a spec that documents a signup-shaped
+// operation sets ReconResult.SignupEndpoint from that operation, not from
+// probeSignupCandidates' lower-precision path-guess fallback.
+func TestRunWave3_SignupEndpoint_FromOpenAPISpec(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	spec := `{"openapi":"3.0.0","servers":[{"url":"/identity"}],"paths":{
+		"/auth/signup": {"post": {"operationId": "signupUser"}}
+	}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/swagger.json" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(spec))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	require.NotNil(t, result.SignupEndpoint)
+	assert.Equal(t, srv.URL+"/identity/auth/signup", result.SignupEndpoint.URL)
+	assert.Equal(t, "POST", result.SignupEndpoint.Method)
+}
+
+// TestRunWave3_SignupEndpoint_PathGuessFallback covers the no-spec case: a
+// target with no reachable OpenAPI document but a real POST-only
+// registration route at one of signupPathCandidates' guesses, which answers
+// a GET with 405 — probeSignupCandidates must still record it.
+func TestRunWave3_SignupEndpoint_PathGuessFallback(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/auth/signup" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	require.NotNil(t, result.SignupEndpoint)
+	assert.Equal(t, srv.URL+"/api/auth/signup", result.SignupEndpoint.URL)
+	assert.Equal(t, "POST", result.SignupEndpoint.Method)
+}
+
+// TestRunWave3_NoSignupCandidate_SignupEndpointStaysNil: a target with none
+// of the candidate signup paths reachable, and no spec, leaves
+// SignupEndpoint nil rather than guessing.
+func TestRunWave3_NoSignupCandidate_SignupEndpointStaysNil(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+	assert.Nil(t, result.SignupEndpoint)
+}
+
 // TestRunKatana_401NotReproduced_EndpointDropped guards the false-positive
 // fix found live 2026-09-04: a real target's "/giftcard/" got a single
 // crawl-time 401 (most likely bot-protection reacting to katana, not real

@@ -17,10 +17,11 @@ import (
 // ReconResult / aggregator exactly as if probeCommonPaths had found the spec
 // served.
 type SpecIngestResult struct {
-	Endpoints  []EndpointFact
-	APISpec    *APISpecFact
-	OutOfScope []string
-	Warnings   []string
+	Endpoints      []EndpointFact
+	APISpec        *APISpecFact
+	SignupEndpoint *SignupFact
+	OutOfScope     []string
+	Warnings       []string
 }
 
 // IngestOpenAPISpecs walks each ref — a local file path or an http(s) URL —
@@ -48,10 +49,13 @@ func IngestOpenAPISpecs(ctx context.Context, client *httpclient.Client, sc *scop
 			out.Warnings = append(out.Warnings, fmt.Sprintf("--openapi-spec %s: %v — skipped", ref, err))
 			continue
 		}
-		facts, truncated := walkOpenAPISpec(specURL, body)
+		facts, truncated, signup := walkOpenAPISpec(specURL, body)
 		if len(facts) == 0 {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("--openapi-spec %s: not a recognisable OpenAPI 2.0/3.x document (no routes walked)", ref))
 			continue
+		}
+		if out.SignupEndpoint == nil {
+			out.SignupEndpoint = signup
 		}
 		kept := 0
 		for _, ef := range facts {

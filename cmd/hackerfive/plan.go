@@ -129,6 +129,9 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 					if result.APISpec == nil {
 						result.APISpec = ing.APISpec
 					}
+					if result.SignupEndpoint == nil {
+						result.SignupEndpoint = ing.SignupEndpoint
+					}
 					for _, w := range ing.Warnings {
 						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "plan: "+w)
 					}

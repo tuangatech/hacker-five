@@ -183,6 +183,7 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	for _, seed := range seeds {
 		r.probeCommonPaths(ctx, agg, seed)
 		r.tagAuthBoundary(ctx, agg, seed)
+		r.probeSignupCandidates(ctx, agg, seed)
 	}
 
 	// LT-76 (docs/follow-up.md, Phase 8 Step 6): give the highest-interest
@@ -526,7 +527,15 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 			// observed endpoint. JSON and YAML spec bodies are both walked
 			// (LT-40(b)); a body that parses as neither stays the
 			// presence-only APISpecFact.
-			if specEPs, truncated := walkOpenAPISpec(reqURL, specBody); len(specEPs) > 0 {
+			specEPs, truncated, signup := walkOpenAPISpec(reqURL, specBody)
+			if signup != nil {
+				// Part B (--auto-provision-account): a spec-derived signup
+				// hint is higher precision than the path-guess fallback
+				// below, so it's recorded here regardless of whether the
+				// spec also yielded ordinary route facts.
+				agg.setSignupEndpoint(*signup)
+			}
+			if len(specEPs) > 0 {
 				for _, ef := range specEPs {
 					agg.addEndpoint(ef)
 				}
@@ -832,6 +841,66 @@ func readBodySampleAndLen(body io.Reader) (sample []byte, total int) {
 		}
 	}
 	return sample, total
+}
+
+// signupPathCandidates are GET-probed the same way commonPaths are — a
+// lower-precision fallback for --auto-provision-account's signup-endpoint
+// signal (ReconResult.SignupEndpoint) when no OpenAPI spec is available to
+// confirm one via specwalk.go's signupOperationHint. A curated, named list,
+// not a broad guess — the same style as commonPaths itself.
+var signupPathCandidates = []string{
+	"/register", "/signup", "/auth/register", "/auth/signup",
+	"/api/auth/signup", "/api/register", "/users/register", "/account/register",
+}
+
+// probeSignupCandidates GETs signupPathCandidates against seed, looking for
+// a registration route's existence — never registers anything itself (GET
+// only). A POST-only registration route commonly answers a GET with 405
+// Method Not Allowed, which is itself a strong "this route exists" signal
+// here (unlike probeCommonPaths' own generic filtering, which treats any
+// >=400 status as noise, so this uses its own narrower check rather than
+// reusing that loop); a 2xx GET is accepted only when its Content-Type looks
+// like JSON, so a generic HTML/SPA page happening to answer 200 isn't
+// mistaken for a real API route. This is a best-effort, lower-precision
+// fallback — pkg/provision.ProvisionAccount still fails closed downstream if
+// the candidate turns out to be wrong.
+func (r *Recon) probeSignupCandidates(ctx context.Context, agg *aggregator, seed string) {
+	if agg.signupEndpoint != nil {
+		return // a higher-precision spec-derived hint already won
+	}
+	base := strings.TrimRight(seed, "/")
+	host := hostOnly(base)
+	if r.hostErrors.ShouldSkip(host) {
+		return
+	}
+	for _, path := range signupPathCandidates {
+		if agg.signupEndpoint != nil {
+			return
+		}
+		reqURL := base + path
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			continue
+		}
+		r.applyHeaders(req)
+		resp, err := r.client.Do(req)
+		if err != nil {
+			if !isRequestTimeout(err) {
+				r.hostErrors.RecordError(host)
+			}
+			continue
+		}
+		r.hostErrors.RecordSuccess(host)
+		ctype := normalizeContentType(resp.Header.Get("Content-Type"))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+		_ = resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusMethodNotAllowed:
+			agg.setSignupEndpoint(SignupFact{URL: reqURL, Method: http.MethodPost})
+		case resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.Contains(ctype, "json"):
+			agg.setSignupEndpoint(SignupFact{URL: reqURL, Method: http.MethodPost})
+		}
+	}
 }
 
 // tagAuthBoundary fetches seed's homepage once and tags an EndpointFact if
