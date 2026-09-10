@@ -120,6 +120,11 @@ func TestSuggestIDOREndpointCandidates(t *testing.T) {
 			urls: []string{"https://example.com/includes/lib_head.js.php?id=5"},
 			want: []string{"/includes/lib_head.js.php?id={{id}}"},
 		},
+		{
+			name: "a spec-documented but valueless ID-shaped query param IS a candidate — the walker's own keyless encoding (LT-95)",
+			urls: []string{"https://example.com/workshop/api/mechanic/mechanic_report?report_id="},
+			want: []string{"/workshop/api/mechanic/mechanic_report?report_id={{id}}"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -143,6 +148,36 @@ func TestSuggestIDOREndpointCandidates(t *testing.T) {
 
 func TestSuggestIDOREndpointCandidates_NilResult(t *testing.T) {
 	if got := SuggestIDOREndpointCandidates(nil); got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+}
+
+// TestSuggestIDORSeedIDs covers LT-95 (docs/follow-up.md): a UUID-shaped
+// candidate's real, concrete observed value is surfaced as a seed keyed by
+// its {{id}}-templated string; an int-shaped or spec-templated ("{id}")
+// candidate has no seed, since SequentialIntStrategy already brute-forces
+// the int case and a bare spec placeholder carries no real value.
+func TestSuggestIDORSeedIDs(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/vehicle/1b4e28ba-2fa1-11d2-883f-0016d3cca427/location"},
+		{URL: "https://example.com/orders/123"},
+		{URL: "https://example.com/api/accounts/{accountId}"},
+	}}
+
+	seeds := SuggestIDORSeedIDs(result)
+	if got := seeds["/vehicle/{{id}}/location"]; got != "1b4e28ba-2fa1-11d2-883f-0016d3cca427" {
+		t.Fatalf("got seed %q, want the observed UUID", got)
+	}
+	if _, ok := seeds["/orders/{{id}}"]; ok {
+		t.Fatalf("an int-shaped candidate must not get a seed")
+	}
+	if _, ok := seeds["/api/accounts/{{id}}"]; ok {
+		t.Fatalf("a bare spec-templated {accountId} candidate must not get a seed")
+	}
+}
+
+func TestSuggestIDORSeedIDs_NilResult(t *testing.T) {
+	if got := SuggestIDORSeedIDs(nil); got != nil {
 		t.Fatalf("got %v, want nil", got)
 	}
 }
@@ -199,6 +234,63 @@ func TestSuggestSSRFParamsFromRecon(t *testing.T) {
 
 func TestSuggestSSRFParamsFromRecon_NilResult(t *testing.T) {
 	if got := SuggestSSRFParamsFromRecon(nil); got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+}
+
+// TestSuggestSSRFBodyParamsFromRecon covers LT-96: unlike
+// SuggestSSRFParamsFromRecon's exact-key match, this matches by substring —
+// a real body field name is typically compound ("mechanic_api",
+// "repair_url") rather than a bare "url"/"redirect".
+func TestSuggestSSRFBodyParamsFromRecon(t *testing.T) {
+	cases := []struct {
+		name     string
+		bodyKeys [][]string
+		want     []string
+	}{
+		{
+			name:     "compound keyword hit",
+			bodyKeys: [][]string{{"repair_url", "vehicle_id"}},
+			want:     []string{"repair_url"},
+		},
+		{
+			name:     "compound keyword hit, case-insensitive",
+			bodyKeys: [][]string{{"Repair_Url"}},
+			want:     []string{"Repair_Url"},
+		},
+		{
+			name:     "keyword miss",
+			bodyKeys: [][]string{{"quantity", "notes"}},
+			want:     nil,
+		},
+		{
+			name:     "duplicate key across endpoints collapses to one",
+			bodyKeys: [][]string{{"webhook_endpoint"}, {"webhook_endpoint"}},
+			want:     []string{"webhook_endpoint"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &ReconResult{}
+			for _, keys := range tc.bodyKeys {
+				result.Endpoints = append(result.Endpoints, EndpointFact{URL: "https://example.com/x", BodyParamKeys: keys})
+			}
+			got := SuggestSSRFBodyParamsFromRecon(result)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestSuggestSSRFBodyParamsFromRecon_NilResult(t *testing.T) {
+	if got := SuggestSSRFBodyParamsFromRecon(nil); got != nil {
 		t.Fatalf("got %v, want nil", got)
 	}
 }
@@ -284,10 +376,10 @@ func TestIsNonRouteAssetPath(t *testing.T) {
 		{"/", false},
 		{"/admin", false},
 		{"/api/v2/users", false},
-		{"/report.php", false},        // a bare .php route, no inner asset ext
-		{"/index.php", false},         // ditto
-		{"/download.aspx", false},     // ditto
-		{"/dist/report", false},       // "/dist/" alone is not enough — needs /dist/js|css/
+		{"/report.php", false},         // a bare .php route, no inner asset ext
+		{"/index.php", false},          // ditto
+		{"/download.aspx", false},      // ditto
+		{"/dist/report", false},        // "/dist/" alone is not enough — needs /dist/js|css/
 		{"/products/dist-belt", false}, // substring "dist" but not the "/dist/js/" segment
 	}
 	for _, tc := range cases {

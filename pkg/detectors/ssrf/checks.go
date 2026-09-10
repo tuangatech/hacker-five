@@ -225,6 +225,103 @@ func looksLikeFetchedContent(content []byte) bool {
 	return false
 }
 
+// buildProbeBody returns a JSON body with exactly one field set to payload —
+// same "names only, no values invented beyond the payload" scope
+// checkBodyParamTargets holds to.
+func buildProbeBody(field, payload string) string {
+	return fmt.Sprintf(`{%q:%q}`, field, payload)
+}
+
+// fetchBodyBaseline is fetchBaseline's body-mode counterpart (LT-96,
+// docs/follow-up.md).
+func (d *Detector) fetchBodyBaseline(ctx context.Context, target, authToken, field string) probeBaseline {
+	_, resp, body, err := d.doRequestBody(ctx, target, authToken, buildProbeBody(field, baselinePayload))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return probeBaseline{}
+	}
+	return probeBaseline{ok: true, bodyLen: len(bytes.TrimSpace(body))}
+}
+
+// probeAndRecordBody is probeAndRecord's body-mode counterpart: POSTs a
+// JSON body with exactly one field set to payload, rather than injecting
+// into the query string.
+func (d *Detector) probeAndRecordBody(ctx context.Context, target, authToken, field, idSuffix, payload, checkKind, description string, baseline probeBaseline) []detectors.Finding {
+	reqBody := buildProbeBody(field, payload)
+	req, resp, body, err := d.doRequestBody(ctx, target, authToken, reqBody)
+	if err != nil {
+		return nil
+	}
+	if !looksFetched(resp, body) {
+		return nil
+	}
+	if baselineMatches(baseline, body) {
+		return nil
+	}
+	return []detectors.Finding{{
+		ID:          fmt.Sprintf("ssrf-body-%s-%s-%s", checkKind, field, sanitizeID(idSuffix)),
+		Type:        "ssrf",
+		Severity:    "high",
+		Confidence:  confidenceFor(body),
+		Target:      target,
+		Description: description,
+		Evidence: map[string]string{
+			"body_field": field,
+			"payload":    payload,
+			"request":    detectors.FormatRequest(req.Method, req.URL.String(), req.Header, []byte(reqBody)),
+			"response":   detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+		},
+	}}
+}
+
+// checkBodyParamTargets is checkInternalTargets/checkSchemeBasedTargets'
+// JSON-request-body counterpart (LT-96, docs/follow-up.md): a target may
+// take the attacker-controlled URL in a body field rather than a query
+// param — e.g. crAPI's contact_mechanic takes it as mechanic_api/repair_url.
+// Named, accepted limitation: the probe body contains only the
+// SSRF-candidate field, not the route's other possibly-required fields — a
+// target with strict body validation may 400 before the payload is ever
+// evaluated. Worth revisiting only if live testing shows it matters, same
+// "iterate on evidence, don't pre-solve" discipline the rest of this
+// detector already follows (see probeBaseline's own doc comment).
+func (d *Detector) checkBodyParamTargets(ctx context.Context, target, authToken string, bodyParams []string) ([]detectors.Finding, error) {
+	if len(bodyParams) == 0 {
+		return nil, nil
+	}
+	baselines := make(map[string]probeBaseline, len(bodyParams))
+	for _, field := range bodyParams {
+		if ctx.Err() != nil {
+			break
+		}
+		baselines[field] = d.fetchBodyBaseline(ctx, target, authToken, field)
+	}
+
+	var findings []detectors.Finding
+	var internalPayloads []string
+	internalPayloads = append(internalPayloads, loopbackEncodings()...)
+	internalPayloads = append(internalPayloads, internalNetworkSamples()...)
+
+	for _, field := range bodyParams {
+		if ctx.Err() != nil {
+			return findings, ctx.Err()
+		}
+		baseline := baselines[field]
+		for _, addr := range internalPayloads {
+			findings = append(findings, d.probeAndRecordBody(ctx, target, authToken, field, addr, "http://"+addr+"/",
+				"internal-target", fmt.Sprintf("body field %q accepted an internal-network address (%s) and the response suggests the server fetched it", field, addr), baseline)...)
+		}
+		for _, path := range cloudMetadataPaths() {
+			payloadURL := "http://" + cloudMetadataTarget + path
+			findings = append(findings, d.probeAndRecordBody(ctx, target, authToken, field, cloudMetadataTarget+path, payloadURL,
+				"cloud-metadata", fmt.Sprintf("body field %q accepted a cloud-metadata URL (%s) via a bare GET and the response suggests the server fetched it", field, payloadURL), baseline)...)
+		}
+		for _, payload := range schemeBasedPayloads() {
+			findings = append(findings, d.probeAndRecordBody(ctx, target, authToken, field, payload, payload,
+				"scheme-based", fmt.Sprintf("body field %q accepted a %s payload and the response suggests the server fetched it — target's URL-fetch logic doesn't restrict schemes to http(s)", field, schemeOf(payload)), baseline)...)
+		}
+	}
+	return findings, nil
+}
+
 // doRequest fires one GET request. Unlike every other detector's
 // doRequest, this does not feed pkg/scanner/hosterrors — see this
 // package's doc comment for why.
@@ -240,6 +337,31 @@ func (d *Detector) doRequest(ctx context.Context, fullURL, token string) (*http.
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("ssrf: fetching %s: %w", fullURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("ssrf: reading response body: %w", err)
+	}
+	return req, resp, body, nil
+}
+
+// doRequestBody fires one POST request with a JSON body — checkBodyParamTargets'
+// counterpart to doRequest's bodyless GET (LT-96, docs/follow-up.md).
+func (d *Detector) doRequestBody(ctx context.Context, target, token, reqBody string) (*http.Request, *http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(reqBody))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("ssrf: building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set(d.authHeaderName, strings.Replace(d.authHeaderFormat, "{token}", token, 1))
+	}
+
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("ssrf: fetching %s: %w", target, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

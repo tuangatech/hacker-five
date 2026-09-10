@@ -104,7 +104,7 @@ func New(client *httpclient.Client, opts ...Option) *Detector {
 // every finding. ownerToken is required for the JWT and rate-limit-signal
 // checks; otherToken, if non-empty, additionally enables the token-reuse
 // check (mirrors idor.Detector's two-account baseline shape). protectedPaths
-// is the candidate endpoint list checkMissingAuth/checkJWTAlgNone/
+// is the candidate endpoint list checkMissingAuth/checkJWTAlgNone/checkBFLA/
 // checkTokenReuse/checkBrokenSession fire against.
 func (d *Detector) Run(ctx context.Context, target, ownerToken, otherToken string, protectedPaths []string) ([]detectors.Finding, error) {
 	host, err := hostOf(target)
@@ -121,6 +121,7 @@ func (d *Detector) Run(ctx context.Context, target, ownerToken, otherToken strin
 		d.checkJWTAlgNone,
 		d.checkJWTWeakSecret,
 		d.checkRateLimitSignal,
+		d.checkBFLA,
 		d.checkTokenReuse,
 		d.checkBrokenSession,
 	}
@@ -333,6 +334,83 @@ func (d *Detector) checkRateLimitSignal(ctx context.Context, target, host, _, _ 
 	}}, nil
 }
 
+// distinctAccountIdentifiers returns the set of distinct per-account
+// identifier-shaped values (emails, id/user_id/userId/phone JSON field
+// values) found in body. See rules.go's emailRe/idKeyRe doc comment.
+func distinctAccountIdentifiers(body []byte) map[string]struct{} {
+	found := map[string]struct{}{}
+	for _, m := range emailRe.FindAll(body, -1) {
+		found[string(m)] = struct{}{}
+	}
+	for _, m := range idKeyRe.FindAllSubmatch(body, -1) {
+		found[string(m[1])] = struct{}{}
+	}
+	return found
+}
+
+// looksBFLAShaped reports whether path matches one of bflaPathHints.
+func looksBFLAShaped(path string) bool {
+	lower := strings.ToLower(path)
+	for _, hint := range bflaPathHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkBFLA fires each bflaPathHints-shaped protectedPaths entry (list/admin
+// routes that should return exactly one account's own data) with a single
+// available token, and flags when the response body carries more than one
+// distinct account identifier — a positive, structural signal that a lone,
+// non-privileged token can see every account's data, not a fuzzy diff.
+// Raised at "high" rather than checkTokenReuse's "low": this is a real
+// broken-function-level-authorization bug in its own right (LT-92,
+// docs/follow-up.md — live-observed on crAPI's
+// /workshop/api/management/users/all, previously only surfaced, undersold,
+// as a checkTokenReuse "may not differentiate by account" hit).
+func (d *Detector) checkBFLA(ctx context.Context, target, host, ownerToken, otherToken string, protectedPaths []string) ([]detectors.Finding, error) {
+	token := ownerToken
+	if token == "" {
+		token = otherToken
+	}
+	if token == "" {
+		return nil, nil
+	}
+	var findings []detectors.Finding
+	for _, path := range protectedPaths {
+		if !looksBFLAShaped(path) {
+			continue
+		}
+		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, token)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+		identifiers := distinctAccountIdentifiers(body)
+		if len(identifiers) <= 1 {
+			continue
+		}
+		findings = append(findings, detectors.Finding{
+			ID:          fmt.Sprintf("authbypass-bfla-%s", sanitizeID(path)),
+			Type:        "authbypass",
+			Severity:    "high",
+			Confidence:  "high",
+			Target:      req.URL.String(),
+			Description: fmt.Sprintf("%s returned %d distinct accounts' data to a single, non-privileged token — broken function-level authorization", path, len(identifiers)),
+			Evidence: map[string]string{
+				"path":                 path,
+				"distinct_identifiers": strconv.Itoa(len(identifiers)),
+				"request":              detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+				"response":             detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+			},
+		})
+	}
+	return findings, nil
+}
+
 // checkTokenReuse compares raw response bytes, not idor.Signature's fuzzy
 // (size-tolerance + keyword-set) comparison — deliberately: idor's tolerance
 // exists to absorb noise like timestamps within an otherwise-identical
@@ -365,6 +443,9 @@ func (d *Detector) checkTokenReuse(ctx context.Context, target, host, ownerToken
 		}
 		if string(ownerBody) != string(otherBody) {
 			continue // expected/safe: each account sees its own distinct content
+		}
+		if len(otherBody) == 0 || len(distinctAccountIdentifiers(otherBody)) == 0 {
+			continue // LT-92: an empty or non-personalized (no account-shaped field) shared response isn't meaningful token-reuse signal
 		}
 		findings = append(findings, detectors.Finding{
 			ID:          fmt.Sprintf("authbypass-token-reuse-%s", sanitizeID(path)),

@@ -357,6 +357,40 @@ func TestResolve_IdorEndpointCandidates_FanOutPerCandidate(t *testing.T) {
 	assert.True(t, got["/community/api/v2/community/posts/{{id}}"])
 }
 
+// TestResolve_IdorEndpointCandidates_UUIDCandidateCarriesSeed covers LT-95
+// (docs/follow-up.md): a UUID-shaped candidate observed with a real,
+// concrete value (an authenticated crawl, not a bare spec placeholder) must
+// carry that seed on its leaf so planexec/scanner.Engine can dispatch
+// idor.RandomUUIDStrategy instead of a numeric range that could never reach
+// it. The sibling int-shaped candidate must not.
+func TestResolve_IdorEndpointCandidates_UUIDCandidateCarriesSeed(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/vehicle/1b4e28ba-2fa1-11d2-883f-0016d3cca427/location", Method: "GET", Source: "wave3-crawl", Confidence: "medium"},
+			{URL: "http://api.example.test/orders/123", Method: "GET", Source: "wave3-crawl", Confidence: "medium"},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	byTemplate := map[string]*agenttask.PlanNode{}
+	for _, leaf := range hostLeaves(t, tree, "api.example.test") {
+		if leaf.Detector == "idor" {
+			byTemplate[leaf.EndpointTemplate] = leaf
+		}
+	}
+	uuidLeaf := byTemplate["/vehicle/{{id}}/location"]
+	require.NotNil(t, uuidLeaf)
+	assert.True(t, uuidLeaf.EndpointIDIsUUID)
+	assert.Equal(t, "1b4e28ba-2fa1-11d2-883f-0016d3cca427", uuidLeaf.EndpointSeedID)
+
+	intLeaf := byTemplate["/orders/{{id}}"]
+	require.NotNil(t, intLeaf)
+	assert.False(t, intLeaf.EndpointIDIsUUID)
+	assert.Empty(t, intLeaf.EndpointSeedID)
+}
+
 // TestResolve_IdorCapabilityOnly_KeepsBareLeaf: a host with a tech-matched
 // idor capability but zero ID-shaped recon endpoints keeps its single bare
 // idor leaf (nothing to fan out).
@@ -1194,6 +1228,24 @@ func TestResolve_SSRFParamEndpoint_ProducesSsrfLeaf(t *testing.T) {
 
 	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "ssrf" })
 	require.NotNil(t, leaf, "a URL-shaped query param must produce an ssrf leaf")
+}
+
+// TestResolve_SSRFBodyParamEndpoint_ProducesSsrfLeafWithBodyParams covers
+// LT-96 (docs/follow-up.md): an api-spec fact's requestBody schema property
+// name, not a query param, must still produce a dispatchable ssrf leaf.
+func TestResolve_SSRFBodyParamEndpoint_ProducesSsrfLeafWithBodyParams(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://example.test/merchant/contact_mechanic", Method: "POST", Source: "api-spec", BodyParamKeys: []string{"repair_url"}},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "ssrf" })
+	require.NotNil(t, leaf, "a URL-shaped requestBody property must produce an ssrf leaf")
+	assert.Equal(t, []string{"repair_url"}, leaf.SSRFBodyParams)
 }
 
 func TestResolve_CartEndpoint_ProducesBusinessLogicLeaf(t *testing.T) {

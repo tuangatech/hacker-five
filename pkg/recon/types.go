@@ -100,6 +100,17 @@ type EndpointFact struct {
 	// reason. An empty pair is the common case (no cross-host redirect).
 	RedirectChain []string `json:"redirect_chain,omitempty"`
 	FinalURL      string   `json:"final_url,omitempty"`
+
+	// BodyParamKeys is set (LT-96, docs/follow-up.md) only on a Source
+	// "api-spec" fact whose documented operation has a `requestBody` JSON
+	// schema: the request-body property names the spec declares, names
+	// only — no values invented, same principle GET's keyless query-key
+	// folding already uses. SuggestSSRFBodyParamsFromRecon matches these
+	// against a curated keyword set the same way SuggestSSRFParamsFromRecon
+	// does for query params, closing the gap where an attacker-controlled
+	// URL is taken in a JSON body field (e.g. crAPI's contact_mechanic)
+	// rather than a query string.
+	BodyParamKeys []string `json:"body_param_keys,omitempty"`
 }
 
 // TechFact is one technology/framework signal observed on the target.

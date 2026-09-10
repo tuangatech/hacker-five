@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +127,69 @@ func TestIDORDetector(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIDORDetector_RandomUUIDStrategy_Hit covers LT-95 (docs/follow-up.md):
+// a UUID-keyed BOLA (e.g. crAPI's vehicle/{vehicleId}/location) is
+// unreachable by SequentialIntStrategy's int-only range. Here both accounts
+// can access the seed vehicle's location while every random filler UUID is
+// correctly denied — RandomUUIDStrategy's fillers establish the "denied"
+// baseline exactly as an int-range scan would, and the one real seed sample
+// deviates from it.
+func TestIDORDetector_RandomUUIDStrategy_Hit(t *testing.T) {
+	const seedID = "1b4e28ba-2fa1-11d2-883f-0016d3cca427"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, seedID) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"lat":1.23,"lon":4.56}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := httpclient.New(httpclient.Config{
+		Timeout:             5 * time.Second,
+		MaxRedirects:        5,
+		MaxIdleConnsPerHost: 10,
+	})
+	strategy := idor.RandomUUIDStrategy{Seed: seedID, FillerCount: 20}
+	detector := idor.New(client, strategy)
+
+	findings, err := detector.Run(context.Background(), srv.URL+"/vehicle/{{id}}/location", "owner-token", "other-token")
+	require.NoError(t, err)
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "idor", findings[0].Type)
+	assert.Equal(t, "high", findings[0].Confidence)
+}
+
+// TestIDORDetector_RandomUUIDStrategy_NoFinding_ProperlyProtected is the
+// same seed/filler shape, but otherToken is correctly denied at the seed ID
+// too — a properly-authorized endpoint must not flag.
+func TestIDORDetector_RandomUUIDStrategy_NoFinding_ProperlyProtected(t *testing.T) {
+	const seedID = "1b4e28ba-2fa1-11d2-883f-0016d3cca427"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if path.Base(r.URL.Path) == seedID && r.Header.Get("Authorization") == "Bearer owner-token" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"lat":1.23,"lon":4.56}`))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	client := httpclient.New(httpclient.Config{
+		Timeout:             5 * time.Second,
+		MaxRedirects:        5,
+		MaxIdleConnsPerHost: 10,
+	})
+	strategy := idor.RandomUUIDStrategy{Seed: seedID, FillerCount: 20}
+	detector := idor.New(client, strategy)
+
+	findings, err := detector.Run(context.Background(), srv.URL+"/vehicle/{{id}}/location", "owner-token", "other-token")
+	require.NoError(t, err)
+	assert.Empty(t, findings)
 }
 
 // TestIDORDetector_AuthHeaderOption proves idor.WithAuthHeader controls which

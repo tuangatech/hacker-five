@@ -148,7 +148,7 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 		if !strings.HasPrefix(p, "/") {
 			continue // a relative or server-templated path — skip
 		}
-		method, queryKeys, authRequired := walkPathItem(doc.Paths[p], docRequiresAuth)
+		method, queryKeys, bodyParamKeys, authRequired := walkPathItem(doc.Paths[p], docRequiresAuth)
 		full := prefix + p
 		if !strings.HasPrefix(full, "/") {
 			full = "/" + full
@@ -171,28 +171,30 @@ func walkOpenAPISpec(specURL string, body []byte) (facts []EndpointFact, truncat
 			break
 		}
 		facts = append(facts, EndpointFact{
-			URL:          full,
-			Method:       method,
-			Source:       "api-spec",
-			Confidence:   ConfidenceLow,
-			AuthRequired: authRequired,
+			URL:           full,
+			Method:        method,
+			Source:        "api-spec",
+			Confidence:    ConfidenceLow,
+			AuthRequired:  authRequired,
+			BodyParamKeys: bodyParamKeys,
 		})
 	}
 	return facts, truncated
 }
 
 // walkPathItem pulls the representative method, the set of documented
-// query-parameter names, and whether the representative operation requires
-// authentication (LT-90) out of one path-item object. The method is GET when
-// the path documents one, else the first documented operation
+// query-parameter names, the representative operation's requestBody JSON
+// schema property names (LT-96), and whether the representative operation
+// requires authentication (LT-90) out of one path-item object. The method is
+// GET when the path documents one, else the first documented operation
 // alphabetically (deterministic); it falls back to GET for a path-item that
 // is all $ref/parameters and no operation. docRequiresAuth is the
 // document-level default, used unless the operation declares its own
 // `security`.
-func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, queryKeys []string, authRequired bool) {
+func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, queryKeys, bodyParamKeys []string, authRequired bool) {
 	var item map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &item); err != nil {
-		return http.MethodGet, nil, docRequiresAuth
+		return http.MethodGet, nil, nil, docRequiresAuth
 	}
 
 	qk := map[string]bool{}
@@ -212,6 +214,7 @@ func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, que
 	}
 
 	ops := map[string]json.RawMessage{}
+	bodyKeysByOp := map[string][]string{}
 	var methods []string
 	for k, v := range item {
 		up := strings.ToUpper(k)
@@ -221,10 +224,16 @@ func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, que
 		methods = append(methods, up)
 		ops[up] = v
 		var op struct {
-			Parameters json.RawMessage `json:"parameters"`
+			Parameters  json.RawMessage `json:"parameters"`
+			RequestBody json.RawMessage `json:"requestBody"`
 		}
-		if json.Unmarshal(v, &op) == nil && len(op.Parameters) > 0 {
-			collect(op.Parameters)
+		if json.Unmarshal(v, &op) == nil {
+			if len(op.Parameters) > 0 {
+				collect(op.Parameters)
+			}
+			if len(op.RequestBody) > 0 {
+				bodyKeysByOp[up] = requestBodyPropertyNames(op.RequestBody)
+			}
 		}
 	}
 	sort.Strings(methods)
@@ -250,7 +259,37 @@ func walkPathItem(raw json.RawMessage, docRequiresAuth bool) (method string, que
 	for k := range qk {
 		queryKeys = append(queryKeys, k)
 	}
-	return method, queryKeys, authRequired
+	sort.Strings(queryKeys)
+	bodyParamKeys = bodyKeysByOp[method]
+	sort.Strings(bodyParamKeys)
+	return method, queryKeys, bodyParamKeys, authRequired
+}
+
+// requestBodyPropertyNames reads an OpenAPI 3 `requestBody` object's
+// top-level JSON schema property names — `content["application/json"].
+// schema.properties` only (LT-96, docs/follow-up.md); no nested-object
+// recursion and no other media type in v1, matching this walker's existing
+// "names only, no values invented" scope for query parameters.
+func requestBodyPropertyNames(raw json.RawMessage) []string {
+	var rb struct {
+		Content map[string]struct {
+			Schema struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"schema"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &rb) != nil {
+		return nil
+	}
+	media, ok := rb.Content["application/json"]
+	if !ok {
+		return nil
+	}
+	var names []string
+	for name := range media.Schema.Properties {
+		names = append(names, name)
+	}
+	return names
 }
 
 // operationSecurity reports whether an operation object declares a `security`

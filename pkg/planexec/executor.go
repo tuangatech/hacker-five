@@ -360,6 +360,16 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 		if notify != nil {
 			notify(fmt.Sprintf("idor: enumerating recon-derived endpoint %s (LT-91)", leaf.EndpointTemplate))
 		}
+		// LT-95: a UUID-shaped candidate carries its own real seed ID —
+		// copied alongside EndpointTemplate, never independently, since it
+		// only means anything paired with the template it was derived from.
+		if leaf.EndpointIDIsUUID {
+			cfg.IDORSeedID = leaf.EndpointSeedID
+			cfg.IDOREndpointIsUUID = true
+			if notify != nil {
+				notify("idor: UUID-shaped endpoint — enumerating with a random-UUID baseline seeded from a real observed ID (LT-95)")
+			}
+		}
 	}
 	if len(leaf.ProtectedPaths) > 0 && len(cfg.ProtectedPaths) == 0 {
 		cfg.ProtectedPaths = append([]string(nil), leaf.ProtectedPaths...)
@@ -371,6 +381,12 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 		cfg.SSRFParams = append([]string(nil), leaf.SSRFParams...)
 		if notify != nil {
 			notify(fmt.Sprintf("ssrf: probing recon-derived param(s) %s (LT-94)", strings.Join(leaf.SSRFParams, ", ")))
+		}
+	}
+	if len(leaf.SSRFBodyParams) > 0 && len(cfg.SSRFBodyParams) == 0 {
+		cfg.SSRFBodyParams = append([]string(nil), leaf.SSRFBodyParams...)
+		if notify != nil {
+			notify(fmt.Sprintf("ssrf: probing recon-derived body param(s) %s (LT-96)", strings.Join(leaf.SSRFBodyParams, ", ")))
 		}
 	}
 }
@@ -386,8 +402,8 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 			return "no --protected-paths given and recon/I4 found no usable candidate"
 		}
 	case "ssrf":
-		if len(cfg.SSRFParams) == 0 {
-			return "no --ssrf-param given and recon found no usable candidate"
+		if len(cfg.SSRFParams) == 0 && len(cfg.SSRFBodyParams) == 0 {
+			return "no --ssrf-param given and recon found no usable query or body param candidate"
 		}
 	case "businesslogic":
 		if !cfg.AllowWrites {

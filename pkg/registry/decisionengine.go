@@ -1152,7 +1152,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 			switch {
 			case leaf.EndpointTemplate != "":
 				key += "\x00" + leaf.EndpointTemplate
-			case len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0:
+			case len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0 || len(leaf.SSRFBodyParams) > 0:
 				key += "\x00endpoint-driven"
 			}
 			addLeaf(leaf, key)
@@ -1363,10 +1363,19 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 		if len(candidates) > maxEndpointDrivenIdorLeaves {
 			candidates = candidates[:maxEndpointDrivenIdorLeaves]
 		}
+		// LT-95: a UUID-shaped candidate's real, concrete observed value
+		// (the crawl's own account's likely resource ID) rides along on the
+		// same leaf so scanner/engine.go can dispatch RandomUUIDStrategy
+		// instead of a numeric range that would never reach it.
+		seeds := recon.SuggestIDORSeedIDs(hostResult)
 		for _, cand := range candidates {
 			leaf := newEndpointLeaf(host, "idor", endpointConf,
 				fmt.Sprintf("recon derived the ID-shaped endpoint %s on this host — enumerating its {{id}}", cand), leafIdx)
 			leaf.EndpointTemplate = cand
+			if seed, ok := seeds[cand]; ok {
+				leaf.EndpointSeedID = seed
+				leaf.EndpointIDIsUUID = true
+			}
 			leaves = append(leaves, leaf)
 		}
 	}
@@ -1380,10 +1389,22 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, templateB
 		leaf.ProtectedPaths = protected
 		leaves = append(leaves, leaf)
 	}
-	if params := recon.SuggestSSRFParamsFromRecon(hostResult); len(params) > 0 {
+	params := recon.SuggestSSRFParamsFromRecon(hostResult)
+	bodyParams := recon.SuggestSSRFBodyParamsFromRecon(hostResult)
+	if len(params) > 0 || len(bodyParams) > 0 {
+		var rationaleParts []string
+		if len(params) > 0 {
+			rationaleParts = append(rationaleParts, fmt.Sprintf("query param(s) %s", strings.Join(params, ", ")))
+		}
+		if len(bodyParams) > 0 {
+			// LT-96: a JSON request-body field, not a query string — e.g.
+			// crAPI's contact_mechanic takes the attacker URL this way.
+			rationaleParts = append(rationaleParts, fmt.Sprintf("body param(s) %s", strings.Join(bodyParams, ", ")))
+		}
 		leaf := newEndpointLeaf(host, "ssrf", endpointConf,
-			fmt.Sprintf("recon observed URL-shaped query param(s) on this host: %s", strings.Join(params, ", ")), leafIdx)
+			fmt.Sprintf("recon observed URL-shaped %s on this host", strings.Join(rationaleParts, " and ")), leafIdx)
 		leaf.SSRFParams = params
+		leaf.SSRFBodyParams = bodyParams
 		leaves = append(leaves, leaf)
 	}
 	for _, ep := range hostEndpoints {
@@ -1468,7 +1489,7 @@ func firstRedirectFlowEndpoint(endpoints []recon.EndpointFact) (string, bool) {
 // idor/authbypass/ssrf leaf (LT-91/LT-94) — it carries the recon-derived
 // required field on the PlanNode, so it is directly runnable.
 func leafCarriesReconField(leaf *agenttask.PlanNode) bool {
-	return leaf.EndpointTemplate != "" || len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0
+	return leaf.EndpointTemplate != "" || len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0 || len(leaf.SSRFBodyParams) > 0
 }
 
 // dropBareCapabilityLeavesSupersededByEndpointDriven removes the bare

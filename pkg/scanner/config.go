@@ -37,6 +37,16 @@ type Config struct {
 	Insecure           bool   // maps to httpclient.Config.InsecureSkipVerify; default false
 	HostErrorThreshold int    // 0 = use hosterrors.DefaultThreshold
 
+	// IDORSeedID / IDOREndpointIsUUID are LT-95's (docs/follow-up.md)
+	// UUID-keyed-BOLA counterpart to EndpointTemplate: a real, concrete ID
+	// value recon observed for EndpointTemplate's {{id}} position
+	// (recon.SuggestIDORSeedIDs), and whether it's UUID-shaped. When
+	// IDOREndpointIsUUID is true, pkg/scanner/engine.go dispatches
+	// idor.RandomUUIDStrategy with this seed instead of the default
+	// SequentialIntStrategy, which can never reach a UUID-keyed route.
+	IDORSeedID         string
+	IDOREndpointIsUUID bool
+
 	AuthToken      string // primary/"owner" account token — from --auth-token or HACKERFIVE_AUTH_TOKEN, never hardcoded
 	OtherAuthToken string // second, unrelated account token used for IDOR baseline comparison; optional, but required for high-confidence IDOR findings
 
@@ -102,6 +112,15 @@ type Config struct {
 	// (StringArrayVar), not a single comma-separated flag — see
 	// docs/13-implementation-plan-ph4.md Step 2.
 	SSRFParams []string
+
+	// SSRFBodyParams are candidate JSON request-body field names (recon-
+	// derived via SuggestSSRFBodyParamsFromRecon, LT-96) the ssrf detector's
+	// body-injection check fires against — additive to SSRFParams, not a
+	// replacement: a target may take the attacker-controlled URL in a query
+	// param, a body field, or both. Optional even for --detector ssrf, since
+	// SSRFParams alone remains a valid, required-field-satisfying
+	// configuration.
+	SSRFBodyParams []string
 
 	// OOBServers are the base URL(s) of Interactsh-protocol server(s) (from
 	// repeatable --oob-server) the ssrf detector's blind callback check
@@ -309,8 +328,8 @@ func (c Config) validate(opts ValidateOptions) error {
 	if c.Detector == "authbypass" && len(c.ProtectedPaths) == 0 && !opts.SkipProtectedPathsRequired {
 		return fmt.Errorf("validating config: authbypass detector requires --protected-paths")
 	}
-	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 && !opts.SkipSSRFParamsRequired {
-		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param")
+	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 && len(c.SSRFBodyParams) == 0 && !opts.SkipSSRFParamsRequired {
+		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param (query) or a recon-derived body param (LT-96)")
 	}
 	if c.Detector == "businesslogic" && c.AuthToken == "" {
 		return fmt.Errorf("validating config: businesslogic detector requires --auth-token (or its env var equivalent)")

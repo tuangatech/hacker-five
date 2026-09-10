@@ -158,12 +158,40 @@ func IsPlausibleURLPath(p string) bool {
 // situations a caller must handle explicitly (skip-and-explain, in the
 // Launch page's case) — this function only ever reports what recon found.
 func SuggestIDOREndpointCandidates(result *ReconResult) []string {
+	candidates, _ := idorCandidatesAndSeeds(result)
+	return candidates
+}
+
+// SuggestIDORSeedIDs returns, for every UUID-shaped {{id}} candidate
+// SuggestIDOREndpointCandidates would also produce, the concrete UUID value
+// recon actually observed on the wire — keyed by the same {{id}}-templated
+// string, so a caller already holding a candidate template can look up its
+// seed. LT-95 (docs/follow-up.md): idor.SequentialIntStrategy's int-only
+// range can never reach a UUID-keyed BOLA (e.g. crAPI's
+// vehicle/{vehicleId}/location); idor.RandomUUIDStrategy instead needs one
+// real, concrete seed ID to test cross-account access against directly.
+// Wave 3's crawl runs with whatever --auth-token/header the operator
+// supplied, so a concrete UUID seen in an authenticated crawl is very
+// likely that same account's own resource ID — exactly the value idor's
+// owner/other baseline semantics need. Never invents a value: only
+// surfaces an ID recon actually observed. A template with no UUID-shaped
+// observation (e.g. a plain int-keyed route) has no entry.
+func SuggestIDORSeedIDs(result *ReconResult) map[string]string {
+	_, seeds := idorCandidatesAndSeeds(result)
+	return seeds
+}
+
+// idorCandidatesAndSeeds is SuggestIDOREndpointCandidates/
+// SuggestIDORSeedIDs' shared implementation — one walk over result's
+// EndpointFacts feeding both public views, so their filtering (static-asset
+// skip, LT-117's asset-wrapper skip, LT-85's plausible-path check) can never
+// drift apart.
+func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTemplate map[string]string) {
 	if result == nil {
-		return nil
+		return nil, nil
 	}
 
 	seen := map[string]bool{}
-	var candidates []string
 	for _, ep := range result.Endpoints {
 		// A static build/CDN asset's ID-shaped path segment is a cache-slot
 		// or version number, not a per-record identifier — swapping it just
@@ -196,12 +224,18 @@ func SuggestIDOREndpointCandidates(result *ReconResult) []string {
 		if !IsPlausibleURLPath(p) {
 			continue
 		}
-		tmpl, ok := idShapedCandidate(ep.URL)
+		tmpl, concreteVal, isUUID, ok := idShapedCandidate(ep.URL)
 		if !ok || seen[tmpl] {
 			continue
 		}
 		seen[tmpl] = true
 		candidates = append(candidates, tmpl)
+		if isUUID && concreteVal != "" {
+			if seedByTemplate == nil {
+				seedByTemplate = map[string]string{}
+			}
+			seedByTemplate[tmpl] = concreteVal
+		}
 	}
 	// LT-83: a query-routed CMS enumerates its content through a numeric
 	// param whose name (e.g. "article") doesn't look ID-shaped — pick those
@@ -213,20 +247,26 @@ func SuggestIDOREndpointCandidates(result *ReconResult) []string {
 		seen[tmpl] = true
 		candidates = append(candidates, tmpl)
 	}
-	return candidates
+	return candidates, seedByTemplate
 }
 
 // idShapedCandidate returns the {{id}}-templated path(+query) for rawURL, if
 // any — an ID-shaped path segment first, else an ID-shaped query value whose
-// key name itself suggests an identifier.
-func idShapedCandidate(rawURL string) (string, bool) {
+// key name itself suggests an identifier. concreteVal/isUUID (LT-95,
+// docs/follow-up.md) surface the real value that was templated away and
+// whether it was UUID-shaped, so idorCandidatesAndSeeds can offer it as a
+// RandomUUIDStrategy seed — a plain int-shaped or spec-templated "{id}"
+// match leaves isUUID false, since idor.SequentialIntStrategy already
+// brute-forces the int case and a bare "{id}"/"{userId}" spec placeholder
+// carries no real value at all.
+func idShapedCandidate(rawURL string) (tmpl, concreteVal string, isUUID, ok bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", false
+		return "", "", false, false
 	}
 
-	if tmpl, ok := idShapedPathCandidate(u); ok {
-		return tmpl, true
+	if tmpl, concreteVal, isUUID, ok := idShapedPathCandidate(u); ok {
+		return tmpl, concreteVal, isUUID, true
 	}
 	return idShapedQueryCandidate(u)
 }
@@ -239,7 +279,7 @@ func idShapedCandidate(rawURL string) (string, bool) {
 // params — those params aren't part of what a --endpoint template actually
 // needs to enumerate, and keeping them turned one real candidate into dozens
 // of spurious "distinct" ones, each looking like a genuine ambiguity.
-func idShapedPathCandidate(u *url.URL) (string, bool) {
+func idShapedPathCandidate(u *url.URL) (tmpl, concreteVal string, isUUID, ok bool) {
 	segments := strings.Split(u.Path, "/")
 	for i, seg := range segments {
 		if !isIDShaped(seg) && !isSpecPathParam(seg) {
@@ -247,9 +287,9 @@ func idShapedPathCandidate(u *url.URL) (string, bool) {
 		}
 		newSegments := append([]string(nil), segments...)
 		newSegments[i] = "{{id}}"
-		return strings.Join(newSegments, "/"), true
+		return strings.Join(newSegments, "/"), seg, uuidPattern.MatchString(seg), true
 	}
-	return "", false
+	return "", "", false, false
 }
 
 // idShapedQueryCandidate requires the query key's own name to look
@@ -259,9 +299,9 @@ func idShapedPathCandidate(u *url.URL) (string, bool) {
 // idShapedPathCandidate's fix above; those keys don't look like an
 // identifier by name, so they're excluded before the value pattern is even
 // checked.
-func idShapedQueryCandidate(u *url.URL) (string, bool) {
+func idShapedQueryCandidate(u *url.URL) (tmpl, concreteVal string, isUUID, ok bool) {
 	if u.RawQuery == "" {
-		return "", false
+		return "", "", false, false
 	}
 	for _, pair := range strings.Split(u.RawQuery, "&") {
 		kv := strings.SplitN(pair, "=", 2)
@@ -272,13 +312,21 @@ func idShapedQueryCandidate(u *url.URL) (string, bool) {
 		if !looksLikeIDKey(key) {
 			continue
 		}
+		// LT-95 (docs/follow-up.md): a spec-documented but valueless query
+		// param ("report_id=", the walker's own keyless-param encoding, see
+		// specwalk.go) is still an identifier position by definition — the
+		// same tolerance isSpecPathParam already gives a valueless *path*
+		// "{id}" template, just for a query key instead.
+		if rawVal == "" {
+			return u.Path + "?" + strings.Replace(u.RawQuery, pair, key+"={{id}}", 1), "", false, true
+		}
 		val, err := url.QueryUnescape(rawVal)
 		if err != nil || !isIDShaped(val) {
 			continue
 		}
-		return u.Path + "?" + strings.Replace(u.RawQuery, pair, key+"={{id}}", 1), true
+		return u.Path + "?" + strings.Replace(u.RawQuery, pair, key+"={{id}}", 1), val, uuidPattern.MatchString(val), true
 	}
-	return "", false
+	return "", "", false, false
 }
 
 // looksLikeIDKey reports whether key's own name suggests an object
@@ -545,6 +593,39 @@ func SuggestSSRFParamsFromRecon(result *ReconResult) []string {
 			if ssrfParamKeywords[strings.ToLower(key)] {
 				seen[key] = true
 				params = append(params, key)
+			}
+		}
+	}
+	return params
+}
+
+// SuggestSSRFBodyParamsFromRecon matches EndpointFact.BodyParamKeys entries
+// (populated only from an api-spec fact's requestBody schema, see
+// walkOpenAPISpec) against ssrfParamKeywords — LT-96, docs/follow-up.md's
+// fix for a real live-observed miss (crAPI's contact_mechanic takes the
+// attacker URL in a JSON body field, not a query param). Unlike
+// SuggestSSRFParamsFromRecon's exact-key lookup, this matches by substring:
+// a real body field name is typically compound ("mechanic_api",
+// "repair_url", "webhook_endpoint") rather than a bare "url"/"redirect".
+func SuggestSSRFBodyParamsFromRecon(result *ReconResult) []string {
+	if result == nil {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	var params []string
+	for _, ep := range result.Endpoints {
+		for _, key := range ep.BodyParamKeys {
+			if seen[key] {
+				continue
+			}
+			lower := strings.ToLower(key)
+			for keyword := range ssrfParamKeywords {
+				if strings.Contains(lower, keyword) {
+					seen[key] = true
+					params = append(params, key)
+					break
+				}
 			}
 		}
 	}

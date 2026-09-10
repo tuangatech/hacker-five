@@ -61,6 +61,45 @@ func TestWalkOpenAPISpec_V2BasePath(t *testing.T) {
 	assert.Equal(t, "GET", facts[0].Method)
 }
 
+// TestWalkOpenAPISpec_RequestBodyProperties covers LT-96: a POST operation's
+// requestBody JSON schema property names are captured onto BodyParamKeys —
+// names only, no values invented — closing the gap where an attacker
+// -controlled URL is taken in a JSON body field (e.g. crAPI's
+// contact_mechanic) rather than a query param.
+func TestWalkOpenAPISpec_RequestBodyProperties(t *testing.T) {
+	body := []byte(`{
+	  "openapi": "3.0.1",
+	  "servers": [{"url": "https://api.example.com/v1"}],
+	  "paths": {
+	    "/merchant/contact_mechanic": {
+	      "post": {
+	        "requestBody": {
+	          "content": {
+	            "application/json": {
+	              "schema": {
+	                "properties": {
+	                  "mechanic_api": {"type": "string"},
+	                  "vehicle_id": {"type": "string"}
+	                }
+	              }
+	            }
+	          }
+	        }
+	      }
+	    },
+	    "/health": {"get": {}}
+	  }
+	}`)
+	facts, _ := walkOpenAPISpec("https://target.example/openapi.json", body)
+
+	got := map[string][]string{}
+	for _, f := range facts {
+		got[f.URL] = f.BodyParamKeys
+	}
+	assert.Equal(t, []string{"mechanic_api", "vehicle_id"}, got["https://target.example/v1/merchant/contact_mechanic"])
+	assert.Nil(t, got["https://target.example/v1/health"], "an operation with no requestBody has no BodyParamKeys")
+}
+
 // TestWalkOpenAPISpec_NotASpec: a JSON body with no version key, a
 // non-JSON body, and an empty body all walk to nothing.
 func TestWalkOpenAPISpec_NotASpec(t *testing.T) {

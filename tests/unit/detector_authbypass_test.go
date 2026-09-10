@@ -312,7 +312,7 @@ func TestAuthBypassTokenReuse_Hit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/me" {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("same content regardless of account"))
+			_, _ = w.Write([]byte(`{"plan":"free","user_id":"12345"}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -326,6 +326,116 @@ func TestAuthBypassTokenReuse_Hit(t *testing.T) {
 	got := withPrefix(findings, "authbypass-token-reuse-")
 	require.Len(t, got, 1)
 	assert.Equal(t, "low", got[0].Confidence)
+}
+
+// TestAuthBypassTokenReuse_NoFinding_EmptySharedBody and
+// TestAuthBypassTokenReuse_NoFinding_NonPersonalizedBody guard LT-92's
+// docs/follow-up.md tightening: an identical response is only meaningful
+// token-reuse signal when it's non-empty and actually carries a
+// per-account-shaped field — an empty list or a plain shared/non-personalized
+// page (this project's own live testing found both to be common, benign
+// cases) must not flag.
+func TestAuthBypassTokenReuse_NoFinding_EmptySharedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/orders" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "other-token", []string{"/orders"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-token-reuse-"))
+}
+
+func TestAuthBypassTokenReuse_NoFinding_NonPersonalizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/catalog" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("same content regardless of account"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "other-token", []string{"/catalog"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-token-reuse-"))
+}
+
+// TestAuthBypassBFLA_Hit reproduces LT-92's real crAPI finding: a plain
+// non-privileged token GETting a list/admin-shaped path back gets every
+// account's PII, not just its own — a broken-function-level-authorization
+// bug in its own right, previously only surfaced as an undersold
+// checkTokenReuse "may not differentiate by account" hit.
+func TestAuthBypassBFLA_Hit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/workshop/api/management/users/all" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"email":"alice@example.com"},{"email":"bob@example.com"}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "low-priv-token", "", []string{"/workshop/api/management/users/all"})
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "authbypass-bfla-")
+	require.Len(t, got, 1)
+	assert.Equal(t, "high", got[0].Severity)
+	assert.Equal(t, "high", got[0].Confidence)
+	assert.Equal(t, "2", got[0].Evidence["distinct_identifiers"])
+}
+
+func TestAuthBypassBFLA_NoFinding_SingleAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin/profile" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"email":"alice@example.com"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "", []string{"/admin/profile"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-bfla-"))
+}
+
+// TestAuthBypassBFLA_NoFinding_PathNotShaped confirms checkBFLA only
+// evaluates bflaPathHints-shaped paths — a multi-account response on an
+// ordinary path is checkTokenReuse's job (when both tokens are supplied),
+// not checkBFLA's.
+func TestAuthBypassBFLA_NoFinding_PathNotShaped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/directory" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"email":"alice@example.com"},{"email":"bob@example.com"}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector := authbypass.New(newAuthBypassClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "owner-token", "", []string{"/directory"})
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "authbypass-bfla-"))
 }
 
 func TestAuthBypassTokenReuse_NoFinding_DifferentContent(t *testing.T) {
