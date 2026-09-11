@@ -1262,16 +1262,60 @@ func majorOf(v string) (int, bool) {
 // too.
 var webminServerVersionRe = regexp.MustCompile(`(?i)MiniServ/(\d+\.\d+(?:\.\d+)?)`)
 
-// checkWebmin flags an internet-reachable Webmin / MiniServ admin login. The
-// hard gate is the "Server: MiniServ" header — the bespoke HTTP server behind
-// Webmin, Usermin and Virtualmin, and nothing else — confirmed by the login
-// form's session_login.cgi post target in the body. A MiniServ admin panel on
-// the public internet is itself the finding (misconfig-webmin-login-exposed,
-// medium); when the Server header also carries a version below a
-// KnownVulnerableVersions fix line, a second misconfig-webmin-outdated finding
-// is emitted. Same one-request, product-gated, table-driven shape as the other
-// native version checks — no version parsed ⇒ no CVE finding.
+// webminAdminPort is Webmin/MiniServ's default admin-panel port. A leaf's
+// own `target` is always the web application's own HTTP(S) port (LT-145,
+// docs/follow-up.md): naabu found port 10000 open on 8 of 24 live
+// nettix.com.pe hosts, yet checkWebmin never probed it — interestingPorts/
+// netserviceCheckedPorts (pkg/registry/decisionengine.go) carry no
+// HTTP-admin-port coverage at all, and even a future leaf built for it would
+// still need to know to target :10000 specifically rather than the host's
+// default port. checkWebmin closes this the same way checkDolibarrOutdated/
+// checkNextcloudStatus already bypass the registry/PlanTree entirely: it
+// probes its own leaf's target port as before (the one case where a
+// misconfigured reverse proxy fronts Webmin on the default port), then
+// unconditionally also probes :10000 on the same host — self-contained, no
+// plumbing change needed anywhere else.
+const webminAdminPort = "10000"
+
+// webminPortTarget rebuilds target at webminAdminPort, keeping the same
+// scheme (Webmin's own TLS setting is independent of the main site's, but
+// this is the simplest useful default without a second, scheme-guessing
+// round trip) and hostname. ok is false when target doesn't parse with a
+// host, or is already on webminAdminPort (avoids firing an identical,
+// redundant second probe).
+func webminPortTarget(target string) (newTarget, newHost string, ok bool) {
+	u, err := url.Parse(target)
+	if err != nil || u.Hostname() == "" || u.Port() == webminAdminPort {
+		return "", "", false
+	}
+	newHost = u.Hostname() + ":" + webminAdminPort
+	return u.Scheme + "://" + newHost, newHost, true
+}
+
+// checkWebmin flags an internet-reachable Webmin / MiniServ admin login —
+// checked at the leaf's own target port and, unconditionally, at Webmin's
+// default :10000 (see webminAdminPort's doc comment, LT-145). The hard gate
+// at each address is the "Server: MiniServ" header — the bespoke HTTP server
+// behind Webmin, Usermin and Virtualmin, and nothing else — confirmed by the
+// login form's session_login.cgi post target in the body. A MiniServ admin
+// panel on the public internet is itself the finding
+// (misconfig-webmin-login-exposed, medium); when the Server header also
+// carries a version below a KnownVulnerableVersions fix line, a second
+// misconfig-webmin-outdated finding is emitted. Same one-request,
+// product-gated, table-driven shape as the other native version checks — no
+// version parsed ⇒ no CVE finding.
 func (d *Detector) checkWebmin(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
+	findings, _ := d.checkWebminAt(ctx, target, host, authToken)
+	if adminTarget, adminHost, ok := webminPortTarget(target); ok {
+		more, _ := d.checkWebminAt(ctx, adminTarget, adminHost, authToken)
+		findings = append(findings, more...)
+	}
+	return findings, nil
+}
+
+// checkWebminAt is checkWebmin's single-address probe, run once against the
+// leaf's own target and once against webminAdminPort.
+func (d *Detector) checkWebminAt(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "/", authToken, nil, nil)
 	if err != nil {
 		d.logPriorityCheckRequestErr("checkWebmin", target, err)

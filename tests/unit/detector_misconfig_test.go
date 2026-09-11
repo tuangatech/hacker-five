@@ -3,6 +3,7 @@ package unit
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1318,6 +1319,48 @@ func TestMisconfigWebmin_NotMiniServ_NoFinding(t *testing.T) {
 	})
 	assert.Empty(t, withPrefix(findings, "misconfig-webmin-login-exposed"))
 	assert.Empty(t, withPrefix(findings, "misconfig-webmin-outdated"))
+}
+
+// TestMisconfigWebmin_AdminPort10000_ProbedEvenWhenMainSiteIsSomethingElse is
+// LT-145's regression guard (docs/follow-up.md): checkWebmin used to probe
+// only the leaf's own target — always the web app's default HTTP(S) port,
+// never Webmin's actual admin port. Live-observed on nettix.com.pe: naabu
+// found port 10000 open on 8 of 24 hosts, and this check never reached any of
+// them. The main site here serves ordinary content with no MiniServ header
+// at all; a separate listener bound to :10000 on the same host serves the
+// real Webmin login. Only the unconditional :10000 self-probe can find it.
+func TestMisconfigWebmin_AdminPort10000_ProbedEvenWhenMainSiteIsSomethingElse(t *testing.T) {
+	adminLn, err := net.Listen("tcp", "127.0.0.1:10000")
+	if err != nil {
+		t.Skipf("port 10000 unavailable in this environment, skipping: %v", err)
+	}
+	adminSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "MiniServ/2.111")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(webminLoginHTML))
+	}))
+	_ = adminSrv.Listener.Close()
+	adminSrv.Listener = adminLn
+	adminSrv.Start()
+	t.Cleanup(adminSrv.Close)
+
+	mainSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><body>ordinary site, not Webmin</body></html>"))
+	}))
+	t.Cleanup(mainSrv.Close)
+
+	detector := misconfig.New(newMisconfigClient())
+	findings, err := detector.Run(context.Background(), mainSrv.URL, "")
+	require.NoError(t, err)
+
+	exp := withPrefix(findings, "misconfig-webmin-login-exposed")
+	require.Len(t, exp, 1, "expected the :10000 self-probe to find Webmin even though the main site is unrelated: %+v", findings)
+	assert.Contains(t, exp[0].Target, ":10000")
+
+	out := withPrefix(findings, "misconfig-webmin-outdated")
+	require.Len(t, out, 1)
+	assert.Contains(t, out[0].Evidence["cves"], "CVE-2026-56020")
 }
 
 // TestMisconfigNativeChecks_DokuWikiNegativeControl: wiki.nettix.com.pe runs
