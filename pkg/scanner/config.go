@@ -17,6 +17,7 @@ var recognizedDetectors = map[string]bool{
 	"authbypass":    true,
 	"ssrf":          true,
 	"businesslogic": true,
+	"netservice":    true,
 }
 
 // Config is passed from the CLI into the Engine.

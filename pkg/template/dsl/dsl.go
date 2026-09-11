@@ -469,6 +469,15 @@ func (p *parser) resolveIdent(name string) (any, error) {
 		return p.ctx.StatusCode, nil
 	case "body":
 		return p.ctx.Body, nil
+	case "data":
+		// Real Nuclei's tcp:-protocol convention name for the same raw bytes
+		// "body" already names for an http: request — see matcher.ValidPart's
+		// matching "data" entry (Phase 8 Step 1,
+		// docs/17-implementation-plan-ph8.md). Aliased here rather than left
+		// to the Vars fallback below so a tcp: template's `dsl: contains(data,
+		// ...)` resolves the same way `contains(body, ...)` already does,
+		// instead of erroring as an unknown identifier.
+		return p.ctx.Body, nil
 	case "header":
 		return p.ctx.Header, nil
 	case "content_type":

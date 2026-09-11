@@ -333,7 +333,16 @@ func ValidPart(part string) bool {
 	switch part {
 	case "", "body", "header", "all", "content_type", "response", "request",
 		"location", "server", "set_cookie",
-		"interactsh_protocol", "interactsh_request", "interactsh_response":
+		"interactsh_protocol", "interactsh_request", "interactsh_response",
+		// "data" is real Nuclei's tcp:-protocol convention name for "the raw
+		// bytes read back from the connection" — the exact same thing "body"
+		// already means for an http: request. Part()'s default case already
+		// falls through to string(r.Body) for any part name it doesn't
+		// specifically recognize (that's how "data" already worked before
+		// this entry existed), so this is purely a load-time allowlist
+		// addition, not a new behavior (Phase 8 Step 1,
+		// docs/17-implementation-plan-ph8.md).
+		"data":
 		return true
 	default:
 		return false

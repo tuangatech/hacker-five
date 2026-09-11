@@ -17,11 +17,22 @@ import (
 )
 
 // Template is the top-level parsed shape of one Nuclei-compatible template
-// file, restricted to the http: protocol.
+// file, restricted to the http: and tcp: protocols.
 type Template struct {
 	ID   string        `yaml:"id"`
 	Info Info          `yaml:"info"`
 	HTTP []HTTPRequest `yaml:"http"`
+
+	// TCP holds this template's tcp: protocol requests (Phase 8 Step 1,
+	// docs/17-implementation-plan-ph8.md) — the "deferred, not rejected"
+	// capability loader.go's disallowedBlocks previously hard-rejected
+	// outright. A template carries either HTTP or TCP entries in practice
+	// (real corpus templates don't mix protocols within one file); nothing
+	// here enforces that as a load-time rule, but nuclei.Executor.Run only
+	// ever fires the block matching the target's own scheme (a bare
+	// "tcp://host:port" target for TCP, anything else for HTTP) — see its
+	// own doc comment.
+	TCP []TCPRequest `yaml:"tcp,omitempty"`
 
 	// Flow holds the raw flow: script text. Real Nuclei's flow: is small JS
 	// controlling conditional/looped execution across a template's multiple
@@ -158,6 +169,62 @@ type HTTPRequest struct {
 	// cache (respcache.go) always hits the network for such a request — a
 	// cache hit has no meaningful elapsed time.
 	usesTiming bool
+}
+
+// TCPRequest is one request block within a template's tcp: list — Phase 8
+// Step 1's deliberately minimal subset of real Nuclei's tcp: protocol
+// (docs/17-implementation-plan-ph8.md's Design section): connect, fire each
+// Inputs entry in order over the same connection, then evaluate Matchers
+// once against everything read back. No raw:/payloads:/attack: support (no
+// real corpus tcp: template sampled at implementation time needed either —
+// the class of check this exists for, a fixed banner-grab or fixed probe
+// string, has no legitimate use for a payload sweep the way an http:
+// fuzzing template does) and no code:/script execution of any kind — a
+// tcp: block that somehow carried one would have nowhere to put it, since
+// TCPInput.Data is always a plain, {{}}-templated string, never anything
+// interpreted as a program. See tcpproto.Probe for the actual connect/
+// send/read primitive this compiles down to.
+type TCPRequest struct {
+	// Host lists candidate dial addresses, {{}}-templated (real corpus
+	// convention: "{{Hostname}}:6379", a literal port). Empty (the common
+	// case for a leaf this project itself dispatches, e.g. netservice's
+	// promoted port leaves) dials the target string passed to Run
+	// directly — target already carries its own host:port for a tcp://
+	// leaf, so there's nothing to render. When non-empty, the first entry
+	// that renders with no unresolved "{{...}}" placeholder left over wins;
+	// a template whose only Host entries need a variable this project
+	// doesn't supply (e.g. real Nuclei's {{Port}}, which has no source
+	// here — there's no separate `port:` field to read it from) resolves
+	// to no dial address at all, and that request block is skipped rather
+	// than guessing wrong. See loader.go's validate and executor.go's
+	// resolveTCPHost.
+	// Extractors is deliberately not a field here yet: TCP v1 has no
+	// consumer for an extracted value (no flow:/chaining across tcp:
+	// requests — see TCPRequest's doc comment above), so wiring extraction
+	// through would validate at load time but silently do nothing at scan
+	// time. yaml.v3's default lenient unmarshal (no KnownFields(true) here,
+	// same as every other unmodeled key this parser already tolerates)
+	// means a real template's extractors: under tcp: is silently dropped
+	// rather than rejected — a load-time error would be preferable but
+	// isn't free to add without also making that strict for every other
+	// already-tolerated unknown key. Tracked: docs/follow-up.md.
+	Host []string `yaml:"host,omitempty"`
+
+	Inputs            []TCPInput                `yaml:"inputs"`
+	Matchers          []matcher.Matcher         `yaml:"matchers,omitempty"`
+	MatchersCondition matcher.MatchersCondition `yaml:"matchers-condition,omitempty"`
+}
+
+// TCPInput is one send/read step within a TCPRequest, fired in order over
+// one shared connection. Data is optional — a step with no Data at all just
+// reads (e.g. a service that volunteers a banner unprompted, the common
+// first step); Read caps how many bytes that step's read waits for (0 =
+// tcpproto.MaxReadBytes, matching real Nuclei's own "read the default
+// amount when unset" behavior for a `read:` this project doesn't otherwise
+// distinguish from the cap).
+type TCPInput struct {
+	Data string `yaml:"data,omitempty"`
+	Read int    `yaml:"read,omitempty"`
 }
 
 // resolvePayloads validates req.Payloads/req.Attack and returns every

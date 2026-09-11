@@ -377,7 +377,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "cross-target worker pool size")
 	cmd.Flags().IntVar(&templateConcurrency, "template-concurrency", 0, "how many loaded templates fire in parallel against a single target (doc15 Step 6b); 0 = built-in default (10). Still bounded by --rate-limit; auto-capped to 5 when a prompt-injection template is loaded")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 10, "requests/sec across the whole scan (conservative default — raise it explicitly for a lab benchmark; most bounty/VDP programs' own limits are lower still)")
-	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", or "businesslogic"`)
+	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", "businesslogic", or "netservice" (unauthenticated-exposure checks against a "tcp://host:port" target, e.g. a naabu-discovered open port — see Phase 8 Step 1, docs/17-implementation-plan-ph8.md)`)
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().BoolVar(&idorPreview, "idor-preview", false, "fire one extra preflight GET against the resolved --endpoint before enumeration begins, logging its status/body-length — off by default so scripted invocations see no behavior change")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")

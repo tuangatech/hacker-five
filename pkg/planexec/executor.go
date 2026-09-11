@@ -38,6 +38,7 @@ import (
 // templates-only run — see RunPlan's eligibility loop and runLeaf, below.
 var recognizedDetectors = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
+	"netservice": true,
 }
 
 // executionResult is one leaf's dispatch outcome, folded into RunPlan's

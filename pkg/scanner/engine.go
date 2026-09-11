@@ -16,6 +16,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors/businesslogic"
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
+	"github.com/tuangatech/hacker-five/pkg/detectors/netservice"
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
@@ -240,7 +241,7 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 	// ensureOOBPoller) the first time a loaded template embeds
 	// {{interactsh-url}}, so a scan/--templates set with none never talks
 	// to an OOB server at all, default or not.
-	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders).WithOOBServers(e.cfg.OOBServers).WithKnownDeadPaths(e.cfg.KnownDeadPaths)
+	nucleiExec := nuclei.New(e.client).WithHeaders(e.cfg.ExtraHeaders).WithOOBServers(e.cfg.OOBServers).WithKnownDeadPaths(e.cfg.KnownDeadPaths).WithTCPTimeout(e.cfg.Timeout)
 	defer nucleiExec.Close()
 	nativeExec := native.New(e.client, e.idorOptions()...).WithHeaders(e.cfg.ExtraHeaders)
 
@@ -460,16 +461,25 @@ func (e *Engine) runTemplates(
 	// --max-target-duration budget or a shared --rate-limit spread thin
 	// across many concurrent targets could exhaust before any of them ran
 	// (LT-114, docs/follow-up.md).
-	for _, tmpl := range nativeTemplates {
-		if !acquire() {
-			break
+	//
+	// Skipped entirely for a "tcp://host:port" netservice leaf (Phase 8
+	// Step 1, docs/17-implementation-plan-ph8.md): the native format has
+	// no tcp: protocol concept at all, unlike nucleiExec.Run, which
+	// self-gates on the same target shape (see nuclei's isTCPTarget) —
+	// firing it here would just build a doomed http.Request against a
+	// non-http URL for every native template, every netservice leaf.
+	if !isTCPScanTarget(target) {
+		for _, tmpl := range nativeTemplates {
+			if !acquire() {
+				break
+			}
+			tmpl := tmpl
+			dispatched++
+			wg.Add(1)
+			go fire(tmpl.ID, func() ([]detectors.Finding, error) {
+				return nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
+			})
 		}
-		tmpl := tmpl
-		dispatched++
-		wg.Add(1)
-		go fire(tmpl.ID, func() ([]detectors.Finding, error) {
-			return nativeExec.Run(ctx, target, tmpl, e.cfg.AuthToken, e.cfg.OtherAuthToken)
-		})
 	}
 	// nucleiTemplates arrives from loadTemplates already ordered by dispatch
 	// priority (descending severity, CVEs last within a severity) rather than
@@ -1083,6 +1093,9 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "businesslogic":
 		detector := businesslogic.New(e.client, e.businesslogicOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.AllowWrites)
+	case "netservice":
+		detector := netservice.New(netservice.WithTimeout(e.cfg.Timeout))
+		return detector.Run(ctx, target)
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)
 	}
@@ -1146,4 +1159,15 @@ func hostOf(target string) (string, error) {
 		return "", fmt.Errorf("parsing URL: %w", err)
 	}
 	return u.Host, nil
+}
+
+// isTCPScanTarget reports whether target is a "tcp://host:port" netservice
+// leaf — the exact shape registry.resolvePortFacts constructs, and the
+// only thing this project ever gives that scheme (Phase 8 Step 1,
+// docs/17-implementation-plan-ph8.md). A plain prefix check, not a full
+// url.Parse, matching how the leaf itself is built (fmt.Sprintf("tcp://%s:%d",
+// host, port)) rather than re-deriving the same answer a second, more
+// expensive way.
+func isTCPScanTarget(target string) bool {
+	return strings.HasPrefix(target, "tcp://")
 }

@@ -1548,10 +1548,15 @@ func TestResolve_WooCommerceTechFact_ProducesMisconfigLeaf(t *testing.T) {
 // --- P1-2: port-driven visibility leaves ---
 
 func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
+	// Port 5432 (postgresql) has no netservice check yet
+	// (netserviceCheckedPorts) — still the plain visibility-only path.
+	// See TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf
+	// below for the covered-port (21/3306/6379) counterpart, Phase 8
+	// Step 1.
 	result := &recon.ReconResult{
 		Target: "http://example.test",
 		Hosts: []recon.HostFact{
-			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 3306, Protocol: "tcp", Source: "naabu"}}},
+			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 5432, Protocol: "tcp", Source: "naabu"}}},
 		},
 	}
 
@@ -1563,6 +1568,33 @@ func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
 	leaf := agenttask.Leaves(hostNode)[0]
 	assert.Equal(t, agenttask.StatusUnresolved, leaf.Status)
 	assert.Empty(t, leaf.Detector, "a port-visibility leaf must never dispatch — no loadable check exists for it")
+	assert.Contains(t, leaf.Rationale, "5432")
+	assert.Contains(t, leaf.Rationale, "postgresql")
+}
+
+// TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf is Phase 8
+// Step 1's counterpart to the visibility-only test above: a port
+// netserviceCheckedPorts covers (21/3306/6379 — pkg/detectors/netservice)
+// gets promoted straight to a real dispatchable "netservice" leaf, Target
+// carrying the port directly, not just a StatusUnresolved note. Closes
+// LT-23 (docs/follow-up.md).
+func TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 3306, Protocol: "tcp", Source: "naabu"}}},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	hostNode := tree.Find("host:staging.example.test")
+	require.NotNil(t, hostNode)
+	require.Len(t, agenttask.Leaves(hostNode), 1)
+	leaf := agenttask.Leaves(hostNode)[0]
+	assert.Equal(t, agenttask.StatusPending, leaf.Status)
+	assert.Equal(t, "netservice", leaf.Detector)
+	assert.Equal(t, "tcp://staging.example.test:3306", leaf.Target)
 	assert.Contains(t, leaf.Rationale, "3306")
 	assert.Contains(t, leaf.Rationale, "mysql")
 }
@@ -1605,6 +1637,29 @@ func TestResolve_UninterestingPortOpen_NoLeaf(t *testing.T) {
 }
 
 func TestResolve_PortService_PrefersObservedOverStaticTable(t *testing.T) {
+	// Port 9200 (elasticsearch) — no netservice check yet, still the
+	// plain visibility-only path. See
+	// TestResolve_NetservicePortService_PrefersObservedOverStaticTable for
+	// the covered-port counterpart.
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "example.test", Ports: []recon.PortFact{{Port: 9200, Protocol: "tcp", Service: "elasticsearch-7.10", Source: "naabu"}}},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Status == agenttask.StatusUnresolved })
+	require.NotNil(t, leaf)
+	assert.Contains(t, leaf.Rationale, "elasticsearch-7.10", "naabu's own service string should be used when present, not just the static table's generic name")
+}
+
+// TestResolve_NetservicePortService_PrefersObservedOverStaticTable is the
+// netservice-dispatched-leaf counterpart (Phase 8 Step 1): the same
+// observed-service-string preference applies whether or not the port is
+// promoted to a dispatchable leaf.
+func TestResolve_NetservicePortService_PrefersObservedOverStaticTable(t *testing.T) {
 	result := &recon.ReconResult{
 		Target: "http://example.test",
 		Hosts: []recon.HostFact{
@@ -1614,9 +1669,41 @@ func TestResolve_PortService_PrefersObservedOverStaticTable(t *testing.T) {
 
 	tree, _ := Resolve(result, nil)
 
-	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Status == agenttask.StatusUnresolved })
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Status == agenttask.StatusPending && n.Detector == "netservice" })
 	require.NotNil(t, leaf)
 	assert.Contains(t, leaf.Rationale, "redis-server-6.2", "naabu's own service string should be used when present, not just the static table's generic name")
+}
+
+// TestResolve_NetserviceLeaf_TargetSurvivesHTTPBaseURLUpgrade is a
+// regression guard for a real bug this test caught (Phase 8 Step 1): the
+// LT-93 pass at the end of Resolve's per-host loop upgrades every leaf's
+// Target from the bare host to the real scheme://host[:port] HTTP base URL
+// recon observed — unconditionally, before the netservice leaf's own
+// carefully-built "tcp://host:port" Target existed as a special case. Left
+// unguarded, a host with BOTH a real HTTP TechFact (any other detector)
+// AND a netservice-covered open port would have its netservice leaf's
+// Target silently clobbered back to the HTTP base URL, making the
+// detector dial the wrong host:port entirely.
+func TestResolve_NetserviceLeaf_TargetSurvivesHTTPBaseURLUpgrade(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "https://staging.example.test",
+		Hosts: []recon.HostFact{
+			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 21, Protocol: "tcp", Source: "naabu"}}},
+		},
+		TechStack: []recon.TechFact{{Name: "Nginx", Host: "staging.example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	hostNode := tree.Find("host:staging.example.test")
+	require.NotNil(t, hostNode)
+	netserviceLeaf := findLeaf(t, tree, "staging.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "netservice" })
+	require.NotNil(t, netserviceLeaf)
+	assert.Equal(t, "tcp://staging.example.test:21", netserviceLeaf.Target)
+
+	misconfigLeaf := findLeaf(t, tree, "staging.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" })
+	require.NotNil(t, misconfigLeaf, "the Nginx TechFact must still dispatch a misconfig leaf")
+	assert.Equal(t, "https://staging.example.test", misconfigLeaf.Target, "a non-netservice leaf must still get the real HTTP base URL upgrade")
 }
 
 // TestResolve_MultipleInterestingPorts_AllProduceLeaves is a regression

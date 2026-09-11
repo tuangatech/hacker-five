@@ -97,6 +97,16 @@ var Capabilities = []Capability{
 		Risk:           "The one detector that changes target state — gated behind the explicit --allow-writes flag, never implied.",
 		InputsRequired: []string{"target URL", "--allow-writes", "coupon mint/apply endpoint paths", "owner auth token"},
 	},
+	{
+		Name:           "netservice",
+		Kind:           KindDetector,
+		Description:    "Unauthenticated-exposure checks for common non-HTTP network services: anonymous-FTP login, empty-password MySQL login, unauthenticated Redis PING (Phase 8 Step 1, docs/17-implementation-plan-ph8.md).",
+		WhenToUse:      "naabu found an open port on a service this detector covers (21/ftp, 3306/mysql, 6379/redis) — registry.resolvePortFacts dispatches this automatically once that port fact exists.",
+		WhenNotToUse:   "The open port is a protocol this detector does not cover yet (telnet/postgresql/elasticsearch/mongodb — docs/follow-up.md LT-142) or the port is closed/unreachable.",
+		Cost:           "Read-only; one bounded connect/handshake per port, no data enumerated.",
+		Risk:           "Read-only — the empty-password/anonymous-credential attempt this makes never scrambles or guesses a real secret; a login that succeeds means the account already had none.",
+		InputsRequired: []string{"a \"tcp://host:port\" target for a covered port"},
+	},
 	// --- Recon tools (pkg/recon/, shelled out via fixed subprocess calls) ---
 	{Name: "subfinder", Kind: KindReconTool, Description: "Passive subdomain/DNS enumeration (Wave 1).", WhenToUse: "Any domain-shaped target, before any active probe.", WhenNotToUse: "Target is a bare IP with no domain to enumerate against.", Cost: "Zero-touch against the target — queries third-party passive OSINT sources only.", Risk: "Read-only, no direct target contact.", InputsRequired: []string{"a domain"}},
 	{Name: "tlsx", Kind: KindReconTool, Description: "TLS certificate SAN inspection (Wave 1) — a common source of sibling environments a wordlist alone would miss.", WhenToUse: "Target serves TLS.", WhenNotToUse: "Target is plaintext HTTP only.", Cost: "One TLS handshake per host.", Risk: "Read-only.", InputsRequired: []string{"a host:port"}},

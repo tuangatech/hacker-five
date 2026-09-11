@@ -225,6 +225,15 @@ var interestingPorts = map[int]string{
 	27017: "mongodb",
 }
 
+// netserviceCheckedPorts is the subset of interestingPorts Phase 8 Step 1
+// (docs/17-implementation-plan-ph8.md) actually has a first-party detector
+// for (pkg/detectors/netservice: anonymous-FTP, empty-password MySQL,
+// unauthenticated Redis) — a real dispatchable "netservice" leaf, not just
+// visibility. Every other interestingPorts entry (telnet/postgresql/
+// elasticsearch/mongodb) still gets the plain StatusUnresolved leaf below
+// until its own check lands (docs/follow-up.md LT-142).
+var netserviceCheckedPorts = map[int]bool{21: true, 3306: true, 6379: true}
+
 // hostnameProductHints maps a first-DNS-label token (lowercased, trailing
 // digits stripped — so "guacamole01" -> "guacamole") to a tech name whose
 // registry capabilities / template tags are worth dispatching even when no
@@ -559,6 +568,15 @@ var detectorTemplateTagFloor = map[string][]string{
 	"ssrf":          {"ssrf", "redirect", "oob"},
 	"idor":          {"idor", "bola", "apidocs", "swagger", "graphql"},
 	"businesslogic": nil,
+	// "network" is real Nuclei's own conventional tag on its network/
+	// (tcp:-protocol) template category. Narrows away the ~9.5k http:-only
+	// corpus for a netservice leaf the same way every other detector's
+	// floor does (LT-137, docs/follow-up.md) — has zero effect today since
+	// the committed templates/index.json carries no tcp:-block entries yet
+	// (pkg/templatesync.List's own loader rejected them before Phase 8 Step
+	// 1 lifted "tcp" out of loader.go's disallowedBlocks); takes effect
+	// once the corpus is next synced/re-indexed.
+	"netservice": {"network"},
 }
 
 // DetectorTemplateTags returns the tech-agnostic category-tag floor for a
@@ -1177,6 +1195,17 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 		// handed to the executor.
 		baseURL := reconHostBaseURL(host, result)
 		for _, leaf := range hostNode.Children {
+			// A "netservice" leaf's Target is already the real dial address
+			// resolvePortFacts built ("tcp://host:port" — Phase 8 Step 1,
+			// docs/17-implementation-plan-ph8.md), not an HTTP request
+			// base — overwriting it with baseURL would send the detector's
+			// TCP dial at the host's *HTTP* scheme/port instead of the
+			// actual open port that made this leaf exist in the first
+			// place. Every other leaf (idor/misconfig/authbypass/ssrf/
+			// businesslogic/hostname-hint) does still want this upgrade.
+			if leaf.Detector == "netservice" {
+				continue
+			}
 			leaf.Target = baseURL
 		}
 		// C7a (doc16 Phase 7 Step 3): stamp each leaf's dispatch priority,
@@ -1738,6 +1767,33 @@ func resolvePortFacts(host string, ports []recon.PortFact, leafIdx *int, addLeaf
 		if p.Service != "" {
 			service = p.Service // naabu/httpx's own service-detection name, when present, is more specific than our static table
 		}
+
+		if netserviceCheckedPorts[p.Port] {
+			// A real check exists (pkg/detectors/netservice) — promote to a
+			// dispatchable leaf instead of visibility-only. Target carries
+			// the port directly ("tcp://host:port"), the same shape
+			// scanner.Engine's runTemplates/nuclei.Executor gate every
+			// tcp:/http: template on (Phase 8 Step 1). Dedup key is
+			// per-port (pendingDedupKey takes target/detector verbatim, no
+			// normalization that would collide two different ports the way
+			// unresolvedDedupKey's NormalizeTechName already had to be
+			// worked around for below) — two open netservice-checked ports
+			// on the same host (e.g. both 21 and 3306) must each get their
+			// own leaf.
+			leaf := &agenttask.PlanNode{
+				ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+				Target:     fmt.Sprintf("tcp://%s:%d", host, p.Port),
+				Detector:   "netservice",
+				Rationale:  fmt.Sprintf("port %d/%s (%s) open (source: %s) — checking for unauthenticated access", p.Port, p.Protocol, service, p.Source),
+				Status:     agenttask.StatusPending,
+				Confidence: agenttask.ConfidenceMedium,
+			}
+			*leafIdx++
+			leafContexts[leaf.ID] = LeafContext{Port: &p}
+			addLeaf(leaf, pendingDedupKey(host, fmt.Sprintf("netservice-%d", p.Port)))
+			continue
+		}
+
 		leaf := &agenttask.PlanNode{
 			ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
 			Target:     host,

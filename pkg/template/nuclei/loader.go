@@ -19,8 +19,13 @@ import (
 // disallowedBlocks are top-level YAML keys that trigger a load-time error
 // rather than a parsed-but-silently-incomplete template — RCE/LFI-capable
 // protocol blocks nobody on this project has reviewed. Same list as
-// documented in doc 02/03.
-var disallowedBlocks = []string{"code", "javascript", "headless", "file", "dns", "tcp", "ssl", "network", "websocket", "whois"}
+// documented in doc 02/03. "tcp" was lifted out (Phase 8 Step 1,
+// docs/17-implementation-plan-ph8.md): a bounded connect/send/read-banner
+// executor now exists (see TCPRequest, executor.go's runTCPRequest), same
+// review status as every other supported protocol — "deferred, not
+// rejected", per that same doc's framing, until each remaining entry gets
+// its own reviewed executor.
+var disallowedBlocks = []string{"code", "javascript", "headless", "file", "dns", "ssl", "network", "websocket", "whois"}
 
 // LoadError pairs a rejected file's path with why it failed — the
 // structured shape LoadDirDetailed returns so a caller that also runs the
@@ -264,8 +269,8 @@ func validate(tmpl *Template) error {
 	if strings.TrimSpace(tmpl.ID) == "" {
 		return fmt.Errorf("template has no id")
 	}
-	if len(tmpl.HTTP) == 0 {
-		return fmt.Errorf("template has no http: requests")
+	if len(tmpl.HTTP) == 0 && len(tmpl.TCP) == 0 {
+		return fmt.Errorf("template has no http: or tcp: requests")
 	}
 	if tmpl.Flow != "" {
 		ast, maxN, err := parseFlow(tmpl.Flow)
@@ -393,6 +398,29 @@ func validate(tmpl *Template) error {
 		// network, since a cache hit's elapsed time is meaningless.
 		if usesTimingRef(req.Matchers, req.Extractors) {
 			tmpl.HTTP[i].usesTiming = true
+		}
+	}
+
+	for i, req := range tmpl.TCP {
+		if len(req.Inputs) == 0 {
+			return fmt.Errorf("tcp[%d]: no inputs", i)
+		}
+		for j, m := range req.Matchers {
+			// No flow: support for tcp: requests (see TCPRequest's doc
+			// comment) — an internal: true matcher would have nothing to
+			// gate, same rejection reasoning as the http: case above.
+			if m.Internal {
+				return fmt.Errorf("tcp[%d].matchers[%d]: uses internal: true — flow: is unsupported for tcp: requests", i, j)
+			}
+			// Validated against an empty dsl.Context: TCP v1 binds no
+			// indexed body_N-style identifiers (no multi-input
+			// correlation, see TCPRequest's doc comment) — a bare
+			// "body"/"data" identifier and part: already resolve fine
+			// against the zero Context, same as any single-request http:
+			// template's matchers do.
+			if err := matcher.Validate(m); err != nil {
+				return fmt.Errorf("tcp[%d].matchers[%d]: %w", i, j, err)
+			}
 		}
 	}
 	return nil
