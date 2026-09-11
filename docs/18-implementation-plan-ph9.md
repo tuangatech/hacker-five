@@ -399,7 +399,7 @@ extension) against the lab targets with every new detector from Steps 1, 3, 4 (a
 Phase 8's Steps 1-3) enabled, and record the delta: new true positives found, and —
 held to the same "revise down with reasoning, don't pad" discipline — any new
 false-positive mode the new detectors introduced, tracked against the <5% target.
-Full cost accounting per run as in Phase 7 Step 7 / Phase 8 Step 10. Then full
+Full cost accounting per run as in Phase 7 Step 7 / Phase 8 Step 6. Then full
 integration testing across the Phase 5-9 stack, and release.
 
 ### Files (anticipated, confirm at implementation time)

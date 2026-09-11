@@ -154,7 +154,7 @@ var endpointSignals = []endpointSignal{
 
 // productEndpointSignatures pairs a normalized tech name (NormalizeTechName)
 // with lower-cased path substrings that only that product serves. LT-50
-// (docs/follow-up.md, Phase 8 Step 6): a `Jira` tech fact plus an observed
+// (docs/follow-up.md, Phase 8 Step 5): a `Jira` tech fact plus an observed
 // `/secure/Dashboard.jspa` on the same host is far stronger evidence than
 // the fingerprint alone — correlatedEndpoints already folds such endpoints
 // into an unresolved leaf's prose, but never to raise a matched leaf's
@@ -328,7 +328,7 @@ var nonActionableTech = map[string]bool{
 	// not the target's own surface — left in, each spawned an unresolved
 	// "matched no registry capability" recon-followup leaf (and LLM-fallback
 	// bait). The companion "don't attribute a Cloudflare/CDN fact absent
-	// from the host's own response headers" half is Phase 8 Step 6 (LT-65).
+	// from the host's own response headers" half is Phase 8 Step 5 (LT-65).
 	"cdnjs":                   true,
 	"jsdelivr":                true,
 	"unpkg":                   true,
@@ -1494,7 +1494,7 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, coupon *r
 		}
 	}
 
-	// LT-77 (docs/follow-up.md, Phase 8 Step 6): a redirect/OAuth/SSO/logout-
+	// LT-77 (docs/follow-up.md, Phase 8 Step 5): a redirect/OAuth/SSO/logout-
 	// shaped endpoint is a textbook open-redirect candidate. Dispatch the
 	// corpus's generic open-redirect check (the "reuse the redirect tag"
 	// half of LT-77) against the host when recon observed such a path —

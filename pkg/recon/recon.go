@@ -33,7 +33,7 @@ const (
 	DefaultConcurrency = 25
 	// DefaultCrawlDepth is katana's -depth for Wave 3. Kept at 2 so a run
 	// with no explicit --crawl-depth is byte-for-byte the crawl it was
-	// before the knob existed (docs/follow-up.md LT-8, Phase 8 Step 6).
+	// before the knob existed (docs/follow-up.md LT-8, Phase 8 Step 5).
 	DefaultCrawlDepth = 2
 )
 
@@ -191,7 +191,7 @@ func WithConcurrency(n int) Option {
 // the endpoint set resolveEndpointFacts turns into idor/authbypass/ssrf
 // candidates, at a proportional request-volume and wall-clock cost — so
 // it moves off the default only when an operator asks for it
-// (docs/follow-up.md LT-8, Phase 8 Step 6).
+// (docs/follow-up.md LT-8, Phase 8 Step 5).
 func WithCrawlDepth(d int) Option {
 	return func(r *Recon) {
 		if d >= 1 {

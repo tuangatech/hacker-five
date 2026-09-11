@@ -1669,7 +1669,9 @@ func TestResolve_NetservicePortService_PrefersObservedOverStaticTable(t *testing
 
 	tree, _ := Resolve(result, nil)
 
-	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Status == agenttask.StatusPending && n.Detector == "netservice" })
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool {
+		return n.Status == agenttask.StatusPending && n.Detector == "netservice"
+	})
 	require.NotNil(t, leaf)
 	assert.Contains(t, leaf.Rationale, "redis-server-6.2", "naabu's own service string should be used when present, not just the static table's generic name")
 }
@@ -1878,7 +1880,7 @@ func TestResolve_APISpec_MatchesTemplateTags(t *testing.T) {
 }
 
 // TestResolve_RedirectFlowEndpoint_DispatchesOpenRedirectCheck guards LT-77
-// (Phase 8 Step 6): a redirect/OAuth-flow-shaped endpoint dispatches the
+// (Phase 8 Step 5): a redirect/OAuth-flow-shaped endpoint dispatches the
 // corpus's generic open-redirect check against the host.
 func TestResolve_RedirectFlowEndpoint_DispatchesOpenRedirectCheck(t *testing.T) {
 	index := []templatesync.Entry{

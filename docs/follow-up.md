@@ -15,7 +15,7 @@ Open enhancement items and unresolved review findings, organized by category rat
 - **`misconfig` anti-FP:** LT-69+LT-73 (exposed-path/dir-listing skip 404/429/5xx; disallowed-method skip a 2xx/3xx matching a plain-GET baseline).
 - **Engine robustness:** LT-74+LT-88 (adaptive rate-halving → target-abort on sustained 429/503 or a mid-run connect-failure spike, `pkg/scanner/adaptive.go`), LT-79 (`--max-target-duration`, default 15m), LT-70 (an unresolved/dead-end leaf sorts below every dispatchable leaf).
 
-**Routed to a phase step instead:** LT-64/65/83/84b/86b/76/77 → Phase 8 Step 6 (✅ done 2026-09-07) · LT-40/61 → Phase 8 Step 6 (✅ done 2026-09-07) · LT-78 → [Phase 9](18-implementation-plan-ph9.md) Step 3 · LT-87 → [Phase 9](18-implementation-plan-ph9.md) Step 4 · LT-67/71 → [Phase 7](16-implementation-plan-ph7.md) Step 5 (✅ done; renumbered 2026-09-10 from "Step 6a") · LT-107/108 → [Phase 7](16-implementation-plan-ph7.md) Step 7 (✅ both done 2026-09-10; renumbered from "Step 8"; LT-109/110 are its still-unscheduled rungs 3-5) · LT-89/90/91/93/94 → Phase 8 Step 6 (✅ all done 2026-09-08, pulled forward for the crAPI demo). LT-92/95/96 ✅ done 2026-09-09 too — detector-precision fixes, filed as an ad-hoc batch rather than folded into Step 6.
+**Routed to a phase step instead:** LT-64/65/83/84b/86b/76/77 → Phase 8 Step 5 (✅ done 2026-09-07) · LT-40/61 → Phase 8 Step 5 (✅ done 2026-09-07) · LT-78 → [Phase 9](18-implementation-plan-ph9.md) Step 3 · LT-87 → [Phase 9](18-implementation-plan-ph9.md) Step 4 · LT-67/71 → [Phase 7](16-implementation-plan-ph7.md) Step 5 (✅ done; renumbered 2026-09-10 from "Step 6a") · LT-107/108 → [Phase 7](16-implementation-plan-ph7.md) Step 7 (✅ both done 2026-09-10; renumbered from "Step 8"; LT-109/110 are its still-unscheduled rungs 3-5) · LT-89/90/91/93/94 → Phase 8 Step 5 (✅ all done 2026-09-08, pulled forward for the crAPI demo). LT-92/95/96 ✅ done 2026-09-09 too — detector-precision fixes, filed as an ad-hoc batch rather than folded into Step 5. (Phase 8's own Steps renumbered 2026-09-11 — old Step 5→4, Step 6→5, Step 10→6, per Step 1's netservice work; Steps 4/7/8/9 were fully removed from doc17, their bodies already duplicated in [Phase 9](18-implementation-plan-ph9.md).)
 
 ## Security & Scope Hardening
 
@@ -30,7 +30,7 @@ Resolved, kept for traceability:
 
 ## Detection Coverage — Protocol/Capability Expansion
 
-Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase 8](17-implementation-plan-ph8.md): TCP banner-grab Step 1 ✅ done 2026-09-11, TLS passive checks Step 2, JS static analysis Step 3 ✅, semver gating Step 5, richer crawl Step 6) and depth/active ([Phase 9](18-implementation-plan-ph9.md): OOB blind-RCE Step 1, template-format gaps Step 2, AI-agent surface Step 3, WAF-aware + injection detectors Step 4). Phases 6/7 explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style fuzzing stays a separate opt-in-only item (Phase 8 Step 6's out-of-scope note, reaffirmed 2026-09-08 — see Parked).
+Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase 8](17-implementation-plan-ph8.md): TCP banner-grab Step 1 ✅ done 2026-09-11, TLS passive checks Step 2, JS static analysis Step 3 ✅, semver gating Step 4, richer crawl Step 5) and depth/active ([Phase 9](18-implementation-plan-ph9.md): OOB blind-RCE Step 1, template-format gaps Step 2, AI-agent surface Step 3, WAF-aware + injection detectors Step 4). Phases 6/7 explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style fuzzing stays a separate opt-in-only item (Phase 8 Step 5's out-of-scope note, reaffirmed 2026-09-08 — see Parked).
 
 ## Template Engine & Detection Backlog
 
@@ -60,14 +60,14 @@ Surfaced 2026-09-04 against `andertone.com`: recon was strong but `registry.Reso
 
 ### P0 — precision & correctness (✅ all landed 2026-09-04)
 
-Version-aware CVE ranking (P0-1a); ranked template-tag selection + canonical tech→tag map (P0-2, 107→74 leaves); `Finding.Target` double-slash fix (P0-3); PlanTree leaf dedup by `(target, detector)` (P0-4, 31→8 leaves); non-actionable-tech denylist (P0-5). Detail: [15](15-implementation-plan-ph6.md) Step 2 addenda. P0-1b (true semver range gating) → Phase 8 Step 5.
+Version-aware CVE ranking (P0-1a); ranked template-tag selection + canonical tech→tag map (P0-2, 107→74 leaves); `Finding.Target` double-slash fix (P0-3); PlanTree leaf dedup by `(target, detector)` (P0-4, 31→8 leaves); non-actionable-tech denylist (P0-5). Detail: [15](15-implementation-plan-ph6.md) Step 2 addenda. P0-1b (true semver range gating) → Phase 8 Step 4.
 
 ### P1 — coverage (turn recon signal into leaves)
 
 - **P1-1 ✅** Endpoint-driven resolution pass (2026-09-04) — idor/ssrf/businesslogic went from unreachable to active.
 - **P1-2 ✅ (2026-09-04 interim, 2026-09-11 real detector)** — `resolvePortFacts` emits an honest `StatusUnresolved` leaf naming an open port for a protocol nothing checks; for the ports `netservice` now covers (21/3306/6379) it promotes straight to a dispatchable `tcp://host:port` leaf instead (Phase 8 Step 1, closes LT-23). Remaining `interestingPorts` entries (23/5432/9200/27017) still get the visibility-only leaf — see LT-142.
 - **P1-3 ✅ (2026-09-04)** — WordPress plugin/theme slug+version facts from crawled endpoints.
-- **P1-4** nuclei DSL/`part:` gaps — ✅ mostly closed 2026-09-04 (`content_type_N`, indexed `part:` names, `path:`-multi-request correlation). Still open: `xpath`/`flow:` cross-block `_N` → [Phase 9](18-implementation-plan-ph9.md) Step 2; affected-version index field → Phase 8 Step 5.
+- **P1-4** nuclei DSL/`part:` gaps — ✅ mostly closed 2026-09-04 (`content_type_N`, indexed `part:` names, `path:`-multi-request correlation). Still open: `xpath`/`flow:` cross-block `_N` → [Phase 9](18-implementation-plan-ph9.md) Step 2; affected-version index field → Phase 8 Step 4.
 - Multi-key + file-based `payloads:` ✅ (2026-09-04); `interactsh_*`/OOB support for nuclei templates ✅ (2026-09-04, `pkg/oob` wired into `pkg/template/nuclei`, one shared `Poller`).
 - **P1-5** `techRules` coverage — woocommerce ✅; cloud-provider (aws/s3/gcp) exposure tags ✅ done 2026-09-09, Phase 8 Step 3.
 
@@ -84,7 +84,7 @@ First real run against owned targets. All 17 items below ✅ done 2026-09-04 unl
 - LT-4 Recon silently failed on self-signed-cert hosts → `recon.ClientConfig` forces `InsecureSkipVerify`.
 - LT-5 ✅ done 2026-09-07 — SSE catchup/dedup via a monotonic `eventSeq`.
 - LT-6 ✅ done 2026-09-06 — `reporter.SplitAggregates` expands the nuclei missing-headers aggregate, collapses the native/nuclei pair. *Tail still open:* same 1:1 pair for weak-HSTS (needs a template-ID skip-list entry); webui/mcp never call `Dedup`/`SplitAggregates`.
-- LT-7 `matchTemplateTags` is version-blind → Phase 8 Step 5.
+- LT-7 `matchTemplateTags` is version-blind → Phase 8 Step 4.
 - LT-8 katana hardcoded `-depth 2`, no JS-rendering → 🟡 `--crawl-depth` done 2026-09-07; headless mode superseded by LT-99.
 - LT-9 hostname product hints unused → `hostnameProductHints` exact-token dispatch.
 - LT-10 Google Analytics → 3 false template leaves → added to `nonActionableTech`.
@@ -130,7 +130,7 @@ First end-to-end pipeline run against a modern SPA/CDN target. `www.valmo.in` wa
 - **LT-37** `plan --llm-assist` gave zero progress/spend visibility → per-leaf log lines + `spent $X of $Y`.
 - **LT-38** a context-killed recon wave was indistinguishable from "found nothing" → `errWaveTimeout` + explicit warning. *Tail still open:* scaling `waveTimeout` by host count (see LT-111 below, which added an explicit override instead).
 - **LT-39** `robots.txt`/`sitemap.xml` fetched but never parsed → `EndpointFact`s from `Disallow`/`Allow`/`Sitemap:`/`<loc>`. *Tail still open:* seeding the Wave-3 crawl itself from the parsed hints; recursive child-sitemap fetch.
-- **LT-40** ✅ done 2026-09-07 (Phase 8 Step 6) — OpenAPI JSON/YAML spec walker (`specwalk.go`), live-validated against crAPI's real spec (40 paths → 6 idor candidates incl. the real BOLA route). *Tail (a) still open:* GraphQL SDL/introspection walking.
+- **LT-40** ✅ done 2026-09-07 (Phase 8 Step 5) — OpenAPI JSON/YAML spec walker (`specwalk.go`), live-validated against crAPI's real spec (40 paths → 6 idor candidates incl. the real BOLA route). *Tail (a) still open:* GraphQL SDL/introspection walking.
 - **LT-41** `ResolveField`/`TriageFindings` reachable only from mcpserver/webui → `pkg/fieldsuggest` shared package + CLI `triage --llm-assist` + `scan --recon-file` self-fill.
 - **LT-42** an engagement's prose `policy.md` was invisible to D2 preflight → warns when no `policy.yaml` sits beside it.
 - **LT-43(1)/(2)** misconfig's `panel` floor tag (~1,591 templates) admitted on a bare 401/403 → gated on a real auth-boundary/admin-path signal; paired with the new `pkg/uniformwall` primitive (D6) that short-circuits the per-target corpus entirely on a uniform wall/catch-all verdict.
@@ -145,7 +145,7 @@ First end-to-end pipeline run against a modern SPA/CDN target. `www.valmo.in` wa
 - **LT-52** an out-of-scope crawled link still reached `ReconResult.Endpoints` → diverted to `OutOfScope`.
 - **LT-53** `scan` didn't auto-apply policy `request_headers` (recon/plan did) → fixed.
 - **R-c** `/robots.txt` double-fetched (Wave 0 + Wave 3) → Wave 3's duplicate dropped.
-- **LT-61 / LT-63 (routed, not this run)** consume the CDN-ASN fact to skip/shorten naabu (✅ done, see the Akamai re-run below); companion mobile-app API discovery via subfinder's `crtsh` source → Phase 8 Step 6, still open.
+- **LT-61 / LT-63 (routed, not this run)** consume the CDN-ASN fact to skip/shorten naabu (✅ done, see the Akamai re-run below); companion mobile-app API discovery via subfinder's `crtsh` source → Phase 8 Step 5, still open.
 
 ## Live Testing — www.valmo.in / Meesho, Akamai re-run (2026-09-07)
 
@@ -156,11 +156,11 @@ Asset had moved behind an Akamai WAF returning a 403 "Access Denied" on every pa
 - LT-60 an empty plan gave no diagnostic → `emptyPlanDiagnostic` stderr line.
 - LT-61 CDN-edge ASN table (`pkg/recon/cdnasn.go`) skips naabu port-scanning a recognized CDN-edge host. *Tail still open:* per-resolved-IP ASN classification (today only the seed domain's own ASN is checked).
 - LT-62 recon gave no "I'm blind here" signal on a high block ratio → `UniformResponseFact.BlockedRatio` + a `plan` stderr diagnostic.
-- **LT-63 (open)** — a scope entry with a documented companion mobile app triggers no API-host discovery. **Fix:** a passive, scope-checked companion-API pass reusing subfinder's `crtsh` CT-log source for `api.`/`gw.`/`mobile.` siblings. → Phase 8 Step 6.
+- **LT-63 (open)** — a scope entry with a documented companion mobile app triggers no API-host discovery. **Fix:** a passive, scope-checked companion-API pass reusing subfinder's `crtsh` CT-log source for `api.`/`gw.`/`mobile.` siblings. → Phase 8 Step 5.
 
 ## Live Testing — linkpop.com / Shopify (2026-09-07)
 
-A decommissioned asset: root 301s to the out-of-scope `www.shopify.com`; every other path is a GCS bucket serving one static 404 shell. All items ✅ done 2026-09-07 (Phase 7 Step 6a / Phase 8 Step 6 first tranche / near-term batch) unless noted:
+A decommissioned asset: root 301s to the out-of-scope `www.shopify.com`; every other path is a GCS bucket serving one static 404 shell. All items ✅ done 2026-09-07 (Phase 7 Step 6a / Phase 8 Step 5 first tranche / near-term batch) unless noted:
 - LT-64 recon followed a cross-host redirect and attributed the destination's content to the original target → `redirect_chain`/`final_url` recorded, first-hop status kept, out-of-scope destination warned loudly.
 - LT-65 tech facts fingerprinted post-redirect were attributed to the original host → withheld; paired with `dropCDNTechWithoutHeader` (a CDN brand with no corroborating header on the host itself is dropped).
 - LT-66 ✅ done 2026-09-10 — the D6 catch-all verdict was host-level; a bucket host whose canary happened to 404 could still record an individual `200` path as a high-confidence endpoint. Fixed: `probeCommonPaths` now keeps a per-call body-hash/bucket-marker record, and `dropCatchallCommonPathEndpoints` drops any batch endpoint whose body duplicates another probed path's or whose headers carry an `x-goog-*`/`x-amz-*`/`x-guploader-uploadid` marker, when the host classified `catchall`. Test: `pkg/recon/catchall_endpoints_test.go`.
@@ -172,7 +172,7 @@ A decommissioned asset: root 301s to the out-of-scope `www.shopify.com`; every o
 
 ## Live Testing — accounts.shopify.com / shop.app (2026-09-07)
 
-Both behind Cloudflare managed-challenge. `accounts.shopify.com` was the model D6 outcome (correctly classified, corpus skipped, one honest finding in 10s). `shop.app` was not: a 58-minute scan into the wall produced 11 noise findings from self-inflicted rate-limiting, because its wave-3 canary had errored rather than returned a readable block page, so no uniform-wall fact was ever set. All items ✅ done 2026-09-07 (near-term batch / Phase 8 Step 6 first tranche) unless noted:
+Both behind Cloudflare managed-challenge. `accounts.shopify.com` was the model D6 outcome (correctly classified, corpus skipped, one honest finding in 10s). `shop.app` was not: a 58-minute scan into the wall produced 11 noise findings from self-inflicted rate-limiting, because its wave-3 canary had errored rather than returned a readable block page, so no uniform-wall fact was ever set. All items ✅ done 2026-09-07 (near-term batch / Phase 8 Step 5 first tranche) unless noted:
 - LT-72 D6 verdict derived only from the canary probe, with no fallback on a canary error → falls back to the wave-2 httpx root observation.
 - LT-73 (see anti-FP fixes above).
 - LT-74 no adaptive backoff/abort on sustained 429/503 → the adaptive-throttle middleware (LT-88 extends it to connect-failure spikes).
@@ -184,7 +184,7 @@ Both behind Cloudflare managed-challenge. `accounts.shopify.com` was the model D
 
 ## Live Testing — ALSCO / Secure Gateway sandboxes (2026-09-07)
 
-First genuinely reachable (no-CDN) bug-bounty target in four runs — but the program's premise is bypassing their own WAF/upload filters, and the run ended with the scanning IP blocked at origin. All items ✅ done 2026-09-07 (near-term batch / Phase 8 Step 6 first tranche) unless noted:
+First genuinely reachable (no-CDN) bug-bounty target in four runs — but the program's premise is bypassing their own WAF/upload filters, and the run ended with the scanning IP blocked at origin. All items ✅ done 2026-09-07 (near-term batch / Phase 8 Step 5 first tranche) unless noted:
 - LT-80 `--scope` didn't strip inline `#` comments → fixed (same fix applied to `scan -t <file>`).
 - LT-81 (= LT-75, see above).
 - LT-82 D6 verdict set without cross-checking recon's own crawl evidence (54 real endpoints incl. a genuine 404 among 2xx) → `crawlEvidenceRefutesWall` suppresses the verdict on ≥5 distinct endpoints spanning ≥2 status codes.
@@ -302,7 +302,7 @@ For an actionable demo independent of owned sites, crAPI (13 verified findings, 
 
 Not hand-verified: Webmin :10000, Apache Guacamole (`guacamole01`), a webmail stack, DokuWiki (current, ruled out).
 
-- LT-101 ✅ done 2026-09-08 — a `www.<domain>` seed starved Wave 1 subdomain enum (39-host surface collapsed to 1, since subfinder ran against the `www.` host, not the registrable domain). **Still open:** the registrable-domain reduction itself (this round worked around it by re-seeding at the apex by hand); real fix → Phase 8 Step 6/recon backlog.
+- LT-101 ✅ done 2026-09-08 — a `www.<domain>` seed starved Wave 1 subdomain enum (39-host surface collapsed to 1, since subfinder ran against the `www.` host, not the registrable domain). **Still open:** the registrable-domain reduction itself (this round worked around it by re-seeding at the apex by hand); real fix → Phase 8 Step 5/recon backlog.
 - LT-102 ✅ done 2026-09-08 — `app_surface: none` suppressed the plan on a 24-host result where a majority of hosts were walled but several served real, distinct content → `classifyAppSurface` now weighs distinct-real-content hosts, not just the majority verdict.
 - LT-103 ✅ done 2026-09-08 — a CMS login page that renders for many paths (Dolibarr/DokuWiki) was flagged `catchall` despite katana crawling real distinct routes on it → suppressed when katana itself extracted ≥2 distinct non-asset routes. **Residual (open):** depends on katana actually reaching the host inside the flat 60s wave cap on a large sweep (fixed for a focused 2-6-host scan, not a 24-host one) — filed toward LT-38/a `uniformwall` follow-up.
 - **LT-140 (open)** — `ReconResult.UniformResponse` is one fact, not one per host, so D6's corpus-skip (LT-59) only ever protects a single host per multi-host recon run — `aggregator.setUniformResponse` keeps only "the first verdict seen," and all three frontends build `UniformWallHosts` (already a `map[string]string`) from that one fact. **Fix:** widen `UniformResponseFact` to a per-host collection (versioned schema change), `setUniformResponse`/`classifyAppSurface` keyed by host, all 4 call sites (`cmd/hackerfive/scan.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_plan.go`/`tools_scan.go`) build the full map. → [Phase 8](17-implementation-plan-ph8.md) Step 6, alongside LT-64/65/84's per-host fact attribution theme. Not demo-blocking (a focused 2-6-host scan usually has only one wall anyway).
