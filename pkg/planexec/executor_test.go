@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -820,5 +821,53 @@ func TestRunPlan_HigherPriorityDispatchedFirst(t *testing.T) {
 	defer mu.Unlock()
 	if len(order) != 3 || order[0] != "/p30" || order[1] != "/p20" || order[2] != "/p10" {
 		t.Fatalf("leaves did not run in descending-priority order: %v", order)
+	}
+}
+
+// TestRunPlan_UniformWallFinding_DedupedAcrossLeaves is LT-148's regression
+// guard (docs/follow-up.md): runLeaf gives every leaf a fresh scanner.Engine,
+// so D6's uniform-response-wall short-circuit (pkg/scanner/uniformwall.go)
+// re-evaluates once per leaf on a walled host — before this fix, N leaves on
+// the same recon-flagged host each contributed their own
+// "misconfig-waf-blocked" finding, live-reproduced on nettix.com.pe's
+// WAF-walled hosts via webui/mcp (the only two RunPlan callers; the CLI
+// `scan` path runs cmd/hackerfive/scan.go:354's identical Dedup pipeline
+// itself and never showed this). RunPlan must now collapse the duplicates
+// down to one, the same way scan.go already does for the CLI.
+func TestRunPlan_UniformWallFinding_DedupedAcrossLeaves(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden) // shape is irrelevant — the D6 verdict below comes from cfg.UniformWallHosts, not a live probe
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parsing test server URL: %v", err)
+	}
+
+	baseCfg := scanner.Config{
+		Concurrency:      2,
+		RateLimit:        50,
+		Timeout:          2 * time.Second,
+		OutputFormat:     "json",
+		UniformWallHosts: map[string]string{u.Host: "waf-block"},
+	}
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-a", Target: srv.URL, Detector: "misconfig", Status: agenttask.StatusPending},
+		{ID: "leaf-b", Target: srv.URL + "/admin", Detector: "misconfig", Status: agenttask.StatusPending},
+	}}}
+
+	findings, _, skipped, err := RunPlan(context.Background(), tree, baseCfg, nil, testOpts())
+	if err != nil || len(skipped) != 0 {
+		t.Fatalf("RunPlan: err=%v skipped=%v", err, skipped)
+	}
+
+	wafBlocked := 0
+	for _, f := range findings {
+		if f.ID == "misconfig-waf-blocked" {
+			wafBlocked++
+		}
+	}
+	if wafBlocked != 1 {
+		t.Fatalf("expected exactly 1 deduped misconfig-waf-blocked finding across 2 same-host leaves, got %d: %+v", wafBlocked, findings)
 	}
 }
