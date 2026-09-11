@@ -264,3 +264,36 @@ func TestRunWave3_JSStaticAnalysis_OutOfScopeBucket_NotDispatched(t *testing.T) 
 		assert.NotEqual(t, "s3", tf.Name, "an out-of-scope bucket mention must never produce a dispatchable TechFact")
 	}
 }
+
+// TestRunWave3_JSStaticAnalysis_OutOfScopeAbsoluteEndpoint_NotDispatched is
+// LT-144's regression guard (docs/follow-up.md): extractJSEndpoints's
+// absolute-URL branch only checks path *shape*, so a page can carry an
+// absolute URL on an unrelated third-party domain (live-observed: an
+// "xmlns=\"http://www.w3.org/1999/xhtml\"" namespace declaration, not a
+// link) and that host must clear --scope exactly like a cloud-bucket
+// reference already does, rather than becoming a real js-static
+// EndpointFact that registry.Resolve can turn into a dispatchable leaf
+// against a host nobody authorized.
+func TestRunWave3_JSStaticAnalysis_OutOfScopeAbsoluteEndpoint_NotDispatched(t *testing.T) {
+	jsBody := `const u = "https://evil.example/api/v2/admin/users";`
+	jsBodyJSON, err := json.Marshal(jsBody)
+	require.NoError(t, err)
+
+	target := "https://target.example"
+	responses := map[string]string{
+		"katana": `{"request":{"endpoint":"` + target + `/static/app.js","method":"GET"},` +
+			`"response":{"status_code":200,"body":` + string(jsBodyJSON) + `}}`,
+	}
+	_, fake := recordingRun(t, responses)
+
+	s, err := scope.New([]string{"target.example"}) // evil.example is NOT in scope
+	require.NoError(t, err)
+	r := New(newTestClient(), withRun(fake), WithScope(s))
+	result, err := r.Run(context.Background(), target, DepthFull)
+	require.NoError(t, err)
+
+	for _, ep := range result.Endpoints {
+		assert.NotContains(t, ep.URL, "evil.example", "an out-of-scope absolute endpoint must never become a dispatchable EndpointFact")
+	}
+	assert.Contains(t, result.OutOfScope, "evil.example")
+}
