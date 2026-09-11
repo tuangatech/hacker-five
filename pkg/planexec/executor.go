@@ -23,6 +23,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/registry"
+	"github.com/tuangatech/hacker-five/pkg/reporter"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
 	"github.com/tuangatech/hacker-five/pkg/scanner/workerpool"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
@@ -318,6 +319,31 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 	allErrs := append(detErrs, llmErrs...)
 	if len(allErrs) > 0 {
 		err = fmt.Errorf("plan execution completed with %d leaf error(s), first: %w", len(allErrs), allErrs[0])
+	}
+	// LT-148/LT-6 tail (docs/follow-up.md): cmd/hackerfive/scan.go's CLI path
+	// has always run its accumulated findings through this exact pipeline
+	// before returning/exporting them (scan.go:354) — RunPlan never did, so
+	// the webui/mcp path (the only two callers of RunPlan) kept every
+	// pre-Dedup duplicate the CLI path already collapses. That duplication is
+	// structural here in a way it isn't for the CLI: runLeaf gives every leaf
+	// its own fresh scanner.Engine.Run call (one leaf, one Engine invocation),
+	// so a host with N template/detector leaves re-evaluates D6's
+	// uniform-response-wall gate N times and can emit the same
+	// misconfig-waf-blocked/misconfig-uniform-catchall finding N times over —
+	// live-reproduced on nettix.com.pe's WAF-walled hosts. Order matches
+	// scan.go's: split the nuclei aggregate first so Dedup's exact-ID key can
+	// collapse it against the native per-header finding, then drop the
+	// superseded native/nuclei pair, then Dedup. opts.OnFinding above still
+	// streams each leaf's raw, pre-Dedup findings the instant they complete
+	// (unchanged) — this only dedupes the batch RunPlan itself returns.
+	//
+	// Skipped entirely when findings is empty: SplitAggregates unconditionally
+	// allocates a fresh non-nil slice, which would turn a nil findings return
+	// (every leaf skipped, or an empty tree — TestRunPlan_EmptyTree_NoPanic)
+	// into a non-nil empty one and change this function's zero-value contract
+	// for every existing caller.
+	if len(findings) > 0 {
+		findings = reporter.Dedup(reporter.DropSupersededNucleiFindings(reporter.SplitAggregates(findings)))
 	}
 	return findings, logs, skipped, err
 }
