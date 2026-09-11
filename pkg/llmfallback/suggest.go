@@ -26,7 +26,8 @@ const suggestSystemPrompt = `You help a human security researcher decide what to
 Each action's "kind" must be exactly one of: "draft_template" (a ledger row nothing covers — propose drafting a template for it), "run_leaf" (a finding suggests a specific second-pass check, e.g. a disclosed admin path or version banner), "redo_recon" (the ledger shows a thin endpoint surface — recon should be re-run with different parameters), "correlate_hosts" (the same product/version fingerprinted on multiple hosts — group them), "triage_group" (findings that belong together in a report draft). Never invent a kind outside this list, never invent a finding_id or host not present in the input.
 
 Respond with ONLY a JSON object, no other text, matching exactly:
-{"actions": [{"kind": "<kind>", "description": "<short reason>", "detail": {"<key>": "<value>"}}, ...]}`
+{"actions": [{"kind": "<kind>", "description": "<short reason>", "detail": {"<key>": "<value or list of values>"}}, ...]}
+"detail" values are usually a single string (host/product/finding_id), but for "triage_group" use a JSON array of finding_id strings under the key "finding_ids".`
 
 type suggestResponse struct {
 	Actions []SuggestedAction `json:"actions"`

@@ -43,6 +43,29 @@ func TestSuggest_ModelInventsUnknownKind_Drops(t *testing.T) {
 	}
 }
 
+// TestSuggest_TriageGroupWithFindingIDsList_Decodes locks in LT-139 (found
+// live against aalberts.com, 2026-09-10): a real model naturally returns
+// triage_group's detail.finding_ids as a JSON array, not a scalar string —
+// Detail must be untyped enough to hold it rather than failing the whole
+// response's decode.
+func TestSuggest_TriageGroupWithFindingIDsList_Decodes(t *testing.T) {
+	srv := fakeChatServer(t, `{"actions":[{"kind":"triage_group","description":"group the header findings","detail":{"finding_ids":["a","b","c"]}}]}`)
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+
+	got, _, err := c.Suggest(context.Background(), sampleLedger(), sampleFindings())
+	if err != nil {
+		t.Fatalf("Suggest: %v", err)
+	}
+	if len(got.Actions) != 1 || got.Actions[0].Kind != "triage_group" {
+		t.Fatalf("got %+v", got)
+	}
+	ids, ok := got.Actions[0].Detail["finding_ids"].([]any)
+	if !ok || len(ids) != 3 {
+		t.Fatalf("got detail=%+v, want a 3-element finding_ids list", got.Actions[0].Detail)
+	}
+}
+
 func TestSuggest_EmptyInput_NoCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {

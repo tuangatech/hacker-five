@@ -693,20 +693,33 @@ func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string
 
 	allowOrigin := resp.Header.Get("Access-Control-Allow-Origin")
 	allowCreds := strings.EqualFold(resp.Header.Get("Access-Control-Allow-Credentials"), "true")
-	reflected := allowOrigin == corsProbeOrigin || allowOrigin == "*"
-	if !reflected || !allowCreds {
+	echoedProbe := allowOrigin == corsProbeOrigin
+	literalWildcard := allowOrigin == "*"
+	if (!echoedProbe && !literalWildcard) || !allowCreds {
 		return nil, nil
 	}
 
 	severity, confidence := "high", "high"
-	description := "target reflects an arbitrary Origin (or uses a wildcard) while also allowing credentials, letting any site make authenticated cross-origin requests"
+	description := "target reflects an arbitrary Origin while also allowing credentials, letting any site make authenticated cross-origin requests"
+	// LT-139 (found live against aalberts.com, 2026-09-10): a literal "*"
+	// is not the same evidence as an echoed probe origin. Per the Fetch
+	// spec, a browser refuses to expose a credentialed response when
+	// Access-Control-Allow-Origin is the literal wildcard — Access-
+	// Control-Allow-Credentials: true has no effect in that case, so this
+	// combination is spec-non-functional and not exploitable via any
+	// spec-compliant browser. It's still a real config smell (self-
+	// contradictory headers) worth flagging, just not a high.
+	if literalWildcard && !echoedProbe {
+		severity, confidence = "low", "medium"
+		description = "target sends Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true — contradictory headers that most standards-compliant browsers will refuse to honor for credentialed requests (Fetch spec forbids exposing a credentialed response to a literal wildcard), so this is not exploitable as authenticated cross-origin access; worth cleaning up, but only escalate if the origin is confirmed to actually reflect the request's Origin instead of a static wildcard"
+	}
 	// LT-121: the misconfigured headers were seen only on an auth-wall
 	// response (401/403/407 — e.g. agent.aalberts.com, uniformly HTTP Basic
 	// auth). A cross-origin caller still can't read that body, so this
 	// evidence doesn't support a high; down-rank and flag it for
 	// verification against an authenticated 200 rather than suppressing it —
 	// the same misconfig may well extend to the real API behind the wall.
-	if isAuthWallStatus(resp.StatusCode) {
+	if echoedProbe && isAuthWallStatus(resp.StatusCode) {
 		severity, confidence = "medium", "medium"
 		description += fmt.Sprintf(" — but observed only on an auth-walled response (status %d), which a cross-origin caller cannot read; verify the same headers against an authenticated 200 before treating this as high", resp.StatusCode)
 	}

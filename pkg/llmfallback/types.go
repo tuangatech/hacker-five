@@ -65,9 +65,14 @@ type TriageResult struct {
 // suggestActionKinds (client.go's Suggest drops any other value rather than
 // trusting it) — never applied automatically, never a Finding mutation.
 type SuggestedAction struct {
-	Kind        string            `json:"kind"`
-	Description string            `json:"description"`
-	Detail      map[string]string `json:"detail,omitempty"`
+	Kind        string         `json:"kind"`
+	Description string         `json:"description"`
+	// Detail is untyped (LT-139, found live against aalberts.com,
+	// 2026-09-10): most kinds carry scalar strings (host, product,
+	// finding_id), but triage_group's natural payload is a list of finding
+	// IDs — a model returning that list as a JSON array must decode, not
+	// fail the whole response the way a map[string]string forced it to.
+	Detail map[string]any `json:"detail,omitempty"`
 }
 
 // SuggestResult is I4's fourth caller's result.

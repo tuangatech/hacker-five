@@ -422,6 +422,29 @@ func TestMisconfigCORS_WildcardWithCredentials(t *testing.T) {
 	assert.Equal(t, "high", got[0].Severity)
 }
 
+// TestMisconfigCORS_LiteralWildcardWithCredentials_DownRanked locks in
+// LT-139 (found live against aalberts.com, 2026-09-10): a literal "*" that
+// does NOT echo the probed Origin is not equivalent evidence to an actual
+// reflected origin — browsers refuse to honor Access-Control-Allow-
+// Credentials: true alongside a literal wildcard, so it isn't exploitable
+// as authenticated cross-origin access the way a true reflection is.
+func TestMisconfigCORS_LiteralWildcardWithCredentials_DownRanked(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && r.Method == http.MethodGet {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-cors")
+	require.Len(t, got, 1)
+	assert.Equal(t, "low", got[0].Severity)
+	assert.NotContains(t, got[0].Description, "letting any site make authenticated cross-origin requests")
+}
+
 func TestMisconfigCORS_WildcardWithoutCredentials_NoFinding(t *testing.T) {
 	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" && r.Method == http.MethodGet {
