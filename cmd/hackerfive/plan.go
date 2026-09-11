@@ -374,21 +374,23 @@ func appSurfaceDiagnostic(w io.Writer, result *recon.ReconResult) {
 	_, _ = fmt.Fprintf(w, "%s: live application surface: %s (%s)\n", prefix, s.Verdict, s.Reason)
 }
 
-// uniformWallDiagnostic prints one stderr line when recon classified the
-// target as a uniform response wall (Phase 7 Step 4 D6 / docs/follow-up.md
-// LT-59, LT-62) — a WAF/bot/auth block layer or a SPA/bucket catch-all that
-// answers every path with one page. The plan still resolves (LT-57's
-// baseline misconfig leaf keeps it non-empty), but a scan from this vantage
-// will not reach the application, so `scan` will short-circuit the corpus.
+// uniformWallDiagnostic prints one stderr line per host recon classified as
+// a uniform response wall (Phase 7 Step 4 D6 / docs/follow-up.md LT-59,
+// LT-62; widened to every walled host, not just one, by LT-140) — a
+// WAF/bot/auth block layer or a SPA/bucket catch-all that answers every
+// path with one page. The plan still resolves (LT-57's baseline misconfig
+// leaf keeps it non-empty), but a scan from this vantage will not reach the
+// application, so `scan` will short-circuit the corpus for that host.
 func uniformWallDiagnostic(w io.Writer, result *recon.ReconResult) {
-	if result == nil || result.UniformResponse == nil {
+	if result == nil {
 		return
 	}
-	u := result.UniformResponse
-	what := "returns one generic catch-all page for every path"
-	if u.Kind == "waf-block" {
-		what = "sits behind a WAF/bot/auth block wall that intercepts every request"
+	for _, u := range result.UniformResponses {
+		what := "returns one generic catch-all page for every path"
+		if u.Kind == "waf-block" {
+			what = "sits behind a WAF/bot/auth block wall that intercepts every request"
+		}
+		_, _ = fmt.Fprintf(w, "plan: %s %s (canary status %d, %.0f%% of recon probes blocked) — a scan from this vantage will short-circuit the template corpus (D6); consider an in-region/residential egress or the target's non-web surface\n",
+			u.Host, what, u.CanaryStatus, u.BlockedRatio*100)
 	}
-	_, _ = fmt.Fprintf(w, "plan: %s %s (canary status %d, %.0f%% of recon probes blocked) — a scan from this vantage will short-circuit the template corpus (D6); consider an in-region/residential egress or the target's non-web surface\n",
-		u.Host, what, u.CanaryStatus, u.BlockedRatio*100)
 }

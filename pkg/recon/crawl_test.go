@@ -244,9 +244,9 @@ func TestRunWave3_UniformResponseWall(t *testing.T) {
 		r := New(newTestClient(), withRun(fake))
 		result, err := r.Run(context.Background(), srv.URL, DepthFull)
 		require.NoError(t, err)
-		require.NotNil(t, result.UniformResponse, "a 403-everything host must be recorded as a uniform wall")
-		assert.Equal(t, "waf-block", result.UniformResponse.Kind)
-		assert.Equal(t, http.StatusForbidden, result.UniformResponse.CanaryStatus)
+		require.Len(t, result.UniformResponses, 1, "a 403-everything host must be recorded as a uniform wall")
+		assert.Equal(t, "waf-block", result.UniformResponses[0].Kind)
+		assert.Equal(t, http.StatusForbidden, result.UniformResponses[0].CanaryStatus)
 	})
 
 	t.Run("200 shell on every path -> catchall", func(t *testing.T) {
@@ -261,8 +261,8 @@ func TestRunWave3_UniformResponseWall(t *testing.T) {
 		r := New(newTestClient(), withRun(fake))
 		result, err := r.Run(context.Background(), srv.URL, DepthFull)
 		require.NoError(t, err)
-		require.NotNil(t, result.UniformResponse)
-		assert.Equal(t, "catchall", result.UniformResponse.Kind)
+		require.Len(t, result.UniformResponses, 1)
+		assert.Equal(t, "catchall", result.UniformResponses[0].Kind)
 	})
 
 	t.Run("normal host (real 404 for nonexistent) -> no fact", func(t *testing.T) {
@@ -279,7 +279,7 @@ func TestRunWave3_UniformResponseWall(t *testing.T) {
 		r := New(newTestClient(), withRun(fake))
 		result, err := r.Run(context.Background(), srv.URL, DepthFull)
 		require.NoError(t, err)
-		assert.Nil(t, result.UniformResponse, "a host with a real 404 for nonexistent paths is not a wall")
+		assert.Empty(t, result.UniformResponses, "a host with a real 404 for nonexistent paths is not a wall")
 	})
 }
 

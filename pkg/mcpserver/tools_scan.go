@@ -21,20 +21,20 @@ import (
 // 1) — a call with no entries is refused by requireScope before an Engine
 // is ever constructed, never a silent CLI-style warning.
 type scanInput struct {
-	Targets          []string                   `json:"targets" jsonschema:"target URLs to scan"`
-	Scope            []string                   `json:"scope" jsonschema:"required allow-list (domain, *.domain, or CIDR entries) every target must fall within; the call is refused if empty"`
-	Detector         string                     `json:"detector" jsonschema:"one of idor, misconfig, authbypass, ssrf, businesslogic, netservice (netservice targets a \"tcp://host:port\" leaf, not an ordinary URL — see the scan tool's own targets field)"`
-	Tags             []string                   `json:"tags,omitempty" jsonschema:"only fire loaded templates carrying at least one of these tags (OR match); empty means no filtering"`
-	EndpointTemplate string                     `json:"endpoint_template,omitempty" jsonschema:"required for detector=idor, e.g. /api/report?id={{id}}"`
-	ProtectedPaths   []string                   `json:"protected_paths,omitempty" jsonschema:"required for detector=authbypass"`
-	AuthToken        string                     `json:"auth_token,omitempty" jsonschema:"owner-account auth token; also read from HACKERFIVE_AUTH_TOKEN if unset"`
-	OtherAuthToken   string                     `json:"other_auth_token,omitempty" jsonschema:"second-account auth token, for idor's baseline comparison"`
-	AllowWrites      bool                       `json:"allow_writes,omitempty" jsonschema:"REQUESTS detector=businesslogic's mutating checks (coupon self-mint/apply, apply-race); honored only after a human attests via an elicitation round trip (B2) — a bare true here never runs writes on its own, and the mutating checks are skipped with a warning when unattested"`
-	ExtraHeaders     map[string]string          `json:"extra_headers,omitempty"`
-	TechStack        []recon.TechFact           `json:"tech_stack,omitempty" jsonschema:"optional — a prior recon tool call's result.tech_stack; adds this stack's product-specific template tags on top of the detector-category floor (LT-16/LT-17, doc15 Step 6a)"`
-	UniformResponse  *recon.UniformResponseFact `json:"uniform_response,omitempty" jsonschema:"optional — a prior recon tool call's result.uniform_response; when set, the per-target template corpus is skipped for that host (it answers every request with one block/catch-all page) and one honest finding is emitted instead (D6, LT-59)"`
-	AllTemplates     bool                       `json:"all_templates,omitempty" jsonschema:"load the full ~9.5k synced corpus, bypassing the default per-detector template scoping (doc15 Step 6a); no effect when tags is set"`
-	Reason           string                     `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
+	Targets          []string                    `json:"targets" jsonschema:"target URLs to scan"`
+	Scope            []string                    `json:"scope" jsonschema:"required allow-list (domain, *.domain, or CIDR entries) every target must fall within; the call is refused if empty"`
+	Detector         string                      `json:"detector" jsonschema:"one of idor, misconfig, authbypass, ssrf, businesslogic, netservice (netservice targets a \"tcp://host:port\" leaf, not an ordinary URL — see the scan tool's own targets field)"`
+	Tags             []string                    `json:"tags,omitempty" jsonschema:"only fire loaded templates carrying at least one of these tags (OR match); empty means no filtering"`
+	EndpointTemplate string                      `json:"endpoint_template,omitempty" jsonschema:"required for detector=idor, e.g. /api/report?id={{id}}"`
+	ProtectedPaths   []string                    `json:"protected_paths,omitempty" jsonschema:"required for detector=authbypass"`
+	AuthToken        string                      `json:"auth_token,omitempty" jsonschema:"owner-account auth token; also read from HACKERFIVE_AUTH_TOKEN if unset"`
+	OtherAuthToken   string                      `json:"other_auth_token,omitempty" jsonschema:"second-account auth token, for idor's baseline comparison"`
+	AllowWrites      bool                        `json:"allow_writes,omitempty" jsonschema:"REQUESTS detector=businesslogic's mutating checks (coupon self-mint/apply, apply-race); honored only after a human attests via an elicitation round trip (B2) — a bare true here never runs writes on its own, and the mutating checks are skipped with a warning when unattested"`
+	ExtraHeaders     map[string]string           `json:"extra_headers,omitempty"`
+	TechStack        []recon.TechFact            `json:"tech_stack,omitempty" jsonschema:"optional — a prior recon tool call's result.tech_stack; adds this stack's product-specific template tags on top of the detector-category floor (LT-16/LT-17, doc15 Step 6a)"`
+	UniformResponses []recon.UniformResponseFact `json:"uniform_responses,omitempty" jsonschema:"optional — a prior recon tool call's result.uniform_responses; each entry's host has its per-target template corpus skipped (it answers every request with one block/catch-all page) and one honest finding emitted instead (D6, LT-59; widened to every walled host, not just one, by LT-140)"`
+	AllTemplates     bool                        `json:"all_templates,omitempty" jsonschema:"load the full ~9.5k synced corpus, bypassing the default per-detector template scoping (doc15 Step 6a); no effect when tags is set"`
+	Reason           string                      `json:"reason,omitempty" jsonschema:"optional — the coordinator's stated reason for this call; recorded verbatim in the session.log, advisory only"`
 }
 
 // scanOutput is the scan tool's result: every Finding the run produced,
@@ -201,9 +201,13 @@ func runScan(ctx context.Context, req *mcp.CallToolRequest, in scanInput, writes
 
 	// D6 (docs/16-implementation-plan-ph7.md Step 4): a recon-classified
 	// uniform response wall short-circuits the per-target template corpus.
-	if in.UniformResponse != nil {
-		cfg.UniformWallHosts = map[string]string{in.UniformResponse.Host: in.UniformResponse.Kind}
-		out.Logs = append(out.Logs, fmt.Sprintf("info: template scope: recon classified %s as a %s — the template corpus will be skipped for it (D6)", in.UniformResponse.Host, in.UniformResponse.Kind))
+	// LT-140: every walled host the caller passed, not just one.
+	if len(in.UniformResponses) > 0 {
+		cfg.UniformWallHosts = make(map[string]string, len(in.UniformResponses))
+		for _, u := range in.UniformResponses {
+			cfg.UniformWallHosts[u.Host] = u.Kind
+			out.Logs = append(out.Logs, fmt.Sprintf("info: template scope: recon classified %s as a %s — the template corpus will be skipped for it (D6)", u.Host, u.Kind))
+		}
 	}
 
 	// LT-107 (doc16 Phase 7 Step 7): pass the recon tech stack through so the

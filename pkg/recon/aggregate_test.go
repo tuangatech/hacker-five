@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestClassifyAppSurface covers LT-68's synthesised none/thin/full verdict.
@@ -17,7 +18,7 @@ func TestClassifyAppSurface(t *testing.T) {
 	}
 	tech := []TechFact{{Name: "nginx"}}
 
-	assert.Equal(t, "none", classifyAppSurface(nil, nil, &UniformResponseFact{Kind: "waf-block"}).Verdict)
+	assert.Equal(t, "none", classifyAppSurface(nil, nil, uniformMap(UniformResponseFact{Kind: "waf-block"})).Verdict)
 	assert.Equal(t, "none", classifyAppSurface(nil, nil, nil).Verdict)
 	assert.Equal(t, "none", classifyAppSurface([]EndpointFact{{StatusCode: 301}}, nil, nil).Verdict)
 	assert.Equal(t, "thin", classifyAppSurface(nil, tech, nil).Verdict)
@@ -32,7 +33,7 @@ func TestClassifyAppSurface(t *testing.T) {
 	crawledRoute := func(host, path string) EndpointFact {
 		return EndpointFact{URL: "https://" + host + path, StatusCode: 200, Source: "katana-crawl"}
 	}
-	wall := &UniformResponseFact{Host: "erp.nettix.com.pe", Kind: "catchall"}
+	wall := uniformMap(UniformResponseFact{Host: "erp.nettix.com.pe", Kind: "catchall"})
 
 	// Only the walled host has any content → still "none".
 	assert.Equal(t, "none", classifyAppSurface(
@@ -59,6 +60,93 @@ func TestClassifyAppSurface(t *testing.T) {
 	assert.False(t, endpointShowsRealApp(realApp("pe01.nettix.com.pe", "Welcome to nginx!")))
 	assert.False(t, endpointShowsRealApp(EndpointFact{URL: "https://x/", StatusCode: 200, Title: "401 Authorization Required"}))
 	assert.True(t, endpointShowsRealApp(crawledRoute("ixn.nettix.com.pe", "/viewimage.php")))
+}
+
+// uniformMap builds classifyAppSurface's uniform argument the same way
+// aggregator.finalize() does — keyed by NormalizeHost(Host) — from a
+// var-args list of facts, so a test reads as a plain list of walled hosts.
+func uniformMap(facts ...UniformResponseFact) map[string]UniformResponseFact {
+	m := make(map[string]UniformResponseFact, len(facts))
+	for _, f := range facts {
+		m[NormalizeHost(f.Host)] = f
+	}
+	return m
+}
+
+// TestClassifyAppSurface_TwoWalledHosts guards LT-140: a multi-host recon
+// run with more than one uniform-response wall must judge "blind" against
+// *all* of them, not just a single named host — before the fix,
+// classifyAppSurface only ever took one UniformResponseFact, so a second
+// walled host in the same run was invisible to this function entirely.
+func TestClassifyAppSurface_TwoWalledHosts(t *testing.T) {
+	realApp := func(host, title string) EndpointFact {
+		return EndpointFact{URL: "https://" + host + "/", StatusCode: 200, Title: title}
+	}
+	walls := uniformMap(
+		UniformResponseFact{Host: "waf.nettix.com.pe", Kind: "waf-block"},
+		UniformResponseFact{Host: "bucket.nettix.com.pe", Kind: "catchall"},
+	)
+
+	// Only the two walled hosts have any content → still "none", not just
+	// checked against whichever wall happened to be first.
+	assert.Equal(t, "none", classifyAppSurface(
+		[]EndpointFact{realApp("waf.nettix.com.pe", "Blocked"), realApp("bucket.nettix.com.pe", "Shell")},
+		nil, walls).Verdict)
+
+	// A third, unwalled host serves a real app → not blind; "thin", and the
+	// reason names both walled hosts.
+	got := classifyAppSurface([]EndpointFact{
+		realApp("waf.nettix.com.pe", "Blocked"),
+		realApp("www.nettix.com.pe", "Bienvenido a Nettix Perú |"),
+	}, nil, walls)
+	assert.Equal(t, "thin", got.Verdict)
+	assert.Contains(t, got.Reason, "2 host(s)")
+	assert.Contains(t, got.Reason, "bucket.nettix.com.pe")
+	assert.Contains(t, got.Reason, "waf.nettix.com.pe")
+}
+
+// TestSetUniformResponse_MultipleHosts_AllRecorded guards LT-140's actual
+// aggregator-level bug: before the fix, setUniformResponse kept only "the
+// first verdict seen" full stop, so a second walled host in the same
+// multi-host recon run was silently dropped from the final ReconResult.
+func TestSetUniformResponse_MultipleHosts_AllRecorded(t *testing.T) {
+	agg := &aggregator{}
+	agg.setUniformResponse(UniformResponseFact{Host: "waf.example.test", Kind: "waf-block", CanaryStatus: 403})
+	agg.setUniformResponse(UniformResponseFact{Host: "bucket.example.test", Kind: "catchall", CanaryStatus: 200})
+
+	result := agg.finalize()
+	require.Len(t, result.UniformResponses, 2, "both walled hosts must survive to the final result, not just the first one probed")
+
+	hosts := result.UniformWallHosts()
+	assert.Equal(t, "waf-block", hosts["waf.example.test"])
+	assert.Equal(t, "catchall", hosts["bucket.example.test"])
+}
+
+// TestSetUniformResponse_SameHostTwice_FirstWriterWins guards the existing
+// per-host discipline: a later, weaker signal for a host already recorded
+// must not clear or replace its verdict.
+func TestSetUniformResponse_SameHostTwice_FirstWriterWins(t *testing.T) {
+	agg := &aggregator{}
+	agg.setUniformResponse(UniformResponseFact{Host: "www.example.test", Kind: "waf-block", CanaryStatus: 403})
+	agg.setUniformResponse(UniformResponseFact{Host: "example.test", Kind: "catchall", CanaryStatus: 200})
+
+	result := agg.finalize()
+	require.Len(t, result.UniformResponses, 1, "www./bare variants of the same host must not produce two entries (NormalizeHost dedup, LT-14 convention)")
+	assert.Equal(t, "waf-block", result.UniformResponses[0].Kind, "the first-seen verdict for a host must win")
+}
+
+func TestUniformResponseForHost_NormalizesHostAndMisses(t *testing.T) {
+	result := &ReconResult{UniformResponses: []UniformResponseFact{
+		{Host: "www.example.test", Kind: "waf-block"},
+	}}
+
+	got := result.UniformResponseForHost("Example.test")
+	if assert.NotNil(t, got, "a www./case variant must still match") {
+		assert.Equal(t, "waf-block", got.Kind)
+	}
+	assert.Nil(t, result.UniformResponseForHost("other.test"))
+	assert.Nil(t, (*ReconResult)(nil).UniformResponseForHost("example.test"))
+	assert.Nil(t, (&ReconResult{}).UniformWallHosts())
 }
 
 func TestAddTech_SameNameAndHost_MergesInsteadOfDuplicating(t *testing.T) {

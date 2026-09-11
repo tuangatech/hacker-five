@@ -266,7 +266,7 @@ func TestResolve_BodyGrepSecretTemplate_SuppressedOnStaticHost(t *testing.T) {
 
 	// catch-all wall on the host -> secret grep suppressed, control kept.
 	walled := base()
-	walled.UniformResponse = &recon.UniformResponseFact{Host: "example.test", Kind: "catchall"}
+	walled.UniformResponses = []recon.UniformResponseFact{{Host: "example.test", Kind: "catchall"}}
 	tree, _ := Resolve(walled, index)
 	assert.Nil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }),
 		"a body-grep secret template must not be planned against a catch-all host")
@@ -301,6 +301,28 @@ func TestResolve_BodyGrepSecretTemplate_KeptOnDynamicHost(t *testing.T) {
 	tree, _ := Resolve(result, index)
 	assert.NotNil(t, findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }),
 		"a body-grep secret template is planned normally against a host serving real content")
+}
+
+// TestResolve_BodyGrepSecretTemplate_OtherHostWallDoesNotSuppress guards
+// LT-140: a catch-all wall recorded on one host in a multi-host recon run
+// must not suppress hostServesDynamicContent's verdict for a *different*
+// host that plainly served real content — before the fix, a single
+// first-host-wins UniformResponse fact (or its Host=="" wildcard fallback)
+// could bleed a wall verdict onto a host it was never actually recorded
+// against.
+func TestResolve_BodyGrepSecretTemplate_OtherHostWallDoesNotSuppress(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "shopify-app-secret", Tags: []string{"shopify", "token", "exposure", "vuln"}},
+	}
+	result := &recon.ReconResult{
+		Target:           "http://real.example.test",
+		TechStack:        []recon.TechFact{{Name: "Shopify", Host: "real.example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+		Endpoints:        []recon.EndpointFact{{URL: "http://real.example.test/", Method: "GET", StatusCode: 200, BodyLen: 8192, Source: "wave3-common-path-probe"}},
+		UniformResponses: []recon.UniformResponseFact{{Host: "walled.example.test", Kind: "catchall"}},
+	}
+	tree, _ := Resolve(result, index)
+	assert.NotNil(t, findLeaf(t, tree, "real.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "shopify-app-secret" }),
+		"a wall recorded against a different host must not suppress this host's own secret-grep leaf")
 }
 
 // TestResolve_SpecAuthRequiredRoute_ProducesAuthbypassLeaf covers LT-90: a
@@ -1015,8 +1037,8 @@ func TestDetectorTemplateTagsForRecon(t *testing.T) {
 	// an auth-boundary heuristic hit) still keeps it even behind the wall.
 	wafWalled := func(eps ...recon.EndpointFact) *recon.ReconResult {
 		return &recon.ReconResult{
-			Endpoints:       eps,
-			UniformResponse: &recon.UniformResponseFact{Host: "walled.test", Kind: "waf-block", CanaryStatus: 403},
+			Endpoints:        eps,
+			UniformResponses: []recon.UniformResponseFact{{Host: "walled.test", Kind: "waf-block", CanaryStatus: 403}},
 		}
 	}
 	assert.NotContains(t,
@@ -1028,6 +1050,20 @@ func TestDetectorTemplateTagsForRecon(t *testing.T) {
 	assert.Contains(t,
 		DetectorTemplateTagsForRecon("misconfig", wafWalled(recon.EndpointFact{URL: "https://walled.test/", StatusCode: 403, Source: "wave3-auth-boundary-heuristic"})),
 		"panel", "auth-boundary heuristic hit even behind a WAF → keep panel")
+
+	// LT-140: a multi-host result with one WAF-walled host must not
+	// suppress a genuine 401/403 admin signal on a *different*, unwalled
+	// host in the same run — reconShowsAdminSurface now checks the wall
+	// per endpoint host, not once for the whole result.
+	multiHost := &recon.ReconResult{
+		Endpoints: []recon.EndpointFact{
+			{URL: "https://walled.test/x", StatusCode: 403, Source: "katana-crawl"},
+			{URL: "https://open.test/x", StatusCode: 403, Source: "katana-crawl"},
+		},
+		UniformResponses: []recon.UniformResponseFact{{Host: "walled.test", Kind: "waf-block", CanaryStatus: 403}},
+	}
+	assert.Contains(t, DetectorTemplateTagsForRecon("misconfig", multiHost), "panel",
+		"a bare 403 on an unwalled host in a multi-host run must still count as an admin signal (LT-140) — the WAF wall on the other host must not suppress it")
 }
 
 func TestTechStackTags_UnionsRelevantEntryTags(t *testing.T) {
@@ -1548,15 +1584,14 @@ func TestResolve_WooCommerceTechFact_ProducesMisconfigLeaf(t *testing.T) {
 // --- P1-2: port-driven visibility leaves ---
 
 func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
-	// Port 5432 (postgresql) has no netservice check yet
-	// (netserviceCheckedPorts) — still the plain visibility-only path.
-	// See TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf
-	// below for the covered-port (21/3306/6379) counterpart, Phase 8
-	// Step 1.
+	// Port 23 (telnet) has no netservice check (netserviceCheckedPorts) and
+	// isn't expected to get one — still the plain visibility-only path. See
+	// TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf below
+	// for the covered-port (21/3306/5432/6379/27017) counterpart.
 	result := &recon.ReconResult{
 		Target: "http://example.test",
 		Hosts: []recon.HostFact{
-			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 5432, Protocol: "tcp", Source: "naabu"}}},
+			{Host: "staging.example.test", Ports: []recon.PortFact{{Port: 23, Protocol: "tcp", Source: "naabu"}}},
 		},
 	}
 
@@ -1568,16 +1603,16 @@ func TestResolve_InterestingPortOpen_ProducesUnresolvedLeaf(t *testing.T) {
 	leaf := agenttask.Leaves(hostNode)[0]
 	assert.Equal(t, agenttask.StatusUnresolved, leaf.Status)
 	assert.Empty(t, leaf.Detector, "a port-visibility leaf must never dispatch — no loadable check exists for it")
-	assert.Contains(t, leaf.Rationale, "5432")
-	assert.Contains(t, leaf.Rationale, "postgresql")
+	assert.Contains(t, leaf.Rationale, "23")
+	assert.Contains(t, leaf.Rationale, "telnet")
 }
 
 // TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf is Phase 8
 // Step 1's counterpart to the visibility-only test above: a port
-// netserviceCheckedPorts covers (21/3306/6379 — pkg/detectors/netservice)
-// gets promoted straight to a real dispatchable "netservice" leaf, Target
-// carrying the port directly, not just a StatusUnresolved note. Closes
-// LT-23 (docs/follow-up.md).
+// netserviceCheckedPorts covers (21/3306/5432/6379/27017 —
+// pkg/detectors/netservice) gets promoted straight to a real dispatchable
+// "netservice" leaf, Target carrying the port directly, not just a
+// StatusUnresolved note. Closes LT-23 (docs/follow-up.md).
 func TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf(t *testing.T) {
 	result := &recon.ReconResult{
 		Target: "http://example.test",
@@ -1597,6 +1632,33 @@ func TestResolve_NetserviceCheckedPortOpen_ProducesDispatchableLeaf(t *testing.T
 	assert.Equal(t, "tcp://staging.example.test:3306", leaf.Target)
 	assert.Contains(t, leaf.Rationale, "3306")
 	assert.Contains(t, leaf.Rationale, "mysql")
+}
+
+// TestResolve_NetserviceCheckedPortOpen_PostgresAndMongo is LT-142's
+// counterpart to the MySQL case above, covering the two ports it added to
+// netserviceCheckedPorts (PostgreSQL's trust-auth check, MongoDB's
+// unauthenticated-listDatabases check) — each on its own host so the two
+// dispatchable leaves don't collide.
+func TestResolve_NetserviceCheckedPortOpen_PostgresAndMongo(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "pg.example.test", Ports: []recon.PortFact{{Port: 5432, Protocol: "tcp", Source: "naabu"}}},
+			{Host: "mongo.example.test", Ports: []recon.PortFact{{Port: 27017, Protocol: "tcp", Source: "naabu"}}},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	pgLeaf := agenttask.Leaves(tree.Find("host:pg.example.test"))[0]
+	assert.Equal(t, agenttask.StatusPending, pgLeaf.Status)
+	assert.Equal(t, "netservice", pgLeaf.Detector)
+	assert.Equal(t, "tcp://pg.example.test:5432", pgLeaf.Target)
+
+	mongoLeaf := agenttask.Leaves(tree.Find("host:mongo.example.test"))[0]
+	assert.Equal(t, agenttask.StatusPending, mongoLeaf.Status)
+	assert.Equal(t, "netservice", mongoLeaf.Detector)
+	assert.Equal(t, "tcp://mongo.example.test:27017", mongoLeaf.Target)
 }
 
 // TestResolve_InterestingPortOpen_PopulatesLeafContext confirms P2-2's
