@@ -23,7 +23,7 @@ import (
 type scanInput struct {
 	Targets          []string                   `json:"targets" jsonschema:"target URLs to scan"`
 	Scope            []string                   `json:"scope" jsonschema:"required allow-list (domain, *.domain, or CIDR entries) every target must fall within; the call is refused if empty"`
-	Detector         string                     `json:"detector" jsonschema:"one of idor, misconfig, authbypass, ssrf, businesslogic"`
+	Detector         string                     `json:"detector" jsonschema:"one of idor, misconfig, authbypass, ssrf, businesslogic, netservice (netservice targets a \"tcp://host:port\" leaf, not an ordinary URL — see the scan tool's own targets field)"`
 	Tags             []string                   `json:"tags,omitempty" jsonschema:"only fire loaded templates carrying at least one of these tags (OR match); empty means no filtering"`
 	EndpointTemplate string                     `json:"endpoint_template,omitempty" jsonschema:"required for detector=idor, e.g. /api/report?id={{id}}"`
 	ProtectedPaths   []string                   `json:"protected_paths,omitempty" jsonschema:"required for detector=authbypass"`

@@ -18,6 +18,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scanner/vars"
 	"github.com/tuangatech/hacker-five/pkg/template/extractor"
 	"github.com/tuangatech/hacker-five/pkg/template/matcher"
+	"github.com/tuangatech/hacker-five/pkg/template/tcpproto"
 )
 
 // Executor runs one parsed Template against one target.
@@ -48,6 +49,14 @@ type Executor struct {
 
 	oobOnce   sync.Once
 	oobPoller *oob.Poller
+
+	// tcpTimeout is the dial/write/read deadline every tcp: request this
+	// Executor fires uses (tcpproto.Probe's individual calls) — see
+	// WithTCPTimeout. Zero (New's default) means tcpproto's own
+	// DefaultTimeout applies; pkg/scanner.Engine threads its configured
+	// --timeout through explicitly (Phase 8 Step 1,
+	// docs/17-implementation-plan-ph8.md).
+	tcpTimeout time.Duration
 }
 
 // New constructs an Executor.
@@ -115,6 +124,17 @@ func (e *Executor) WithHeaders(headers map[string]string) *Executor {
 func (e *Executor) WithOOBServers(servers []string) *Executor {
 	if len(servers) > 0 {
 		e.oobServers = servers
+	}
+	return e
+}
+
+// WithTCPTimeout sets the dial/write/read deadline every tcp: request this
+// Executor fires uses. A zero/negative d is a no-op, leaving any prior
+// call's value (or New's zero default, which falls back to tcpproto's own
+// DefaultTimeout) in place — mirrors WithOOBServers/WithHeaders' shape.
+func (e *Executor) WithTCPTimeout(d time.Duration) *Executor {
+	if d > 0 {
+		e.tcpTimeout = d
 	}
 	return e
 }
@@ -311,6 +331,23 @@ func (e *Executor) Run(ctx context.Context, target string, tmpl *Template) ([]de
 	// it's only ever reached from here. Mirrors the same trailing-slash fix
 	// made for the authbypass detector (doc15 Step 2 addendum, 2026-09-04).
 	target = strings.TrimRight(target, "/")
+
+	// D6-equivalent protocol gate (Phase 8 Step 1,
+	// docs/17-implementation-plan-ph8.md): a "tcp://host:port" target
+	// (the shape registry.resolvePortFacts' netservice leaves, and
+	// nothing else, ever produces) only ever fires this template's tcp:
+	// requests — its http: requests (if any; real templates don't mix
+	// protocols) would otherwise try to build an HTTP request against a
+	// URL with no meaningful path/method semantics. Every other target
+	// scheme (http/https — the entire rest of this project) is the
+	// mirror image: tcp: requests never fire there. This keeps the
+	// existing "every loaded template runs against every target"
+	// additive model correct once tcp: templates can load at all,
+	// without pkg/scanner.Engine's runTemplates needing to know
+	// anything about protocol internals itself.
+	if isTCPTarget(target) {
+		return e.runTCP(ctx, target, tmpl)
+	}
 
 	if tmpl.flowAST != nil {
 		return e.runFlow(ctx, target, tmpl)
@@ -1239,4 +1276,148 @@ func severityOrDefault(s string) string {
 		return "info"
 	}
 	return s
+}
+
+// isTCPTarget reports whether target is a "tcp://host:port" leaf —
+// registry.resolvePortFacts' netservice leaf shape, and the only thing
+// this project ever constructs with that scheme (Phase 8 Step 1,
+// docs/17-implementation-plan-ph8.md). Any parse failure is treated as "not
+// tcp" — Run's existing http: path already handles a malformed target the
+// same tolerant way it always has (a bad URL fails later, at request
+// construction, not here).
+func isTCPTarget(target string) bool {
+	u, err := neturl.Parse(target)
+	return err == nil && u.Scheme == "tcp"
+}
+
+// runTCP fires every tmpl.TCP entry against target (a "tcp://host:port"
+// leaf) in order, same top-level shape as Run's plain http: loop — no
+// flow:/chaining, since tcp: requests support neither (see TCPRequest's doc
+// comment). A per-request connect/write/read failure is swallowed as a
+// non-match, not propagated as a Run-level error — the same "a live
+// target's transient failure is an expected outcome, not a scan-fatal one"
+// convention tryPath already holds for e.client.Do.
+func (e *Executor) runTCP(ctx context.Context, target string, tmpl *Template) ([]detectors.Finding, error) {
+	var findings []detectors.Finding
+	for reqIdx, req := range tmpl.TCP {
+		if ctx.Err() != nil {
+			return findings, ctx.Err()
+		}
+		finding, matched, err := e.tryTCP(ctx, target, tmpl, reqIdx, req)
+		if err != nil {
+			return findings, err
+		}
+		if matched {
+			findings = append(findings, finding)
+		}
+	}
+	return findings, nil
+}
+
+// tryTCP resolves req's dial address, fires every req.Inputs entry in
+// order over one shared connection, concatenates everything read back, and
+// evaluates req.Matchers once against that concatenation. Returning a nil
+// error alongside matched == false covers every "nothing to report" and
+// every non-fatal per-request failure alike (unresolved host, dial/write/
+// read failure, no match) — only ctx cancellation propagates as a real
+// error, mirroring tryPath's own error-return discipline.
+func (e *Executor) tryTCP(ctx context.Context, target string, tmpl *Template, reqIdx int, req TCPRequest) (detectors.Finding, bool, error) {
+	addr, ok := resolveTCPHost(req.Host, target)
+	if !ok {
+		return detectors.Finding{}, false, nil
+	}
+
+	conn, err := tcpproto.Dial(ctx, addr, e.tcpTimeout)
+	if err != nil {
+		return detectors.Finding{}, false, nil
+	}
+	defer func() { _ = conn.Close() }()
+
+	hostOnly := ""
+	if h, hErr := neturl.Parse("tcp://" + addr); hErr == nil {
+		hostOnly = h.Hostname()
+	}
+
+	var all []byte
+	for _, input := range req.Inputs {
+		if ctx.Err() != nil {
+			return detectors.Finding{}, false, ctx.Err()
+		}
+		if input.Data != "" {
+			rendered, rErr := vars.Render(input.Data, vars.Context{Hostname: hostOnly})
+			if rErr != nil {
+				return detectors.Finding{}, false, nil
+			}
+			if _, wErr := tcpproto.Write(conn, []byte(rendered), e.tcpTimeout); wErr != nil {
+				return detectors.Finding{}, false, nil
+			}
+		}
+		read, rErr := tcpproto.Read(conn, input.Read, e.tcpTimeout)
+		if rErr != nil {
+			return detectors.Finding{}, false, nil
+		}
+		all = append(all, read...)
+	}
+
+	mResp := matcher.Response{Body: all}
+	evaluated := len(req.Matchers) > 0 && matcher.EvaluateAll(req.Matchers, req.MatchersCondition, mResp)
+	if !evaluated || !hasReportableMatcher(req.Matchers) {
+		return detectors.Finding{}, false, nil
+	}
+
+	matchedChecks := matcher.MatchingNames(req.Matchers, mResp)
+	description := tmpl.Info.Name
+	if len(matchedChecks) > 0 {
+		description = fmt.Sprintf("%s (%s)", tmpl.Info.Name, strings.Join(matchedChecks, ", "))
+	}
+
+	response := string(all)
+	if len(response) > detectors.MaxEvidenceBodyBytes {
+		response = fmt.Sprintf("%s\n... [truncated, %d bytes total]", response[:detectors.MaxEvidenceBodyBytes], len(response))
+	}
+
+	return detectors.Finding{
+		ID:          fmt.Sprintf("nuclei-%s-%d", tmpl.ID, reqIdx),
+		Type:        "misconfig",
+		Severity:    severityOrDefault(tmpl.Info.Severity),
+		Confidence:  "high",
+		Target:      addr,
+		Description: description,
+		Evidence: map[string]string{
+			"template_id":    tmpl.ID,
+			"matched_checks": strings.Join(matchedChecks, ","),
+			"response":       response,
+		},
+	}, true, nil
+}
+
+// resolveTCPHost returns the address tryTCP should dial: target's own
+// host:port (target already carries one — see isTCPTarget) when reqHost is
+// empty, else the first reqHost entry that renders with every {{}}
+// placeholder resolved. See TCPRequest.Host's doc comment for why an entry
+// needing a variable this project has no source for (real Nuclei's
+// {{Port}}, e.g.) is skipped rather than guessed at.
+func resolveTCPHost(reqHost []string, target string) (string, bool) {
+	if len(reqHost) == 0 {
+		addr, err := hostnameOf(target)
+		if err != nil || addr == "" {
+			return "", false
+		}
+		return addr, true
+	}
+	u, err := neturl.Parse(target)
+	if err != nil {
+		return "", false
+	}
+	hostOnly := u.Hostname()
+	for _, entry := range reqHost {
+		rendered, rErr := vars.Render(entry, vars.Context{Hostname: hostOnly})
+		if rErr != nil {
+			continue
+		}
+		if rendered = strings.TrimSpace(rendered); rendered != "" {
+			return rendered, true
+		}
+	}
+	return "", false
 }

@@ -6,7 +6,7 @@ Open enhancement items and unresolved review findings, organized by category rat
 
 **Trimmed 2026-09-10** to cut re-read cost: every `✅ done` item below is compressed to 1-3 lines (symptom → fix, test pointer, phase-step pointer); every still-open item keeps full detail. **The original, unabridged write-up of every item — full reproduction steps, exact measurements, superseded designs — lives in [follow-up-archive.md](follow-up-archive.md).** When resolving an open item here, add its full write-up to the archive, then compress it here.
 
-**`LT-N` items** form one continuous number sequence wherever they sit in this doc, currently through **LT-141**. Full per-batch provenance (which live round produced which range) is in the archive's header. Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md docs/follow-up-archive.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
+**`LT-N` items** form one continuous number sequence wherever they sit in this doc, currently through **LT-143** (LT-142/143 from Phase 8 Step 1's implementation, 2026-09-11: `netservice`'s remaining-port gap and `tcp:` extractors: being unwired). Full per-batch provenance (which live round produced which range) is in the archive's header. Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md docs/follow-up-archive.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
 
 ## Near-term batch — "do now" (raised across the 2026-09-07 linkpop / shop.app / ALSCO runs)
 
@@ -30,7 +30,7 @@ Resolved, kept for traceability:
 
 ## Detection Coverage — Protocol/Capability Expansion
 
-Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase 8](17-implementation-plan-ph8.md): TCP banner-grab Step 1, TLS passive checks Step 2, JS static analysis Step 3 ✅, semver gating Step 5, richer crawl Step 6) and depth/active ([Phase 9](18-implementation-plan-ph9.md): OOB blind-RCE Step 1, template-format gaps Step 2, AI-agent surface Step 3, WAF-aware + injection detectors Step 4). Phases 6/7 explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style fuzzing stays a separate opt-in-only item (Phase 8 Step 6's out-of-scope note, reaffirmed 2026-09-08 — see Parked).
+Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase 8](17-implementation-plan-ph8.md): TCP banner-grab Step 1 ✅ done 2026-09-11, TLS passive checks Step 2, JS static analysis Step 3 ✅, semver gating Step 5, richer crawl Step 6) and depth/active ([Phase 9](18-implementation-plan-ph9.md): OOB blind-RCE Step 1, template-format gaps Step 2, AI-agent surface Step 3, WAF-aware + injection detectors Step 4). Phases 6/7 explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style fuzzing stays a separate opt-in-only item (Phase 8 Step 6's out-of-scope note, reaffirmed 2026-09-08 — see Parked).
 
 ## Template Engine & Detection Backlog
 
@@ -41,6 +41,9 @@ Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase
 | `flow:` `if`/`set`/`for`/`let`/`var` constructs (~42 templates) | [Phase 9](18-implementation-plan-ph9.md) Step 2 |
 | Template signing | [Parked](#parked--revisit-on-a-trigger-or-after-an-eval) |
 | DOM-based XSS via Chromedp | [Parked](#parked--revisit-on-a-trigger-or-after-an-eval) |
+| **LT-142 (open)** — `netservice` covers only 21/ftp, 3306/mysql, 6379/redis (Phase 8 Step 1). `interestingPorts`' remaining entries (23/telnet, 5432/postgresql, 9200/elasticsearch, 27017/mongodb) still only get `resolvePortFacts`' visibility-only `StatusUnresolved` leaf. Elasticsearch's real exposure check is arguably HTTP (`GET /` unauthenticated on 9200), not `tcp:`, and would want its own recon Wave-2 pass, not netservice; Mongo's wire-protocol `hello`/`isMaster` handshake is a bounded but unbuilt follow-on to the packet-framing helpers `mysql.go` already has. Also unre-verified: LT-23's original evidence target (`staging.andertone.com`, owned) hasn't been re-scanned against the new `netservice` detector yet — do that before calling LT-23 fully closed in practice, not just in code. |
+| **LT-143 (open)** — a `tcp:` template's `extractors:` block is accepted by the (lenient, non-`KnownFields`) YAML decoder but silently does nothing (`TCPRequest` has no `Extractors` field — see schema.go's doc comment): no consumer exists yet since `tcp:` requests support no `flow:`/chaining. Low priority — no real corpus tcp: template sampled at implementation time needed it. |
+| Real synced-corpus `tcp:` templates (upstream's `network/` category) aren't in the committed `templates/index.json` yet | Operational, not code — `pkg/templatesync.List`'s own loader rejected every one before Step 1 lifted `tcp` out of `disallowedBlocks`; takes effect on the next corpus sync/re-index run. |
 
 ✅ Done 2026-09-05 (LT-22): `+` concat operator, `location`/`server`/`set_cookie` parts, `binary` matcher, 10 stdlib DSL string functions, string/int comparison coercion.
 
@@ -62,7 +65,7 @@ Version-aware CVE ranking (P0-1a); ranked template-tag selection + canonical tec
 ### P1 — coverage (turn recon signal into leaves)
 
 - **P1-1 ✅** Endpoint-driven resolution pass (2026-09-04) — idor/ssrf/businesslogic went from unreachable to active.
-- **P1-2 ✅ interim (2026-09-04)** — `resolvePortFacts` emits an honest `StatusUnresolved` leaf naming an open port; the real network-service detector is Phase 8 Step 1 (LT-23).
+- **P1-2 ✅ (2026-09-04 interim, 2026-09-11 real detector)** — `resolvePortFacts` emits an honest `StatusUnresolved` leaf naming an open port for a protocol nothing checks; for the ports `netservice` now covers (21/3306/6379) it promotes straight to a dispatchable `tcp://host:port` leaf instead (Phase 8 Step 1, closes LT-23). Remaining `interestingPorts` entries (23/5432/9200/27017) still get the visibility-only leaf — see LT-142.
 - **P1-3 ✅ (2026-09-04)** — WordPress plugin/theme slug+version facts from crawled endpoints.
 - **P1-4** nuclei DSL/`part:` gaps — ✅ mostly closed 2026-09-04 (`content_type_N`, indexed `part:` names, `path:`-multi-request correlation). Still open: `xpath`/`flow:` cross-block `_N` → [Phase 9](18-implementation-plan-ph9.md) Step 2; affected-version index field → Phase 8 Step 5.
 - Multi-key + file-based `payloads:` ✅ (2026-09-04); `interactsh_*`/OOB support for nuclei templates ✅ (2026-09-04, `pkg/oob` wired into `pkg/template/nuclei`, one shared `Poller`).
@@ -102,7 +105,7 @@ Recon was strong (5 hosts, 28 tech facts, 204 endpoints, ports 21/3306 on `stagi
 - LT-20 ✅ businesslogic endpoint match didn't reuse `IsStaticAssetPath` → fixed.
 - LT-21 ✅ a cache-busting hash was recorded as a plugin version → shape-validated.
 - LT-22 ✅ (2026-09-05) fresh template-rejection measurement (320/9,363, ~3.4%) → `+` concat, named parts, `binary` matcher, 10 DSL functions, string/int coercion all fixed; `xpath`/`flow:` → Phase 9 Step 2; disallowed blocks are by-design.
-- **LT-23 (open) — live-confirmed FTP (21) + raw MySQL (3306) exposure on `staging.andertone.com` behind an otherwise 403-walled HTTP surface, with no reachable check** (`tcp:`/`network:` templates are structurally unloadable today). The motivating evidence for [Phase 8](17-implementation-plan-ph8.md) Step 1's `tcp:` executor + `netservice` detector — see that doc's own Design section for the full plan. Re-confirmed live 2026-09-10 (still unbuilt).
+- **LT-23 ✅ done 2026-09-11** — live-confirmed FTP (21) + raw MySQL (3306) exposure on `staging.andertone.com` behind an otherwise 403-walled HTTP surface, with no reachable check. Closed by [Phase 8](17-implementation-plan-ph8.md) Step 1: `tcp:` lifted out of `loader.go`'s `disallowedBlocks` into a real bounded executor (`pkg/template/tcpproto`, matcher/dsl `data`-part alias), plus a first-party `netservice` detector (anonymous-FTP, empty-password MySQL, unauthenticated-Redis) dispatched via `resolvePortFacts` promoting a covered open port straight to a `tcp://host:port` leaf. Not yet re-verified against the live `staging.andertone.com` target itself (owned, in scope) — see LT-142's re-verification note.
 
 ### Step 5 live-verification runbook (2026-09-05, DVWA/WebGoat/Juice Shop + aalberts.com)
 
@@ -274,7 +277,7 @@ Active recon + a focused `misconfig` pass over the four owned demo domains (`.en
 **Demo-target verdicts — do not re-evaluate these for a demo:**
 - **`nettix.com.pe` — ✅ the demo target.** Only one of the four with a reachable, un-walled surface and a confirmed actionable finding: `www.nettix.com.pe` serves the full WordPress author list unauthenticated at `/wp-json/wp/v2/users/` (incl. `admin`, still active) — CWE-200, feeds credential stuffing. Secondary: `erp`/`ixn.nettix.com.pe` expose Dolibarr ERP 23.0.3 (behind 23.0.4+, CVE-2026-81728 HIGH + CVE-2026-85401; the earlier "critical dol_eval RCE" read was wrong, NVD-corrected 2026-09-08).
 - **`aalberts.com` — ❌ non-viable.** Hardened estate (Cloudflare/M365 SSO/HTTP Basic/S3 apex), ~3 scannable hosts, thin actionable set, source-IP-blocked mid-run. FP-regression fixture only. Full record: § "Live Testing — www.aalberts.com" below.
-- **`andertone.com` — ❌ non-viable.** HTTP surface CDN-403-walled; the one real exposure (FTP:21+MySQL:3306 on `staging.`, LT-23) needs the still-unbuilt network-service detector (Phase 8 Step 1).
+- **`andertone.com` — ❌ non-viable (demo).** HTTP surface CDN-403-walled; the one real exposure (FTP:21+MySQL:3306 on `staging.`, LT-23) has a real `netservice` detector now (Phase 8 Step 1, done 2026-09-11) but that's a single non-HTTP finding, not a demo-worthy walkthrough — this verdict is about demo viability, not detector coverage; do not re-evaluate.
 - **`aceautowreckers.com` — ❌ non-viable.** Fully Cloudflare-walled, every host 403. Same dead-end class as valmo/shopify/ALSCO.
 
 For an actionable demo independent of owned sites, crAPI (13 verified findings, 0 FP, full plan→execute) stays the strongest.

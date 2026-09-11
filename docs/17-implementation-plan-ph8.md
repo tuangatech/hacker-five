@@ -35,7 +35,7 @@ inspection, never literal command execution on a target.
 
 ## Scope
 
-1. ⬜ **TCP protocol support + network-service exposure detector** (Weeks 57-58)
+1. ✅ **TCP protocol support + network-service exposure detector** (Weeks 57-58) — done 2026-09-11
 2. ⬜ **TLS/SSL passive checks** (Week 59)
 3. ✅ **JS static analysis — secrets & endpoints in served JavaScript; cloud-provider fingerprinting** (Weeks 60-61) — done 2026-09-09
 4. → **Moved to [Phase 9](18-implementation-plan-ph9.md) Step 1** — OOB blind-RCE verification (body retained below for provenance)
@@ -68,7 +68,7 @@ release steps as terminal gates of their phase. Current order:
 - [Phase 7](16-implementation-plan-ph7.md) **Step 7 — LT-108** ✅ **done 2026-09-10** — `hackerfive suggest` (one stateless frontier call, print-only, H5-capped) — **Tier 1/2 boundary**: it consumes LT-107's ledger, so it follows it. No auto-apply / re-scan (that's LT-109/LT-110, unscheduled).
 
 **Tier 2 — Phase 8 (breadth & precision; each near self-contained, dependencies already satisfied):**
-1. **Step 1** — TCP + `netservice` detector. Biggest single new class, live-confirmed on a real target (LT-23). Fully independent.
+1. **Step 1** ✅ **done 2026-09-11** — TCP + `netservice` detector. Biggest single new class, live-confirmed on a real target (LT-23, closed). Fully independent. See § Step 1's As-built.
 2. **Step 3** ✅ **done 2026-09-09** — JS static analysis + cloud-provider fingerprinting. Directly widens the thin idor/ssrf endpoint surface every live run has complained about; closes P1-5. Minor `resolveTechFact` merge overlap with Step 6 / LT-84 still open (unaffected by Step 3's own changes).
 3. **Step 5** — affected-version (semver) gating. Removes a concrete false-positive class (LT-7); `staleCVEPenalty` is only a stopgap today. Minor `matchTemplateTags` merge overlap with Phase 7 F3.
 4. **Step 2** — TLS/SSL passive checks. Small, clean, fully independent.
@@ -143,7 +143,7 @@ Step 2 — see that doc's Dependencies section.
 
 ---
 
-## Step 1: TCP Protocol Support + Network-Service Exposure Detector (Weeks 57-58) — ⬜ not yet implemented
+## Step 1: TCP Protocol Support + Network-Service Exposure Detector (Weeks 57-58) — ✅ done 2026-09-11
 
 ### Design
 
@@ -183,6 +183,103 @@ Integration: the crAPI/DVWA compose stack already exposes a real MySQL — confi
 unauth-connect check fires against it and reports honestly. Live: re-run against the
 LT-23 evidence target (`staging.andertone.com`, owned) and confirm the port-21/3306
 leaves now resolve to real `netservice` findings instead of `StatusUnresolved`.
+
+### As-built (2026-09-11)
+
+Both pieces shipped as designed, plus a few implementation-time corrections:
+
+- **`tcp:` executor** landed almost exactly as scoped, with one deliberate
+  narrowing versus real Nuclei: no `raw:`/`payloads:`/`attack:` support for
+  `tcp:` blocks (`TCPRequest.Inputs` is a fixed, ordered send/read list fired
+  once) — no real corpus template sampled needed a payload sweep for a
+  banner-grab-shaped check, and it kept the executor genuinely small. A
+  template's `host:` entries (real corpus convention: `["{{Hostname}}:6379"]`,
+  a literal port) are supported via the existing `pkg/scanner/vars` renderer;
+  an entry needing `{{Port}}` (a variable this project has no source for — no
+  separate `port:` field is modeled) is skipped rather than guessed at, not
+  rejected at load time — see `resolveTCPHost`'s doc comment.
+  `pkg/template/matcher`'s `Response.Body`/`Part()` were already protocol-
+  agnostic (its own doc comment anticipated exactly this); only `ValidPart`'s
+  allowlist needed `"data"` added (real Nuclei's `part: data` convention for
+  a `tcp:` response, the same bytes `"body"` already names) — no matcher.go
+  behavior changed. `pkg/template/dsl` got one matching addition: a bare
+  `data` identifier aliased to `ctx.Body`, so `dsl: contains(data, ...)`
+  resolves the same way `contains(body, ...)` already does. Protocol
+  dispatch is a scheme check on the target string
+  (`nuclei.isTCPTarget`/`pkg/scanner.isTCPScanTarget`): a `"tcp://host:port"`
+  leaf (the only shape `registry.resolvePortFacts` ever produces) fires only
+  a template's `tcp:` requests; every other target fires only `http:` —
+  `pkg/scanner/engine.go`'s `runTemplates` additionally skips the native
+  template loop entirely for a `tcp://` target (the native format has no
+  `tcp:` concept at all). `tcp:` extractors: are a known, tracked gap —
+  accepted by the lenient YAML decoder but wired to nothing (LT-143,
+  docs/follow-up.md) — no consumer exists yet since `tcp:` has no
+  `flow:`/chaining.
+- **`netservice` detector** covers 3 of `interestingPorts`' 7 entries:
+  anonymous-FTP (USER/PASS), empty-password MySQL, and unauthenticated Redis
+  (PING). The MySQL check is the one genuinely nontrivial piece: it hand-
+  rolls just enough of the wire protocol (packet framing, `HandshakeV10`
+  parse, a minimal `HandshakeResponse41`) to attempt a `root` login with a
+  **zero-length auth-response field** — MySQL's protocol represents "empty
+  password" as literally no scrambled bytes at all, so this needs no
+  scrambling/hashing and is not a credential-list attack, just the one
+  well-known "does this account have no password" case. Telnet/PostgreSQL/
+  Elasticsearch/MongoDB stay `StatusUnresolved`-only (LT-142,
+  docs/follow-up.md) — Elasticsearch's real exposure check is arguably HTTP
+  (unauthenticated `GET /` on 9200), not a `tcp:`/`netservice` shape, and
+  Mongo's `hello`/`isMaster` handshake is a bounded but unbuilt follow-on.
+  `registry.resolvePortFacts` promotes exactly those 3 covered ports from
+  the visibility-only leaf to a real `Detector: "netservice"` /
+  `Status: StatusPending` leaf whose `Target` is `"tcp://host:port"`
+  (`netserviceCheckedPorts`); the dedup key is per-port
+  (`pendingDedupKey(host, "netservice-<port>")`), since two covered ports
+  open on the same host must each get their own leaf. `--detector
+  netservice` is CLI-reachable directly (`hackerfive scan --detector
+  netservice --target tcp://host:port`) and wired into `planexec`'s
+  `recognizedDetectors` (so an agent-driven plan dispatches it
+  automatically), but deliberately **not** added to the Web UI's manual
+  launch form: every existing launch-form detector (idor/misconfig/
+  authbypass/ssrf/businesslogic) takes an ordinary URL a human types in;
+  `netservice` only ever makes sense against a `tcp://host:port` leaf a
+  recon port-scan already produced, which the launch form has no
+  equivalent field for. Its real front door is the agent/Plan-Preview
+  path, not a hand-typed target.
+- **Real bug caught by the tests, fixed before shipping**: `Resolve`'s
+  per-host loop ends with an LT-93 pass (docs/follow-up.md) that
+  unconditionally upgrades every leaf's `Target` from the bare host to the
+  real `scheme://host[:port]` HTTP base URL recon observed — written before
+  a netservice leaf's own `"tcp://host:port"` Target existed as a distinct
+  shape needing protection. Unguarded, a host with both a real HTTP
+  TechFact (any other detector) and a netservice-covered open port would
+  have its netservice leaf's `Target` silently clobbered back to the HTTP
+  base URL — dialing the wrong host:port entirely. Fixed in
+  `decisionengine.go`: that loop now skips a `Detector: "netservice"` leaf.
+  Caught by `TestResolve_NetserviceLeaf_TargetSurvivesHTTPBaseURLUpgrade`.
+- **Corpus impact today is zero, by design, until the next sync.**
+  `pkg/templatesync.List` builds `templates/index.json` by running the same
+  loader this step patched — before this change, every real `network/`
+  `tcp:` template in the upstream corpus failed to parse and was silently
+  excluded from the index. Lifting `tcp` out of `disallowedBlocks` doesn't
+  retroactively add them; a fresh `recon setup`/corpus resync is a separate
+  operational step (noted, not scheduled, in docs/follow-up.md).
+- Tests: `tests/unit/tcpproto_test.go` (the connect/write/read primitive
+  against local fakes — banner, echo, read-timeout-is-not-an-error, dial
+  failure, the read-size cap); `tests/unit/nuclei_tcp_test.go` (load-time
+  accept/reject, send-then-read + unsolicited-banner + bare-`data`-DSL
+  matches, the http:/tcp: protocol-gate in both directions, the `host:`
+  literal-port-resolves and needs-`{{Port}}`-skips cases);
+  `tests/unit/detector_netservice_test.go` (black-box `Run` dispatch only:
+  an uncovered port, an invalid/portless target — no real listener needed);
+  `pkg/detectors/netservice/{ftp,mysql,redis}_test.go` (package-internal,
+  mirroring `pkg/scanner`'s own external-black-box-plus-internal-package
+  test split — FTP/Redis/MySQL vulnerable and not-vulnerable against local
+  fakes bound to an OS-assigned ephemeral port, a non-MySQL banner, an
+  AuthSwitchRequest reply, a raw MySQL packet-framing round-trip. Needed
+  because `Run` dispatches on the literal port named in the target
+  (21/3306/6379), and a test can't safely bind a real listener to those —
+  21 is privileged, 3306/6379 might already be owned by a real local
+  service). No test talks to a real FTP/MySQL/Redis server or any real
+  external host.
 
 ---
 
