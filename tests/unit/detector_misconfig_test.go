@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1354,4 +1355,42 @@ func TestMisconfigNativeChecks_DokuWikiNegativeControl(t *testing.T) {
 	} {
 		assert.Empty(t, withPrefix(findings, prefix), "DokuWiki root must not match %s", prefix)
 	}
+}
+
+// TestMisconfigPriorityCheck_RequestErr_LoggedNotSilent is LT-151's
+// regression guard (docs/follow-up.md): every priority product-fingerprint
+// check (checkWPUserEnum/checkDolibarrOutdated/checkNextcloudStatus/
+// checkPhpMyAdmin/checkWebmin) used to turn a genuine doRequest failure
+// (connection refused, DNS failure, ...) into a silent "nil, nil" —
+// indistinguishable from "this just isn't the product." A closed listener
+// makes every request to it fail at the network layer, so a caller with
+// WithLogCallback wired up must see at least one warn-level line naming one
+// of those checks — the asymmetry that made the live nettix.com.pe
+// cloud01/cloud02 Nextcloud-finding gap undiagnosable without an independent
+// curl.
+func TestMisconfigPriorityCheck_RequestErr_LoggedNotSilent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	deadURL := server.URL
+	server.Close() // nothing is listening here anymore — every request now fails to connect
+
+	var mu sync.Mutex
+	var logs []string
+	detector := misconfig.New(newMisconfigClient(), misconfig.WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, level+": "+msg)
+	}))
+	_, err := detector.Run(context.Background(), deadURL, "")
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, logs, "a connection failure on every priority check must produce at least one log line, not silence")
+	for _, l := range logs {
+		assert.True(t, strings.HasPrefix(l, "warn:"), "priority-check request-failure lines must log at warn, got %q", l)
+	}
+	joined := strings.Join(logs, "\n")
+	assert.Contains(t, joined, "misconfig ", "log line should identify the misconfig detector and which check failed")
 }

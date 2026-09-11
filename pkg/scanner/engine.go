@@ -1082,7 +1082,7 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		detector := idor.New(e.client, strategy, opts...)
 		return detector.Run(ctx, endpointTemplate, e.cfg.AuthToken, e.cfg.OtherAuthToken)
 	case "misconfig":
-		detector := misconfig.New(e.client)
+		detector := misconfig.New(e.client, misconfig.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }))
 		return detector.Run(ctx, target, e.cfg.AuthToken)
 	case "authbypass":
 		detector := authbypass.New(e.client, e.authbypassOptions()...)
