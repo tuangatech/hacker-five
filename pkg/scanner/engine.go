@@ -278,7 +278,10 @@ func (e *Engine) Run(ctx context.Context) (findings []detectors.Finding, err err
 		}
 
 		err = pool.Submit(func(ctx context.Context) error {
-			if hostCache.ShouldSkip(host) {
+			if skip, first := hostCache.ShouldSkipWarnOnce(host); skip {
+				if first {
+					e.warnf("warn", "%s: skipping — host %s crossed the %d-consecutive-error threshold (hosterrors); no further targets on this host are probed this run", target, host, threshold)
+				}
 				return nil
 			}
 

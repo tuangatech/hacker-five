@@ -721,6 +721,52 @@ func TestEngineRun_LogCallback_FiresForDetectorError(t *testing.T) {
 	assert.Contains(t, strings.Join(msgs, "\n"), "running idor detector against", "must log which detector/target failed")
 }
 
+// TestEngineRun_LogCallback_FiresOnceForHostErrorSkip covers the hosterrors
+// circuit-breaker: once a host crosses its consecutive-error threshold, Run
+// used to skip every remaining target on that host with no log line at all
+// (silent). It must now log exactly one "warn" line for the host, even
+// though several remaining targets share it — not one per skipped target.
+func TestEngineRun_LogCallback_FiresOnceForHostErrorSkip(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := scanner.Config{
+		// Four targets on the same host; a malformed --endpoint makes every
+		// one of them fail the idor detector deterministically, regardless
+		// of path, so the threshold trips partway through the list.
+		Targets:            []string{server.URL + "/t1", server.URL + "/t2", server.URL + "/t3", server.URL + "/t4"},
+		Concurrency:        1, // sequential: deterministic trip point
+		RateLimit:          50,
+		Timeout:            5 * time.Second,
+		Detector:           "idor",
+		EndpointTemplate:   "/%zz-invalid-escape",
+		AuthToken:          "token",
+		HostErrorThreshold: 2,
+	}
+	require.NoError(t, cfg.Validate())
+
+	var mu sync.Mutex
+	var levels, msgs []string
+	_, err := scanner.New(cfg).WithLogCallback(func(level, msg string) {
+		mu.Lock()
+		levels = append(levels, level)
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}).Run(context.Background())
+	require.Error(t, err, "the first two detector failures must still surface as a Run error")
+
+	var skipWarnings int
+	for i, msg := range msgs {
+		if levels[i] == "warn" && strings.Contains(msg, "consecutive-error threshold") {
+			skipWarnings++
+			assert.Contains(t, msg, "hosterrors", "the skip line should name its own mechanism")
+		}
+	}
+	assert.Equal(t, 1, skipWarnings, "the host-skip warning must fire exactly once, not once per remaining target on the host")
+}
+
 // writeRejectFixtures drops three files rejected by both template formats into
 // dir — one per reportRejected bucket class: a by-design disallowed-block
 // refusal, malformed YAML, and a file with no id: — and returns their paths.

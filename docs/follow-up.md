@@ -4,1648 +4,388 @@
 
 Open enhancement items and unresolved review findings, organized by category rather than by when they were raised. Direction: HackerFive is expanding beyond HackerOne-program scanning, so categories here stay useful for detection/reporting work generally. Narrative-style research and decision write-ups live in [discussions.md](discussions.md); this doc is the open-items backlog.
 
-**`LT-N` items** (live-testing findings and testing-gap notes) form one continuous number sequence wherever they sit in this doc — currently through LT-139 (LT-30–50 from the 2026-09-06 `www.valmo.in`/Meesho pipeline run + its 2026-09-07 review bucketing; LT-51 from the 2026-09-06 8-host Meesho recon sweep; LT-52 from the 2026-09-06 demo-batch acceptance run; LT-53 from the 2026-09-06 demo dry-run, both on `superstoreapp.meesho.com`; LT-54–56 from the scan-engine / PlanTree design review; LT-57–63 from the 2026-09-07 `www.valmo.in` re-run, now Akamai-WAF-walled; LT-64–71 from the 2026-09-07 `linkpop.com`/Shopify run, a decommissioned asset; LT-72–79 from the 2026-09-07 `accounts.shopify.com` / `shop.app` run, both Cloudflare managed-challenge; LT-80–88 from the 2026-09-07 ALSCO / Secure Gateway sandbox run, reachable but WAF-premised and IP-blocked mid-run; LT-89–96 from the 2026-09-08 crAPI actionable-findings prep + Step B/E live rounds; LT-97–98 from the 2026-09-08 nettix.com.pe demo-prep round; LT-99–100 from the 2026-09-08 demo-prep capability-gap review — recon depth / param surface; LT-101–105 from the 2026-09-08 Step 0 inventory re-runs; LT-106–110 split out of the 2026-09-08 demo-prep scan-engine / end-of-scan-loop review; LT-111–114 from the 2026-09-08 nettix.com.pe baseline run; LT-115–117 from the 2026-09-08 demo-prep Web UI Playwright check; LT-118 from the 2026-09-09 demo-prep `www.nettix.com.pe` Web UI run; LT-119–121 from the 2026-09-09 `www.aalberts.com` full recon+scan; LT-122 from the 2026-09-09 post-LT-115 form-persistence question; LT-123 from the 2026-09-10 design review that shipped `--auto-provision-account`; LT-124–131 from the 2026-09-10 live Part A/B verification round against `nettix.com.pe`; LT-132–134 backfilled 2026-09-10 for the three un-numbered misses in the Step E crAPI table above, plus a 2026-09-10 roadmap-hygiene pass that retagged LT-92/95/96 out of Phase 8 Step 6; LT-135–136 from a 2026-09-10 design review of `businesslogic`'s crAPI-only limitation and a JS-static-secret-validity idea; LT-137–138 from the 2026-09-10 G1 agent-driven eval run; LT-139/139b from the 2026-09-10 pre-v0.7.0-tag re-verification against `www.aalberts.com`). Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
+**Trimmed 2026-09-10** to cut re-read cost: every `✅ done` item below is compressed to 1-3 lines (symptom → fix, test pointer, phase-step pointer); every still-open item keeps full detail. **The original, unabridged write-up of every item — full reproduction steps, exact measurements, superseded designs — lives in [follow-up-archive.md](follow-up-archive.md).** When resolving an open item here, add its full write-up to the archive, then compress it here.
+
+**`LT-N` items** form one continuous number sequence wherever they sit in this doc, currently through **LT-141**. Full per-batch provenance (which live round produced which range) is in the archive's header. Next number: `grep -oE 'LT-[0-9]+' docs/follow-up.md docs/follow-up-archive.md | sort -t- -k2 -n | tail -1`. A fresh live round gets its own `## Live Testing — <targets> (<date>)` section that continues the count.
 
 ## Near-term batch — "do now" (raised across the 2026-09-07 linkpop / shop.app / ALSCO runs)
 
-Small, isolated fixes — mostly correctness and anti-false-positive — pulled out of the last three
-live runs' LT items. **Not phase work; clear these before the next engagement.** Each item's own
-entry below carries the detail.
+**✅ Landed 2026-09-07.** Twelve small correctness/anti-FP fixes, all clean on build/vet/test/lint:
+- **Recon fidelity:** LT-80 (scope parser strips inline `#` comments), LT-81=LT-75 (recon's own client sends a desktop-browser UA by default), LT-82 (uniform-wall verdict suppressed when the host has ≥5 distinct endpoints spanning a real 404 among 2xx), LT-72/86a (wave-3 canary-probe failure falls back to the wave-2 httpx root), LT-68 (new `ReconResult.AppSurface` none/thin/full verdict), LT-84a (cdnjs/jsdelivr/unpkg/Google-hosted-libs → `nonActionableTech`), LT-85 (`IsPlausibleURLPath` rejects JS-syntax-punctuation candidates).
+- **`misconfig` anti-FP:** LT-69+LT-73 (exposed-path/dir-listing skip 404/429/5xx; disallowed-method skip a 2xx/3xx matching a plain-GET baseline).
+- **Engine robustness:** LT-74+LT-88 (adaptive rate-halving → target-abort on sustained 429/503 or a mid-run connect-failure spike, `pkg/scanner/adaptive.go`), LT-79 (`--max-target-duration`, default 15m), LT-70 (an unresolved/dead-end leaf sorts below every dispatchable leaf).
 
-**✅ Landed 2026-09-07 (near-term batch).** All twelve items shipped together; build / `go vet` /
-`go test -race` / `golangci-lint` all clean. What shipped:
-
-- **Recon fidelity / run-blockers:**
-  - **LT-80** — `pkg/scanner/scope.New` (and `cmd/hackerfive/scan.go`'s `resolveTargets`) now cut each line at its first `#` before the blank/comment test, so `host  # note` resolves to the bare host. Test: `scope.TestNew_InlineCommentStripped`.
-  - **LT-81 = LT-75** — `pkg/recon` sends a default desktop-Chrome `User-Agent` (`recon.DefaultBrowserUserAgent`) on every one of its own probes and via httpx/katana `-H`, unless a `--header User-Agent` overrides it. `recon.applyHeaders`/`headerArgs`. Tests: `TestHeaderArgs_*`.
-  - **LT-82** — `recordUniformResponse` calls `crawlEvidenceRefutesWall`: a `catchall`/`waf-block` verdict is suppressed (with a warning) when the host already has ≥5 distinct endpoints spanning a real 404 among 2xx responses. Tests: `TestCrawlEvidenceRefutesWall`.
-  - **LT-72 / LT-86a** — when the wave-3 canary errors (reset / challenge / breaker), `recordUniformResponse` falls back to the wave-2 httpx GET of the root as the `uniformwall.Classify` input; a clean 2xx root there means no wall is recorded. `hostEndpointEvidence`. Tests: `TestHostEndpointEvidence_PicksHTTPXRoot`.
-  - **LT-68** — new `ReconResult.AppSurface` (`none`/`thin`/`full` + reason, schema v1.5), synthesised in `classifyAppSurface`; `plan` and `scan` echo it to stderr, loudly on `none`. Tests: `TestClassifyAppSurface`.
-  - **LT-84a** — `cdnjs` / `jsdelivr` / `unpkg` / `google hosted libraries` added to `registry.nonActionableTech`.
-  - **LT-85** — `recon.IsPlausibleURLPath` rejects a path carrying JavaScript-syntax punctuation (`' " ` `` ` `` `( ) [ ] < > \` space `+`); wired into `SuggestIDOREndpointCandidates` and `SuggestAuthBypassPathsFromRecon`. Test: `TestSuggestIDOREndpointCandidates` (new case).
-- **`misconfig` anti-false-positive (LT-69 + LT-73):**
-  - Exposed-path / dir-listing checks skip a `404` / `429` / `5xx` (`notServedStatus`); verbose-error keeps `5xx`, drops `429`. Test: `TestMisconfigExposedPath_429NotFlagged`.
-  - Disallowed-method check adds `methodResponseMatchesGET`: a 2xx/3xx response whose status + body shape match a plain GET of the same path, with no `Allow`/`Location`/created signal, is not an accept. Test: `TestMisconfigMethod_SamePageForEveryVerb_NotFlagged`. (The 500-still-flagged and gateway-error contracts are unchanged.)
-- **Engine robustness:**
-  - **LT-74 + LT-88** — `pkg/scanner/adaptive.go`: an outcome-observer middleware feeds a rolling monitor that halves `--rate-limit` on the first bad 20 s window (≥30 % `429`/`503`, or ≥50 % connect-failure after the host had answered) and aborts the target on the second, emitting `scan-target-rate-limited` / `scan-target-unreachable-mid-run`. `--no-adaptive-throttle` opts out. Tests: `TestAdaptiveThrottle_*`.
-  - **LT-79** — `--max-target-duration` (default 15 m, 0 = off): per-target `context.WithTimeout` around detector + template dispatch; on expiry, records `scan-partial-time-budget`. `pkg/scanner/budget.go`.
-  - **LT-70** — `leafPriority` returns `agenttask.PriorityDeadEnd` (1) for a `StatusUnresolved` / detector-less leaf, below every dispatchable class. Test: `TestResolve_UnresolvedLeaf_DeadEndPriority`.
-
-**Routed to a phase step instead** (detail + marker on each entry): LT-64, LT-65, LT-83, LT-84b, LT-86b, LT-76, LT-77 → [Phase 8](17-implementation-plan-ph8.md) Step 6 (first tranche done 2026-09-07) · LT-40, LT-61 → Phase 8 Step 6 (second tranche done 2026-09-07; LT-40 (b)/(c) tail done 2026-09-07 with the Step 6a batch) · LT-78 → [Phase 9](18-implementation-plan-ph9.md) Step 3 · LT-87 → [Phase 9](18-implementation-plan-ph9.md) Step 4 · LT-67, LT-71 → [Phase 7](16-implementation-plan-ph7.md) Step 5 (F3/F4, ✅ done 2026-09-07; renumbered 2026-09-10 from "Step 6a" when Phase 7's OWASP-mapping step and its "6b" sub-item moved wholly to Phase 9 Step 5) · LT-107 (coverage-gap ledger) + LT-108 (`hackerfive suggest`) → [Phase 7](16-implementation-plan-ph7.md) Step 7 (added 2026-09-08; ✅ both done 2026-09-10; renumbered 2026-09-10 from "Step 8"; LT-109/LT-110 are the still-unscheduled rungs 3–5 of that ladder) · LT-89 (spec-ingest) + LT-90 (spec-driven authbypass) + LT-91 (per-candidate idor leaf fan-out) + LT-93 (leaf Target lost scheme/port) + LT-94 (RunPlan not self-sufficient for authbypass/ssrf fields) → [Phase 8](17-implementation-plan-ph8.md) Step 6, ✅ all done 2026-09-08 (pulled forward for the crAPI demo; LT-91/93/94 surfaced by the Step B/E live rounds). LT-92 (BFLA vs. token-reuse), LT-95 (idor int-only enumeration), LT-96 (SSRF body-param detection) ✅ all done 2026-09-09 — detector-logic precision fixes, not recon-signal work, so filed as an ad-hoc batch rather than folded into Step 6 (which was already carrying 12+ unrelated LT numbers before these three; see each entry below). **Phase 8 was split 2026-09-07** — its Steps 4/7/8/9 (OOB blind-RCE, template-format gaps, AI-agent surface, WAF + native injection detectors) moved to [Phase 9](18-implementation-plan-ph9.md); see [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) § "Execution order" for the single cross-phase backlog.
+**Routed to a phase step instead:** LT-64/65/83/84b/86b/76/77 → Phase 8 Step 6 (✅ done 2026-09-07) · LT-40/61 → Phase 8 Step 6 (✅ done 2026-09-07) · LT-78 → [Phase 9](18-implementation-plan-ph9.md) Step 3 · LT-87 → [Phase 9](18-implementation-plan-ph9.md) Step 4 · LT-67/71 → [Phase 7](16-implementation-plan-ph7.md) Step 5 (✅ done; renumbered 2026-09-10 from "Step 6a") · LT-107/108 → [Phase 7](16-implementation-plan-ph7.md) Step 7 (✅ both done 2026-09-10; renumbered from "Step 8"; LT-109/110 are its still-unscheduled rungs 3-5) · LT-89/90/91/93/94 → Phase 8 Step 6 (✅ all done 2026-09-08, pulled forward for the crAPI demo). LT-92/95/96 ✅ done 2026-09-09 too — detector-precision fixes, filed as an ad-hoc batch rather than folded into Step 6.
 
 ## Security & Scope Hardening
 
 Resolved, kept for traceability:
-- ✅ Scope allow-list (`--scope`), evidence redaction by default, IDOR normalization, JWT weak-secret offline check, rate-limiting-signal probe, Business Logic Flaw detector (coupon/race checks, `--allow-writes`-gated) — see [10](10-implementation-plan-ph1b.md)/[11](11-implementation-plan-ph2.md)/[13](13-implementation-plan-ph4.md).
-- ✅ OOB public-server leak risk — mechanism was always user-controlled; the *default* changed 2026-09-02 (2 public servers, `--no-oob` opt-out) — see [discussions.md](discussions.md).
-- ✅ **`--rate-limit` default lowered 50 → 10 req/sec (2026-09-05).** `cmd/hackerfive/scan.go` flag default, `pkg/recon.DefaultRateLimit`, `pkg/{webui,mcpserver}` mirrored constants; README + doc21 updated. `tests/integration/perf_test.go` keeps `RateLimit: 50` pinned (measures engine overhead, not default wall-clock).
-- ✅ **interactsh_ OOB traffic footprint — idle-skip added 2026-09-05.** `Poller.run` (`pkg/oob/poller.go`) skips the `Poll()` network call on a tick when no caller is in `Wait`, bounding sustained traffic to a configured OOB server to the windows a probe is genuinely mid-flight. The bigger deferred-bulk-correlation change (doc15 Step 2's logged OOB tradeoff) is still open.
+- ✅ Scope allow-list, evidence redaction, IDOR normalization, JWT weak-secret check, rate-limit-signal probe, Business Logic Flaw detector (`--allow-writes`-gated) — doc10/11/13.
+- ✅ OOB default: 2 public interactsh servers, `--no-oob` opt-out (2026-09-02).
+- ✅ `--rate-limit` default 50 → 10 req/s (2026-09-05).
+- ✅ OOB `Poller` idle-skips its network poll when nobody's waiting (2026-09-05).
+- ✅ `Retry-After`-aware HTTP backoff, `max(exponential, Retry-After)`, 30s ceiling (2026-09-05, Phase 6 Step 3).
 
-Resolved:
-- ✅ **`Retry-After`-aware backoff in the scan HTTP client** — done 2026-09-05, [Phase 6](15-implementation-plan-ph6.md) Step 3. `WithRetry` now parses both `Retry-After` forms (delta-seconds, HTTP-date); the retry wait is `max(exponential, Retry-After)` with no negative jitter on the server value; a `Retry-After` beyond a 30s ceiling returns the `429`/`503` as the answer instead of stalling a worker.
-
-(Baseline-mode account provisioning guidance and a self-hosted `interactsh-server` moved to **[Parked](#parked--revisit-on-a-trigger-or-after-an-eval)** below — both engagement-triggered, not code work.)
+(Baseline-mode account-provisioning guidance and a self-hosted `interactsh-server` moved to [Parked](#parked--revisit-on-a-trigger-or-after-an-eval) — both engagement-triggered, not code work.)
 
 ## Detection Coverage — Protocol/Capability Expansion
 
-Scheduled 2026-09-05 as [Phase 8](17-implementation-plan-ph8.md), **split 2026-09-07** into a breadth/precision half ([Phase 8](17-implementation-plan-ph8.md)) and a depth/active half ([Phase 9](18-implementation-plan-ph9.md)). **Phase 8** — TCP (banner grab / port ID, Step 1), TLS/SSL passive checks (Step 2), JS static analysis + cloud-provider fingerprinting (served-JS secret/endpoint mining, Step 3); plus LT-7's affected-version gating (Step 5) and LT-8's richer crawl — configurable depth, JS-rendered/headless, and an opt-in bounded content-discovery pass (curated embedded wordlist via `httpx -path`, `--recon-depth full` only) for unlinked paths a link-following crawl can't reach (Step 6). Step 6 also landed 2026-09-07: robots/sitemap endpoint probing + an open-redirect/OAuth-flow rule + redirect-chain fidelity + numeric-query-param ID candidates + an OpenAPI-JSON spec walker + a known-CDN-ASN naabu skip (LT-76/LT-77/LT-64/LT-65/LT-83/LT-86/LT-40/LT-61). **Phase 9** — OOB blind-RCE verification (Step 1); remaining template-format gaps (`xpath`, `flow:`, DSL — Step 2); an AI-agent-surface recon signal + read-only detector (`llms.txt`/`SKILL.md`/MCP — Step 3, LT-78); WAF-aware probing + first-party `sqli`/`xss`/`lfi`/`uploadbypass` detectors (Step 4, LT-87). Phases 6 and 7 both explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style parameter fuzzing as its own tool stays a separate opt-in-only item (Phase 8 Step 6's out-of-scope note).
+Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase 8](17-implementation-plan-ph8.md): TCP banner-grab Step 1, TLS passive checks Step 2, JS static analysis Step 3 ✅, semver gating Step 5, richer crawl Step 6) and depth/active ([Phase 9](18-implementation-plan-ph9.md): OOB blind-RCE Step 1, template-format gaps Step 2, AI-agent surface Step 3, WAF-aware + injection detectors Step 4). Phases 6/7 explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style fuzzing stays a separate opt-in-only item (Phase 8 Step 6's out-of-scope note, reaffirmed 2026-09-08 — see Parked).
 
 ## Template Engine & Detection Backlog
 
-| Item | Status | Value | Effort |
-|---|---|---|---|
-| `xpath` matcher/extractor; `flow:` cross-block `_N` indexing | Scheduled [Phase 9](18-implementation-plan-ph9.md) Step 2 (was Phase 8 Step 7). | Medium | Medium |
-| `substr()` / `date_time()` / `generate_jwt` DSL functions | Scheduled [Phase 9](18-implementation-plan-ph9.md) Step 2 — share the DSL-function surface; `generate_jwt` may reuse Phase 2's pinned JWT lib. | Low-medium | Low-medium |
-| `flow:` `if`/`set`/`for`/`let`/`var` script constructs (~42 templates) | Scheduled [Phase 9](18-implementation-plan-ph9.md) Step 2 — the larger `runFlow` redesign, sequenced after cross-block `_N`; descopable. | Medium (unlocks ~42 templates) | High |
-| Template signing | **[Parked](#parked--revisit-on-a-trigger-or-after-an-eval)** — trigger: a community repo accepting outside template submissions. | — (parked, no active trigger) | — |
-| DOM-based XSS via Chromedp | **[Parked](#parked--revisit-on-a-trigger-or-after-an-eval)** — un-parks on a Phase 7/8 eval showing reflected-XSS live yield justifies the Chromedp dependency + sandboxing cost. | — (parked, no active trigger) | — |
+| Item | Status |
+|---|---|
+| `xpath` matcher/extractor; `flow:` cross-block `_N` indexing | [Phase 9](18-implementation-plan-ph9.md) Step 2 |
+| `substr()` / `date_time()` / `generate_jwt` DSL functions | [Phase 9](18-implementation-plan-ph9.md) Step 2 |
+| `flow:` `if`/`set`/`for`/`let`/`var` constructs (~42 templates) | [Phase 9](18-implementation-plan-ph9.md) Step 2 |
+| Template signing | [Parked](#parked--revisit-on-a-trigger-or-after-an-eval) |
+| DOM-based XSS via Chromedp | [Parked](#parked--revisit-on-a-trigger-or-after-an-eval) |
 
-✅ Done 2026-09-05 (detail in LT-22): `+` concat operator, `location`/`server`/`set_cookie` named parts, `binary` matcher type, 10 stdlib string functions (`replace`/`replace_regex`/`hex_encode`/`hex_decode`/`url_encode`/`url_decode`/`trim_space`/`to_upper`/`starts_with`/`ends_with`/`json_minify`), string/int comparison coercion.
+✅ Done 2026-09-05 (LT-22): `+` concat operator, `location`/`server`/`set_cookie` parts, `binary` matcher, 10 stdlib DSL string functions, string/int comparison coercion.
 
 ## Scan Output & Logging
 
-- ✅ **Scan-duration log line** — added 2026-09-06. `scanner.Engine.Run` emits `scan finished in <d> (<n> target(s), <m> raw finding(s), pre-dedup)` at `info` on completion (a `defer`, so it also fires on the "completed with N error(s)" path; "raw" / "pre-dedup" wording added by LT-46, since the count is the engine's internal accumulator before the caller's `reporter.Dedup`). Surfaces in the CLI stderr, the Web UI log stream, and the MCP session log alike, since all three route engine logs through the same callback.
-- ✅ **Rejected-template log spam** — fixed 2026-09-05, [Phase 6](15-implementation-plan-ph6.md) Step 6(d). `engine.loadTemplates` now emits a compact per-reason histogram by default (by-design refusals at `info`, only malformed-YAML / missing-section at `warn`), drops non-template `.yml` files (`.pre-commit-config.yml`, `helpers/*.yml`) from the count, and keeps the full per-file list behind `--verbose` / `--log-rejected <file>`.
+- ✅ Scan-duration log line (2026-09-06) — `scan finished in <d> (<n> target(s), <m> raw finding(s), pre-dedup)`, all 3 frontends.
+- ✅ Rejected-template log spam (2026-09-05) — compact per-reason histogram by default, full list behind `--verbose`/`--log-rejected`.
+- ✅ **Host-error-threshold skip was silent** (2026-09-10) — `hosterrors.Cache` gained `ShouldSkipWarnOnce`; the breaker now logs one `warn` line per host instead of vanishing it from the Logs panel. Tests: `TestCache_ShouldSkipWarnOnce_*`, `TestEngineRun_LogCallback_FiresOnceForHostErrorSkip`.
+- **LT-141 (open) — the "this target is a dead end" signal is four unrelated mechanisms with no shared shape.** D6's uniform-wall skip (findings), the adaptive-throttle abort (findings), recon's `AppSurface: none` (stderr only), the hosterrors breaker (a log line, no finding) each report "give up" independently — a UI/report consumer has to know all four. **Possible fix:** a shared "target abandoned" event with a `reason` enum, without collapsing the existing distinct finding IDs. **Not scheduled** — UX polish, not detection coverage; revisit opportunistically or on a 5th mechanism.
 
 ## Decision Engine & Recon→Plan Signal Use
 
-Surfaced by a 2026-09-04 live review against `andertone.com` (real WordPress/WooCommerce/LiteSpeed target). Recon was strong (5 hosts, 31 tech facts, 196 endpoints, ports 21/3306 on `staging.`, 7 WP plugin slugs+versions); `registry.Resolve` then produced 134 leaves that were mostly noise/duplicates, and `idor`/`authbypass`/`ssrf`/`businesslogic` never activated despite textbook surface. Root cause: the decision engine reasoned only over `ReconResult.TechStack`, never `Endpoints` or `Hosts[].Ports`, and `matchTemplateTags` selected by first-5-in-file-order after a too-broad any-word tag match.
+Surfaced 2026-09-04 against `andertone.com`: recon was strong but `registry.Resolve` produced 134 mostly-noise leaves and idor/authbypass/ssrf/businesslogic never activated. Root cause: the decision engine reasoned only over `TechStack`, never `Endpoints`/`Ports`, and tag-matching was too broad.
 
-### P0 — precision & correctness (✅ all landed 2026-09-04; detail in [15](15-implementation-plan-ph6.md) Step 2 addenda)
+### P0 — precision & correctness (✅ all landed 2026-09-04)
 
-- **P0-1a Version-aware CVE ranking.** `matchTemplateTags` parses the `:version` suffix off `fact.Name` and scores CVE-tagged templates by recency + severity; a pre-2016 CVE against a current-looking version gets a −20 rank penalty. `pkg/registry/decisionengine.go`. **P0-1b** (true semver affected-range gating) needs an index schema carrying version ranges → Phase 8 Step 5.
-- **P0-2 Ranked template-tag selection + canonical tech→tag map.** `matchTemplateTags` rewritten: relevance score (primary-product tag 100 > other tag hit 50 > no product tag = dropped) + severity + CVE-recency, cap 5→8. `canonicalTechTags` pins `nginx`/`jquery`/`mysql`/`wordpress`/`woocommerce`/`litespeed` with corpus-verified exclude values; `genericTechWords` stops `block`/`editor`/`cloud`/`google` matching alone. Real index: 107 leaves → 74, all observed false friends gone.
-- **P0-3 `Finding.Target` double-slash.** `misconfig/detector.go`'s five `target + path` fields use `req.URL.String()`; `nuclei/executor.go` trims one trailing slash from `target`.
-- **P0-4 Dedup PlanTree leaves by `(target, detector)`.** `Resolve` keys every leaf via `leafDedupKey` (pending: `(target, detector)`; unresolved: `(target, NormalizeTechName(fact.Name))`), keeps first in recon order, skips a now-empty host node. `andertone.com`: 31 leaves → 8.
-- **P0-5 Non-actionable-tech denylist.** `nonActionableTech` (`http/2`, `http/3`, `hsts`, `wordpress block editor`, `hostinger`, `google cloud`, …) checked at the top of `resolveTechFact` — a denylisted fact yields no leaf. Removed 12 of 31 fact instances on the real target.
+Version-aware CVE ranking (P0-1a); ranked template-tag selection + canonical tech→tag map (P0-2, 107→74 leaves); `Finding.Target` double-slash fix (P0-3); PlanTree leaf dedup by `(target, detector)` (P0-4, 31→8 leaves); non-actionable-tech denylist (P0-5). Detail: [15](15-implementation-plan-ph6.md) Step 2 addenda. P0-1b (true semver range gating) → Phase 8 Step 5.
 
 ### P1 — coverage (turn recon signal into leaves)
 
-- **P1-1 Endpoint-driven resolution pass.** ✅ 2026-09-04. `resolveEndpointFacts` reuses the `recon.Suggest*FromRecon` functions that fill `Config.EndpointTemplate`/`ProtectedPaths`/`SSRFParams`; `xmlrpc.php`/`wp-json/wp/v2/users` → specific template IDs via `endpointSignals`; a cart/checkout-shaped path → `businesslogic` leaf (gated at exec on `--allow-writes`+auth). `Resolve`'s host set now unions `TechStack` + `Endpoints`. idor/ssrf/businesslogic went from structurally-unreachable to active.
-- **P1-2 Port-driven resolution pass.** ✅ 2026-09-04, interim scope: `resolvePortFacts` emits a `StatusUnresolved` leaf naming the open port (naabu's 21/23/3306/5432/6379/9200/27017 set) with an honest "no automated check yet" rationale — no new detector. **Accepted cost**: `llmfallback.ResolveTreeLeaves` sends every unresolved leaf (port leaves included) to a real LLM call that can never resolve it, since `tcp:`/`network:` templates are unloadable (`loader.go`'s `disallowedBlocks`); a dedicated non-walked status was scoped out. The real network-service detector (anon-FTP, unauth-DB, open-ES) stays a separate larger follow-up → Phase 8 Step 1.
-- **P1-3 WordPress plugin/theme enumeration in recon.** ✅ 2026-09-04, narrower than scoped. `recon/wpplugins.go`'s `wordPressPluginFacts` parses `/wp-content/plugins|themes/<slug>/` + `?ver=` from already-crawled endpoints (Wave 3, no new round trip) into `TechFact{Name:"<slug>[:<ver>]"}`. Paired `matchTemplateTags` `fullSlug` tier makes a hyphenated slug hit its real corpus tag. `readme.txt`/`style.css` version *probes* for an unversioned slug (one GET each, the only new active fetch) → [Phase 8](17-implementation-plan-ph8.md) Step 5.
-- **P1-4 nuclei loader DSL/`part:` gaps.** Long-running bucket, mostly closed 2026-09-04:
-  - `content_type_N` / `duration` / `duration_N` ✅ — routed through the existing `IntVars` mechanism; 332 templates newly loadable (1,966 → 1,634 rejected). All 230 real duration comparisons use integer seconds, so int-truncated-seconds is faithful.
-  - `body_N`/`header_N` as a `part:` *name* ✅ — `matcher.IsIndexedPart` + `ValidPartWithContext` (accepts an indexed name only when `dsl.Context.Vars` already carries the key) + `Part()` falling back to `r.ExtraVars`. Zero executor change for the raw-based majority (239 of 246 already worked via `dsl:` identifiers).
-  - genuine `path:`-multi-request correlation ✅ — opt-in `HTTPRequest.pathCorrelated` (set only when `len(Raw)==0 && len(Path)>1` and an indexed reference is actually found), running through `runPathRequestCorrelated`/`tryPathCorrelatedIteration`; every other multi-path template unaffected (regression test `TestExecutorRun_IndependentMultiPath_EachPathReportsSeparately`). `_1` aliasing added for genuinely single-path templates. 1,183 → 923 rejected (260 newly loadable).
-  - Still open here: `xpath` and `flow:` cross-block `_N` → [Phase 9](18-implementation-plan-ph9.md) Step 2 (`_N` numbers globally across `http:` blocks, a different indexing model than the same-block correlation implemented); an index field carrying affected-version constraints for P0-1b → [Phase 8](17-implementation-plan-ph8.md) Step 5.
-- **Multi-key `payloads:` (pitchfork/clusterbomb/batteringram).** ✅ 2026-09-04. `schema.go`'s `resolvePayloads` returns every substitution pass; `pitchforkIterations` (zip), `clusterbombIterations` (Cartesian), `batteringRamIterations` (broadcast) — Burp Intruder's own definitions, confirmed against corpus examples. Real split: 238 multi-key-only, 248 file-based-only, 3 both. 1,634 → 1,434 rejected.
-- **File-based `payloads:` (WP-version-detection pattern).** ✅ 2026-09-04. Real count 251; 237 are single-value files (a plugin's current version string), pattern `compare_versions(extracted, concat("< ", loaded))`. Three pieces: `templatesync.SupportDirs` (`["helpers"]`) sparse-checkout of upstream's wordlist dir (never fetched before); `schema.go`'s `readPayloadFile` (corpus-root-relative, traversal-guarded); `dsl.go`'s `concat()`. **Two real bugs fixed via end-to-end testing**: (a) a request's own `payloads:` var was never bound into DSL-visible `ExtraVars` (affected multi-key too — silent zero findings); (b) `yaml.v3` drops a `null` list entry rather than decoding `""` — broke `softether-vpn-default-login.yaml`'s `password: [null]`; fixed via `decodeStringSequence`. 1,434 → 1,183 rejected.
-- **`interactsh_*`/OOB support for nuclei templates.** ✅ 2026-09-04. Wires `pkg/oob`'s Interactsh client into `pkg/template/nuclei` (previously unimplemented). 532 templates reference interactsh; 519 → 31 rejected (488 newly loadable).
-  - Load-time `HTTPRequest.usesInteractsh` flag (same pattern as `pathCorrelated`) gates a `prepareOOB`/`awaitOOB` pair in `executor.go`. `prepareOOB` (once per payload iteration) mints a correlation host+nonce via `oob.Client.NewPayloadHost` and injects `{{interactsh-url}}`; `awaitOOB` (after every entry has fired) blocks up to `oobWaitTimeout` (6s) and always returns `interactsh_protocol`/`interactsh_request`/`interactsh_response` (real or `""`). `matcher.Part` special-cases these three to never fall through to the body.
-  - `oob.Poller` (`pkg/oob/poller.go`): one `Client` registration shared across the whole `Executor` and every concurrently-scanned target; centralizes every `Poll` behind one background loop (2s tick) + a nonce→waiter channel map, so `Wait` is the only call path.
-  - Lazy, opt-in registration: `Executor.WithOOBServers` (wired from `scanner.Config.OOBServers`) registers only the first time a *loaded* template actually embeds `{{interactsh-url}}` — the default curated set never talks to an OOB server. `Executor.Close` stops the loop and deregisters.
-  - Related gaps fixed alongside: `vars.placeholderPattern`'s `\w+` couldn't match the hyphen in `{{interactsh-url}}` (widened to `[\w-]+`); `{{randstr}}`, `{{RootURL}}`, `{{Host}}` were unimplemented (added `randstr()` seeded once per template execution, plus `RootURL`/`Host` as `Render`-level aliases of `BaseURL`/`Hostname`).
-  - Accepted latency tradeoff: `awaitOOB` blocks inline, serially, once per interactsh_ template. Real Nuclei fires all OOB requests first then does one deferred correlation pass — a bigger architecture change (this project's request functions return a finalized Finding immediately, needed for extractor→chainVar propagation). Next OOB improvement if the 6s/probe serial cost proves too slow.
-- **P1-5 `techRules` coverage.** Partially done 2026-09-04: `woocommerce` → `misconfig`. Plugin-specific coverage comes from P1-3's slug-tag matching. Cloud-provider exposure tags (→ `aws`/`s3`/`gcp`) — **✅ done 2026-09-09, [Phase 8](17-implementation-plan-ph8.md) Step 3.** `pkg/fingerprint` gained header signatures (`x-amzn-requestid`/`x-amz-cf-id`/`x-amz-bucket-region`/`x-goog-generation`/...) producing `aws`/`s3` facts on the httpx-probed host itself; `pkg/recon/jsstatic.go`'s `extractCloudBucketRefs` finds an S3/GCS bucket-URL shape in a JS body or an already-crawled endpoint and attaches the fact to **the bucket's own host** (scope-gated — an out-of-scope bucket mention earns neither a scan nor a fact). `canonicalTechTags` pins all three to their real corpus tags in `matchTemplateTags`. Caught and fixed a real scoring bug along the way: `"aws"` sits in `genericTechWords`, so `primaryTechWord` returned `""` for it and it could never clear `minTemplateLeafScore` (60) against the mostly low/info-severity real templates — fixed by deriving a canonical entry's `primary` word from its own `q.include[0]` instead of re-running it through the generic-word filter.
+- **P1-1 ✅** Endpoint-driven resolution pass (2026-09-04) — idor/ssrf/businesslogic went from unreachable to active.
+- **P1-2 ✅ interim (2026-09-04)** — `resolvePortFacts` emits an honest `StatusUnresolved` leaf naming an open port; the real network-service detector is Phase 8 Step 1 (LT-23).
+- **P1-3 ✅ (2026-09-04)** — WordPress plugin/theme slug+version facts from crawled endpoints.
+- **P1-4** nuclei DSL/`part:` gaps — ✅ mostly closed 2026-09-04 (`content_type_N`, indexed `part:` names, `path:`-multi-request correlation). Still open: `xpath`/`flow:` cross-block `_N` → [Phase 9](18-implementation-plan-ph9.md) Step 2; affected-version index field → Phase 8 Step 5.
+- Multi-key + file-based `payloads:` ✅ (2026-09-04); `interactsh_*`/OOB support for nuclei templates ✅ (2026-09-04, `pkg/oob` wired into `pkg/template/nuclei`, one shared `Poller`).
+- **P1-5** `techRules` coverage — woocommerce ✅; cloud-provider (aws/s3/gcp) exposure tags ✅ done 2026-09-09, Phase 8 Step 3.
 
-### P2 — LLM leverage & ergonomics (✅ all six done 2026-09-04; detail in [15](15-implementation-plan-ph6.md) Step 2's P2 addendum)
+### P2 — LLM leverage & ergonomics (✅ all six done 2026-09-04)
 
-- **P2-2 Feed `ResolveLeaf` structured data.** `registry.Resolve` returns a second value, `map[string]LeafContext` (originating `TechFact`/`PortFact`/endpoints, keyed by leaf ID); `ResolveLeaf`/`buildLeafPrompt` read it directly instead of regexing `leaf.Rationale`. The regex stays as a fallback for a caller with no LeafContext (e.g. a cached webui tree).
-- **P2-3 Make `use_existing_tag` executable.** `buildLeafPrompt` lists ranked-relevant *templates* by exact `id: name` (`rankRelevantTemplates`), not shared tags — `RunPlan` can only dispatch a real capability name or `templatesync.Entry.ID`.
-- **P2-1 `PlanFromRecon(ReconResult)` — a 4th `pkg/llmfallback` caller.** One local-tier-first call per plan run proposing `{target, detector, rationale}` leaves; `MergeLLMProposals` merges with two hard filters: `Target` must already name a host node `Resolve` produced, `Detector` must be a real capability/template ID. **Wired only into CLI `plan --llm-assist`** (P2-4), not MCP/webui default flow — `llmfallback`'s package doc says I4 fires "only on a confirmed deterministic-decision-engine miss, never as a standing parallel path." Only `HostFact.Notes` is dropped from the prompt (other `ReconResult` fields already carry no raw response data).
-- **P2-4 Wire I4 into CLI `plan` behind `--llm-assist`.** Off by default. Not wired into `scan` (no unresolved-leaf concept there — `cfg.Validate()` requires `--detector`/`--endpoint` explicitly).
-- **P2-5 Index/corpus drift guard.** `templatesync.CountTemplateFiles` + `IndexDriftWarning` compare `templates/index.json`'s entry count against on-disk `.yaml`/`.yml`; `plan` warns to stderr when wildly out of sync. Not wired into `scan` (never reads the index).
-- **P2-6 Enforce `--scope` (hard-fail) for CLI `plan`/`recon`.** `requireScopeOrOptOut` (`cmd/hackerfive/scopeflag.go`) refuses to run without `--scope` unless `--allow-no-scope` is passed; `scan` keeps warn-only (its `--targets` is already the exact host list). Considered reversal of doc15's CLI-warn/MCP-hard-fail framing. Set once per engagement (`.engagements/*/scope.txt`, gitignored) and every later run proceeds unattended. MCP `plan`'s approve-before-execute elicitation gate kept as-is.
+Structured `LeafContext` for `ResolveLeaf` (P2-2); ranked-template prompts for `use_existing_tag` (P2-3); `PlanFromRecon` 4th caller, CLI `plan --llm-assist` only (P2-1/P2-4); index/corpus drift guard (P2-5); `--scope` hard-fail for CLI `plan`/`recon` (P2-6). Detail: [15](15-implementation-plan-ph6.md) Step 2 P2 addendum.
 
 ## Live Testing — nettix.com.pe & aceautowreckers.com (2026-09-04)
 
-Real run against owned targets (`.engagements/owned-sites/scope.txt`; doc22's "Owned / operator-authorized targets"). LT-numbered by priority; tags are estimates, not measured.
-
-- **LT-1 Web UI Launch never dispatched the decision engine's template-ranked leaves.** ✅ 2026-09-04 — was spec'd unimplemented as [15](15-implementation-plan-ph6.md) Step 4. Plan Preview's `<form>` now dispatches an operator-approved plan via a new shared `pkg/planexec` (extracted from `pkg/mcpserver`'s executor), with per-leaf inclusion, a spend gauge, and a kill switch (`Job.Cancel`, `POST /scans/{id}/cancel`).
-- **LT-2 `misconfig`'s `rejected()` didn't exclude 5xx — live FP.** ✅ 2026-09-04 — now also excludes 502/503/504; plain 500 deliberately left in (origin-app failure is still accept-adjacent signal). Added `TestMisconfigDisallowedMethod_GatewayErrors_NotFlagged` / `_500_StillFlagged`.
-- **LT-3 A real swagger.json/openapi.json never triggered its `idor`/`misconfig` checks.** ✅ 2026-09-04 — recon records an `APISpecFact` separate from `TechStack`, which the decision engine never read. New `resolveAPISpecFact` (`decisionengine.go`) dispatches `ReconResult.APISpec` through the same `techRules`/`matchTemplateTags` lookup (`openapi`→`swagger`, `graphql-sdl`→`graphql`), scoped to the spec URL's own host.
-- **LT-4 Recon silently failed on internal/self-signed-cert hosts, dropping 13/22 hosts from Wave 3.** ✅ 2026-09-04 — `pkg/recon`'s own HTTP client verified TLS certs while katana/httpx hardcode verification off. New `recon.ClientConfig` forces `InsecureSkipVerify: true` for recon's client (separate from the scan `--insecure` flag, which was then removed as pointless); added a warning when a host trips the internal error circuit-breaker.
-- **LT-5 ✅ done 2026-09-07 (`ph7-step3a`, Phase 7 C5).** `Job.eventSeq` is one monotonic counter stamped onto every `#logs`/`#findings`/`#agent` row (`data-seq`, initial paint and live SSE swap alike); `scan_status.html`'s `hfMaxSeq` reports the highest seq each list already holds, and `scanCatchup` replays only rows past `since_log`/`since_finding`/`since_agent` (three independent markers — the lists interleave on the shared counter). `fragment_catchup.html` emits the extra append-list OOB blocks only when non-empty. No duplication, no permanent loss.
-- **LT-6 ✅ done 2026-09-06 (post-demo-batch, Phase 7 C6).** `reporter.SplitAggregates` expands the nuclei `http-missing-security-headers` aggregate into one finding per header *before* `reporter.Dedup`; a header the native `misconfig` check also grades gets that check's exact `misconfig-missing-header-<Name>` ID so Dedup collapses the pair (native wins — real severity + evidence), the rest survive as `nuclei-http-missing-security-headers-<token>` findings. Wired into `cmd/hackerfive/scan.go` (the only `Dedup` caller). No fuzzy/semantic key. *Still open:* the same native+nuclei 1:1 pair now exists for weak-HSTS (`misconfig-weak-hsts-max-age` + `nuclei-weak-hsts-detect-0`, LT-47) — a template-ID skip-list entry, not an aggregate split; and webui/mcp don't call `Dedup`/`SplitAggregates` at all.
-- **LT-7 `matchTemplateTags` is version-blind (P0-1b) — live-confirmed.** All 9 Nginx hosts got the identical top-8 CVE list regardless of version. Needs an index schema carrying affected-version ranges + real Nginx version extraction, not just a scoring tweak. → Scheduled [Phase 8](17-implementation-plan-ph8.md) Step 5.
-- **LT-8 `katana` crawl hardcoded to `-depth 2`, no JS-rendering, no CLI flag.** Plausibly why endpoint-driven idor/ssrf found nothing on a target with a live login boundary on 7 hosts. → 🟡 Partly done 2026-09-07 (Phase 8 Step 6, first tranche): configurable `--crawl-depth` (`recon.WithCrawlDepth`, default 2 unchanged) threaded into `runKatana -depth`, on `recon` and `plan` (`TestRunKatana_CrawlDepth`). **Still open:** the opt-in headless/JS-rendered katana mode.
-- **LT-9 `guacamole01` hostname signal unused.** ✅ 2026-09-05 — new `hostnameProductHints` map + `resolveHostnameHints` (`decisionengine.go`): a host whose first DNS label (trailing digits stripped, so `guacamole01` → `guacamole`) exact-token-matches a known product dispatches that product's capability + template-tag leaves at `ConfidenceLow`, deduped against a real fingerprint leaf for the same `(host, capability)`. Exact-token, not substring — `myjira-notes` doesn't trip `jira`. Seed list: guacamole/jenkins/gitlab/grafana/kibana/jira/confluence/phpmyadmin/sonarqube/portainer/prometheus.
-- **LT-10 Google Analytics → 3 keyword-collision templates** (`piwik-unauthenticated-access`/`sonicwall-analytics-panel`/`versa-analytics-server`, matched purely on the shared "analytics" tag word). ✅ 2026-09-05 — `google analytics` + `google tag manager` added to `nonActionableTech`; a client-side analytics tag names no scannable server surface, so it yields no leaf.
-- **LT-11 `recon`/`plan` CLI emitted zero stderr even at `--recon-depth full`** (confirmed: 0-byte stderr for a full 82s run). ✅ 2026-09-05 — `recon.WithProgressCallback` existed and was wired for the Web UI but not the CLI. Both commands gained a `--verbose` flag wiring the callback to a plain stderr writer (`verboseProgress`), off by default.
-- **LT-12 Web UI Launch's "misconfig" selection also runs the full synced corpus** (confirmed: a `nuclei-http-missing-security-headers-0` hit alongside native misconfig findings). ✅ 2026-09-05, doc-only — `templates/launch.html`'s narrow-by-tech hint now spells out that every selected detector additively runs the whole corpus unless the box is checked. Real mitigation (LT-16) already exists.
-- **LT-13 Malformed rendered URLs crashed the whole template instead of skipping one bad path.** ✅ 2026-09-04 — `executor.go`'s `tryPath`/`tryPathCorrelatedIteration` never populated `{{Host}}`/`{{Hostname}}` (scheme-less URLs); a stray leading space or bad `%`-escape hit a hard `url.Parse` error that aborted every other untried path. Fix: populate `Hostname`, `strings.TrimSpace` the rendered URL, treat a request-construction failure as skip-with-warning.
-- **LT-14 Tech-stack facts duplicated across www./bare/mixed-case host variants.** ✅ 2026-09-04 — `recon/aggregate.go`'s `addTech` dedup key used the raw host. New `NormalizeHost` (lowercase + strip one leading `www.`) in the dedup key, reused by `webui/recon_view.go`'s endpoint-table collapsing. Display/aggregation only — both host variants still probed (they can genuinely differ).
-- **LT-15 Bare response headers weren't DSL identifiers, and the rejection wrongly blamed missing OOB support.** ✅ 2026-09-04 — `dsl.go`'s `resolveIdent` resolved only a fixed set (`status_code`/`body`/`header`/`content_type`/`response`). Unknown identifiers now fall back to a case-insensitive header lookup (runtime + load-time validation); the misleading OAST-guess message replaced with "not implemented"; `part: request` properly implemented.
-- **LT-16 The full corpus scans every target regardless of detected tech stack** (confirmed live: 9,244 templates loaded, 0 filtered by tag). ✅ 2026-09-04, opt-in by design — new `registry.TechStackTags` derives a tag allowlist from a target's `TechStack`, wired into the Web UI Launch flow as an unchecked-by-default "Narrow templates to detected tech stack" checkbox; only ever narrows an empty `--tags`, falls back to the full corpus (logged) when nothing actionable was detected. **Superseded 2026-09-06:** the opt-in default and the lack of a generic-template floor (a `TechStackTags`-only `--tags` would drop every `.env`/header/CORS/backup check) proved too coarse on live targets — flipping `--narrow-by-tech` default-on and adding a per-detector category floor (`registry.DetectorTemplateTags`) is scheduled as [Phase 6](15-implementation-plan-ph6.md) Step 6a.
-- **LT-17 CLI/MCP parity for LT-16's narrowing.** ✅ 2026-09-05 — CLI `scan` gained a `--recon-file <path> --narrow-by-tech` pair (reads a prior `recon --output` JSON) via `narrowScanConfigByTech`; MCP `scan` gained an optional `tech_stack` input field. Both mirror the webui behavior: never override an explicit `--tags`, degrade to the full corpus (logged, not an error) otherwise.
+First real run against owned targets. All 17 items below ✅ done 2026-09-04 unless noted:
+- LT-1 Web UI Launch never dispatched ranked leaves → `pkg/planexec` + Plan Preview approve/execute.
+- LT-2 `misconfig.rejected()` didn't exclude 5xx → now excludes 502/503/504.
+- LT-3 A real OpenAPI/GraphQL spec never triggered idor/misconfig → `resolveAPISpecFact`.
+- LT-4 Recon silently failed on self-signed-cert hosts → `recon.ClientConfig` forces `InsecureSkipVerify`.
+- LT-5 ✅ done 2026-09-07 — SSE catchup/dedup via a monotonic `eventSeq`.
+- LT-6 ✅ done 2026-09-06 — `reporter.SplitAggregates` expands the nuclei missing-headers aggregate, collapses the native/nuclei pair. *Tail still open:* same 1:1 pair for weak-HSTS (needs a template-ID skip-list entry); webui/mcp never call `Dedup`/`SplitAggregates`.
+- LT-7 `matchTemplateTags` is version-blind → Phase 8 Step 5.
+- LT-8 katana hardcoded `-depth 2`, no JS-rendering → 🟡 `--crawl-depth` done 2026-09-07; headless mode superseded by LT-99.
+- LT-9 hostname product hints unused → `hostnameProductHints` exact-token dispatch.
+- LT-10 Google Analytics → 3 false template leaves → added to `nonActionableTech`.
+- LT-11 `recon`/`plan` emitted zero stderr → `--verbose` flag.
+- LT-12 Web UI "misconfig" selection also runs the full corpus → doc fix (real mitigation is LT-16/17).
+- LT-13 A malformed rendered URL crashed the whole template → skip-with-warning per path.
+- LT-14 Tech facts duplicated across www./bare host variants → `NormalizeHost`.
+- LT-15 Bare response headers weren't DSL identifiers → case-insensitive header fallback.
+- LT-16 Full corpus scans regardless of detected tech → `registry.TechStackTags`, opt-in. **Superseded 2026-09-06** by LT-17's default-on narrowing + category floor.
+- LT-17 ✅ done 2026-09-05 — CLI/MCP parity for tech-stack narrowing (`--recon-file --narrow-by-tech`).
 
 ## Live Testing — andertone.com (2026-09-04)
 
-Real run on the `lt13-16-live-testing-fixes` branch (LT-1..LT-4 / LT-13..LT-16 already landed): `recon --recon-depth full` (5 hosts, 28 tech facts, 204 endpoints, ports 21/3306 on `staging.`, 82s), `plan` (3 host nodes / 60 leaves), and a `scan --detector misconfig` full-corpus run (9,363 loaded, 320 rejected) to measure execution/rejection behavior. Continues the LT-numbering.
+Recon was strong (5 hosts, 28 tech facts, 204 endpoints, ports 21/3306 on `staging.`) but exposed the decision engine's noise problem and a corpus-execution-cost problem.
 
-- **LT-18 A scan spends its wall-clock on templates unrelated to the target.** Three compounding causes: (a) `scan --detector X` loads the whole ~9,476-template corpus regardless of `X` or detected tech — `--narrow-by-tech` is opt-in, needs `--recon-file`, and `TechStackTags` has no generic floor (re-confirmed 2026-09-06 against nettix.com.pe: `0 filtered by tag`); (b) `engine.go`'s per-target `Run()` loop fires every template sequentially — 53+ min wall-clock for ~16s CPU, round-trip-latency-bound; (c) `planexec.RunPlan` reruns the whole corpus once per builtin-capability leaf, not once per host — the `andertone.com` tree hits it 6× over. Fix: (a) `--narrow-by-tech` default-on + a per-detector category floor (`registry.DetectorTemplateTags`) ∪ `TechStackTags` extras, `--all-templates` escape hatch; (b) bounded worker pool over `engine.go`'s template loop (the shared global rate limiter is still the real throttle; keep prompt-injection at concurrency 5); (c) corpus once per host. → [Phase 6](15-implementation-plan-ph6.md) Step 6: **(a) ✅ done 2026-09-06** — all three frontends, live-verified against nettix.com.pe (`--detector misconfig`: 9,476 → 3,745 templates, `cves/` sweep dropped); **(b) ✅ done 2026-09-05** — bounded intra-target template fan-out (`--template-concurrency` default 10, prompt-injection still capped at 5); live-verified against `www.aceautowreckers.com` (default-scoped `--detector misconfig`, 3,745 templates, 4m40s; conc 1→10 on a 328-template subset: 39s→23s, plateaus by ~10 — Cloudflare throttles one source's concurrency). **(c) ✅ done 2026-09-05** — `planexec.RunPlan` loads the corpus once per host, not once per builtin leaf (a specific-template leaf still loads it for its `id:` match). **(d) ✅ done 2026-09-05** — rejected-template log hygiene: compact per-reason histogram by default, non-template `.yml` files dropped from the count, full per-file list behind `--verbose`/`--log-rejected`. Step 6 complete.
-- **LT-19 `canonicalTechTags["nginx"]`'s exclude entries didn't match real corpus tags**, letting 4 K8s Ingress-Nginx-Controller CVEs dispatch as top-ranked `misconfig` templates against a plain Nginx fact. ✅ 2026-09-05 — no literal `"ingress-nginx"` tag exists (real tags: `"ingress"`/`"kubernetes"`/`"k8s"`); `nginx-proxy-manager` carries no `"proxy-manager"` tag. Exclude set now `{"ingress", "kubernetes", "k8s"}` + `excludeIDSubstr: []string{"proxy-manager"}`.
-- **LT-20 `resolveEndpointFacts`' businesslogic keyword match didn't reuse `IsStaticAssetPath`** (its IDOR sibling does). ✅ 2026-09-05 — a cosmetic `cart-header-element-lazy.min.css` (matched on the substring "cart") triggered a wrong `businesslogic` leaf. Fix: skip an endpoint when `recon.IsStaticAssetPath(p)` before the keyword check.
-- **LT-21 `wordPressPluginFacts` recorded a cache-busting content hash as a plugin "version"** with no shape validation. ✅ 2026-09-05 — `woocommerce:a02cc7ababe22e5abaaf` sat next to the correct `WooCommerce:11.1.0` for the same host, silently contradicting it (a landmine for version-range gating). Fix: `wpplugins.go` validates `?ver=` against `^[0-9]+(\.[0-9]+){0,3}$` before accepting; a rejected value falls back to an unversioned fact (name == slug).
-- **LT-22 Fresh template-rejection measurement** — 320 rejected of 9,363 loaded (~3.4%), by normalized error reason. Highest per-effort buckets fixed 2026-09-05:
-  - `+` string-concat operator: **59** (largest bucket). ✅ — new `+` token, `parseAdditive` precedence level (tighter than comparison, looser than a call/atom), string-concat-if-either-operand-string / numeric-add-otherwise.
-  - `location`/`server`/`set_cookie` named parts: **36**. ✅ — 3 cases in `matcher.Part()` → `Response.Header.Get`/`.Values`, added to `ValidPart`'s allowed set.
-  - `binary` matcher type: **7**. ✅ — `Matcher.Binary []string` (hex byte sequences), a `case "binary"` raw-bytes substring test, load-time hex validation.
-  - 10 of 12 missing DSL functions: **✅** — `replace`/`replace_regex`/`hex_encode`/`hex_decode`/`url_encode`/`url_decode`/`trim_space`/`to_upper`/`starts_with`/`ends_with`/`json_minify`, stdlib-only, signatures confirmed against ProjectDiscovery's helper-functions reference. `substr`/`date_time`/`generate_jwt` deferred.
-  - `cannot compare string and int`: **9**. ✅ — `compare()` coerces: numeric compare when the string parses as an int (`status_code == "200"`), textual otherwise. Bool still a genuine mismatch.
-  - `xpath` extractor/matcher: **17**; `flow:` cross-block `_N`: part of 42 flow rejections. → Scheduled [Phase 9](18-implementation-plan-ph9.md) Step 2 (was Phase 8 Step 7).
-  - Disallowed blocks (`javascript`/`headless`/`code`/`tcp`/`ssl`): **18** — by design. Absolute-URI raw lines: **31**; `internal: true` outside `flow:`: **37** — documented intentional restrictions, tied to the `flow:` limitation.
-- **LT-23 Live-confirmed FTP + raw MySQL exposure with no reachable check.** `staging.andertone.com` has port 21 and 3306 open to the internet behind an otherwise 403-walled HTTP surface — a textbook anon-FTP / unauth-MySQL target that can only produce a `StatusUnresolved` leaf today (`tcp:`/`network:` templates are structurally unloadable at load time). Fresh motivating evidence for [Phase 8](17-implementation-plan-ph8.md) Step 1 (network-service detector).
+- **LT-18 ✅ done 2026-09-05/06** — a scan spent its wall-clock on unrelated templates: (a) `--narrow-by-tech` made default-on + a per-detector category floor; (b) bounded intra-target template fan-out (`--template-concurrency`); (c) corpus loaded once per host not once per leaf; (d) rejected-template log hygiene. All [Phase 6](15-implementation-plan-ph6.md) Step 6, complete.
+- LT-19 ✅ `canonicalTechTags["nginx"]` exclude set didn't match real corpus tags → fixed.
+- LT-20 ✅ businesslogic endpoint match didn't reuse `IsStaticAssetPath` → fixed.
+- LT-21 ✅ a cache-busting hash was recorded as a plugin version → shape-validated.
+- LT-22 ✅ (2026-09-05) fresh template-rejection measurement (320/9,363, ~3.4%) → `+` concat, named parts, `binary` matcher, 10 DSL functions, string/int coercion all fixed; `xpath`/`flow:` → Phase 9 Step 2; disallowed blocks are by-design.
+- **LT-23 (open) — live-confirmed FTP (21) + raw MySQL (3306) exposure on `staging.andertone.com` behind an otherwise 403-walled HTTP surface, with no reachable check** (`tcp:`/`network:` templates are structurally unloadable today). The motivating evidence for [Phase 8](17-implementation-plan-ph8.md) Step 1's `tcp:` executor + `netservice` detector — see that doc's own Design section for the full plan. Re-confirmed live 2026-09-10 (still unbuilt).
 
 ### Step 5 live-verification runbook (2026-09-05, DVWA/WebGoat/Juice Shop + aalberts.com)
 
-- **LT-24 `resolveFieldSuggestions` fired an I4 field-miss LLM call on every `plan` call, even a `misconfig`-only plan.** ✅ 2026-09-05 — `pkg/mcpserver/tools_plan.go` iterated the idor/authbypass recon suggesters unconditionally; a target with no idor endpoints trivially hits the 0-candidate branch → `resolveOneFieldMiss` → `llmfallback.ResolveFieldMiss` → a real paid call, regardless of whether the tree had an idor/authbypass leaf. Broke WebGoat's `spend_usd == 0` runbook check and contradicted the DoD's "I4 fires only on a confirmed decision-engine miss — never a standing parallel path". Fix: every per-detector block in `resolveFieldSuggestions` is gated on `planLeafDetectors(tree)` — matches `pkg/webui`'s already-correct `fillReconFields` (which switches on `cfg.Detector`). Tests in `tools_plan_test.go` updated to seed a matching leaf.
-- **LT-25 `plan --llm-assist`'s P2-1 recon-wide proposal call times out *reading* a slow frontier response.** ✅ 2026-09-06 — against aalberts.com with an OpenRouter-only I4 config: `llm-assist: recon-wide proposal call failed: llmfallback: reading response: context deadline exceeded`. The classify/leaf calls finished fine; only the larger recon-wide proposal call (whole summarized recon in, a reasoning model's multi-leaf list out) blew the read deadline. `pkg/llmfallback` uses one shared `http.Client.Timeout` (`requestTimeout`) for every call — it was 180s, already sized for `ResolveLeaf`'s draft-template outlier but not this second, bigger one. Fix: bumped to 240s and re-documented as covering both outliers (the recon-wide proposal call is behind an explicit `--llm-assist` opt-in and already degrades gracefully — warn + continue — so a per-call timeout split wasn't worth it).
-- **LT-26 `--recon-file` tech→tag union is too liberal → shallow `--narrow-by-tech` scoping.** ✅ 2026-09-06, in two landings. `registry.TechStackTags` was unioning in *every* tag of each ranked template entry, so one legit WordPress/S3/… match dragged in that entry's `edb`/`cve*`/`disclosure`/`rce`/`kev`/`wpscan`/`tech`/`plugin` tags — all corpus-wide — and the narrowing collapsed. Measured on nettix.com.pe (`--detector misconfig`, rich WordPress+WooCommerce+phpMyAdmin+Nextcloud+Redis stack, 95 tech facts), full corpus 9,652:
-  - **(1) `genericCorpusWideTags` denylist** (commit `9c718aa`) — provenance / issue-category / request-part tags + a `cveNNNN` year-bucket check, filtered from the union. Cut 121 tags → 106, `9,432 → 9,049` loaded. Still almost nothing (`rce`/`sqli`/`xss`/`kev`/`tech`/`plugin` remained).
-  - **(2) `techProductTags` — harvest only the *identifying* tag(s)** (this commit). `TechStackTags` no longer takes a matched entry's whole tag list; it intersects with `techIdentifyingTags(fact.Name)` (the canonical include set, or the generic-word-filtered word set, + primary word + compound slug) — exactly what `matchTemplateTags` scored the entry on. A WordPress-CVE entry now contributes `wordpress`/`wp`, never `rce`/`kev`. Result: **21 tags, `9,432 → 5,333` loaded (43% cut)** — floor's 3,735 + the real wordpress/woocommerce/php/mysql/nginx/redis/… families, which *should* run against this target. Also added `basic` (a WWW-Authenticate realm httpx reports as a fake tech fact) to `nonActionableTech`.
-  - Not chased: `popup`/`svg`-type marginal tags from a fact name whose word happens to be a small real corpus tag family; and the "generic cloud/CDN fact resolves to a broad product tag at all" root cause, still routed to Phase 8 Step 3 (P1-5 note above). A "product tags only, drop the category floor" ultra-tight mode remains a possible future opt-in.
-- **LT-27 The Web UI Cancel control is a plain-POST form.** ✅ 2026-09-06 — `fragment_progress.html`'s kill switch (`<form action=".../cancel" method="post">`) navigated the browser away from the live `/scans/{id}` page to a bare `fragment_progress` fragment rendered as the whole document — the cancel *worked* (job → `canceled`), but the operator lost the status page. Fix: `hx-post` with `hx-target="#progress" hx-swap="innerHTML"` (innerHTML, not outerHTML — `#progress` is the SSE-bound `<span>`; `fragment_catchup.html` documents why its listeners must not be detached). No handler change — `cancelScan` already returns exactly that fragment.
-- **LT-28 `pkg/webui` recon/scan tests time out when the recon toolchain is on `PATH`.** ✅ 2026-09-06 — `TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables`, `TestStartLaunch_IDORBlankEndpoint_RealReconFindsNoCandidate_SkipsAndJobStillCompletes`, `TestEndToEnd_StartScan_ProducesRealFindings` passed with `go test` alone but failed their `Eventually` windows once `~/go/bin` was on `PATH` and real subfinder/httpx/katana/naabu ran against the httptest target. Fix: `newTestServer` / `newTestServerHandlers` now also `t.Setenv("PATH", "")` (they already scrubbed `HOME`/`XDG_CONFIG_HOME`), the same isolation `cmd/hackerfive` and `pkg/mcpserver` test helpers already use — passive recon still runs and still produces a `ReconResult`, it just skips the external-tool waves. Verified: the 3 tests now finish in <0.5s each *with* `~/go/bin` on `PATH`.
+- LT-24 ✅ an I4 field-miss LLM call fired on every `plan`, even a misconfig-only one → gated on `planLeafDetectors(tree)`.
+- LT-25 ✅ `plan --llm-assist`'s recon-wide proposal call timed out reading a slow frontier response → request timeout bumped 180s→240s.
+- LT-26 ✅ done 2026-09-06, two landings — `--recon-file` tech→tag union was too liberal (pulled in corpus-wide `rce`/`kev`/`cve*` tags from one legit match); fixed via a `genericCorpusWideTags` denylist then `techProductTags` (intersect with the fact's own identifying tags only). 9,432→5,333 templates on a real rich-stack target.
+- LT-27 ✅ the Web UI Cancel control full-page-navigated away → `hx-post`/`hx-target` in place.
+- LT-28 ✅ `pkg/webui` tests timed out when the real recon toolchain was on `PATH` → test-isolation env scrub.
 
-## Live Testing — www.valmo.in / Meesho (2026-09-06)
+## Live Testing — www.valmo.in / Meesho (2026-09-06 and 2026-09-07)
 
-First end-to-end pipeline run (`recon --recon-depth full` → `plan --recon-depth full --llm-assist` → `scan --detector {misconfig,ssrf,authbypass} --recon-file`) against a modern SPA/CDN target: `www.valmo.in`, an in-scope Meesho asset (`.engagements/meesho/scope.txt`). Binary built from `2a28419` (v0.6.0 + 1 doc). Read-only. Full write-up + logs: `.engagements/meesho/logs/baseline-2026-09-06/ENHANCEMENT-REPORT.md`. `www.valmo.in` is a Google-Cloud-fronted React SPA whose catch-all returns a byte-identical 1526-byte `index.html` (HTTP 200) for **every** path incl. a random canary — so recon's unguarded 200-checks fabricated signal, and `plan` produced a 21-leaf tree in which ~19 leaves are false positives or non-executable. Theme: recon has no "is this signal real?" gate and the decision engine faithfully amplifies whatever recon hands it. Continues the LT-numbering.
+First end-to-end pipeline run against a modern SPA/CDN target. `www.valmo.in` was a Google-Cloud-fronted React SPA returning one byte-identical `index.html` for every path (incl. a random canary) — recon's unguarded 2xx-checks fabricated signal, and `plan` produced ~19 false leaves out of 21. By the 2026-09-07 re-run the asset had moved behind an Akamai WAF (403 on everything) — a second, different class of the same "recon needs a block-wall gate" problem. Full write-ups: `.engagements/meesho/logs/{baseline,acceptance,dryrun}-2026-09-06/*.md`.
 
-### Disposition (2026-09-07) — bucketed after review
+**All items below ✅ done** (demo-batch 2026-09-06, post-demo-batch 2026-09-06, `ph7-step3a/3b/4a/4b` and the near-term batch 2026-09-07) unless marked open:
+- **Canary/soft-404 gating (LT-30, LT-30b):** `EndpointFact` gained `BodyLen`/`ContentType`/`Title`; `probeCommonPaths` fetches one canary/host and drops any 2xx/3xx matching its shape; an `APISpecFact` requires a real structured content-type. Highest-value single fix from this round.
+- **Non-actionable-tech additions (LT-31, LT-84a):** Google Cloud Storage/S3/CloudFront, cdnjs/jsdelivr/unpkg/Google-hosted-libs.
+- **LT-32** a live HTTP host with only non-actionable tech facts got zero misconfig leaf → `resolveLiveHostBaseline` emits a baseline leaf for any host with a direct-probe live endpoint.
+- **LT-33** recon-tool names (`katana`/`subfinder`) leaked into `MergeLLMProposals`/`PlanFromRecon` as non-executable "detectors" → filtered to `KindDetector`.
+- **LT-34** `plan` always re-ran full recon → `--recon-file` input.
+- **LT-35** Wave 1 subdomain/SAN enum ran even with no wildcard scope entry → `scope.HasWildcard()` gate.
+- **LT-36** recon sent no policy-mandated headers → `policy.yaml` `request_headers:`, threaded through all 3 frontends.
+- **LT-37** `plan --llm-assist` gave zero progress/spend visibility → per-leaf log lines + `spent $X of $Y`.
+- **LT-38** a context-killed recon wave was indistinguishable from "found nothing" → `errWaveTimeout` + explicit warning. *Tail still open:* scaling `waveTimeout` by host count (see LT-111 below, which added an explicit override instead).
+- **LT-39** `robots.txt`/`sitemap.xml` fetched but never parsed → `EndpointFact`s from `Disallow`/`Allow`/`Sitemap:`/`<loc>`. *Tail still open:* seeding the Wave-3 crawl itself from the parsed hints; recursive child-sitemap fetch.
+- **LT-40** ✅ done 2026-09-07 (Phase 8 Step 6) — OpenAPI JSON/YAML spec walker (`specwalk.go`), live-validated against crAPI's real spec (40 paths → 6 idor candidates incl. the real BOLA route). *Tail (a) still open:* GraphQL SDL/introspection walking.
+- **LT-41** `ResolveField`/`TriageFindings` reachable only from mcpserver/webui → `pkg/fieldsuggest` shared package + CLI `triage --llm-assist` + `scan --recon-file` self-fill.
+- **LT-42** an engagement's prose `policy.md` was invisible to D2 preflight → warns when no `policy.yaml` sits beside it.
+- **LT-43(1)/(2)** misconfig's `panel` floor tag (~1,591 templates) admitted on a bare 401/403 → gated on a real auth-boundary/admin-path signal; paired with the new `pkg/uniformwall` primitive (D6) that short-circuits the per-target corpus entirely on a uniform wall/catch-all verdict.
+- **LT-44** PlanTree was flat, no grouping/priority/seeding → `GroupIntoClassNodes`, `PlanNode.Priority`/`Class`, `ExecOptions.SeedFn` (a completed leaf's finding can seed a still-pending one). Full `DependsOn` graph deferred → LT-56.
+- **LT-45** CLI `scan --detector authbypass` hard-required `--auth-token` (MCP/webui didn't) → `SkipAuthTokenRequired` on the CLI path too.
+- **LT-46** scan-completion log counted pre-dedup findings with no label → labelled "raw finding(s), pre-dedup".
+- **LT-47** native weak-HSTS `max-age` check added (`misconfig-weak-hsts-max-age`).
+- **LT-48** no deterministic "junk fact" suppressor → relevance-score floor (`minTemplateLeafScore=60`) replaced the blunt per-tech leaf count cap. A genericness-keyed fan-out cap is NOT done (folded toward LT-49's LLM veto, itself also done).
+- **LT-49** no plausibility veto over a confidently-wrong `StatusPending` leaf → `VetPendingLeaves`/`VetoImplausibleLeaves` (opt-in `--llm-assist`; demote/drop only, never strengthens a leaf).
+- **LT-50** tech facts and endpoints were never cross-correlated → `productEndpointSignatures` promotes a pending leaf to high confidence when a product-distinctive endpoint is observed on the same host.
+- **LT-51** a `400` on an `/api/*` path is a stronger IDOR/param signal than a `404`, untreated as such → `apiRouteConfidence` lifts endpoint-driven leaves to high confidence.
+- **LT-52** an out-of-scope crawled link still reached `ReconResult.Endpoints` → diverted to `OutOfScope`.
+- **LT-53** `scan` didn't auto-apply policy `request_headers` (recon/plan did) → fixed.
+- **R-c** `/robots.txt` double-fetched (Wave 0 + Wave 3) → Wave 3's duplicate dropped.
+- **LT-61 / LT-63 (routed, not this run)** consume the CDN-ASN fact to skip/shorten naabu (✅ done, see the Akamai re-run below); companion mobile-app API discovery via subfinder's `crtsh` source → Phase 8 Step 6, still open.
 
-**Demo batch** — ✅ **landed + live-accepted 2026-09-06** on `demo-batch-lt30-46` (branch off `main`). Acceptance run: `recon --recon-depth full` → `plan --recon-file` against `superstoreapp.meesho.com` — the ~21-leaf valmo-baseline tree (~19 false) collapsed to **3 real leaves** (`envoy-admin-exposure`, `envoy-metadata-disclosure`, one LT-32 baseline `misconfig`); `api_spec: None` with the LT-30 canary-suppression warning logged; `httpx` EndpointFact carried `content_type`/`body_len`. Full write-up: `.engagements/meesho/logs/acceptance-2026-09-06/ACCEPTANCE.md`.
-- ~~LT-30~~ (**folded in LT-30b**) ✅ 2026-09-06 — `EndpointFact` gained `BodyLen`/`ContentType`/`Title` (schema v1.3, populated by `probeCommonPaths` + `httpx -cl -ct -title`); `probeCommonPaths` now GETs one `reconCanaryPath`/host and drops any 2xx/3xx whose (status, body-len ±tol, normalized content-type) matches that canary as a soft-404 (one stderr warning/host), and records an `APISpecFact` only when the spec path's content-type is actually JSON/YAML (`isStructuredSpecContentType`). `BodyLen==0 && ContentType==""` = "unmeasured, don't filter".
-- ~~LT-31~~ ✅ 2026-09-06 — `"google cloud storage"` / `"amazon s3"` / `"amazon cloudfront"` added to `nonActionableTech`; `"storage"` added to `genericTechWords`.
-- ~~LT-32~~ ✅ 2026-09-06 — `resolveLiveHostBaseline` (`decisionengine.go`) emits one `ConfidenceLow` `misconfig` leaf for a host with a *direct-probe* live `EndpointFact` (`httpx` / `wave3-common-path-probe` / `wave3-auth-boundary-heuristic`, status 2xx/3xx) and no misconfig leaf from any other pass; deduped via `pendingDedupKey`. A katana-crawl-only endpoint doesn't trip it, so the "endpoint with no signal ⇒ no host node" behavior is unchanged for crawl-only facts.
-- ~~LT-33~~ ✅ 2026-09-06 — `detectorCapabilities` filters both `MergeLLMProposals`' valid-detector set and `PlanFromRecon`'s prompt capability list to `Kind == KindDetector`; a `katana`/`subfinder`/`tlsx` "detector" proposal is dropped.
-- ~~LT-34~~ ✅ 2026-09-06 — `plan --recon-file <path>` resolves a prior `recon --output` JSON instead of re-running recon (recon client never built when supplied; `--recon-depth` ignored).
-- ~~LT-36~~ **✅ done 2026-09-06** (see detail below).
-- ~~LT-37~~ ✅ 2026-09-06 — `plan --llm-assist` logs `resolving N unresolved leaf/leaves … (per-plan ceiling $X)` before the LLM phase and `spent $X of $Y per-plan ceiling` after, plus a `WARNING: … (model openrouter:…)` line when this plan's spend exceeds `HACKERFIVE_LLM_COST_WARN_USD` (default `$0.02`); helpers `Client.ModelLabel()` / `llmfallback.CostWarnThresholdUSD()`.
-- ~~LT-45~~ ✅ 2026-09-06 — CLI `scan --detector authbypass` now validates with `ValidateOptions{SkipAuthTokenRequired: true}` (matches the planexec/MCP path); token-gated checks still self-skip, `--protected-paths` still required.
-- ~~LT-46~~ ✅ 2026-09-06 — the scan-completion line reads `… (%d raw finding(s), pre-dedup)`; count stays the engine's internal pre-`reporter.Dedup` accumulator, now labelled so it reconciles with the exported report.
-- ~~R-c~~ ✅ 2026-09-06 — `/robots.txt` dropped from `commonPaths` (Wave 0's `fetchPolicySignals` remains the single fetch); the LT-39 sitemap/robots parsing work is still open, post-demo.
+## Live Testing — www.valmo.in / Meesho, Akamai re-run (2026-09-07)
 
-**Post-demo quick batch** — ✅ **landed 2026-09-06** on `post-demo-batch` (branch off `main`), after the demo dry-run confirmed ≥1 real finding on `superstoreapp.meesho.com` (5: missing CSP/XFO/XCTO + weak HSTS `max-age=86400`+`preload`; write-up `.engagements/meesho/logs/dryrun-2026-09-06/DRYRUN.md`). Six commits:
-- **LT-35** ✅ — `scope.Scope.HasWildcard()`; `runWave1` skips subfinder/tlsx when `--scope` has no `*.`/CIDR entry (listed hosts still resolved/probed, WHOIS/ASN still runs).
-- **LT-38** ✅ — `defaultRun` checks `ctx.Err()`; a `waveTimeout` kill returns a distinct `errWaveTimeout` with the partial stdout, which every wave caller now parses *and* warns `results may be partial` on, instead of silently discarding.
-- **LT-39** ✅ — Wave 0 parses `robots.txt` Disallow/Allow prefixes → `robots-txt` EndpointFacts and fetches+parses `sitemap.xml` (`Sitemap:` URLs + the conventional path) → `sitemap-xml` EndpointFacts; same-host + scope-checked, bounded. `/sitemap.xml` dropped from Wave 3 `commonPaths` (Wave 0 owns it now, like R-c did for `/robots.txt`).
-- **LT-52** ✅ — `runKatana` diverts a fetched cross-host endpoint (no `rec.Error`) to `OutOfScope` when a `--scope` is set and the host is neither a seed nor in scope.
-- **LT-48** ✅ (score-floor half) — `matchTemplateTags` drops candidates below `minTemplateLeafScore=60` and yields no template leaf when even the best is below it; count cap kept as a backstop. The genericness-keyed fan-out cap needs a sharper "weak product word" signal than a denylist → folded toward LT-49.
-- **LT-51** ✅ — `apiRouteConfidence`: a 400/401/403/422 on an `/api` path lifts the endpoint-driven idor/authbypass/ssrf leaves to `ConfidenceHigh`.
-- **LT-43(1)** ✅ — `registry.DetectorTemplateTagsForRecon` drops misconfig's `panel` floor tag (~1,591 templates) unless recon shows an auth-boundary/401/403/admin-path surface; wired into `scan --recon-file` only (MCP/webui still get tech_stack only — follow-on).
-- **LT-47** ✅ — native weak-HSTS `max-age` check in `checkMissingHeaders` (`misconfig-weak-hsts-max-age`, low sev, flags the `preload`+short combo); `nonActionableTech` `hsts` note updated.
-- **LT-42** ✅ — `runPreflight` warns when a prose `policy.md` sits next to `--scope` with no `policy.yaml`.
-- **LT-53** ✅ (new) — `scan` now merges the scope-sibling `policy.yaml` `request_headers:` (as recon/plan already did, LT-36); `--header` of the same name still wins.
-
-**Phase 7** ([16-implementation-plan-ph7.md](16-implementation-plan-ph7.md)): LT-41 → Step 1 (new **A6**). LT-44 + LT-49 → Step 3 (new **C7**), ✅ done 2026-09-07 (`ph7-step3b`); the deferred dependency-graph half is LT-56. LT-54 + LT-55 (redundant-request elimination, new **D5**) ✅ **done 2026-09-07 (`ph7-step4b`)** — `pkg/template/nuclei` response cache + `--recon-file` known-404 `path:` skip; LT-43(2) + LT-58 + LT-59 + LT-62 (one "uniform response wall" primitive, new **D6**) ✅ **done 2026-09-07 (`ph7-step4a`)** — `pkg/uniformwall` + recon `UniformResponse` fact + `scanner` corpus short-circuit + `plan` note; LT-66 (per-endpoint bucket-catch-all cleanup) still open. LT-57 + LT-60 ✅ done 2026-09-07 (`lt57-60-waf-plan-gaps`, not a step — small isolated fixes: baseline leaf for a WAF-403 host; empty-plan stderr diagnostic).
-
-**Phase 8** ([17-implementation-plan-ph8.md](17-implementation-plan-ph8.md)) Step 6: LT-40 — **stays in Phase 8** (2026-09-06 8-host sweep decided this): all 3 live Meesho hosts return `200` for `/swagger.json` + `/.well-known/openapi.json`, but every one is the SPA shell, not a real spec (LT-30 territory) — no genuine OpenAPI/GraphQL doc to parse on this engagement. LT-50 ("S-d"). S-e (served-JS mining) and LT-43's 201-structural-rejection tail ("T-b") are already Step 3 / Step 7 — this run is corroboration, no new item; update Step 7's "~42 templates" estimate (the `flow: set/if` bucket measured 45 in the misconfig subset alone). **LT-61** (consume the CDN-ASN fact recon already collects → skip/shorten naabu, tag endpoints "CDN edge") and **LT-63** (companion mobile-app API discovery via subfinder's `crtsh` source, scope-checked) added to Step 6 from the 2026-09-07 `www.valmo.in` re-run.
-
-- **LT-30 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — see the Disposition index above for what shipped.** Original: **`pkg/recon`'s common-path probe has no soft-404 / canary / content-type gate — a SPA catch-all fabricates a false `APISpecFact` + endpoints.** `crawl.go:203 probeCommonPaths` records an `EndpointFact` + `APISpecFact` on `resp.StatusCode >= 200 && < 400` alone. Against `www.valmo.in`, `/swagger.json`, `/.well-known/openapi.json`, `/api`, `/graphql`, `/sitemap.xml` and a nonexistent canary all return the identical SPA shell (verified: `valmo-spa-catchall-check.log`), so recon emitted a ConfidenceHigh `openapi` `APISpecFact` → `resolveAPISpecFact` dispatched **9 ConfidenceHigh leaves** (`misconfig`, `idor`, `CVE-2024-7314`, `CVE-2022-0381`, `browserless-swagger-detect`, `graylog-api-exposure`, `jeecg-boot-swagger`, `litellm-swagger-detect`, `swagger-api` — `plan-valmo.stdout.json` leaves 8–16). `pkg/detectors/misconfig/detector.go` already has the fix (`probeBaseline`/`looksLikeBaselinePage`/`looksLikeKnownWAFBlockPage`, mid-run WAF refresh) — it just lives in the detector, one layer downstream of where recon feeds the engine. **Fix (quick–medium):** lift `looksLikeBaselinePage` into a shared helper; `probeCommonPaths` fetches one canary/host and treats a 200 as real only if it differs materially (status / body length ±tol / content-type); require `Content-Type: application/json`\|`yaml` before recording an `openapi` `APISpecFact`. Depends on **LT-31b** (`EndpointFact` body-length/content-type). Highest-value single fix from this run.
-- **LT-30b ✅ done 2026-09-06 (`demo-batch-lt30-46`) — folded into LT-30; see the Disposition index above.** Original: **`EndpointFact` carries no body-length / content-type / title.** `recon/types.go:65`. `probeCommonPaths` holds `resp` and `io.Copy(io.Discard, resp.Body)` — discards the bytes it could measure. Blocks LT-30's fix and any decision-engine soft-404 filtering. **Fix (quick schema):** add `BodyLen int` + `ContentType string` (+ `Title`) to `EndpointFact`, populate from `probeCommonPaths`' `resp` and `httpx -cl -ct`.
-- **LT-31 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — see the Disposition index above.** Original: **`"Google Cloud Storage"` tech fact → 8 NAS/storage-appliance template leaves.** `plan-valmo.stdout.json` leaves 0–7 (`ibm-storage-default-login`, `seaweedfs-unauth`, `asustor-adm-panel`, `nextcloud-install`, …). `decisionengine.go:226 nonActionableTech` lists `"google cloud"`/`"google cloud cdn"` but not `"google cloud storage"`; `genericTechWords` (`:297`) lacks `"storage"`, so `nonGenericTechWords` = `{storage}`, `primaryTechWord` = `"storage"`, every `storage`-tagged template scores 100. Same P0-5 class as andertone's Hostinger facts, missed because no GCS target had been run. `maxTemplateLeavesPerTech=8` is what bounded it at exactly 8. **Fix (quick):** add `"google cloud storage"` (+ `"amazon s3"`, `"amazon cloudfront"`) to `nonActionableTech`; add `"storage"` to `genericTechWords`. Deeper cloud-provider fingerprinting stays Phase 8 Step 3.
-- **LT-32 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — see the Disposition index above (`resolveLiveHostBaseline`, gated on a direct-probe live endpoint).** Original: **No `misconfig` leaf for a live HTTP host whose only tech facts are non-actionable.** `www.valmo.in` has a live 200 root + 10 endpoints but its real facts (Google Cloud / HSTS / HTTP/3) are all `nonActionableTech`, and `resolveEndpointFacts` (`decisionengine.go:1011`) emits idor/authbypass/ssrf/businesslogic leaves from endpoint shapes but never a plain `misconfig` leaf. The only `misconfig` leaf in the tree came from LT-30's false APISpec — remove that and the host gets zero baseline headers/CORS/exposed-path dispatch, despite `misconfig`'s registry entry calling it "the broadest, lowest-risk, first detector to run against something new." Hits most WAF/SPA/thin-fingerprint targets (i.e. most of Meesho). **Fix (quick, ~10 lines):** `Resolve` emits one ConfidenceLow/Medium `misconfig` leaf for any host with ≥1 live `EndpointFact` and no existing `misconfig` leaf.
-- **LT-33 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — see the Disposition index above (`detectorCapabilities` filter).** Original: **`MergeLLMProposals` / `PlanFromRecon` accept recon-tool capability names as leaf detectors — non-executable leaves + wasted frontier spend.** `plan-valmo.stdout.json` leaves `llm-plan-17/19/20` = `detector: katana`/`subfinder`/`tlsx`. `planfromrecon.go:158` builds `validDetector` from all `registry.Capabilities` (incl. `KindReconTool`); `planexec/executor.go:36 recognizedDetectors` is only the 5 real detectors, so `RunPlan` skips them. The ≈2-min frontier `PlanFromRecon` call spent output on 3 leaves that can never run. **Fix (quick):** filter `validDetector` to `cap.Kind == KindDetector`; pass detector-only capabilities into `PlanFromRecon`'s prompt (`planfromrecon.go:120`).
-- **LT-34 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — see the Disposition index above (`plan --recon-file`).** Original: **`plan` re-runs full recon that `recon --output` already did — no `--recon-file` input.** `cmd/hackerfive/plan.go:95` always calls `r.Run`; no `--recon-file` flag (contrast `scan.go:226`). Measured: `recon` 2m15s, then `plan` re-ran an identical `wave0…wave3` for another ~2m15s. **Fix (quick, ~20 lines):** add `--recon-file` to `plan`, skip `r.Run` when supplied.
-- **LT-35 ✅ done 2026-09-06 (post-demo-batch) — see the Post-demo quick batch index above.** Original: **Wave 1 passive subdomain/SAN enumeration runs even when `--scope` has no wildcard entry.** `passive.go:102 runWave1` always runs subfinder+tlsx; Meesho `scope.txt` is 8 exact hosts, so every result is scope-rejected (`recon-valmo.json` → `out_of_scope: ["*.valmo.in","valmo.in"]`) — pure latency on every recon/plan/scan for the engagement. **Fix (quick-ish):** skip subdomain/SAN enum when the scope has no `*.` entry (needs a `scope.HasWildcard()` accessor); still resolve/probe the listed hosts, still do WHOIS/ASN.
-- **LT-36 ✅ done 2026-09-06. Recon now sends the policy-mandated `X-Hackerone: <user>` header.** Was: `pkg/recon` shelled `httpx`/`katana` with fixed args (no `-H`) and its own Wave 0 / `probeCommonPaths` / `tagAuthBoundary` / `verifyAuthCandidates` probes used `r.client.Do` with no extra headers, so the whole recon phase hit `www.valmo.in` unattributed. **Shipped:** new top-level `request_headers:` list in `policy.yaml` (parsed by `pkg/preflight`, `PolicySet.RequestHeaders()`), auto-resolved from the `--scope` sibling — no per-command flag to forget. `recon.WithHeaders` applies it to all 5 direct-request sites and passes `-H "Name: Value"` (sorted) to httpx and katana; dnsx/naabu/subfinder/tlsx take no HTTP header and are untouched. Wired into CLI `recon` (+ a `--header` flag merged on top, flag wins on a name clash) and `plan`, MCP `recon`/`plan` (via `HACKERFIVE_POLICY_FILE`), and the webui launch flow (reuses the form's headers textarea). `.engagements/meesho/policy.yaml` created with `X-Hackerone: tonytran` + the 8 in-scope hosts declared `automated_scanning: allowed`. Tests: `pkg/recon/headers_test.go`, `pkg/preflight` request-header cases, `cmd/hackerfive/preflight_test.go`.
-- **LT-37 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — see the Disposition index above. The classify/field-vs-outlier timeout split was NOT done (still one 240s ceiling) — deferred, low value behind the opt-in.** Original: **`plan --llm-assist` gives zero progress and never reports spend.** `plan-valmo`: `real 4m36s`, ≈2m20s of it in the LLM phase with one line of output at the very end. `cmd/hackerfive/plan.go:116-146` logs no per-leaf "resolving X/Y" and never prints `tree.SpendSoFar()` (the CLI `enc.Encode(tree)` serializes only exported fields; MCP's `planOutput.SpendUSD` exposes it, the CLI doesn't). `requestTimeout=240s`/call (`client.go:50`), so a slow model = minutes of silence, no $ visibility against the `$0.10`/`$2.00` ceilings. **Fix (quick):** log each leaf/recon-wide call as it starts; print `spent $X of $Y` at the end; consider a shorter timeout for the classify/field calls (the code comment says they "finish in a few seconds") vs. the 240s draft/proposal outliers.
-- **LT-38 ✅ done 2026-09-06 (post-demo-batch) — see the Post-demo quick batch index above. The `waveTimeout`-scaled-by-host-count design tweak is NOT done (still a flat 60s).** Original: **A context-killed recon wave binary is indistinguishable from "found nothing".** `recon/exec.go:71-78 defaultRun` — any `*exec.ExitError`, incl. a `waveTimeout` (60s) SIGKILL, returns `(out, nil)`; callers only warn on `err != nil`, and tool stderr is discarded (`cmd.Output()`). `runNaabu` scans top-100 ports for all in-scope hosts at the global rate limit — past ~6 hosts it's cut off at 60s and the partial ports list is used silently. `user 2.6s` for the whole 2m15s recon confirms it's all network-wait. **Fix (quick):** check `ctx.Err()` after the process; on non-nil return a distinct `errWaveTimeout` logged as "wave N: <tool> hit the 60s cap, results may be partial"; optionally capture the tail of tool stderr. Also fixes the "tool crashed with partial garbage stdout" case. Related: scale `waveTimeout` by host count (design).
-- **LT-39 ✅ done 2026-09-06 (post-demo-batch) — see the Post-demo quick batch index above. Seeding the *Wave 3 crawl* from the parsed hints is NOT done (the hints reach `Endpoints`/the decision engine, but katana isn't re-seeded); a `<loc>` pointing at a child sitemap is recorded as a hint, not recursively fetched.** Original: **`robots.txt` / `sitemap.xml` are fetched (200) but their contents are never parsed for endpoints.** valmo `robots.txt` = `User-Agent: *` / `Allow: /` / `Sitemap: https://www.valmo.in/sitemap.xml`. `passive.go:62` only checks robots for `Disallow: /` (a bool); the `Sitemap:` pointer and any `Disallow:`/`Allow:` paths are dropped, and `sitemap.xml`'s `<loc>` list is never read. Both are free endpoint/hint sources (a `Disallow: /admin` is a classic tell). ~~Also `/robots.txt` is fetched twice (Wave 0 + Wave 3 `commonPaths`).~~ (R-c: the duplicate `commonPaths` fetch was dropped with the demo batch, 2026-09-06.) **Fix (quick–medium), still open:** parse `Disallow:`/`Allow:`/`Sitemap:` into `EndpointFact`s (`Source: "robots-txt"`, ConfidenceLow); fetch+parse `sitemap.xml`; seed Wave 3 crawl + the decision engine.
-- **LT-40 ✅ done 2026-09-07 (Phase 8 Step 6, second tranche).** OpenAPI JSON walker: `pkg/recon/specwalk.go` `walkOpenAPISpec` parses a fetched OpenAPI 2.0 / 3.x document's `paths`/`parameters` into `EndpointFact{Source: "api-spec", Confidence: low}` — OpenAPI-2 `basePath` / OpenAPI-3 `servers[0].url` path as the route prefix, `{param}` path templating kept verbatim, documented query keys appended keyless (`?q=&url=`), capped at `maxSpecEndpoints` (200) with a truncation warning. `probeCommonPaths` (crawl.go) keeps the spec-path response body (bounded `maxSpecBodyBytes` 3 MiB) and walks it right where it already records the `APISpecFact` — still gated by LT-30's canary/content-type check, so an SPA shell at `/swagger.json` never reaches the walker. `recon.isSpecPathParam` makes `SuggestIDOREndpointCandidates` treat a `{param}` segment as an ID position, so `/users/{id}` → `/users/{{id}}` with no fabricated id; keyless query keys still name-match `SuggestSSRFParamsFromRecon`. **Live-validated 2026-09-07** against crAPI's real 101 KB `crapi-openapi-spec.json` (served locally at `/swagger.json`): all 40 paths walked → `api-spec` EndpointFacts, `plan --recon-file` then derived 6 `idor` `endpoint_template` candidates from the `{param}` routes — incl. crAPI's real BOLA path family `/workshop/api/shop/orders/{{id}}` and `/identity/api/v2/vehicle/{{id}}/location` — plus a `businesslogic` leaf correlated to the spec-walked `/community/api/v2/coupon/new-coupon`. Against a plain SPA (crAPI's web root, non-headless katana) the same run found 4 endpoints and 0 IDOR candidates, so the spec walk is the difference between a blind and a mapped API surface. **(b) + (c) ✅ done 2026-09-07 (Phase 7 Step 6a batch).** (b) `specBodyToJSON` in `specwalk.go` normalises a YAML spec body to JSON up front (`yaml.Unmarshal` → `json.Marshal`) so `walkOpenAPISpec` handles JSON and YAML on the identical code path; a body that is neither stays the presence-only `APISpecFact`. Tests: `TestWalkOpenAPISpec_YAMLBody`, `TestWalkOpenAPISpec_YAMLNotASpec`. (c) `commonPaths`/`specPaths` (crawl.go) gained `/openapi.json`, `/v3/api-docs`, `/v2/api-docs`, `/api-docs`, `/swagger/v1/swagger.json` — each still passes the LT-30 canary + structured-Content-Type gate, so a SPA shell at one of them costs one GET. Test: `TestProbeCommonPaths_WalksSpecAtFrameworkPath`. **Still open:** (a) GraphQL SDL/introspection walking (needs a POST introspection query — a read-only-boundary call).
-- **LT-41 ✅ done 2026-09-06 (`post-demo-batch` + `ph7-step1`, Phase 7 Step 1 A6).** `hackerfive triage --findings <file> --llm-assist` landed in the post-demo batch. The recon-field self-suggest half landed on `ph7-step1`: new `pkg/fieldsuggest.Deterministic(result, want) (suggestions, misses)` (the no-LLM auto-fills lifted out of `mcpserver.resolveFieldSuggestions`, `recon`+`agenttask` imports only). `plan` computes `field_suggestions` — deterministic always, misses I4-resolved under `--llm-assist`, advisory note without it — and its stdout is now `{"tree": …, "field_suggestions": […]}` (was a bare tree). `scan --recon-file` self-fills a blank `--endpoint`/`--protected-paths`/`--ssrf-param`/`--login-paths`/`--logout-paths` from an unambiguous recon candidate (explicit flag wins); an idor 0/many miss falls through to the existing "required for --detector X" error — no `scan --llm-assist`. `mcpserver.resolveFieldSuggestions` delegates to the shared package with no behavior change (its `planLeafDetectors` gate becomes `fieldsuggest`'s `want` set, preserving "I4 never a standing parallel path"). Original: `ResolveField`/`TriageFindings` were reachable only from `pkg/mcpserver` + `pkg/webui`.
-- **LT-42 ✅ done 2026-09-06 (post-demo-batch) — see the Post-demo quick batch index above. The "ship a `policy.yaml` scaffold for this engagement" half was already done separately (LT-36 created `.engagements/meesho/policy.yaml`).** Original: **An engagement's prose `policy.md` restrictions are invisible to the D2 preflight, with no warning.** `.engagements/meesho/policy.md` documents "Testing rate limits on the order flow is not allowed", "no real transactions", "`superstoreapp` needs delivery PIN Nagpur or the account locks" — none machine-readable. No `policy.yaml` → `preflight.go:75` returns `(nil,nil)` → every verdict `Unknown` → all run logs show only the generic "authorization is on the operator" line. **Fix (quick):** when a `policy.md`/`policy.*` sits next to the `--scope` file but no `policy.yaml` does, warn "a policy.md exists but is not machine-readable — restrictions in it are NOT enforced"; ship a `policy.yaml` scaffold for this engagement.
-- **LT-43(1) ✅ done 2026-09-06 (post-demo-batch); LT-43(2) ✅ done 2026-09-07 (`ph7-step4a`, D6) — the uniform-SPA/catch-all corpus short-circuit landed with the WAF-wall variant as one `pkg/uniformwall` primitive: a `catchall` verdict (200 canary shape-identical to root, or a storage-origin `Server` header) skips `runTemplates` and emits `misconfig-uniform-catchall`. MCP/webui `panel` gating still receives `tech_stack` not endpoints (unchanged follow-on).** Original: **`--detector misconfig` loads 3,747 templates even with `--narrow-by-tech` + `--recon-file`.** `scan-misconfig-valmo.stderr.log`: `loaded 3747 nuclei-compatible … (201 rejected, 5733 filtered by tag)`; the `--recon-file` tech match added exactly one tag (`storage`, itself LT-31's false match). The `misconfig` category floor alone (`detectorTemplateTagFloor["misconfig"]` = `misconfig,exposure,config,default-login,panel`) pulls 3,747 — `panel` alone is ~1,591. 3,747 templates fired at a SPA that 200s everything → ~6 min wall-clock, large FP surface, for a target with ~zero real surface. **Fix:** (quick) drop/gate the `panel` floor tag for `misconfig` behind an observed admin/login path; (medium) a "target is a uniform SPA/catch-all" short-circuit that skips the corpus pass (reuse LT-30's canary result). The 201 rejected are structural nuclei-feature gaps (`flow:` 83, DSL/xpath 64, protocol blocks) — already [Phase 9](18-implementation-plan-ph9.md) Step 2 (was Phase 8 Step 7); this run confirms the `flow: set/if` 45-template bucket is the biggest.
-- **LT-44 ✅ done 2026-09-07 (`ph7-step3b`, C7a) — `registry.Resolve` now builds `root → host → per-vuln-class node → leaves` (`agenttask.GroupIntoClassNodes` + exported `registry.LeafClass`); `agenttask.PlanNode` gained `Priority` (confidence-band-derived, `planexec.RunPlan` stable-sorts each dispatch tier by it — start order, the pool stays concurrent) and `Class`. Early-leaf-output → later-leaf-input is a structural hook: `ExecOptions.SeedFn` + the one built-in `planexec.EndpointSeedFromFindings` (a completed same-host leaf's `Finding.Target`/`Evidence` URL seeds a still-pending idor/ssrf leaf's blank `EndpointTemplate`/`SSRFParams`, reusing `recon`'s own templating; blank-only, logged; the missing-field gate is deferred to `runLeaf` for seed-fillable detectors when a `SeedFn` is set). Wired at the MCP + webui execute paths. A full `DependsOn` edge graph + a broader `Finding→Config` extractor were explicitly left out of that branch → LT-56.** Original: **PlanTree is flat (root→host→leaf) — no strategy, ordering, grouping, or inter-leaf dependency.** `plantree.go:54` claims "task decomposition — PentestGPT's PTT shape" but `decisionengine.go:880 Resolve` only builds `root → one host node → flat leaf list` (valmo: 21 undifferentiated siblings, 9 near-identical swagger checks, no priority, no "cheap broad check first, feed its output to the targeted one"). **Fix (design, Phase 7/8):** intermediate nodes per vuln-class/detector, a priority field, and letting an early leaf's findings seed later leaves. Pairs with a pending-`StatusPending`-leaf plausibility gate (an LLM or heuristic veto over confidently-wrong leaves — the LT-30/LT-31 class — which `llmfallback` currently never does, acting only on `StatusUnresolved` leaves post-hoc).
-- **LT-45 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — see the Disposition index above (`ValidateOptions{SkipAuthTokenRequired: true}` for authbypass; no new flag needed).** Original: **CLI `scan --detector authbypass` hard-requires `--auth-token`; the `plan`/MCP path runs it tokenless.** `scan-authbypass-valmo.stderr.log`: `Error: validating config: authbypass detector requires --auth-token`. `pkg/scanner/config.go:258` rejects `authbypass` without a token unless `opts.SkipAuthTokenRequired` — and `pkg/planexec/executor.go`'s `runLeaf` sets exactly that, with `config.go:198` commenting "authbypass may run fully unauthenticated". So the executor runs authbypass's no-auth checks (missing-auth probe, JWT `alg:none`, rate-limit signal) without a token but `cmd/hackerfive/scan.go` can't. Blocks the highest-value authbypass case on a bounty target — "this endpoint should require auth and doesn't", which by definition you have no token for. **Fix (quick):** `scan.go` passes `SkipAuthTokenRequired: true` for `authbypass` (token-gated checks already self-skip when it's absent), or add a `--unauthenticated` flag.
-- **LT-46 ✅ done 2026-09-06 (`demo-batch-lt30-46`) — labelled `raw finding(s), pre-dedup` rather than deduping in-engine (keeps `pkg/scanner` free of a `pkg/reporter` dep); see the Disposition index above.** Original: **The scan-completion log's finding count is pre-`reporter.Dedup`.** `scan-misconfig-valmo.stderr.log`: `scan finished in 18m34s (1 target(s), 6 finding(s))` but the exported JSON has 5 — `engine.go Run()`'s timing `defer` logs `len(findings)` from the internal accumulator (6, incl. the LT-6 native/nuclei missing-header pair) while the exporter dedups to 5. Minor, but the line reports a number the operator can't reconcile with the output. **Fix (quick):** count after dedup, or label it "raw finding(s)". → demo batch.
-- **LT-47 ✅ done 2026-09-06 (post-demo-batch) — took the "native weak-`max-age` check + keep the denylist entry" option; new `misconfig-weak-hsts-max-age` finding (low sev), denylist note updated.** Original: **`weak-hsts-detect` fires despite `"hsts"` ∈ `nonActionableTech`.** `scan-misconfig-valmo.stderr.log` — the nuclei `weak-hsts-detect-0` template flagged valmo's short `max-age`, but the denylist entry's own rationale ("the `misconfig` detector already checks Strict-Transport-Security directly") only holds for a *missing* header: `checkMissingHeaders` in `pkg/detectors/misconfig/detector.go` doesn't grade a weak `max-age`. So the denylist suppresses a class it claims the native check owns, and the native check doesn't cover it. **Fix (quick):** narrow the `"hsts"` denylist note to "missing HSTS only", or add a native weak-`max-age` check to `checkMissingHeaders` and keep the denylist entry. → post-demo quick.
-- **LT-48 ✅ partially done 2026-09-06 (post-demo-batch) — the relevance-score floor (`minTemplateLeafScore=60`) replaced the blunt count cap; a fact whose best template match is below the floor now contributes no template leaf. The genericness-keyed fan-out cap ("drop a per-fact fan-out when `NormalizeTechName` is a single generic word") is NOT done — it needs a sharper "weak product word" signal than a denylist to avoid suppressing real single-word products, so it's folded toward LT-49's LLM plausibility veto.** Original: **No cheap deterministic "junk fact" suppressor before leaves are built.** LT-30 and LT-31 are one-off denylist patches for the same shape — a single non-product signal (a CDN brand, a SPA-catch-all 200) fanning out into 8–9 confident leaves. A heuristic gate in `Resolve` catches the *class* without waiting for each new brand to be reported live: drop a per-fact fan-out when `NormalizeTechName(fact.Name)` is a single generic word, and replace the blunt `maxTemplateLeavesPerTech = 8` count cap (`decisionengine.go:25`) with a relevance-score floor (`score < K` dropped) — this subsumes report item D-f. **Fix (quick-ish, decision-engine only):** score floor + genericness-keyed fan-out cap. → post-demo quick. The LLM version (reviews leaves the engine was *confident* about) is LT-49.
-- **LT-49 ✅ done 2026-09-07 (`ph7-step3b`, C7b) — `pkg/llmfallback/plausibility.go`: `VetPendingLeaves` is one local-tier-first classify call over the confident `StatusPending` leaves (verdict set validated in code — every id once, no unknowns, action ∈ keep/demote/drop — else degraded to `EscalateToHuman`); `VetoImplausibleLeaves` applies `demote` (one confidence band down + reason onto Rationale) / `drop` (→ new `agenttask.StatusVetoed`: kept visible, `planexec` skips it, `ResolveTreeLeaves` never re-touches it). Opt-in behind `--llm-assist` in `cmd/hackerfive/plan.go`; folded into the escalation list the MCP `plan` elicitation summary and the webui Plan Preview show. No-op without an LLM tier; respects `tree.SpendCeilingUSD`; can only ever weaken a plan.** Original: **No plausibility veto over a confidently-wrong `StatusPending` leaf.** `llmfallback` acts only on `StatusUnresolved` leaves (`ResolveTreeLeaves`, `pkg/llmfallback/resolve.go:62`) — it never reviews a leaf the deterministic engine was sure about, so LT-30/LT-31's `ConfidenceHigh` false leaves are untouchable by I4 today. One classify call over "here are the pending leaves + the facts that spawned them — which are real product surface vs. CDN-brand / SPA-catch-all noise?" kills the whole class at once, and is the clearest case of the LLM doing something the per-fact rule table structurally cannot. **Fix (design, new `llmfallback` caller):** optional pre-print pass in `plan --llm-assist` (then MCP/webui plan flow) that demotes or drops a pending leaf with a logged reason. → Phase 7 Step 3 (**C7**), pairs with LT-44.
-- **LT-50 Wave 2 tech facts and Wave 3 endpoints are never cross-correlated for dispatch.** `decisionengine.go`'s `correlatedEndpoints` folds up to 3 endpoints into an *unresolved* leaf's rationale prose only — never to raise a match's Confidence or add a targeted leaf. CLAUDE.md wants exactly this: "correlating a fingerprinted technology with an endpoint discovered separately." E.g. a `Jira` tech fact on the same host as an observed `/secure/Dashboard.jspa` should upgrade the leaf, not just annotate it. **Fix (medium):** in `resolveTechFact`, when a product's known endpoint signature appears on the same host, raise leaf Confidence and/or emit a targeted leaf; needs a per-product endpoint-signature table. → **✅ Done 2026-09-07 (Phase 8 Step 6, first tranche)** — `productEndpointSignatures` (jira/confluence/gitlab/jenkins/grafana/drupal/joomla) + `techEndpointSignatureHit` in `decisionengine.go`: a product-distinctive endpoint on the tech fact's own host promotes that host's pending product leaves to ConfidenceHigh with a note. Tests: `TestResolve_TechEndpointSignature_*`.
-- **LT-51 ✅ done 2026-09-06 (post-demo-batch) — `apiRouteConfidence` in `resolveEndpointFacts`: a 400/401/403/422 on an `/api` path lifts the endpoint-driven idor/authbypass/ssrf leaves to High. The demo dry-run re-hit this exact shape (`/api/customer/sub-order/review` → 400).** Original: **A `400` on an `/api/*` path is a stronger IDOR/param signal than a `404`, but the decision engine treats them alike.** From the 2026-09-06 Meesho 8-host sweep: `superstoreapp.meesho.com`'s `main.js` JS-crawl surfaced ~20 `/api/customer/*` paths; bare GET returned `404` for most but **`400` for `/api/customer/order-history`** (and `/api/customer/*` that echoed a validation error) — i.e. the route exists and rejected the request *shape*, not the *path*. `resolveEndpointFacts` (`decisionengine.go`) keys off URL shape and doesn't weight status: a 400/422 on an unauthenticated GET to an ID-shaped API path should raise an idor/authbypass leaf's Confidence (route confirmed live) vs. a 404 (route may not exist). **Fix (quick–medium):** thread `EndpointFact.StatusCode` into `resolveEndpointFacts`' scoring — 400/401/403/422 on `/api/*` ⇒ "reachable, needs params/auth" ⇒ stronger candidate than 404/2xx-SPA-catch-all. Pairs with LT-30 (which removes the 2xx-catch-all noise) and LT-50. → post-demo quick.
-
-- **LT-52 ✅ done 2026-09-06 (post-demo-batch) — `runKatana` diverts a fetched cross-host endpoint to `OutOfScope` when a `--scope` is set and the host is neither a seed nor in scope. Re-seen on the demo dry-run (`images.meesho.com` → 400).** Original: **An out-of-scope host's URL still reaches `ReconResult.Endpoints` when katana links to it.** 2026-09-06 demo-batch acceptance run against `superstoreapp.meesho.com`: katana crawled a link to `https://images.meesho.com/` (400) and it was recorded as an `EndpointFact` even though `images.meesho.com` is out of scope (`out_of_scope` correctly listed `*.meesho.com`). No plan node was produced for it (`Resolve`'s host loop is scope-clean), so impact today is limited to a stray endpoint row in the export + anything downstream that iterates `Endpoints` without re-checking scope (`describeEndpoints`, `planFromReconSummary`, a future sitemap/JS miner). `runKatana` (`crawl.go`) already routes an out-of-scope *host* to `agg.addOutOfScope`, but only when `rec.Error != ""`; a link katana actually fetched (200/400/…) on an out-of-scope host falls through to `agg.addEndpoint`. **Fix (quick):** in `runKatana`, drop (or divert to `addOutOfScope`) any endpoint whose host isn't in `seedHosts` / fails the scope check, mirroring the `rec.Error != ""` branch. → post-demo quick.
-
-- **LT-53 ✅ done 2026-09-06 (post-demo-batch) — `scan` didn't auto-apply the policy `request_headers`.** Found on the demo dry-run: `recon`/`plan` merge the scope-sibling `policy.yaml` `request_headers:` (LT-36), but `cmd/hackerfive/scan.go` only read `--header`, so `X-Hackerone: tonytran` had to be passed by hand on every `scan` invocation or the whole template-driven pass hit Meesho unattributed. **Fix (quick):** `scan`'s RunE now runs the same `policyRequestHeaders` + `mergeHeaders` path recon/plan use (flag wins on a name clash), logging one `applying policy-mandated request header` line per applied header.
-
-## Live Testing — www.valmo.in / Meesho (2026-09-07)
-
-Second end-to-end run against `www.valmo.in` (in-scope `meesho_bbp`, `.engagements/meesho/`), binary from `2bcc6ab` (v0.6.0 + Phase 7 Step 3). Since the 2026-09-06 run the asset moved from a Google-Cloud 200-catch-all SPA to an **Akamai WAF that returns a 366–405-byte "Access Denied" (HTTP 403, `edgesuite` marker) on every path** — verified across `/`, `/robots.txt`, `/about`, `/api/`, a random canary, browser UA, HTTP/1.1, and with/without `X-Hackerone` (all 403). From a WSL/datacenter egress the asset has **zero reachable application surface** (hard geo/ASN/bot block). Artifacts: `.engagements/meesho/valmo-{recon,plan,scan-misconfig-native}-2026-09-07.json`. Outcome: `recon` → 1 host, 1 endpoint (403), 2 non-actionable tech facts (HSTS, HTTP/3); `plan` → **empty tree** (`root` only, no host node); native-only `misconfig` → 1 honest `misconfig-waf-blocked` (low) in 5.8 s; `--recon-file` `misconfig` (narrowed corpus) → killed after 30 min+ with no output. No vuln reachable from here — findings below are all tool-enhancement. Continues the LT-numbering.
-
-- **LT-57 ✅ done 2026-09-07 (`lt57-60-waf-plan-gaps`) — `liveBaselineStatus` in `decisionengine.go` now accepts 401/403/429 (not just 2xx/3xx) from a `liveBaselineEndpointSources` probe, so `resolveLiveHostBaseline` emits its ConfidenceLow misconfig leaf for a WAF/auth-walled host; misconfig's own WAF recognition then produces the honest `misconfig-waf-blocked` note instead of the plan path producing nothing. Regression guards: `TestResolve_WAFBlockedHost_GetsBaselineMisconfigLeaf`, `TestResolve_WAFBlockedHost_KatanaOnlyRoot403_NoLeaf`, `TestLiveBaselineStatus`.** Original: **The LT-32 `resolveLiveHostBaseline` fix has a hole exactly where a WAF sits — its `StatusCode >= 200 && < 400` gate excludes a host that answers 401/403 on every path, so `plan` produced a completely empty tree for a reachable target.** A 403-on-everything host *is* a live HTTP server; misconfig's baseline (headers on the 403, CORS, the `misconfig-waf-blocked` note) should still dispatch.
-- **LT-58 ✅ done 2026-09-07 (`ph7-step4a`, D6) — `reconShowsAdminSurface` now drops the bare-`401/403` admit when `result.UniformResponse.Kind == "waf-block"`, keeping `panel` only for an auth-boundary heuristic hit or an admin-shaped path. Test: `TestDetectorTemplateTagsForRecon` D6 cases.** Original: LT-43(1)'s `reconShowsAdminSurface` returns true on any `ep.StatusCode == 403`, so a blanket Akamai WAF 403 re-admits the ~1,591 `panel` templates that gate was meant to exclude.
-- **LT-59 ✅ done 2026-09-07 (`ph7-step4a`, D6) — `pkg/uniformwall.Classify` runs in recon Wave 3 → `ReconResult.UniformResponse`; `scanner.Engine.Run` reads `Config.UniformWallHosts` (frontends fill it from that fact) and skips `runTemplates` for a walled host, emitting one `misconfig-waf-blocked`/`misconfig-uniform-catchall`. Override: `--scan-uniform-anyway` (implied by `--all-templates`). Test: `TestEngineRun_UniformWallHost_SkipsTemplateCorpus`.** Original: once the misconfig baseline canary establishes a total block, the scan should skip the rest of the per-target corpus.
-- **LT-60 ✅ done 2026-09-07 (`lt57-60-waf-plan-gaps`) — `cmd/hackerfive/plan.go`'s new `emptyPlanDiagnostic` prints one stderr line when `registry.Resolve` returns a tree with no host nodes, e.g. `plan: empty plan — 2 non-actionable tech fact(s) [HSTS, HTTP/3], 1/1 endpoint(s) WAF/auth-blocked, 0 actionable leaves; nothing to scan from this vantage`. No-op the moment the tree has any host node. Test: `TestEmptyPlanDiagnostic`. Note LT-57 now makes the `www.valmo.in` plan non-empty (1 baseline misconfig leaf), so this fires only for a genuinely dead vantage (a 404/500-only host, or non-actionable tech with no direct-probe endpoint).** Original: **`plan` exits 0 with a bare `{"tree":{"root":…}}` and no diagnostic when every fact is non-actionable / WAF-blocked** — the operator can't tell an empty plan from a bug.
-- **LT-61 ✅ done 2026-09-07 (Phase 8 Step 6, second tranche).** `pkg/recon/cdnasn.go` `cdnEdgeASNs` — a hand-authored, dedicated-CDN-only ASN table (Cloudflare 13335/…, Akamai 20940/16625/…, Fastly 54113, Edgio/Edgecast, CDN77, BunnyCDN, Imperva, Sucuri, StackPath); generic clouds (AWS 16509/14618, GCP 15169, Azure 8075) are deliberately excluded since a real origin can share those. Wave 1's `runWHOISAndASN` runs the looked-up ASN through `cdnForASNField` and, on a hit, adds a `cdn-edge:` HostFact note and calls `agg.markCDNEdge`. `runNaabu` (active.go) drops every marked host from the port scan — a fresh slice so the caller's list is untouched — with a per-host `LT-61` warning, and doesn't invoke naabu at all when nothing is left to scan. **Deviation from the plan text:** the "CDN edge, not origin" annotation lives on the HostFact note (shown in the report + Hosts table) rather than a per-`EndpointFact` field — every endpoint on a CDN-edge host is equally "edge", so a host-grain fact is the right level and avoids a schema field. **Still open:** per-resolved-IP ASN classification (today only the target domain's own Wave-1 ASN is checked, not "*every* resolved address"); a lookupASN test seam (not injectable, so no Run-level integration test). **Not live-validated 2026-09-07:** the only in-scope lab targets are loopback, and Wave 1 correctly skips WHOIS/ASN for private/loopback addresses, so there is no ASN to classify — `cdnasn_test.go`'s `TestRunNaabu_SkipsCDNEdgeHost` stands as the coverage until a real CDN-fronted in-scope target is run.
-- **LT-62 ✅ done 2026-09-07 (`ph7-step4a`, D6) — `UniformResponseFact.BlockedRatio` is the fraction of Wave 3 probes that came back intercepted; `recordUniformResponse` emits a recon warning and `cmd/hackerfive/plan.go`'s `uniformWallDiagnostic` prints a stderr note ("`<host>` sits behind a WAF … a scan from this vantage will short-circuit the template corpus; consider an in-region/residential egress or the target's non-web surface").** Original: recon/plan emitted no "recon is blind here" signal when ~100% of probes hit a block page.
-- **LT-63 → Phase 8 Step 6.** A scope entry with a documented companion mobile app (`policy.md`: "Valmo Mobile App", test MSISDNs) triggers no API-host discovery — recon only pivots via DNS/crawl/ports off the given web host, so when that host is WAF-walled there is nowhere left to look, even though the app's API is the real surface. **Fix:** a passive, scope-checked companion-API pass — reuse subfinder's `crtsh` CT-log source for `api.`/`gw.`/`mobile.` siblings of the scope host, and check whether an already-in-scope API host (`prod.meeshoapi.com`) answers the app's paths.
+Asset had moved behind an Akamai WAF returning a 403 "Access Denied" on every path (verified across UA/protocol/header variants) — zero reachable surface from this vantage. `plan` produced an empty tree; native misconfig correctly reported `misconfig-waf-blocked` in 5.8s; the `--recon-file`-narrowed full-corpus run ran 30+ minutes for nothing. All items ✅ done 2026-09-07 (`ph7-step4a`/`lt57-60-waf-plan-gaps`):
+- LT-57 `resolveLiveHostBaseline`'s live-status gate excluded 401/403/429 → widened, so a WAF-walled host still gets a baseline misconfig leaf.
+- LT-58 `reconShowsAdminSurface` re-admitted the `panel` floor on a blanket WAF 403 → now requires a real auth-boundary/admin-path signal, not just any 403.
+- LT-59 **the D6 primitive itself:** `pkg/uniformwall.Classify` (recon Wave 3) → `ReconResult.UniformResponse` → `scanner.Engine` skips `runTemplates` for a walled host, emitting one honest finding. Override: `--scan-uniform-anyway`. **See LT-140 below for its one-fact-per-run limitation.**
+- LT-60 an empty plan gave no diagnostic → `emptyPlanDiagnostic` stderr line.
+- LT-61 CDN-edge ASN table (`pkg/recon/cdnasn.go`) skips naabu port-scanning a recognized CDN-edge host. *Tail still open:* per-resolved-IP ASN classification (today only the seed domain's own ASN is checked).
+- LT-62 recon gave no "I'm blind here" signal on a high block ratio → `UniformResponseFact.BlockedRatio` + a `plan` stderr diagnostic.
+- **LT-63 (open)** — a scope entry with a documented companion mobile app triggers no API-host discovery. **Fix:** a passive, scope-checked companion-API pass reusing subfinder's `crtsh` CT-log source for `api.`/`gw.`/`mobile.` siblings. → Phase 8 Step 6.
 
 ## Live Testing — linkpop.com / Shopify (2026-09-07)
 
-End-to-end run against `linkpop.com` (in-scope `shopify`, `.engagements/shopify/`), binary from `ad13d98` (v0.6.0 + Phase 7 Step 3b, LT-57/LT-60 merged). Target picked as the in-scope asset with the most plausible app surface (a link-in-bio SaaS) — but it is a **decommissioned product**: `GET /` (any query, :80 and :443) is a Cloudflare-edge **301 to `https://www.shopify.com/`** (explicitly *not* in scope per `scope.txt`), and every other path is a Google Cloud Storage bucket (`server: UploadServer`, `x-goog-*`) serving an identical **746-byte static "404 — Page Not Found" SPA shell**, with inconsistent status (`200` on `/robots.txt` `/admin` `/graphql`, `404` on most others, same bytes). Zero live application surface. Artifacts: `.engagements/shopify/linkpop-{recon,plan,scan-misconfig}-2026-09-07.json`. Outcome: `recon` (full) → 2 hosts, 2 endpoints, 4 tech facts; `plan` → 10 leaves (1 recon-followup, 8 `shopify-*`, 1 LT-57 baseline misconfig); `misconfig` scan (`--recon-file`, tech-narrowed to 2224 templates) → **14 findings, none actionable** — all against `www.shopify.com` (the followed 301 target, out of scope), 3 of them the known method-accept false positive in a new shape, the rest the no-PoC header class Shopify auto-closes. Worked correctly: LT-57's baseline leaf fired (plan was not empty); recon marked all 15 discovered subdomains `out_of_scope` (scope has `linkpop.com` bare, no wildcard). Continues the LT-numbering.
-
-- **LT-64 — recon follows a cross-host redirect and records the destination's response as the target's, with no scope flag.** `linkpop.com`'s endpoint record reads `status_code: 200, title: "Shopify: The All-in-One Commerce Platform…", body_len: 676777` — that is `www.shopify.com`, reached via the root 301. The 301 itself, the redirect chain, and the final URL are all dropped. **Fix:** in `pkg/recon`, record `redirect_chain` / `final_url` on the endpoint, keep `status_code` as the first-hop 301, and emit a warning + plan note when the final URL's host is outside the `--scope` allow-list ("root of in-scope host redirects to out-of-scope `www.shopify.com`"). **→ ✅ Done 2026-09-07 (Phase 8 Step 6, first tranche).** `pkg/recon/active.go`: httpx runs with `-include-chain -location`; `analyzeRedirect` marks a cross-host redirect, the `EndpointFact` keeps the first-hop 3xx as `status_code` + records `redirect_chain`/`final_url` (schema v1.6), and its title/body/tech are dropped; a warning fires, loudly when `final_url` is out of `--scope`. Tests: `TestAnalyzeRedirect`, `TestRunHTTPX_CrossHostRedirect_NotAttributed`.
-- **LT-65 — tech facts fingerprinted after a cross-host redirect are attributed to the original target and drive its plan.** The single `Shopify` tech fact (and thus the entire 8-leaf `templates` class node, all `shopify-*` secret templates, and the `shopify` tag that widened the scan corpus to 2224 templates / 10 min) came from httpx fingerprinting `www.shopify.com` after the 301, not `linkpop.com`. **Fix:** tag each tech fact with the host/URL it was observed on; when that differs from the target host (post-redirect), attribute it to the final host and exclude it from the original target's `resolveTechFact` — or at minimum ConfidenceLow + a "seen on redirect target" note so it doesn't seed a full template class. **→ ✅ Done 2026-09-07 (Phase 8 Step 6, first tranche).** A cross-host-redirect httpx record contributes no tech fact and no fingerprint input (its headers/body/favicon are withheld from `pkg/fingerprint`), so `www.shopify.com`'s stack never reaches `linkpop.com`'s plan. LT-84b's other half also landed: `dropCDNTechWithoutHeader` discards an httpx `-tech-detect` CDN brand (Cloudflare/CloudFront/Akamai/Fastly) when the host's own response headers carry no corroborating edge header. Tests: `TestRunHTTPX_CrossHostRedirect_NotAttributed`, `TestRunHTTPX_SpuriousCDNTechWithoutHeader`.
-- **LT-66 🟡 partly done 2026-09-07 (`ph7-step4a`, D6).** `pkg/uniformwall.Classify` now returns `VerdictCatchall` when a 2xx canary comes from a storage origin (`Server: UploadServer` / `AmazonS3`), so `scan` short-circuits the corpus and `recon` records the fact + warns. **Still open:** the fact is host-level, not per-endpoint — `wave3-common-path-probe` can still record an individual `/graphql`-style `200` as a `confidence: high` endpoint on a bucket host where the canary happened to 404 (linkpop's exact shape: 404 canary, 200-identical body on `/robots.txt` `/admin` `/graphql`). Add: when `UniformResponse.Kind == "catchall"`, drop/downgrade the host's `wave3-common-path-probe` endpoints, and key off identical body hash across ≥2 probed paths (not just the canary) plus `x-goog-*`/`x-amz-*`/`x-guploader-uploadid` markers.
-- **LT-67 ✅ done 2026-09-07 (Phase 7 Step 6a, F3).** `pkg/registry/decisionengine.go`: `isBodyGrepSecretTemplate(entry)` flags a response-body secret grep (an entry carrying a `token`/`secret`/`api-key`/`credential` tag **and** an `exposure`/`disclosure` tag — the `shopify-*-token` / `aws-access-key-value` / `google-api-key` family, ~114 corpus entries). `resolveTechFact` drops such a leaf when `hostServesDynamicContent(host, result)` is false — i.e. a recorded catch-all wall on the host, recon's own `AppSurface: none`, or every measured 2xx body on the host below `dynamicContentBodyFloor` (1 KiB; linkpop's shell was 746 B). Deliberately biased toward emitting (any doubt → leaf kept), preserving the <5%-FP discipline. Every other template family is untouched. Tests: `TestResolve_BodyGrepSecretTemplate_SuppressedOnStaticHost`, `TestResolve_BodyGrepSecretTemplate_KeptOnDynamicHost`. Original: the 8 planned `shopify-*` leaves grepped the body for leaked credentials against linkpop's 746-byte static 404 shell — structurally impossible, yet planned and fired.
-- **LT-68 — recon has no "live app surface" verdict line, so a decommissioned asset still yields a 10-leaf plan and a 10-minute scan.** Every fact needed to conclude "no live app here" was in hand (root 301 off-scope, `server: UploadServer` on everything else, identical tiny bodies). **Fix:** a one-line recon summary verdict — e.g. `app surface: none (root 301 → out-of-scope www.shopify.com; all other paths = static storage bucket)` — that `plan`/`scan` surface prominently and that suppresses the plan when it reads "none". **→ ✅ Done 2026-09-07 (near-term batch)** — synthesises facts recon already holds.
-- **LT-69 — `misconfig` disallowed-method check counts a `200` whose body equals the baseline GET as "method accepted".** `misconfig-method-{put,delete,patch}-root` fired because the followed `www.shopify.com` returns `200` + near-identical static HTML for PUT/DELETE/PATCH (CDN serves the page regardless of verb). This is the same false-positive class the 2026-09-01 `partners.shopify.com` run fixed by adding `404` to `rejected()` — resurfacing for `200`. **Fix:** in `pkg/detectors/misconfig`, treat "`2xx` with body within a small delta of the baseline `GET` body and no state-change/`Allow`/`Location` signal" as *not* an accept — a real mutating endpoint responds differently from a `GET` of the same path. **→ ✅ Done 2026-09-07 (near-term batch)**, consolidated with **LT-73** into one baseline-diff rewrite of misconfig's accept/exposed/rejected classification (subsumes the 2026-09-01 `404` fix, this `200`-equals-baseline case, and LT-73's `429`).
-- **LT-71 ✅ done 2026-09-07 (Phase 7 Step 6a, F4) — ID fast path.** `nuclei.LoadDirByIDs(dir, want)` walks the tree (cheap readdir) but only fully parses+validates a file whose `id:`, peeked from its first 4 KiB (`peekTemplateID`, column-0-anchored), is in `want`. `scanner.Engine.loadTemplates` takes this path when the corpus is narrowed purely by `Config.TemplateID` and not also by a tag scope (`fastLoadNucleiIDs`); if the peek misses a requested id (never seen on the real corpus) it falls back to a full parse (`nucleiIDsCovered`), so the narrowing is a pure optimisation — an empty before/after finding-set diff by construction. `pkg/planexec`'s specific-template leaves get this for free (they already set `TemplateID`). `templatesync.LoadByIDs` is the cross-format reusable wrapper (mirrors `List`; for a future `scan --plan-file`). Tests: `TestLoadDirByIDs_*`, `TestEngineRun_TemplateID_FastLoadSkipsCorpusParse`, `TestLoadByIDs_*`. **Still open:** the pure-`--tags` scan path (no plan) still full-loads — resolving a small `--tags` set to concrete IDs safely needs a guaranteed-fresh `templates/index.json` (or a `Path` field in it); tracked as a follow-on, low value vs. the plan-executor win. Original: `planexec.RunPlan`'s LT-18(c) logic forced `loadCorpus = true` for every specific-template leaf; `scan --tags shopify` loaded 2224 + rejected 201 + filtered 7256 to run its matches; the linkpop plan named 9 exact leaves and took 10 minutes.
-- **LT-70 — a dead-end "matched nothing" leaf outranks real scan work in dispatch priority.** The `recon-followup` class node (its one leaf: `tech fact "Cloudflare" matched no registry capability or template tag`, `status: unresolved`) is `priority: 30`, above `templates` (25) and `misconfig` (10). An unresolved no-op should sort below anything dispatchable. **Fix:** cap `StatusUnresolved` / "matched nothing" leaf priority below the lowest pending-leaf class. **→ ✅ Done 2026-09-07 (near-term batch)** as the one-line guard; the fuller priority model stays with **LT-56** / Phase 8.
+A decommissioned asset: root 301s to the out-of-scope `www.shopify.com`; every other path is a GCS bucket serving one static 404 shell. All items ✅ done 2026-09-07 (Phase 7 Step 6a / Phase 8 Step 6 first tranche / near-term batch) unless noted:
+- LT-64 recon followed a cross-host redirect and attributed the destination's content to the original target → `redirect_chain`/`final_url` recorded, first-hop status kept, out-of-scope destination warned loudly.
+- LT-65 tech facts fingerprinted post-redirect were attributed to the original host → withheld; paired with `dropCDNTechWithoutHeader` (a CDN brand with no corroborating header on the host itself is dropped).
+- LT-66 ✅ done 2026-09-10 — the D6 catch-all verdict was host-level; a bucket host whose canary happened to 404 could still record an individual `200` path as a high-confidence endpoint. Fixed: `probeCommonPaths` now keeps a per-call body-hash/bucket-marker record, and `dropCatchallCommonPathEndpoints` drops any batch endpoint whose body duplicates another probed path's or whose headers carry an `x-goog-*`/`x-amz-*`/`x-guploader-uploadid` marker, when the host classified `catchall`. Test: `pkg/recon/catchall_endpoints_test.go`.
+- LT-67 8 `shopify-*` secret-grep template leaves planned against a 746-byte static shell → suppressed when the host shows no dynamic-content evidence.
+- LT-68 (see the valmo batch above — done in the near-term batch, first hit on this run).
+- LT-69/73 (see the anti-FP fixes above — the 200-equals-baseline and 429-as-exposed shapes resurfaced here, same fix).
+- LT-70 (see above — done in the near-term batch).
+- LT-71 ✅ done (Phase 7 Step 6a, F4) — `LoadDirByIDs` ID-peek fast path for a plan-executor specific-template leaf; skips a full corpus parse. *Still open:* the pure-`--tags` scan path (no plan) still full-loads.
 
 ## Live Testing — accounts.shopify.com / shop.app (2026-09-07)
 
-End-to-end run against the two remaining unauthenticated in-scope Shopify core assets, binary from `d9fc58c` (v0.6.0 + Phase 7 Step 4 a/b/c). Both sit behind Cloudflare's **managed-challenge** ("Verifying your connection…", `Cf-Mitigated: challenge`, HTTP 403). Artifacts: `.engagements/shopify/{accounts,shopapp}-{recon,plan,scan-misconfig}-2026-09-07.json`.
-
-- **`accounts.shopify.com` — handled correctly, nothing actionable.** `recon` (full) classified the host `uniform_response: waf-block` (canary 403, 75% of probes intercepted) and warned recon is blind; `plan` emitted the note that the scan would short-circuit + one LT-57 baseline misconfig leaf; `scan --recon-file` skipped the 3,745-template corpus (D6) in 10 s and produced one honest `misconfig-waf-blocked` (low). Manual re-check with a stock Chrome UA: every path (`/`, `/robots.txt`, `/lookup`, `/select`, a random canary) still 403-challenges — the wall is real, not a UA artifact. This is the model D6 outcome.
-- **`shop.app` — poor run: 58-minute scan into the wall, 11 findings all noise, self-inflicted rate-limiting.** `recon` did *not* set the `uniform_response` fact (LT-72) despite wave-2 httpx recording the identical `403 "Verifying your connection…"` root; `plan` therefore produced no short-circuit note; `scan --recon-file` ran the full misconfig+panel corpus (3,745 templates) at `--rate-limit 10` for **55 min**, tripped Cloudflare's own rate-limiting (429), and reported 4 `misconfig-exposed-path-*` findings that fired *on the 429s* (LT-73) plus 7 header/HSTS items measured against an inconsistent 403/429/200 mix. With a browser UA, `shop.app` sub-paths respond normally (`/llms.txt` 200, `/mcp/` 200 `shop-mcp`, random canary 404, `/accounts/bounce` 302→`/account`, `/oauth/authorize` 406) — HackerFive's non-browser UA made recon far blinder than a human client (LT-75), and `plan` ignored 108/110 recon endpoints including a whole payment/OAuth/account surface (LT-76). Continues the LT-numbering.
-
-- **LT-72 — the D6 uniform-wall verdict is derived only from wave-3's own canary probe; when that probe errors (or wave-3 is skipped) no `UniformResponse` fact is set even though wave-2 httpx already saw a 401/403 challenge root.** `shop.app` got the full-corpus 58-min scan for exactly this reason — its wave-3 random-path canary was reset/challenged by Cloudflare (`fetchReconCanary` → `fetched:false` → `recordUniformResponse` early-returns) while `accounts.shopify.com`'s canary happened to return a readable 403 body and got flagged. **Fix:** in `recordUniformResponse`, when `!canary.fetched`, fall back to the host's existing wave-2 httpx root `EndpointFact` (status + title/body sample) as the `uniformwall.Classify` input; a known challenge-page title ("Verifying your connection…") or a 401/403 root is decisive on its own. **→ ✅ Done 2026-09-07 (near-term batch)**, with LT-82.
-- **LT-73 — `misconfig` exposed-path check counts an HTTP `429` as "path exists / is exposed".** `misconfig-exposed-path-{admin,graphql,swagger-ui.html,admin123}` all fired with `returned status 429 with sensitive content matching a keyword` after sustained scanning tripped Cloudflare rate-limiting. Third instance of the same false-positive family — `404` (partners, 2026-09-01), `200`-equals-baseline (LT-69), now `429`. **Fix:** in `pkg/detectors/misconfig`, restrict the "exposed" status set to `200/201/301/302/401/403` and explicitly exclude `429` and `5xx`; a throttle/error response is not evidence a path is served. **→ ✅ Done 2026-09-07 (near-term batch)** — folded with **LT-69** into the one baseline-diff classification rewrite.
-- **LT-74 — no adaptive backoff or abort on sustained upstream `429`/`503`.** The engine saw Cloudflare 429s ~15 min into the `shop.app` scan and kept firing templates at the full rate for ~40 more minutes, producing only noise and deepening the throttle. **Fix:** track the rolling fraction of `429/503` across the engine's recent requests; over a threshold, halve the effective `--rate-limit` (then pause); if it persists past N windows, abort the target with a single `scan-target-rate-limited` finding ("upstream is throttling us — results unreliable, stopped at n/m templates"). **→ ✅ Done 2026-09-07 (near-term batch)**. **LT-88** extends the trigger: also fire on a connect-timeout/refused spike mid-run against a host that was reachable at recon time (`scan-target-unreachable-mid-run`).
-- **LT-75 — HackerFive's default non-browser User-Agent turns a selective Cloudflare bot-challenge into "recon is blind".** With a stock desktop-Chrome UA, `shop.app/llms.txt` `/mcp/` `/robots.txt`, a random-path 404 canary, `/accounts/bounce` and `/oauth/authorize` all respond normally; with the default UA the same paths 403-challenge, so the wave-3 canary itself came back 403 and every real path collapsed to "same as canary = blocked". **Fix:** default the recon/scan HTTP client to a current desktop-browser UA (still `--header`-overridable), and on a challenge-page canary retry it once with that UA before concluding a WAF wall; record which UA produced the observation. **→ ✅ Done 2026-09-07 (near-term batch)** — same fix as **LT-81**, confirmed on a second, non-CDN target.
-- **LT-76 — `plan` discards low-confidence recon endpoints wholesale; a payment/OAuth/account surface produced zero detector leaves.** `shop.app` recon recorded 110 endpoints from `robots.txt`+`sitemap.xml` (`/oauth/authorize`, `/oauth/continue`, `/accounts/bounce`, `/pay/{authorize,wallet,sdk-authorize,session,hop}`, `/u/{settings,account,notifications}`, `/delete-account/confirm`, `/checkouts/internal`, …); `resolveEndpointFacts` only reasons over endpoints carrying an observed status, so all 108 non-probed ones drove nothing and the plan had just a `businesslogic` leaf off `/cart` + the misconfig baseline. **Fix:** before resolution, probe a bounded sample (say 20) of the highest-interest low-confidence robots/sitemap paths for a live status — prioritised by name (`/oauth/*`, `*/bounce`, `/pay/*`, `/u/*`, `*/callback`) — so name-suggestive endpoints can seed `authbypass`/`ssrf`/redirect leaves. **→ ✅ Done 2026-09-07 (Phase 8 Step 6, first tranche).** `pkg/recon/endpointprobe.go`: `probeUnprobedEndpoints` (Wave 3 tail) GETs a name-ranked, ≤20 sample of status-less `robots-txt`/`sitemap-xml` endpoints with a no-redirect client, folding the first-hop status (and `final_url` on a 3xx) back onto the `EndpointFact` so `resolveEndpointFacts` treats it like any observed one; static assets / JS fragments / out-of-scope hosts skipped. Tests: `TestProbeUnprobedEndpoints`, `TestPathInterestRank`.
-- **LT-77 — no redirect / OAuth-flow detector rule for bounce-shaped endpoints.** `/accounts/bounce` 302s to `/account`; `/oauth/authorize` + `/oauth/continue` are textbook `redirect_uri`/`return_to` open-redirect and OAuth-flow candidates, but the decision engine has no rule mapping a `*/bounce`, `/oauth/authorize`, `/sso`, `/logout`-shaped path to a redirect-parameter probe. (Quick manual check: `?url=` / `?return_to=` on `/accounts/bounce` are ignored — but that's one endpoint, two param names, unauthenticated.) **Fix:** an endpoint-name→probe rule that fuzzes `url,return_to,redirect_uri,redirect,next,continue,RelayState,checkout_url` against such paths and flags an off-origin `Location`; reuse the `redirect` template tag for the corpus side. **→ 🟡 Partly done 2026-09-07 (Phase 8 Step 6, first tranche).** `recon.IsRedirectFlowPath` + `resolveEndpointFacts` now dispatch the corpus's `open-redirect-generic` template against a host with a `*/bounce` / `/oauth/authorize` / `/sso` / `*/logout`-shaped endpoint (`TestResolve_RedirectFlowEndpoint_DispatchesOpenRedirectCheck`). **Still open:** a first-party per-param off-origin-`Location` probe beyond that one template (needs its own decoy-FP measurement, <5% target) — folded toward [Phase 9](18-implementation-plan-ph9.md) Step 4's active-detector work.
-- **LT-78 — the `llms.txt` / `SKILL.md` / `/mcp/` "AI agent" surface is unmodeled.** `shop.app` publishes an agent skill manifest (`/llms.txt` → `/SKILL.md`: "search the catalog, build a checkout on the merchant's domain, handle orders") and a live `shop-mcp` endpoint at `/mcp/` — an emerging surface (prompt injection into agent instructions, unauthenticated MCP `tools/list`, agent-reachable state-changing tools, checkout manipulation via the agent path). Recon fetched none of it usefully (UA-blocked then 429-drowned) and there is no detector for it. **Fix:** a passive recon signal for `/llms.txt`, `/SKILL.md`, `/.well-known/mcp`, `/mcp` — fetch and record the manifest — plus a follow-up leaf class (injection-marker scan of the manifest text, unauthenticated `POST /mcp {"method":"tools/list"}`, flag any tool whose description implies a mutation). **→ Scheduled [Phase 9](18-implementation-plan-ph9.md) Step 3** (was Phase 8 Step 8, moved 2026-09-07 in the Phase 8/9 split) — its own dedicated step; needs a design pass on the MCP client subset, the `llms.txt`/`SKILL.md` de-facto schemas, and the injection-marker ruleset before implementation.
-- **LT-79 — a scan has no per-target wall-clock budget; one Cloudflare-fronted host consumed 58 minutes.** `--rate-limit 10` × 3,745 templates (many multi-path) with no ceiling. Distinct from LT-71 (don't *load* the whole corpus for a small leaf set) — this is a *dispatch* cap. **Fix:** a `--max-target-duration` (default ~15 min) that stops dispatching new templates for a target once exceeded and records `scan-partial-time-budget` ("stopped at n/m templates"), so a slow or throttled host can't eat the whole run. **→ ✅ Done 2026-09-07 (near-term batch)**.
+Both behind Cloudflare managed-challenge. `accounts.shopify.com` was the model D6 outcome (correctly classified, corpus skipped, one honest finding in 10s). `shop.app` was not: a 58-minute scan into the wall produced 11 noise findings from self-inflicted rate-limiting, because its wave-3 canary had errored rather than returned a readable block page, so no uniform-wall fact was ever set. All items ✅ done 2026-09-07 (near-term batch / Phase 8 Step 6 first tranche) unless noted:
+- LT-72 D6 verdict derived only from the canary probe, with no fallback on a canary error → falls back to the wave-2 httpx root observation.
+- LT-73 (see anti-FP fixes above).
+- LT-74 no adaptive backoff/abort on sustained 429/503 → the adaptive-throttle middleware (LT-88 extends it to connect-failure spikes).
+- LT-75 (= LT-81, see above).
+- LT-76 low-confidence recon endpoints (robots/sitemap, unprobed) were discarded wholesale, missing a 110-endpoint payment/OAuth surface → `probeUnprobedEndpoints` probes a name-ranked sample.
+- **LT-77 (🟡 partly done)** — no redirect/OAuth-flow detector rule for `*/bounce`, `/oauth/authorize`-shaped endpoints. `IsRedirectFlowPath` now dispatches the corpus's `open-redirect-generic` template against such hosts. **Still open:** a first-party per-param off-origin-`Location` probe beyond that one template → folded toward [Phase 9](18-implementation-plan-ph9.md) Step 4.
+- **LT-78 (open)** — the `llms.txt`/`SKILL.md`/`/mcp/` AI-agent surface is unmodeled (prompt injection into agent instructions, unauthenticated MCP `tools/list`, agent-reachable mutating tools). **Fix:** a passive recon signal (fetch+record the manifest) + a follow-up leaf class (injection-marker scan, unauthenticated `tools/list` probe). → [Phase 9](18-implementation-plan-ph9.md) Step 3, needs its own design pass.
+- LT-79 no per-target wall-clock budget → `--max-target-duration` (default 15m).
 
 ## Live Testing — ALSCO / Secure Gateway sandboxes (2026-09-07)
 
-End-to-end run against `sandbox-royal.securegateway.com` + `sandbox.securegateway.com` (in-scope `alsco`, `.engagements/alsco/`), binary from `95ba06a`. Both are ALSCO's *own* pentest sandboxes on one Hetzner origin `188.34.187.32`, no CDN — the first genuinely reachable, non-walled bug-bounty target in four runs. But the bounty premise is **bypassing their "Secure Gateway" WAF + upload filters**, and the run ended with our source IP blocked at the origin. Artifacts: `.engagements/alsco/{royal-recon,royal-recon-uafix,royal-plan,royal-plan-uafix,sandbox-recon,*-scan-*}-2026-09-07.json`. Continues the LT-numbering.
+First genuinely reachable (no-CDN) bug-bounty target in four runs — but the program's premise is bypassing their own WAF/upload filters, and the run ended with the scanning IP blocked at origin. All items ✅ done 2026-09-07 (near-term batch / Phase 8 Step 6 first tranche) unless noted:
+- LT-80 `--scope` didn't strip inline `#` comments → fixed (same fix applied to `scan -t <file>`).
+- LT-81 (= LT-75, see above).
+- LT-82 D6 verdict set without cross-checking recon's own crawl evidence (54 real endpoints incl. a genuine 404 among 2xx) → `crawlEvidenceRefutesWall` suppresses the verdict on ≥5 distinct endpoints spanning ≥2 status codes.
+- LT-83 numeric query params (`?article=3`) ignored as ID-shaped IDOR candidates → `numericQueryIDCandidates`.
+- LT-84 false `Cloudflare`/CDN facts and asset-host brands (cdnjs/jsdelivr) spawned unresolved leaves → denylist additions + the LT-65 "CDN fact absent from host's own headers" fix.
+- LT-85 (see above — JS-syntax-fragment candidates).
+- LT-86 the repeated-error breaker discarded a host's good observations when only *some* paths tarpit → a timed-out path now only counts as a per-path skip; the wave-2 root is retained.
+- **LT-87 (open, coverage/model gap)** — no WAF-fingerprint step, no payload-mutation-on-403 retry, no upload-bypass detector — the whole premise of a WAF/filter-bypass-premised program. **Fix:** (1) WAF-detect recon signal; (2) retry a blocked payload with a mutation/encoding set and flag any bypass; (3) an `uploadbypass` detector. → [Phase 9](18-implementation-plan-ph9.md) Step 4, sequenced last (wants Phase 8's param surface first). A docs/22 target-selection caveat is already applied.
+- LT-88 (see LT-74 above — folded in as an extra trigger condition).
 
-- **LT-80 — `--scope` parser doesn't strip an inline `#` comment; the entry silently becomes an unmatchable literal.** `pkg/scanner/scope/scope.go`'s `New()` skips a line only when it is blank or *starts with* `#` (line 57); `sandbox-royal.securegateway.com  # H1 asset 867317` is then stored whole (lowercased) as one "domain", which `Allowed()` can never match. Recon reported the in-scope target as `out_of_scope` with "not covered by --scope — recon skipped entirely" even though the file lists it. `.engagements/shopify/scope.txt` dodged this only because every *tested* host sat on a bare line. **Fix:** cut each line at its first `#` (a `#` is legal in neither a hostname nor a CIDR) before the blank/comment test; apply the same to `cmd/hackerfive/scan.go`'s `resolveTargets` file handling (the `scope.go` doc comment says they share the convention). **→ ✅ Done 2026-09-07 (near-term batch)**.
-- **LT-81 — recon's own probe HTTP client sends a non-browser User-Agent; a UA-sniffing target yields a false `uniform_response` verdict that short-circuits the whole scan.** `sandbox-royal` (plain nginx/PHP, no CDN) serves `200` + the real "Royal CMS" to a desktop-Chrome UA but `302` to a default/non-browser UA. `pkg/recon`'s canary + common-path probes (its own client) all got the `302` → `uniformwall.Classify` → `uniform_response: {kind: catchall, canary_status: 302, blocked_ratio: 1.0}` → `scanner`'s D6 skips the entire template corpus. The *same* recon file already held 54 endpoints + a full tech stack from katana/httpx (which send a browser-ish UA per LT-4). Adding `--header 'User-Agent: <Chrome>'` alone flipped `uniform_response` to `null`. Same root cause as **LT-75**, now with: (a) a second, unrelated target; (b) the `catchall` variant (reads as "dead asset" — worse than `waf-block`); (c) a first-party origin app, not a CDN edge. **Fix (= LT-75):** default recon's own client to a current desktop-browser UA, matching katana/httpx; keep `--header` override. **→ ✅ Done 2026-09-07 (near-term batch)** — this is the LT-75 fix; the two entries close together.
-- **LT-82 — the D6 uniform-wall verdict is set without cross-checking recon's own crawl evidence.** The `ReconResult` that carried `catchall` ("no real routing to map from this vantage") simultaneously carried 54 distinct in-scope endpoints — including a real `404` on `/3` among the `200`s — plus PHP / jQuery:3.5.1 / Nginx facts. That combination is dispositive proof the "one page for every path" conclusion is wrong. **Fix:** `recordUniformResponse` suppresses/downgrades a `catchall`/`waf-block` verdict when the host already has ≥ N distinct wave-2/3 endpoints spanning ≥ 2 status codes (a genuine `404` among `200`s). The scanner is currently short-circuiting the corpus on a verdict the recon data itself refutes. **→ ✅ Done 2026-09-07 (near-term batch)**, with LT-72.
-- **LT-83 — `SuggestIDOREndpointCandidates` ignores numeric-valued query parameters — the exact IDOR/SQLi surface of a query-routed CMS.** Recon crawled `?article=3..13`, `?topic=1..2` (and the program pays specifically for injection on "Royal CMS"), yet the plan's idor leaf is a blind `endpoint_template: /{{id}}` ("1 ID-shaped endpoint candidate (e.g. /{{id}})"). Not a recon-completeness gap — the endpoints are in the file; the suggester only inspects *path* segments. **Fix:** a query param whose observed value is a small integer and varies across crawled URLs is an ID-shaped candidate → `/?article={{id}}`. **→ ✅ Done 2026-09-07 (Phase 8 Step 6, first tranche).** `recon.numericQueryIDCandidates` (wired into `SuggestIDOREndpointCandidates`): a query key whose value is a 1-6-digit int taking ≥2 distinct values across crawled URLs for one path becomes `/path?key={{id}}`, with a pagination/cosmetic-key denylist. Tests in `TestSuggestIDOREndpointCandidates`. Realises value once `idor` has auth or the Step 9 injection detector exists.
-- **LT-84 — third-party-CDN brand facts and a false `Cloudflare` fact are attributed to the target host, each spawning an unresolved `recon-followup` leaf.** `sandbox-royal` serves `Server: nginx` with no CF headers, but recon fingerprinted `Cloudflare` on it (mis-framing the origin as CDN-fronted) plus `cdnjs` / `jsDelivr` / `Google Hosted Libraries` from crawled `<script src>` hosts — four "matched no registry capability" leaves, LLM-fallback bait, and the `Cloudflare` one actively misleads later reasoning. **Fix:** add `cdnjs` / `jsdelivr` / `google hosted libraries` / `unpkg` to `nonActionableTech` (they name an asset host, not the target's surface); do not attribute a `Cloudflare`/CDN fact to a host whose own response headers don't carry it. **→ Split:** the `nonActionableTech` denylist additions are **✅ done 2026-09-07 (near-term batch)**; the "CDN fact absent from the host's own headers" half is **✅ done 2026-09-07 (Phase 8 Step 6, first tranche)** — `dropCDNTechWithoutHeader` in `pkg/recon/active.go`, see LT-65.
-- **LT-85 — endpoint extraction emits JavaScript-syntax fragments as endpoint / "protected path" candidates.** `plan`'s `field_suggestions` handed the authbypass detector `protected_paths` of `/library/video/'+D.prop(` and `/library/ideabox/'+e.query.results.item[n].link+'` — literal JS string-concat snippets from crawled `.js` bodies. **Fix:** validate a candidate against a URL-path charset (reject `'` `+` `(` `[` and spaces) before it seeds an authbypass/idor leaf. Same family as LT-20 / LT-66 (junk-endpoint filtering), new shape. **→ ✅ Done 2026-09-07 (near-term batch)**; [Phase 8](17-implementation-plan-ph8.md) Step 3's own JS-body endpoint extraction (`extractJSEndpoints`, done 2026-09-09) reuses this exact `IsPlausibleURLPath` helper for its own candidate filtering rather than inventing a second bar.
-- **LT-86 — recon's repeated-error circuit-breaker (LT-4) abandons a host that hangs on *some* paths, discarding the observations it already has.** `sandbox.securegateway.com` served `GET /` (200, real page) and `/robots.txt` (200) to a browser UA but tarpits `.well-known/*` (no response → 30s `--timeout` → "context deadline exceeded"). Two such hangs in Wave 3 tripped the breaker ("no further common-path/auth-boundary probes"), and the final recon result is **0 endpoints, 0 tech, 1 host** — the working root GET never made it in. **Fix:** a timed-out path counts toward a per-path skip, not the host-down breaker; and a wave-2 httpx `200` root is retained in the result even when the wave-3 breaker trips. **→ Split:** retaining the wave-2 `200` root is **✅ done 2026-09-07 (near-term batch)**; the per-path-timeout-vs-host-breaker tuning is **✅ done 2026-09-07 (Phase 8 Step 6, first tranche)** — `isRequestTimeout` in `pkg/recon/crawl.go`: a client/context timeout is a per-path skip (with its own warning), only a connection-level failure (refused/reset/DNS/TLS) feeds the LT-4 breaker. Tests: `TestProbeCommonPaths_PathTarpit_DoesNotTripHostBreaker`, `TestIsRequestTimeout`.
-- **LT-87 (coverage / model gap) — no notion of "a WAF sits in front; a blocked payload is signal, and a finding requires *bypassing* it."** The entire ALSCO bounty is bypassing their "Secure Gateway" WAF + upload filters. Manual read-only probes: `?article=8'`, `?article=8 AND 1=1`, `?article=8/**/OR/**/1=1`, `?lang=../../../../etc/passwd` all return `403`/`503`/`302` from the WAF. HackerFive fires known-signature payloads this WAF exists to catch — near-zero yield, and every block feeds the WAF's auto-ban heuristic. It has no WAF-fingerprint step, no payload mutation/encoding on a `403`, no "`403` on payload X but `200` on benign X ⇒ WAF rule boundary" reasoning, and no upload-filter-bypass detector (extension × content-type × magic-byte permutation, the program's stated challenge). **Fix (new capability):** (1) a WAF-detect recon signal (block-page fingerprint + a benign-vs-payload status delta); (2) when a template/probe payload draws a `403`/`406`/`429` but a benign control on the same endpoint returns `2xx`, retry with a small mutation/encoding set and record any bypass as a finding; (3) an `uploadbypass` detector for programs like this. Also: note in target-selection guidance (docs/22) that a WAF/filter-bypass-premised program is a weak fit for signature-scanning until (1)–(3) exist. **→ Scheduled [Phase 9](18-implementation-plan-ph9.md) Step 4** (was Phase 8 Step 9, moved 2026-09-07 in the Phase 8/9 split) — "WAF-aware probing + active injection / upload-bypass detectors"; also the home for a native `sqli`/`xss`/`lfi` detector. Sequenced **last** in Phase 9 — the injection detectors are parameter-aware and want the param surface Phase 8 Steps 3 + 6 produce. Needs its own design pass. The docs/22 caveat is a small **do-now** doc edit (already applied 2026-09-07).
-- **LT-88 (operational) — a recon/scan sequence got our source IP blocked at the origin and nothing in the tool noticed or adapted.** After ~2 recon passes + a partial corpus scan + injection probes, both sandbox hosts (shared IP `188.34.187.32`) went from `200` to connection-timeout while the Cloudflare-fronted apex stayed up; the backgrounded 4,799-template tag-scan kept firing into the timeout. **Fix:** extend **LT-74**'s adaptive-backoff/abort trigger from `429`/`503` to also cover "connect-timeout / connection-refused ratio spikes mid-run against a host that was reachable at recon time" → abort the target, emit one `scan-target-unreachable-mid-run` finding; **LT-79**'s `--max-target-duration` would also have bounded the waste. **→ ✅ Done 2026-09-07 — folded into LT-74** (near-term batch) — one extra trigger condition on the same adaptive-backoff rule.
-
-Worked correctly: LT-26 tech-tag narrowing (`8 tags = 5 misconfig floor + jquery/nginx/php` from `--recon-file`); LT-35 exact-host-scope warning; the D6 `--header`-UA workaround (proves the LT-81/LT-75 fix). Not reached (IP block): plan-execute, any real scan finding, host-2 anything, `--detector idor` (needs `--auth-token`; no test account this engagement).
+Worked correctly this round: LT-26 tech-tag narrowing, LT-35 exact-host-scope warning, the D6 `--header`-UA workaround.
 
 ## Live Testing — crAPI actionable-findings prep (2026-09-08)
 
-Not a live run — capability gaps identified while planning the pre-demo crAPI
-round (demo 2026-09-10). Every live target in the four prior rounds was
-WAF-walled, SPA-catch-all, or decommissioned, so the recon → detector →
-**confirmed actionable finding** loop has never run end-to-end against a
-dense-vuln target. crAPI is the lab target with that surface (BOLA/IDOR ×N,
-JWT `alg:none`/weak-secret, unauthenticated-but-shouldn't-be endpoints, SSRF,
-mass assignment). The detectors are already capable — `idor` has two-identity
-BOLA comparison (`Config.OtherAuthToken`, wired CLI/MCP/webui); `authbypass`
-has `checkMissingAuth`/`checkJWTAlgNone`/`checkJWTWeakSecret`/`checkTokenReuse`.
-The gaps are on the recon→feed side. The credentialed
-recon→plan→approve→scan→export round trip itself + the fp/fn measurement are
-already [Phase 7](16-implementation-plan-ph7.md) Step 6 (G1, renumbered 2026-09-10 from "Step 7"); LT-89/LT-90
-below are the two capability pieces that Step-6 round needs and that no step
-currently owns — **pulled forward for the 2026-09-10 demo.**
+Capability-gap review (not a live run): every prior live target was WAF-walled/decommissioned, so the recon→detector→**confirmed finding** loop had never run against a dense-vuln target. crAPI has that surface (BOLA×N, JWT `alg:none`, SSRF, mass assignment); the detectors were already capable, the gaps were on the recon→feed side.
 
-- **LT-89 ✅ done 2026-09-08 (Step A).** `recon --openapi-spec <file|url>` (repeatable, also on `plan`, with or without `--recon-file`): `recon.IngestOpenAPISpecs` reads a local file or GETs a URL (bounded to `maxSpecBodyBytes`, via the same rate-limited client + headers as every other probe), walks it with `walkOpenAPISpec`, rebases routes onto the URL ref's host (else the target's), scope-checks every produced `EndpointFact`, and folds the result into the `ReconResult` / aggregator exactly as `probeCommonPaths` does for a served spec — one `--openapi-spec X: walked N route(s)` warning per ref. `pkg/recon/specingest.go`; wired in `recon.Run` (after Wave 1, all depths) + `WithOpenAPISpecs`, `cmd/hackerfive/{recon,plan}.go`. Tests: `TestIngestOpenAPISpecs_{FileRef,URLRef,ScopeFiltersRoutes,BadRefs}`. **`--auth-token` not added** — `--header 'Authorization: Bearer <token>'` already reaches recon's own probes *and* httpx/katana (`headerArgs`), so authenticated recon works today; a dedicated flag would be pure sugar. Original: crAPI's spec is on disk / behind `401` and not at `/swagger.json`, so an unauthenticated recon walked ~none of its API; the 2026-09-07 LT-40 validation only worked because the spec was hand-served at `127.0.0.1:9999/swagger.json`. **→ Phase 8 Step 6 (extends LT-40); pulled forward 2026-09-08 for the demo.**
-- **LT-90 ✅ done 2026-09-08 (Step D).** `walkOpenAPISpec` now reads OpenAPI `security` — a document-level default, overridden per operation (`security: []` opts a route back out) — and sets `EndpointFact.AuthRequired` on the representative operation (`recon-result.schema.json` v1.8, additive/omitempty). `SuggestAuthBypassPathsFromRecon` adds a **parameterless** auth-required `api-spec` route to its `protected` set (a `{param}` route has no id to invent, left to the idor path), sorted + capped at `maxSpecAuthProtectedPaths` (30); `resolveEndpointFacts` then emits the existing endpoint-driven `authbypass` leaf, and `checkMissingAuth` fires each path tokenless and flags a non-401/403. `pkg/recon/{specwalk,types,suggest}.go`. Tests: `TestWalkOpenAPISpec_{AuthRequired,NoSecurity}`, `TestSuggestAuthBypassPathsFromRecon_SpecDeclaredAuth`, `TestResolve_SpecAuthRequiredRoute_ProducesAuthbypassLeaf`. Original: the `security:` declaration — the cleanest "this should reject me and doesn't" signal — was dropped by the walker. **→ Phase 8 Step 6; pulled forward 2026-09-08 for the demo.**
-- **LT-91 ✅ done 2026-09-08 (Step C — surfaced by the Step B crAPI live round).** A recon result with N ID-shaped endpoint candidates produced **one** `idor` leaf whose single `EndpointTemplate` a downstream field-suggestion pass then had to pick from N — `fieldsuggest.Deterministic` treats "more than one idor candidate" as a *miss* (unlike `authbypass`'s "multiple protected paths = all usable"), so the `plan → approve → execute` flow either escalated idor to a human / I4 (and, with no LLM key, **dropped idor entirely**) or — in the webui Launch path — arbitrarily scanned `candidates[0]`, which for crAPI's spec sorts to `/community/api/v2/community/posts/{{id}}`, **not** the vulnerable `/workshop/api/shop/orders/{{id}}`. Fix: `registry.resolveEndpointFacts` now fans out **one idor leaf per candidate**, each carrying its own `PlanNode.EndpointTemplate` (new additive/omitempty field), capped at `maxEndpointDrivenIdorLeaves` (12); the bare tech-capability idor leaf is dropped once ≥1 fanned leaf exists (`dropBareIdorLeafWhenFannedOut`). `planexec.runLeaf` copies a non-empty `leaf.EndpointTemplate` into a blank `cfg.EndpointTemplate` just before dispatch (logged, no LLM, no SeedFn), and `missingRequiredFieldForLeaf` lets the pre-dispatch gate see it. `mcpserver.resolveFieldSuggestions` / `cmd`'s `planFieldSuggestions` suppress the now-moot idor `endpoint_template` escalation when the tree already fanned out (`treeHasEndpointDrivenIdorLeaf`). `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`, `pkg/mcpserver/tools_plan.go`, `cmd/hackerfive/planfields.go`. Tests: `TestResolve_Idor{EndpointCandidates_FanOutPerCandidate,CapabilityOnly_KeepsBareLeaf}`, `TestRunPlan_LeafEndpointTemplate_RunsWithoutSeedOrLLM`, `TestPlanFieldSuggestions_IdorFannedOut_NoEscalation`. **→ Phase 8 Step 6 (extends LT-89/LT-90); demo prep.**
+- LT-89 ✅ done 2026-09-08 — `recon --openapi-spec <file|url>` ingests a spec recon can't discover on its own (local/behind-auth/non-standard-path), scope-checked, folded into `ReconResult` like a served spec.
+- LT-90 ✅ done 2026-09-08 — `walkOpenAPISpec` reads OpenAPI `security:` declarations onto `EndpointFact.AuthRequired`, feeding an endpoint-driven `authbypass` leaf.
+- LT-91 ✅ done 2026-09-08 (Step C) — one idor leaf with N candidates meant a downstream field-miss picked the wrong one (crAPI: a harmless community-posts route, not the real BOLA orders route) → `resolveEndpointFacts` now fans out **one idor leaf per candidate**, each self-sufficient (own `EndpointTemplate`), capped at 12.
 
 ### Step B — crAPI live round 1 (diagnostic), 2026-09-08
 
-First end-to-end recon → detector → **confirmed actionable finding** loop. crAPI `http://127.0.0.1:8888`, two registered accounts, spec ingested via `recon --recon-depth full --openapi-spec ~/targets/crAPI/openapi-spec/crapi-openapi-spec.json --header 'Authorization: Bearer <tok>'` (40 routes walked, 30 `auth_required`, correctly rebased onto the target host; `security: []` opt-outs on login/signup/check-otp detected). Detectors run isolated (`--templates <empty-dir>`) with `--auth-token`/`--other-auth-token`:
-
-- **authbypass — 6 × critical, verified.** `checkJWTAlgNone` forged an `{"alg":"none"}` token from each protected spec path; crAPI's identity service returned `200` + the account's real PII (manual repro: forged token → full dashboard record; no-auth / garbage token → `404`). crAPI genuinely does not verify JWT signatures. Fed entirely by LT-90's spec-`security:` → `protected_paths` auto-fill, no LLM.
-- **authbypass — 1 × BFLA (flagged via token-reuse, conf low).** `/workshop/api/management/users/all` returns every user's email + phone to a plain `ROLE_USER`. Real; the token-reuse framing ("may not differentiate by account") undersells it — see LT-92.
-- **authbypass — 5 × token-reuse noise (conf low, hedged).** Shared product catalog / two empty order+vehicle lists compare equal across accounts. Acceptable — each is labelled "a legitimately shared endpoint looks the same"; not FPs that erode trust, but see LT-92.
-- **authbypass — 1 × no-rate-limit on `/identity/api/auth/login` (conf low).** Real, expected, appropriately hedged.
-- **idor — 5 × high, verified.** `--endpoint /workshop/api/shop/orders/{{id}}`, baseline mode: orders 1–5 (owned by seeded users `adam007`/`pogba006`/`robot001`) returned to *both* test accounts with **full payment-card data**; orders 6–100 all `500` and none flagged (0 FP). crAPI's canonical BOLA. Pre-LT-91 this endpoint was only reachable by hand-picking it; post-LT-91 the plan fans out a leaf for it automatically.
-
-**Follow-ups filed:** LT-91, LT-93, LT-94 (all fixed, below). LT-92 below.
-
-- **LT-92 ✅ done 2026-09-09.** New `authbypass.checkBFLA`: fires each `bflaPathHints`-shaped (`/all`, `/admin/`, `management`) protected path with one available token and flags `high`/`high` when the body carries `>1` distinct account identifier (`emailRe`/`idKeyRe`, `rules.go`) — a positive structural signal, not a diff. `checkTokenReuse` tightened to require the equal body be non-empty and contain `≥1` identifier before flagging at all, quieting the 5 benign shared-catalog/empty-list hits from the crAPI round without touching `checkBFLA`. `pkg/detectors/authbypass/{detector.go,rules.go}`. Tests: `TestAuthBypassBFLA_{Hit,NoFinding_SingleAccount,NoFinding_PathNotShaped}`, `TestAuthBypassTokenReuse_NoFinding_{EmptySharedBody,NonPersonalizedBody}` (`tests/unit/detector_authbypass_test.go`). **Value: high** (a real, confirmed BFLA leaking every account's PII) **· Effort: medium (spent).** Not filed under a phase step — detector-logic precision, not Step 6's recon-signal theme (`crapi-precision-fixes` batch, alongside LT-95/96).
+First end-to-end recon→detector→confirmed-finding loop, two accounts, spec ingested via LT-89. Isolated detector runs (`--templates <empty-dir>`):
+- **authbypass** — 6× critical (JWT `alg:none` forged token → real PII, manually reproduced; crAPI genuinely doesn't verify signatures), 1× BFLA (flagged via token-reuse, see LT-92), 5× token-reuse noise (hedged, acceptable), 1× no-rate-limit on login (hedged).
+- **idor** — 5× high, verified: baseline-mode BOLA on `/workshop/api/shop/orders/{{id}}` (orders 1-5 return full card data to both test accounts; 6-100 all 500, 0 FP). crAPI's canonical BOLA, pre-LT-91 only reachable by hand-picking the endpoint.
+- **LT-92** ✅ done 2026-09-09 — new `authbypass.checkBFLA` fires a structural signal (>1 distinct account identifier in the body of a `/all`/`/admin`/`management`-shaped path) instead of relying on the diff-based token-reuse check, which was tightened to require a non-empty, identifier-bearing body before flagging at all — quiets the 5 benign shared-catalog hits without touching the real BFLA detection.
 
 ### Step E — crAPI live round 2 (full pipeline + fp/fn), 2026-09-08
 
-The whole loop, no manual per-leaf `scan`: `recon --openapi-spec` → `registry.Resolve` → `planexec.RunPlan` (the exact executor the webui Plan Preview "approve → execute" and the MCP `plan` tool wrap), two accounts' tokens on `baseCfg`. Surfaced **LT-93** then **LT-94** (both fixed below); after those, one serial run produced **26 findings, every one a true positive (0 FP)**:
+The whole loop, no manual per-leaf scan: `recon --openapi-spec` → `registry.Resolve` → `planexec.RunPlan` (the same executor webui/MCP wrap), two tokens on `baseCfg`. Surfaced and fixed LT-93, LT-94 (below); after those, one serial run produced **26 findings, 0 FP**:
 
-| crAPI vuln | pipeline result |
+| crAPI vuln | Result |
 | --- | --- |
-| Broken auth — JWT signature not verified (`alg:none`) | ✅ **8 × critical**, all manually reproduced (`no-auth`/`garbage` → `401`, forged `alg:none` → `200`) |
-| BOLA — other users' shop orders + full card data | ✅ **5 × high** (orders 1–5; 6–100 all `500`, none flagged) |
-| Secrets — `/.env` served with real DB/Mongo passwords | ✅ **1 × high** misconfig (`misconfig` leaf, not probed in the isolated Step B round) |
-| Missing security headers (CSP/HSTS/XFO/XCTO) on the API base | ✅ 4 × misconfig |
-| Excessive-data / token-reuse hedged hits | 6 × medium (noise, LT-92) + 1 × medium no-rate-limit login |
-| BOLA — other users' vehicle **location** | ❌ miss — idor leaf ran, but the IDs are UUIDs and `idor.SequentialIntStrategy` only enumerates ints 1..100 → **LT-95** |
-| BOLA — other users' **mechanic reports** (`report_id=` query param) | ❌ miss — the spec carries it as an empty `report_id=`, so `SuggestIDOREndpointCandidates` never templated it → **LT-95** |
-| BFLA — delete another user's video (`DELETE`) | ❌ miss — no detector probes non-GET methods → **LT-132** |
-| SSRF — `contact_mechanic` forwards to an attacker URL (POST **body** field) | ❌ miss — `SuggestSSRFParamsFromRecon` only inspects query-param names → **LT-96** |
-| Mass assignment; NoSQL/SQL injection in coupon/order | ❌ miss — no native detector; injection needs a corpus run (not attempted this round) → **LT-133** |
-| JWT weak-secret; OTP-endpoint rate limiting | ❌ miss — `checkJWTWeakSecret` wordlist didn't hit; `checkRateLimitSignal` only ran the login path → **LT-134** |
+| Broken auth — JWT `alg:none` | ✅ 8× critical, manually reproduced |
+| BOLA — shop orders + card data | ✅ 5× high (orders 1-5; 6-100 all 500, none flagged) |
+| `/.env` served with real DB/Mongo passwords | ✅ 1× high misconfig |
+| Missing security headers on API base | ✅ 4× misconfig |
+| Excessive-data / token-reuse hedged hits | 6× medium noise (LT-92) + 1× medium no-rate-limit |
+| BOLA — vehicle location (UUID IDs) | ❌ miss → **LT-95** (idor only enumerated small ints) |
+| BOLA — mechanic reports (empty `report_id=`) | ❌ miss → **LT-95** (spec walker didn't template an empty ID-shaped query key) |
+| BFLA — delete another user's video (DELETE) | ❌ miss → **LT-132** (no detector probes non-GET methods) |
+| SSRF — `contact_mechanic` forwards attacker URL in POST **body** | ❌ miss → **LT-96** (SSRF param-suggestion only inspected query-param names) |
+| Mass assignment; NoSQL/SQL injection | ❌ miss → **LT-133** (no native detector; injection needs a corpus run, not attempted) |
+| JWT weak-secret; OTP rate limiting | ❌ miss → **LT-134** (wordlist/path didn't hit) |
 
-**Verdict:** the pipeline autonomously produces **13 verified actionable findings (8 critical + 5 high)** plus the `/.env` secret leak, with **zero false positives**, from `recon --openapi-spec → plan → execute` — no LLM, no manual field entry. The misses are feature gaps (LT-95/LT-96/LT-132/LT-133/LT-134), not regressions.
-
-- **LT-132 open.** No authbypass/idor check ever probes a non-GET method — crAPI's `DELETE /workshop/api/merchant/video/delete/{id}` (delete another user's video) is a real BFLA a GET-only pipeline structurally cannot reach. **Value: medium-high** (mutating-method BFLA/BOLA is a common, generalizable real-world bug class, not a one-off). **Effort: medium** — threading a `Method` field through `checkBFLA`/`checkMissingAuth`'s existing request-building path is mechanical, but firing a non-idempotent method (`DELETE`/`PUT`/`PATCH`) against a live target needs a real safety review first (this is still read/enumerate territory only if the probed resource is the *authenticated* account's own — never another account's actual resource — so the design has to pick a target carefully, e.g. probe with the *other* account's token against the *owner's* own just-observed resource ID, read-verify via a follow-up GET rather than trusting the mutating call's response alone). **Route: Phase 9 Step 4** (WAF-aware probing + active injection detectors) design — it already touches parameter-aware, non-GET-shaped probing; folding method-awareness into that step's authz checks avoids a second design pass.
-- **LT-133 open.** Two distinct, currently-homeless vuln classes bundled in one crAPI observation. **Mass assignment** (an extra/undocumented JSON field in a write request gets silently applied — e.g. crAPI's coupon/order endpoints) has **no detector anywhere in the codebase**, native or corpus; it isn't `sqli`/`xss`/`lfi`/`uploadbypass`, so it falls outside Phase 9 Step 4's stated scope even after that step ships. **NoSQL/SQL injection** *is* Phase 9 Step 4's job once it lands. **Value: medium** (real bug class, but crAPI's own instance wasn't independently confirmed exploitable this round — noted as a miss, not a manually-verified finding, unlike LT-92/95/96). **Effort: high** for mass assignment specifically — a first-party detector needs a design pass (how to safely diff "extra field accepted" without a destructive write on a target account) that doesn't exist yet; SQLi/NoSQLi effort is already accounted for in Phase 9 Step 4. **Route:** SQLi/NoSQLi → Phase 9 Step 4 (already scoped). Mass assignment → needs its own future design note; not folded into Step 4 silently, named here so it isn't lost.
-- **LT-134 open.** `checkJWTWeakSecret`'s fixed wordlist didn't contain crAPI's actual secret, and `checkRateLimitSignal` only probes `LoginPaths`, never an OTP/2FA-verification endpoint. **Value: low** — reads as a target-specific wordlist/candidate-list gap (widen the list, add OTP path patterns) rather than a structural detector bug; not generalizable the way LT-92/95/96 were. **Effort: low** — append entries to `WeakJWTSecrets` / a new `OTPPaths` candidate list, same shape as the existing `LoginPaths`/`LogoutPaths` override pattern. **Route:** low-priority / trigger-gated roll-up (alongside LT-6 tail/LT-66 tail below) — pick up opportunistically, not worth a phase step of its own.
-
-- **LT-91 ✅ done 2026-09-08 (Step C — surfaced by the Step B crAPI live round).** A recon result with N ID-shaped endpoint candidates produced **one** `idor` leaf whose single `EndpointTemplate` a downstream field-suggestion pass then had to pick from N — `fieldsuggest.Deterministic` treats "more than one idor candidate" as a *miss* (unlike `authbypass`'s "multiple protected paths = all usable"), so the `plan → approve → execute` flow either escalated idor to a human / I4 (and, with no LLM key, **dropped idor entirely**) or — in the webui Launch path — arbitrarily scanned `candidates[0]`, which for crAPI's spec sorts to `/community/api/v2/community/posts/{{id}}`, **not** the vulnerable `/workshop/api/shop/orders/{{id}}`. Fix: `registry.resolveEndpointFacts` now fans out **one idor leaf per candidate**, each carrying its own `PlanNode.EndpointTemplate` (new additive/omitempty field), capped at `maxEndpointDrivenIdorLeaves` (12); the bare tech-capability idor leaf is dropped once ≥1 fanned leaf exists (`dropBareCapabilityLeavesSupersededByEndpointDriven`). `planexec.runLeaf` copies a non-empty `leaf.EndpointTemplate` into a blank `cfg.EndpointTemplate` just before dispatch (logged, no LLM, no SeedFn), and `missingRequiredFieldForLeaf` lets the pre-dispatch gate see it. `mcpserver.resolveFieldSuggestions` / `cmd`'s `planFieldSuggestions` suppress the now-moot idor `endpoint_template` escalation when the tree already fanned out (`treeHasEndpointDrivenIdorLeaf`). `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`, `pkg/mcpserver/tools_plan.go`, `cmd/hackerfive/planfields.go`. Tests: `TestResolve_Idor{EndpointCandidates_FanOutPerCandidate,CapabilityOnly_KeepsBareLeaf}`, `TestRunPlan_LeafEndpointTemplate_RunsWithoutSeedOrLLM`, `TestPlanFieldSuggestions_IdorFannedOut_NoEscalation`. **→ Phase 8 Step 6 (extends LT-89/LT-90); demo prep.**
-- **LT-93 ✅ done 2026-09-08 (Step E).** Every `registry.resolve*` helper keys and matches on the **bare hostname**, and set that as each leaf's `Target`. But a leaf's `Target` is exactly what `planexec.runLeaf` hands `scanner.Engine` as the request base — `idor`/`authbypass`/`ssrf` build `target + path`, and a bare `"127.0.0.1"` has no scheme or port, so every request was malformed and the plan→execute path found **nothing** against a real host (Step E's first run: 0 findings, ~7 s/leaf). It had never shown up because every prior live round was WAF-walled / decommissioned and every manual `scan` passes a full URL. Fix: after the per-host dedup keys are settled, `Resolve` rewrites every **dispatchable leaf's** `Target` to the `scheme://host[:port]` recon actually observed — `reconHostBaseURL`: first a probed endpoint URL on that host, then `result.Target` / `APISpec.URL`, then a port-list heuristic, then an `https://` fallback. Host/class node IDs and structural node `Target`s stay bare (`ClassNodeID`, `tree.Find`, webui rendering depend on it); only leaves reach the executor. `pkg/registry/decisionengine.go`. Tests: `TestResolve_LeafTarget_CarriesSchemeAndPort`, `TestReconHostBaseURL`. **→ Phase 8 Step 6; demo-blocking, fixed same day.**
-- **LT-94 ✅ done 2026-09-08 (Step E).** `planexec.RunPlan` is not self-sufficient: it relies on the **caller** to have pre-filled `baseCfg.ProtectedPaths`/`SSRFParams` from recon. The MCP `plan` tool does (`resolveFieldSuggestions`); the **webui `executePlan` (Plan Preview → Approve)** path does **not** — it hands `job.ExecConfig()` straight to `RunPlan` — so its endpoint-driven `authbypass`/`ssrf` leaves were skipped for a "missing" field recon had already derived. Fix, symmetric with LT-91's idor field: `resolveEndpointFacts` stashes the derived paths/params on the leaf (`PlanNode.ProtectedPaths` / `PlanNode.SSRFParams`, additive/omitempty); `planexec`'s new `applyLeafReconFields` fills any blank `cfg` field from them just before dispatch (an explicit flag / baseCfg auto-fill / C7a seed still win). The endpoint-driven leaf now gets a distinct dedup key so it doesn't collapse into the bare tech-capability `authbypass` leaf, which `dropBareCapabilityLeavesSupersededByEndpointDriven` then removes. Verified: with `baseCfg` empty, the pipeline still produced all 8 alg:none criticals + BOLA. Known minor gap: `LoginPaths`/`LogoutPaths` (optional, detector has defaults) aren't carried on the leaf, so a bare-`baseCfg` run misses the login-path rate-limit signal — the MCP path still gets it. `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`. Tests: `TestResolve_EndpointDrivenAuthbypassLeaf_CarriesProtectedPaths`, `TestRunPlan_LeafProtectedPaths_RunsWithoutBaseCfgPreFill`. **→ Phase 8 Step 6; demo prep.**
-- **LT-95 ✅ done 2026-09-09.** Two sub-fixes. (1) `idShapedQueryCandidate` now templates a documented-but-**empty** ID-shaped query param (`?report_id=`, the spec walker's own keyless encoding) as `?report_id={{id}}` — same tolerance `isSpecPathParam` already gives a valueless path `{id}`. (2) New `idor.RandomUUIDStrategy{Seed, FillerCount}` reuses `runBaseline`/`Establish` completely unchanged: `FillerCount` fresh v4 UUIDs (never invented targets, just denial-baseline noise — real records can't collide with them) establish the "denied" signature, and one real `Seed` ID — a concrete UUID recon actually observed in an authenticated crawl, very likely that account's own resource ID — is evaluated against it like any other sample. `idShapedCandidate`/`idShapedPathCandidate`/`idShapedQueryCandidate` now also return the concrete value + whether it was UUID-shaped (previously computed then discarded); new `recon.SuggestIDORSeedIDs` exposes it keyed by `{{id}}`-template, additive and non-breaking to `SuggestIDOREndpointCandidates`'s existing 4 callers. New additive `PlanNode.EndpointSeedID`/`EndpointIDIsUUID` and `scanner.Config.IDORSeedID`/`IDOREndpointIsUUID`, threaded `resolveEndpointFacts` → `applyLeafReconFields` → `engine.go`'s idor dispatch (mirrors LT-91/94's leaf-field-carrying convention exactly). `pkg/recon/{suggest.go,suggest_test.go}`, `pkg/detectors/idor/{strategy.go,strategy_test.go}`, `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`, `pkg/scanner/{config.go,engine.go}`. Tests: `TestSuggestIDORSeedIDs*`, `TestRandomUUIDStrategy_*`, `TestIDORDetector_RandomUUIDStrategy_{Hit,NoFinding_ProperlyProtected}`, `TestResolve_IdorEndpointCandidates_UUIDCandidateCarriesSeed`, `TestApplyLeafReconFields_*`. **Value: high** (closed a real, confirmed UUID-keyed BOLA plus a documented-but-empty-query-param BOLA) **· Effort: medium (spent).** Not filed under a phase step — see LT-92's note (`crapi-precision-fixes` batch).
-- **LT-96 ✅ done 2026-09-09.** `walkOpenAPISpec`/`walkPathItem` now also read an operation's `requestBody.content["application/json"].schema.properties` (names only, no values invented, same principle as the existing keyless query-key folding) onto new additive `EndpointFact.BodyParamKeys`. New `recon.SuggestSSRFBodyParamsFromRecon` matches those against `ssrfParamKeywords` by **substring** (not `SuggestSSRFParamsFromRecon`'s exact-key lookup — a real body field is typically compound, e.g. `repair_url`). New additive `PlanNode.SSRFBodyParams`/`scanner.Config.SSRFBodyParams`, threaded the same way as `SSRFParams` through `resolveEndpointFacts`/`applyLeafReconFields`/`missingRequiredField`. `ssrf.Detector.Run` gained a `bodyParams []string` parameter and a new `checkBodyParamTargets` (POST `{"<field>":"<payload>"}`, same scheme/internal payload tables + baseline-diff FP guard as the query-mode checks). Known, named limitation: the probe body carries only the SSRF-candidate field, not a route's other possibly-required fields, so strict body validation could 400 before the payload is evaluated — not solved in v1, revisit only if live testing shows it matters. `docs/schema/recon-result.schema.json` bumped to v1.10. `pkg/recon/{types.go,specwalk.go,suggest.go}`, `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`, `pkg/scanner/{config.go,engine.go}`, `pkg/detectors/ssrf/{detector.go,checks.go}`. Tests: `TestWalkOpenAPISpec_RequestBodyProperties`, `TestSuggestSSRFBodyParamsFromRecon*`, `TestSSRFBodyParamTarget_*`, `TestResolve_SSRFBodyParamEndpoint_ProducesSsrfLeafWithBodyParams`. **Value: high** (closed a real, confirmed SSRF that only reached the target via a POST body field) **· Effort: medium (spent).** Not filed under a phase step — see LT-92's note (`crapi-precision-fixes` batch).
-
-- **LT-123 ✅ done 2026-09-10 (design review, not a live round).** `--auto-provision-account` + `--provision-email <template>`: registers a throwaway second account against a recon-observed signup endpoint so `idor`'s baseline mode / `authbypass`'s token-reuse/BFLA checks (LT-92 above) get a second account's token without an operator finding/creating one by hand and passing `--other-auth-token`. A **second, independently-scoped exception** to the read/enumerate-only default — deliberately not `--allow-writes` (CLAUDE.md scopes that to `pkg/detectors/businesslogic`'s mutating checks only; creating a persistent account is its own class of side effect). New read-only recon signal `ReconResult.SignupEndpoint` (`recon-result.schema.json` v1.11): a spec-derived hint (`specwalk.go`'s `signupOperationHint`, matching an operation's `operationId`/`summary` against signup/register keywords — higher precision, checked across every operation on a path-item rather than the GET-preferring "representative method") or, when no spec is reachable, a path-guess fallback (`crawl.go`'s `probeSignupCandidates` against a curated candidate list, accepting a `405` as "route exists, wrong verb" or a JSON-typed `2xx`). New package `pkg/provision` (`ProvisionAccount`): POSTs a synthesized throwaway email/username/password, extracts a token from the signup response or a login fallback (the same signup→login shape `tests/integration/scripts/crapi_setup.sh` already proves live against crAPI), and **fails closed** — a target that never returns a token (most commonly an email-verification gate) returns a clear error instead of hanging or fabricating one, and the scan proceeds without a second account exactly as it does today. No cleanup/deprovisioning is attempted (accepted limitation, same class as `--allow-writes`' coupon-mint side effect); the created email is logged so the operator can close the account manually if a program's ToS requires it. Wired in `cmd/hackerfive/scan.go` after `runPreflight`, only when `--recon-file` is given; an already-set `--other-auth-token` always wins and is never overwritten. `pkg/recon/{types.go,aggregate.go,crawl.go,specwalk.go,specingest.go,recon.go}`, `cmd/hackerfive/{scan.go,plan.go}`, `pkg/provision/provision.go` (new), `pkg/scanner/config.go`. Tests: `pkg/provision/provision_test.go` (direct-token, login-fallback, nested-token-field, email-verification-gated-fails-closed, non-2xx-signup, empty-template cases), `TestWalkOpenAPISpec_{Signup,NoSignup}Hint`, `TestRunWave3_SignupEndpoint_{FromOpenAPISpec,PathGuessFallback}`, `TestRunWave3_NoSignupCandidate_SignupEndpointStaysNil`, `TestReconResult_SchemaValidatesSignupEndpoint`, `TestConfigValidate/auto-provision-account_*`, `TestProvisionSecondAccount_*` (`cmd/hackerfive/scan_test.go` — the CLI wiring's branching pulled into a directly-testable `provisionSecondAccount` helper). CLI-only for v1; MCP/webui elicitation wiring is a named follow-up, not built now (keeps this pass bounded). **CLAUDE.md Rules section updated** to name both `--allow-writes` and `--auto-provision-account` as this tool's two explicit exceptions.
-
-- **LT-135 ✅ done 2026-09-10 — `businesslogic` could previously only ever fire against crAPI's exact lab routes, not a real bounty target's own coupon flow — the gap was deeper than just the hardcoded paths.** `checkCouponSelfMintCredit`/`checkCouponApplyRace` hardcoded not only `DefaultCouponMintPath`/`DefaultCouponApplyPath` (already overridable via `--coupon-mint-path`/`--coupon-apply-path`) but also the request field names (`coupon_code`, `amount`) and the success-response field (`credit`, via `responseGrantedAmount`) — so even an operator who hand-supplied a real target's coupon paths got a check that POSTed crAPI-shaped JSON and looked for a crAPI-shaped response field, which would simply fail to match on almost any other target's actual schema. **Fix, two independent parts:** (1) `responseGrantedAmount` generalized from an exact `"credit"` field lookup to a bounded-depth (`maxGrantedAmountScanDepth` 4) recursive scan of the apply-response body for any numeric field within `[90%, 150%]` of the injected amount (`anyNumericFieldInRange`) — needs no recon signal at all, and the range (not just a floor) guards against an unrelated large number (a timestamp, an object ID) in the same response; (2) new spec-derived recon signal `ReconResult.CouponEndpoint` (`CouponFact`, schema v1.12) — `specwalk.go`'s new `couponOperationHint` reuses the existing `requestBody` schema-property extraction (LT-96's machinery) plus a keyword match (`coupon`/`promo`/`voucher` noun + a mint verb `new`/`create`/`mint`/`generate`/`add` or an apply verb `apply`/`redeem`, POST only) to find both halves of the pair in one spec walk; `couponFieldNames` then picks the code-shaped and amount-shaped field name out of the mint operation's own declared body-property names (never invented). Carries the derived paths **and** field names onto a new `ConfidenceMedium` `businesslogic` leaf (`PlanNode.CouponMintPath`/`CouponApplyPath`/`CouponCodeField`/`CouponAmountField`, mirroring `SSRFBodyParams`'s leaf-field-carrying convention exactly) that supersedes the older generic cart-keyword-only leaf (`dropBareCapabilityLeavesSupersededByEndpointDriven`, via `leafCarriesReconField`) — so `--allow-writes` plus a spec-carrying `--recon-file` is enough, with zero manual coupon flags; `cmd/hackerfive/scan.go`'s CLI path gets the same auto-fill from `--recon-file` directly (mirroring A6's pattern), and new `--coupon-code-field`/`--coupon-amount-field` flags cover manual override same as the existing path flags. **Deliberately spec-only, no path-guess fallback:** unlike LT-123's signup-endpoint path-guess (a safe GET probe), a coupon-mint endpoint is POST-only and mutating — recon must stay read-only, so guessing a path and firing a blind POST during recon would violate that invariant outright; when no spec is reachable, the manual-flag path stays the only way to run this detector against a non-crAPI target, named as an accepted limitation, not solved here. `pkg/recon/{types.go,specwalk.go,aggregate.go,crawl.go,specingest.go,recon.go}`, `cmd/hackerfive/{scan.go,plan.go}`, `pkg/detectors/businesslogic/{detector.go,rules.go,checks.go}`, `pkg/scanner/{config.go,engine.go}`, `pkg/agenttask/plantree.go`, `pkg/registry/decisionengine.go`, `pkg/planexec/executor.go`, `docs/schema/recon-result.schema.json` (v1.12). Tests: `TestWalkOpenAPISpec_{CouponHint,NoCouponHint,NoCouponHint_MissingHalf}`, `TestReconResult_SchemaValidatesCouponEndpoint`, `TestBusinessLogic_CouponSelfMintCredit_CustomFieldsAndNestedResponse_Hit` (`tests/unit/detector_businesslogic_test.go`), `TestResolve_CouponEndpoint_ProducesEndpointDrivenBusinessLogicLeaf`, `TestApplyLeafReconFields_CouponFieldsCopied`. **Value: medium** (turns a detector that was previously dead weight against every non-lab target into one with a real, if narrower-than-idor/authbypass, path to firing on a real bounty target — directly serves v1.0.0's "3 genuine findings against real authorized targets" gate) **· Effort: medium-high (spent).** Not filed under a phase step — Phase 8 Step 6 is recon-crawl-themed and already overloaded (see LT-92's note), Phase 9 Step 4 is native-injection-detector-themed and a different vuln class; tracked as its own dated item, same precedent as LT-92/95/96.
-- **LT-136 open (design review, bonus idea) — a JS-static-extracted, key-shaped secret is reported as "found a string shaped like a credential," never confirmed live.** Phase 8 Step 3's `misconfig` secret findings from served-JS analysis flag on pattern match alone (an AWS-access-key-shaped string, a GitHub-token-shaped string, etc.) — real severity uncertainty a triager has to resolve by hand. **Idea:** for a curated, small set of well-known credential shapes, add one bounded, read-only validity probe against the credential's own vendor API — AWS STS `GetCallerIdentity`, GitHub `/user`, Slack `auth.test` — and fold a confirmed-live result into the finding's `Confidence`/evidence (never `Severity`, matching the project's existing detector-sets-severity invariant). A live-confirmed credential is a large, justified severity jump over a pattern match; a dead/rotated one stays exactly what it is today. **Value: medium-high** (a large trust/precision jump — "confirmed live" vs. "looks like" — for one extra benign API call per candidate secret) **· Effort: low-medium** (each vendor check is a single unauthenticated-until-tested GET/POST against a fixed, well-known endpoint; the harder part is the credential-shape → probe-function dispatch table and making sure a probe never logs/persists the credential value itself beyond the one bounded call). Not started; not yet scheduled to a phase step — natural fit alongside Phase 8 Step 3's existing JS-static secret work if picked up.
+- LT-93 ✅ done 2026-09-08 (Step E) — every `registry.resolve*` helper set a leaf's `Target` to the bare hostname (no scheme/port), so every request against a real host was malformed (0 findings) → `Resolve` rewrites a dispatchable leaf's `Target` to the real `scheme://host[:port]` recon observed.
+- LT-94 ✅ done 2026-09-08 (Step E) — `planexec.RunPlan` wasn't self-sufficient: the webui execute path (unlike MCP) never pre-filled `ProtectedPaths`/`SSRFParams` from recon → the derived fields now ride the leaf itself (`PlanNode.ProtectedPaths`/`SSRFParams`), filled by `applyLeafReconFields` just before dispatch.
+- LT-95 ✅ done 2026-09-09 — (1) an empty ID-shaped query key (`?report_id=`) now templates as `{{id}}`; (2) new `idor.RandomUUIDStrategy` (fresh UUIDs as denial-baseline filler + one real observed UUID as the sample) covers UUID-keyed BOLA without inventing target IDs.
+- LT-96 ✅ done 2026-09-09 — the spec walker now reads a POST operation's JSON body schema onto `EndpointFact.BodyParamKeys`; `SuggestSSRFBodyParamsFromRecon` keyword-matches them; `ssrf.Detector` gained a body-param check (`checkBodyParamTargets`).
+- **LT-132 (open)** — no authbypass/idor check ever probes a non-GET method, so crAPI's real `DELETE /workshop/api/merchant/video/delete/{id}` BFLA (delete another user's video) is structurally unreachable. **Value: medium-high** (generalizable mutating-method BFLA/BOLA class). **Effort: medium** — mechanical field-threading, but firing a non-idempotent method against a live target needs a safety-first design (probe with the *other* account's token against the *owner's own* just-observed resource ID, read-verify via a follow-up GET, never invent/mutate a resource that isn't the authenticated account's own). **Route:** [Phase 9](18-implementation-plan-ph9.md) Step 4 (already touches parameter-aware, non-GET-shaped probing).
+- **LT-133 (open)** — two homeless vuln classes from the same crAPI observation. **Mass assignment** (an extra/undocumented JSON field silently accepted on write) has **no detector anywhere**, native or corpus, and doesn't fit Phase 9 Step 4's `sqli`/`xss`/`lfi`/`uploadbypass` scope. **NoSQL/SQL injection** *is* Step 4's job once it lands. **Value: medium** (real class, not independently confirmed exploitable this round). **Effort: high** for mass assignment (needs its own design pass — safely diffing "extra field accepted" without a destructive write); SQLi/NoSQLi effort already accounted for in Step 4. **Route:** SQLi/NoSQLi → Phase 9 Step 4; mass assignment → needs its own future design note, not silently folded in.
+- **LT-134 (open)** — `checkJWTWeakSecret`'s fixed wordlist didn't contain crAPI's actual secret, and `checkRateLimitSignal` never probes an OTP/2FA-verification endpoint (only `LoginPaths`). **Value: low** (target-specific wordlist/candidate-list gap, not structural). **Effort: low** (append `WeakJWTSecrets` entries / add an `OTPPaths` list, same pattern as `LoginPaths`/`LogoutPaths`). **Route:** low-priority roll-up, pick up opportunistically.
+- LT-123 ✅ done 2026-09-10 (design review) — `--auto-provision-account` + `--provision-email <template>`: registers a throwaway second account against a recon-observed signup endpoint (new `ReconResult.SignupEndpoint`, spec-derived or path-guess) so idor/authbypass's second-account checks don't need an operator-supplied token. A second, independently-scoped exception to read/enumerate-only (CLAUDE.md) — fails closed on an email-verification gate, no cleanup attempted. CLI-only for v1 (MCP/webui wiring gap → LT-131).
+- LT-135 ✅ done 2026-09-10 — `businesslogic`'s coupon checks were previously crAPI-only in practice: hardcoded field/response-field names on top of the already-overridable paths. `responseGrantedAmount` generalized to a bounded recursive scan for any numeric field within [90%,150%] of the injected amount; new spec-derived `ReconResult.CouponEndpoint`/`CouponFact` (schema v1.12) extracts both the mint+apply paths *and* their real field names from an OpenAPI spec (no path-guess fallback — recon must stay read-only and a coupon-mint endpoint is POST-only/mutating). `--allow-writes` + a spec-carrying `--recon-file` now needs zero manual coupon flags. Tests: `pkg/recon/specwalk_test.go`, `tests/unit/detector_businesslogic_test.go`, `pkg/registry/decisionengine_test.go`.
+- **LT-136 (open, design idea)** — a JS-static-extracted secret (Phase 8 Step 3) is reported on pattern match alone, never confirmed live. **Idea:** for a curated, small set of well-known shapes, add one bounded read-only validity probe against the credential's own vendor API (AWS STS `GetCallerIdentity`, GitHub `/user`, Slack `auth.test`) and fold a confirmed-live result into `Confidence`/evidence — never `Severity` (detector-sets-severity invariant preserved). **Value: medium-high** (large trust jump, "confirmed live" vs. "looks like," for one extra benign call). **Effort: low-medium** (each vendor check is one fixed-endpoint call; the real work is the shape→probe dispatch table and never persisting the credential value beyond that one call). Not scheduled; natural fit alongside Phase 8 Step 3 if picked up.
 
 ## Live Testing — G1 agent-driven eval (2026-09-10)
 
-Real MCP-client-driven `recon`→`plan`→execute(→`findings.triage`) run against all
-four lab targets (`tests/eval/agent_run.go`/`agent_eval_test.go`, doc16 Step 6's
-G1), grading against the same fixtures `TestEvalHarness`'s detector-only
-baseline uses. Full write-up: [90-research-hackerbot.md](90-research-hackerbot.md)
-§G1. Two findings from that run:
+Real MCP-client-driven `recon`→`plan`→execute(→`findings.triage`) run against all four lab targets (`tests/eval/agent_run.go`/`agent_eval_test.go`, doc16 Step 6's G1). Full write-up: [90-research-hackerbot.md](90-research-hackerbot.md) §G1.
 
-- **LT-137 ✅ done 2026-09-10 — `plan` execution never applied doc15 Step 6a's tech-based template narrowing at all.** `pkg/mcpserver/tools_plan.go`'s `buildBaseExecConfig` and `pkg/webui`'s plan-execution `job.ExecConfig()` both built a `scanner.Config` with `DerivedTags`/`Tags` left empty, so every leaf `planexec.RunPlan` executed ran the *entire* synced template corpus (thousands of files, confirmed live: a first G1 run timed out on 3/4 scenarios because a single misconfig leaf's corpus pass alone took 3+ minutes and starved the plan's other leaves of their shared execution deadline). **Fix:** `buildBaseExecConfig` now sets `DerivedTags: registry.TechStackTags(result.TechStack, index)` (the tech-based "extras" half); `pkg/webui/handlers_launch.go`'s plan-exec path does the same, unconditionally (no operator-facing opt-out exists for this flow, unlike the checked-detector launch flow's `NarrowByTech` checkbox); `pkg/planexec/executor.go`'s `runLeaf` unions each leaf's own `registry.DetectorTemplateTags(leaf.Detector)` floor on top, mirroring `cmd/hackerfive/scan.go`'s existing `unionScanTags` composition (own small `unionLeafTags` copy, same "each package keeps its own" precedent `unionScanTags`/`unionLaunchTags` already established) — only when `cfg.Tags` is empty, so an explicit override still wins untouched. `pkg/planexec/executor_test.go`'s `writeOneTemplate` fixture needed a `tags: misconfig` line to keep surviving this now-real floor filter. Tests: existing `pkg/planexec`/`pkg/mcpserver`/`pkg/webui` suites all still green; no new test added specifically (surfaced and fixed via the live G1 run itself, not a unit fixture). **Residual, honest limitation**: misconfig's floor tags (`misconfig`, `exposure`, `config`, `default-login`, `panel`) are broad category words matching most of the real synced corpus, so floor-only narrowing (no tech-based extras, when recon fingerprints nothing) only trims corpus size by ~25% — a misconfig leaf against a target with no confirmable tech still takes several real minutes. Not a bug in this fix; matches the CLI/webui paths' own long-documented behavior for the same detector.
-- **LT-138 open — two distinct agent-specific gaps G1 surfaced, neither fixed here.** (1) crAPI's idor/authbypass leaves resolved as *pending* (I3's capability match succeeded) but were *skipped at execution* (`localhost-leaf-1: skipped — no --endpoint given...`, `localhost-leaf-2: skipped — no --protected-paths given...`) — `--recon-depth active` (no Wave 3 crawl) against an unauthenticated crAPI can't discover the report-ID endpoint template or protected paths, and I4's field-miss resolution never ran (spend stayed $0.0000) — `llmfallback.ResolveTreeLeaves`'s field-suggestion path appears scoped to an I3-*unresolved* leaf, not a *pending*-but-execution-blocked one; worth confirming and, if so, deciding whether a pending leaf missing a required field should also get an I4 turn before being skipped. (2) `misconfig-method-*` (a **native**, not template-driven, check — `checkDisallowedMethods`) never fired against any of DVWA/Juice Shop/vAPI through the agent path despite firing in the CLI baseline against the same targets; MCP's and the CLI's `Concurrency`/`RateLimit`/`Timeout` defaults are identical (ruled out as the cause), root cause not yet found. **→ not filed under a phase step; both need a follow-up live session with more time budgeted specifically for root-causing (2), and a design decision for (1).**
+- LT-137 ✅ done 2026-09-10 — `plan` execution never applied doc15 Step 6a's tech-based template narrowing at all (`DerivedTags`/`Tags` left empty in both `tools_plan.go`'s `buildBaseExecConfig` and webui's plan-exec path), so every leaf ran the *entire* synced corpus — a first G1 run timed out on 3/4 scenarios from one misconfig leaf's 3+-minute corpus pass alone. Fixed: both paths now set `DerivedTags`, `planexec.executor.go`'s `runLeaf` unions each leaf's own detector-tag floor on top (mirroring `cmd/hackerfive/scan.go`'s existing `unionScanTags` composition). **Residual, honest limitation:** misconfig's floor tags are broad category words matching most of the corpus, so floor-only narrowing (no tech fingerprint) only trims ~25% — matches the CLI/webui paths' own long-documented behavior.
+- **LT-138 (open)** — two agent-specific gaps surfaced, neither fixed. (1) crAPI's idor/authbypass leaves resolved *pending* but were *skipped at execution* (missing `--endpoint`/`--protected-paths`) under `--recon-depth active` (no Wave-3 crawl); I4's field-miss resolution never ran — `llmfallback.ResolveTreeLeaves`'s field-suggestion path appears scoped to an I3-*unresolved* leaf, not a *pending*-but-execution-blocked one. (2) the native `misconfig-method-*` check (`checkDisallowedMethods`) never fired against DVWA/Juice Shop/vAPI through the agent path despite firing in the CLI baseline against the same targets, identical `Concurrency`/`RateLimit`/`Timeout` defaults ruled out as cause; root cause not yet found. Needs a follow-up live session with dedicated time for (2)'s root-cause and a design decision for (1).
 
 ## Live Testing — pre-v0.7.0-tag re-verification against www.aalberts.com (2026-09-10)
 
-Before tagging `v0.7.0`, built the binary and ran a full `recon --recon-depth
-active` → `scan --detector misconfig` → `triage --llm-assist` →
-`suggest --llm-assist` pass against `https://www.aalberts.com` (a live target
-with a published VDP — `security@aalberts.com`, PGP key, hall of fame —
-confirmed via its own `security.txt`). Goals: confirm nothing breaks on a
-real external target, sanity-check any cross-origin finding's real severity,
-and confirm the LLM-assisted paths (`triage`, `suggest`) make genuine model
-calls rather than sitting dormant. `triage --llm-assist` worked cleanly (11
-findings ranked, $0.0005 spent, sensible rationale). Two real bugs surfaced
-and were fixed before tagging:
+Full `recon --recon-depth active` → `scan --detector misconfig` → `triage --llm-assist` → `suggest --llm-assist` pass against the live, published-VDP `www.aalberts.com`, before tagging `v0.7.0`. `triage --llm-assist` worked cleanly (11 findings ranked, $0.0005). Two real bugs surfaced and fixed before tagging:
 
-- **LT-139 ✅ done 2026-09-10 — `misconfig-cors` conflated a literal wildcard `Access-Control-Allow-Origin: *` with an actual reflected-origin match, both rated "high."** Manually probing `aalberts.com` with different `Origin` header values showed it always returns a static `*`, never reflecting the sent value. Per the Fetch/CORS spec, browsers refuse to expose a credentialed response when `Access-Control-Allow-Origin` is the literal wildcard — `Access-Control-Allow-Credentials: true` alongside a literal `*` is spec-non-functional in every standards-compliant browser, so the finding's own claim ("letting any site make authenticated cross-origin requests") was materially overstated for this case: a real config smell, not an exploitable vuln. `pkg/detectors/misconfig/detector.go`'s `checkCORS` (`pkg/detectors/misconfig/detector.go:687`) previously treated `allowOrigin == corsProbeOrigin || allowOrigin == "*"` as one undifferentiated "reflected" case. **Fix:** split into `echoedProbe` (genuine reflection — stays "high"/"high") and `literalWildcard` (down-ranked to "low"/"medium", description rewritten to explain why it's spec-non-functional and not to escalate without confirming actual reflection); the existing LT-121 auth-wall down-rank now only applies on top of a genuine `echoedProbe` match, not a literal wildcard. Confirmed live: a re-scan of `aalberts.com` after the fix reports `misconfig-cors` at "low"/"medium" with the corrected description. Tests: `tests/unit/detector_misconfig_test.go`'s `TestMisconfigCORS_LiteralWildcardWithCredentials_DownRanked` (new) locks this in; the three existing CORS tests (`WildcardWithCredentials` — actually a reflection case, despite its name — `WildcardWithoutCredentials_NoFinding`, `AuthWallResponse_DownRanked`) still pass unchanged.
-- **LT-139b ✅ done 2026-09-10 — `SuggestedAction.Detail`'s `map[string]string` type couldn't decode a real model response, discarding a wholly valid `suggest --llm-assist` result.** Live against the aalberts.com scan output, the model correctly proposed a `triage_group` action grouping 8 informational findings under `detail.finding_ids` — a natural JSON array — but `pkg/llmfallback/types.go`'s `SuggestedAction.Detail map[string]string` can only hold scalar strings, so `decodeJSONResponse` failed the *entire* response and `suggest` silently degraded to ledger-only (per its own "degrade, never fabricate" contract — no crash, but a good, safe, real proposal was thrown away). **Fix:** widened `Detail` to `map[string]any`; `pkg/llmfallback/suggest.go`'s system prompt now explicitly documents that `triage_group` should use a `finding_ids` array. Confirmed live: re-running `suggest --llm-assist` against the same (re-scanned, post-LT-139-fix) output now returns all 4 proposed actions including the `triage_group` with its 8-element `finding_ids` array, for $0.0001. Tests: `pkg/llmfallback/suggest_test.go`'s `TestSuggest_TriageGroupWithFindingIDsList_Decodes` (new) locks this in.
+- LT-139 ✅ done 2026-09-10 — `misconfig-cors` conflated a literal wildcard `Access-Control-Allow-Origin: *` with genuine origin-reflection, both rated high/high — but a literal `*` alongside `Access-Control-Allow-Credentials: true` is spec-non-functional in every standards-compliant browser (Fetch/CORS spec), so the finding overstated severity for aalberts.com's actual (non-reflecting) case. Fixed: `checkCORS` now splits `echoedProbe` (genuine reflection, stays high/high) from `literalWildcard` (down-ranked to low/medium, description corrected). Test: `TestMisconfigCORS_LiteralWildcardWithCredentials_DownRanked`.
+- LT-139b ✅ done 2026-09-10 — `SuggestedAction.Detail map[string]string` couldn't decode a real model response (`suggest --llm-assist` correctly proposed a `triage_group` action with an array-valued `finding_ids` field), so `decodeJSONResponse` failed the *entire* response and silently degraded to ledger-only — a good, safe proposal thrown away per the "degrade, never fabricate" contract, but a real capability loss. Fixed: widened `Detail` to `map[string]any`; prompt documents the array shape. Test: `TestSuggest_TriageGroupWithFindingIDsList_Decodes`.
 
 ## Live Testing — nettix.com.pe Part A/B verification (2026-09-10)
 
-Built the binary and re-ran a full recon (`hackerfive recon -t https://nettix.com.pe
---recon-depth full`, apex-seeded per LT-101's still-open workaround) plus targeted
-`scan` invocations against the real, owned `nettix.com.pe` estate, to check whether
-LT-92/95/96 (Part A's authbypass-BFLA / idor-UUID / ssrf-body-param precision fixes)
-and LT-123 (`--auto-provision-account`) actually engage on a real target, and to
-watch live request/response traffic through `pkg/recon`/`pkg/detectors`/
-`pkg/fingerprint`/`pkg/preflight`/`pkg/scanner`/`pkg/mcpserver` for further gaps
-(per CLAUDE.md's detection-philosophy mandate). This checkout is a fresh macOS
-clone with no `.engagements/` (gitignored, lives only on the machine the earlier
-nettix rounds ran from) — recreated `.engagements/owned-sites/scope.txt` with
-`nettix.com.pe` / `*.nettix.com.pe` to match the documented prior authorization.
+Re-ran a full recon + targeted scans against the real, owned `nettix.com.pe` estate to check whether LT-92/95/96/123 actually engage on a real target, and to watch live traffic for further gaps.
 
-**Part A/B verdict: the fixes are real and already proven correct (crAPI live round,
-`pkg/provision`'s own tests, and a local fake-signup-server smoke test — see LT-123)
-but this specific target has none of the endpoint shapes that would exercise them.**
-`nettix.com.pe` is a misconfig/CMS-version-disclosure estate (WordPress+WooCommerce,
-Dolibarr ERP, Nextcloud, DokuWiki, phpMyAdmin, Webmin) with no discovered `{id}`-shaped
-route, SSRF-able param, or self-service signup flow — the 241-leaf plan tree this
-round produced has **zero** idor/authbypass/ssrf leaves (all misconfig + generic
-template dispatch), and `--auto-provision-account` correctly, cleanly failed closed
-("recon found no signup-endpoint candidate — proceeding without a second account").
-That negative-path behavior is itself the correct, intended outcome — not a bug — but
-digging into *why* authbypass got zero leaves surfaced LT-124/125 below, the most
-valuable findings of this round.
+**Verdict: the Part A fixes are real and already proven correct (crAPI, unit tests) but this target has none of the endpoint shapes that exercise them** — no `{id}`-shaped route, SSRF-able param, or self-service signup flow; `--auto-provision-account` correctly failed closed. Digging into *why* authbypass got zero leaves surfaced LT-124/125, the most valuable findings of the round:
 
-- **LT-124 ✅ done 2026-09-10 — `authbypass.checkMissingAuth` (and, confirmed on
-  inspection, `checkJWTAlgNone`/`checkBFLA`/`checkTokenReuse`/`checkBrokenSession`,
-  same pattern) blindly trusted `resp.StatusCode` after the shared client
-  transparently follows a redirect — a live, reproduced FALSE POSITIVE
-  on a correctly-secured endpoint.** `pkg/scanner/engine.go:33`'s `maxRedirects = 5`
-  means every detector's `d.client.Do(req)` silently follows up to 5 redirect hops;
-  `checkMissingAuth` only checked `resp.StatusCode != http.StatusOK` and reported
-  `Target: req.URL.String()` — the *original*, pre-redirect URL — with no check on
-  `resp.Request.URL` to notice a redirect happened at all. Live-reproduced:
-  `GET https://nettix.com.pe/wp-admin/` really returns `302` + `x-redirect-by:
-  WordPress` + `location: https://www.nettix.com.pe/wp-login.php?redirect_to=...`
-  (confirmed via manual `curl -D -`, no `-L`) — WordPress correctly protecting its
-  admin panel. But `hackerfive scan --detector authbypass --protected-paths
-  /wp-admin/` against the same host produced `authbypass-missing-auth-wp-admin`,
-  **high/high**: `"/wp-admin/ returned status 200 with no Authorization header at
-  all — endpoint accepts unauthenticated requests"` — the client followed the
-  redirect to the login page, saw its `200`, and the check reported that as
-  evidence `/wp-admin/` itself has no auth. **Fix:** a new
-  `redirectedAwayFrom(req, resp)` helper (`pkg/detectors/authbypass/detector.go`,
-  porting `misconfig.Detector`'s existing `resp.Request.URL` pattern —
-  `detector.go:327-328,1363-1381` — rather than inventing a new one) — every one
-  of the five checks now skips a `StatusCode == 200` verdict when the response
-  actually came from a different path than the one requested. `idor`'s baseline
-  mode (`pkg/detectors/idor/detector.go:254-260`) and `ssrf`'s diff-based checks
-  share the identical blind-`StatusCode` pattern but were left as-is in this
-  pass — less exposed in practice, since a consistently-redirecting endpoint
-  becomes part of the *baseline itself* under idor's majority-vote `Establish`,
-  so it mostly self-corrects there; `checkMissingAuth` had no such baseline to
-  fall back on, a single request was a verdict. Tests: five new
-  `TestAuthBypass*_RedirectToLoginPage_NoFalsePositive` cases in
-  `tests/unit/detector_authbypass_test.go`, one per check, reproducing the exact
-  `/wp-admin/` → `wp-login.php` shape found live.
-- **LT-125 ✅ done 2026-09-10 — `recon.SuggestAuthBypassPathsFromRecon` only
-  recognized `401`/`403` as "protected path" evidence, missing the extremely
-  common "3xx redirect to a login page" access-control shape — which is *why*
-  this round's plan tree had zero authbypass leaves despite the target's most
-  textbook admin-panel candidate sitting right there.** Fixed via a new
-  `redirectsToLoginBoundary(ep)` helper (`pkg/recon/suggest.go`) added as a new
-  `switch` case ahead of the api-spec/login/logout cases: a `301`/`302`/`303`/
-  `307`/`308` fact whose `FinalURL` (falling back to `RedirectChain`'s last hop)
-  contains `login`/`signin`/`sign-in` is now bucketed into `protected` alongside
-  observed `401`/`403`s. Landed together with LT-124 in the same commit, per
-  that finding's own sequencing constraint — the redirect-blindness fix above
-  ships first in file order so a redirect-shaped `protected` entry can never
-  reach `checkMissingAuth` without the guard already in place. Test:
-  `TestSuggestAuthBypassPathsFromRecon_RedirectToLoginBoundary` (`pkg/recon/
-  suggest_test.go`) — the `/wp-admin/` shape via `FinalURL`, a `RedirectChain`-
-  only variant, and two negative cases (a plain cross-host redirect with
-  nothing login-shaped in its destination; a 3xx recon never actually observed
-  a destination for). Live-confirmed gap this closes: recon recorded
-  `https://nettix.com.pe/wp-admin/` as an `EndpointFact` (`status_code: 302`,
-  `source: robots-txt`) but it never reached `protected`, so `authbypass` never
-  got a leaf at all on that run — the single highest-value, most standard
-  "should reject me" check on the whole target silently never ran.
-- **LT-126 — `probeCommonPaths` records a probed path's pre-redirect URL alongside a
-  post-redirect (same-host) response's status/body/content-type, silently
-  misattributing one URL's content to a different URL.** `pkg/recon/crawl.go`'s
-  `probeCommonPaths` builds `EndpointFact{URL: reqURL, ...}` from the *requested*
-  `reqURL`, but `resp` comes from `r.client.Do(req)`, which (like every other
-  detector) transparently follows same-host redirects. LT-64 already solves this for
-  a *cross-host* redirect (`RedirectChain`/`FinalURL`, `StatusCode` pinned to the
-  first-hop 3xx) — a *same-host* redirect gets none of that treatment. Live-confirmed:
-  the recon JSON for this run records `{"url": "https://erp.nettix.com.pe/api",
-  "status_code": 200, "content_type": "text/html; charset=UTF-8", "body_len": 178}` —
-  but `curl -D - https://erp.nettix.com.pe/api` (no `-L`) returns a **`301`** to
-  `/api/`; the `200`/178-byte body actually belongs to `/api/`, Dolibarr's own
-  "El módulo Api debe ser activado" ("the API module must be activated") message
-  (confirmed by hand). Same for `ixn.nettix.com.pe/api`. Cost: any downstream
-  `Suggest*` helper building an idor/ssrf/authbypass candidate from this fact would
-  target the literally-wrong URL (a `301`, not the real resource), and a report citing
-  `"https://erp.nettix.com.pe/api → 200"` is unreproducible by a triager who curls
-  that exact URL. **Fix:** same shape as LT-64 but for the same-host case — either
-  rewrite `EndpointFact.URL` to `resp.Request.URL.String()` when it differs from
-  `reqURL` (simplest), or carry the redirect chain the same way LT-64 already does
-  regardless of host.
-- **LT-127 — a wiki/CMS whose "page doesn't exist yet" response is HTTP 200 with a
-  page-name-templated title defeats LT-30's canary-suppression, fabricating
-  ConfidenceHigh "real API surface" endpoints out of nonexistent paths.** DokuWiki
-  (`wiki.nettix.com.pe`) answers *any* path with `200` and `<title>{page} [Wiki
-  Nettix]</title>` — confirmed live: `curl https://wiki.nettix.com.pe/doesnotexist123456xyz`
-  → `200`, title `doesnotexist123456xyz [Wiki Nettix]`. Because the title (and thus
-  body length) differs by design for every distinct requested path, `probeCommonPaths`'
-  `sameAsCanary` (`pkg/recon/crawl.go`, length-within-tolerance + status + content-type)
-  never matches it against the canary, so **three fabricated endpoints** were recorded
-  this round at `ConfidenceHigh`/`wave3-common-path-probe`:
-  `wiki.nettix.com.pe/api`, `/.well-known/openapi.json`, `/api-docs` — none of which
-  are real API routes, all three are the same DokuWiki "no such page" template. Worse,
-  `classifyAppSurface`'s `endpointShowsRealApp` (`pkg/recon/aggregate.go:288-297`)
-  counts any non-root, non-asset 2xx path as "real app" evidence regardless of title,
-  so these three fake hits also inflate the `app_surface` verdict. This is the same
-  problem class LT-30 was built for (a catch-all defeating naive 2xx-checking) but a
-  *templated* soft-200 (body differs *by design* per request) evades LT-30's
-  length-tolerance dedup entirely. **Fix:** fetch a *second*, differently-named canary
-  path per host and diff it against the first — if the two canaries differ only in the
-  substring that echoes back the requested path name (not in overall structure/length
-  beyond the substitution), classify the host as templated-catch-all the same way a
-  byte-identical canary already triggers `VerdictCatchall`.
-- **LT-128 — Part B's `signupPathCandidates` (LT-123) is too narrow for the CMS
-  platforms actually seen live, so `--auto-provision-account` never got a chance to
-  attempt provisioning on this run.** `pkg/recon/crawl.go`'s curated list
-  (`/register`, `/signup`, `/auth/register`, `/auth/signup`, `/api/auth/signup`,
-  `/api/register`, `/users/register`, `/account/register`) matches API-shaped apps
-  like crAPI but not WordPress (self-registration is `/wp-login.php?action=register`
-  — a query-string action on an existing path, not a distinct guessable path) or
-  WooCommerce (account creation is a form embedded in `/my-account/`'s own GET page,
-  not a POST-only endpoint at a predictable name) — both confirmed present on
-  `nettix.com.pe`'s tech stack this round. The fail-closed behavior itself worked
-  correctly (`scan: --auto-provision-account set, but recon found no signup-endpoint
-  candidate — proceeding without a second account`) — this is a coverage gap, not a
-  bug. **Fix:** widen `signupPathCandidates` with `/wp-login.php?action=register`
-  (WordPress, extremely high-value given how common WordPress is) and consider a
-  body-marker check (a `name="user_login"` + `name="user_email"` form pair, the way
-  `checkPhpMyAdmin` already gates on its own form-field pair) for CMS platforms whose
-  registration is a GET-rendered form rather than a POST-only route.
-- **LT-129 — `pkg/fingerprint`'s signature table has no entries for Dolibarr,
-  Nextcloud, Webmin, or DokuWiki, all four confirmed live on this exact target, and
-  `Signature`/`Match` have no version-capture mechanism at all.** `pkg/fingerprint/
-  signatures.go`'s `signatures` slice covers WordPress/phpMyAdmin/generic
-  servers/cloud-provider headers but nothing for these four — each was instead
-  reverse-engineered into a bespoke one-off `pkg/detectors/misconfig` check
-  (`checkDolibarrOutdated`/`checkNextcloudStatus`/`checkWebmin`) with its own ad hoc
-  version-regex, rather than feeding the shared, general-purpose fingerprint layer
-  once (which would also make the product visible to `registry.hostnameProductHints`/
-  `TechStackTags` for template-corpus scoping, not just to one hand-written check).
-  Live-confirmed a ready-made, near-zero-FP-risk signature is sitting in plain sight:
-  `erp.nettix.com.pe/api/`'s own response sends `Access-Control-Allow-Headers:
-  Content-Type, Authorization, api_key, DOLAPIKEY, DOLAPIENTITY` —
-  `DOLAPIKEY`/`DOLAPIENTITY` are Dolibarr-specific REST API header names, unlikely to
-  appear on anything else. **Fix:** add header/body signatures for all four (Dolibarr:
-  the `DOLAPIKEY` header, or `<meta name="author" content="Dolibarr` body match;
-  Nextcloud: `"productname":"Nextcloud"` in a `/status.php` body; Webmin: `Server:
-  MiniServ`; DokuWiki: `content="DokuWiki"` generator meta) plus matching
-  `hostnameProductHints` tokens; separately, add an optional `VersionRegex` (one
-  capture group) to `Signature`, surfaced as `Match.Version`, so future versioned
-  products get CVE-correlation for free instead of requiring a bespoke detector each
-  time.
-- **LT-130 — the D2 program-policy pre-flight (`pkg/preflight.Check`) is only ever
-  run against the CLI's initial seed target(s), never against the hosts recon
-  actually fans out to.** `cmd/hackerfive/recon.go:69` and `plan.go:70` both call
-  `runPreflight([]string{target}, ...)` — literally a one-element slice of the
-  `-t` value — *before* `recon.Run` executes Wave 1's `subfinder`-driven host
-  discovery. Live-confirmed: this round's apex-seeded recon fanned out to 24 real
-  hosts (`erp`/`ixn`/`cloud01`/`cloud02`/`wiki`/`soporte`/…), none of which were
-  individually policy-checked — only `nettix.com.pe` itself was. A `policy.yaml`
-  entry declaring, say, `erp.nettix.com.pe: disallowed` (a program plausibly carving
-  its ERP system out as off-limits while the main site stays fair game) would never
-  be enforced once recon fans out past the seed — Wave 1/3 requests reach that host
-  with zero further D2 check. `scan` itself is unaffected (its `--targets` list is
-  always the exact, explicit host set, never discovery-expanded). **Fix:** re-run
-  (or defer) the D2 policy check per newly-discovered host before Wave 2/3 probes it
-  — cheapest version: after Wave 1 finishes, call `preflight.Check` again over the
-  full in-scope host list and abort/warn exactly as the upfront call does today.
-- **LT-131 — `pkg/mcpserver` has zero wiring for any of Part A/B's new
-  recon-derived fields — an MCP-driven agent cannot reach LT-95/96's UUID-idor/
-  SSRF-body-param detection or LT-123's `--auto-provision-account` at all, only the
-  CLI got them.** `grep -rn "SSRFBodyParams\|IDORSeedID\|AutoProvisionAccount\|
-  SignupEndpoint\|ProvisionEmailTemplate" pkg/mcpserver/` returns **zero hits**.
-  `scanInput`/`runScan` (`pkg/mcpserver/tools_scan.go`) build `scanner.Config`
-  without ever setting `SSRFBodyParams`/`IDORSeedID`/`AutoProvisionAccount`/
-  `ProvisionEmailTemplate`, and `planInput`/`handlePlan`/`RunPlan`'s `baseCfg`
-  (`tools_plan.go`) never set `AutoProvisionAccount` either — even though the `plan`
-  tool's own `ReconResult` (when recon ran as part of the same call) already carries
-  `SignupEndpoint`/`BodyParamKeys`/UUID-seed data the CLI path derives these from via
-  `fieldsuggest`/`applyLeafReconFields`. Concretely: an agent driving the intended
-  autonomous `plan → approve → execute` loop against a POST-body-only SSRF candidate,
-  or a target needing a provisioned second account for `idor`/`authbypass`, has no
-  tool-surface field to ask for either — it would have to fall back to manually
-  supplying `other_auth_token`, defeating the point of the autonomous workflow this
-  server exists to support. (Already named as a scoped-out "CLI-only for v1" cut in
-  LT-123's own entry; this confirms it's a real, concrete gap rather than a
-  hypothetical one.) **Fix:** add these fields to `scanInput`/`planInput`, thread them
-  into `cfg`/`baseCfg` the same way the CLI does. **Minor, same area:** `handlePlan`
-  (`tools_plan.go:227`) discards a template-index load error silently
-  (`index, _ := templatesync.LoadIndex(...)`) while `runScan`'s identical failure
-  (`tools_scan.go:219-223`) appends an explicit `warn:` line to its output — worth
-  making `handlePlan` do the same for consistency, low priority.
+- **LT-124 ✅ done 2026-09-10** — every authbypass check blindly trusted `resp.StatusCode` after the shared client transparently follows a redirect — a live FALSE POSITIVE: `GET /wp-admin/` (302→`wp-login.php`, correctly protected) was reported as `authbypass-missing-auth-wp-admin` high/high because the client followed the redirect and graded the login page's 200. Fix: `redirectedAwayFrom(req, resp)` gates all five authbypass checks (porting `misconfig`'s existing pattern). idor/ssrf's identical blind-status pattern left as-is (self-corrects via baseline/diff).
+- **LT-125 ✅ done 2026-09-10** — `SuggestAuthBypassPathsFromRecon` only recognized 401/403 as "protected path" evidence, missing the extremely common "3xx redirect to a login page" shape — which is *why* this round had zero authbypass leaves despite `/wp-admin/` sitting right there as a recon-observed `302`. Fix: `redirectsToLoginBoundary` bucket ahead of the other cases. Landed with LT-124, sequenced after it.
+- **LT-126 (open)** — `probeCommonPaths` records a probed path's *pre-redirect* URL alongside the *post-redirect* response's status/body — a same-host redirect gets none of LT-64's cross-host treatment. Live-confirmed: `erp.nettix.com.pe/api` recorded as `200` (actually Dolibarr's "API module must be activated" page at `/api/`, confirmed by hand; `/api` itself is a 301). **Fix:** same shape as LT-64 for the same-host case — rewrite `EndpointFact.URL` to the final URL, or carry the redirect chain regardless of host.
+- **LT-127 (open)** — a wiki/CMS whose "page doesn't exist" response is HTTP 200 with a page-name-templated title defeats LT-30's canary suppression (body differs *by design* per path) — DokuWiki fabricated 3 high-confidence fake API endpoints this round. **Fix:** fetch a second, differently-named canary and diff it against the first; if they differ only in the echoed-path substring, classify as templated-catch-all.
+- **LT-128 (open)** — `signupPathCandidates` (LT-123) is too narrow for WordPress/WooCommerce-style registration (a query-string action on an existing path, or a form embedded in an existing page) — `--auto-provision-account` never got a chance on this target. **Fix:** widen with `/wp-login.php?action=register`; consider a body-marker check for GET-rendered registration forms.
+- **LT-129 (open)** — `pkg/fingerprint` has no signatures for Dolibarr/Nextcloud/Webmin/DokuWiki (all four confirmed live here), each instead reverse-engineered into a bespoke one-off `misconfig` check; `Signature` has no version-capture mechanism at all. **Fix:** add header/body signatures for all four (e.g. Dolibarr's `DOLAPIKEY` CORS header) + `hostnameProductHints` tokens; add an optional `VersionRegex` to `Signature` so future products get CVE-correlation for free.
+- **LT-130 (open)** — the D2 program-policy pre-flight runs only against the CLI's initial seed target, never against hosts recon fans out to (24 real hosts this round, zero individually policy-checked). `scan` itself is unaffected (explicit `--targets` only). **Fix:** re-run `preflight.Check` over the full in-scope host list after Wave 1.
+- **LT-131 (open)** — `pkg/mcpserver` has zero wiring for Part A/B's new fields (`SSRFBodyParams`/`IDORSeedID`/`AutoProvisionAccount`/`SignupEndpoint`) — an MCP-driven agent can't reach LT-95/96/123 at all, CLI-only. **Fix:** add the fields to `scanInput`/`planInput`, thread into `cfg`/`baseCfg` the same way the CLI does. Minor: `handlePlan` silently discards a template-index load error where `runScan` warns — align them.
 
+### Demo-target selection (2026-09-08/09/10)
 
+Active recon + a focused `misconfig` pass over the four owned demo domains (`.engagements/owned-sites/scope.txt`) to pick the 2026-09-10 Web UI demo target.
 
-Active recon + focused `misconfig` pass over the four owned demo domains
-(`*.andertone.com`, `*.aalberts.com`, `*.nettix.com.pe`, `*.aceautowreckers.com`;
-`.engagements/owned-sites/scope.txt` is the authorization) to pick the
-2026-09-10 Web-UI demo target and lock in ≥1 actionable finding.
-`nettix.com.pe` chosen — 24 hosts / 25 endpoints / 67 tech facts,
-`app_surface: full`, mostly un-CDN'd. `andertone.com`/`aalberts.com` thin
-(CDN + SSO), `aceautowreckers.com` fully Cloudflare-walled (every host 403).
+**Demo-target verdicts — do not re-evaluate these for a demo:**
+- **`nettix.com.pe` — ✅ the demo target.** Only one of the four with a reachable, un-walled surface and a confirmed actionable finding: `www.nettix.com.pe` serves the full WordPress author list unauthenticated at `/wp-json/wp/v2/users/` (incl. `admin`, still active) — CWE-200, feeds credential stuffing. Secondary: `erp`/`ixn.nettix.com.pe` expose Dolibarr ERP 23.0.3 (behind 23.0.4+, CVE-2026-81728 HIGH + CVE-2026-85401; the earlier "critical dol_eval RCE" read was wrong, NVD-corrected 2026-09-08).
+- **`aalberts.com` — ❌ non-viable.** Hardened estate (Cloudflare/M365 SSO/HTTP Basic/S3 apex), ~3 scannable hosts, thin actionable set, source-IP-blocked mid-run. FP-regression fixture only. Full record: § "Live Testing — www.aalberts.com" below.
+- **`andertone.com` — ❌ non-viable.** HTTP surface CDN-403-walled; the one real exposure (FTP:21+MySQL:3306 on `staging.`, LT-23) needs the still-unbuilt network-service detector (Phase 8 Step 1).
+- **`aceautowreckers.com` — ❌ non-viable.** Fully Cloudflare-walled, every host 403. Same dead-end class as valmo/shopify/ALSCO.
 
-**Demo-target verdicts for `owned-sites/scope.txt` — do not re-evaluate these
-for a demo:**
-- **`nettix.com.pe` — ✅ the demo target.** Only one of the four with a
-  reachable, un-walled surface and a confirmed actionable finding.
-- **`aalberts.com` — ❌ non-viable.** Hardened estate (Cloudflare / M365 SSO /
-  HTTP Basic / S3 apex), ~3 scannable hosts, thin actionable set, several FPs,
-  source-IP-blocked mid-run on the 2026-09-09 full scan. FP-regression fixture
-  only. (Full record: § "Live Testing — www.aalberts.com".)
-- **`andertone.com` — ❌ non-viable.** Recon-rich (WP/WooCommerce/LiteSpeed, 196
-  endpoints) but the HTTP surface is CDN 403-walled and the one real exposure —
-  FTP :21 + MySQL :3306 on `staging.` (LT-23) — needs the still-unbuilt
-  network-service detector ([Phase 8](17-implementation-plan-ph8.md) Step 1);
-  today it can only produce a `StatusUnresolved` leaf. It was also the target
-  that surfaced the decision-engine noise problem (134 mostly-noise leaves).
-- **`aceautowreckers.com` — ❌ non-viable.** Fully Cloudflare-walled, every host
-  returns 403; same dead-end class as valmo / shopify / ALSCO.
+For an actionable demo independent of owned sites, crAPI (13 verified findings, 0 FP, full plan→execute) stays the strongest.
 
-For an actionable end-to-end demo independent of these, crAPI (local lab) stays
-the strongest: 13 verified findings, 0 FP, full plan→execute.
+- LT-97 ✅ done 2026-09-08 — no first-party WordPress REST user-enum check (the nuclei template existed but a real-target corpus run reliably never dispatches it within budget) → `misconfig.checkWPUserEnum`, always-on, immune to corpus starvation.
+- LT-98 split into the dispatch-order fix (✅ done 2026-09-08, below under LT-114) and the corpus-load-perf design item (✅ done 2026-09-09, LT-106).
+- LT-99 ✅ done 2026-09-09 — no headless/JS-rendered crawl (non-headless katana on crAPI's SPA found 4 endpoints vs. 40 in its spec) → opt-in `--headless-crawl` (`recon`/`plan`, `--recon-depth full` only), self-provisions Chromium if needed. webui/MCP toggle deferred.
+- LT-100 ✅ done 2026-09-09 — no hidden-parameter mining → first-party diff-oracle param miner (`--param-mining`, curated ~239-name wordlist, ≥2-signal corroboration gate, hard request cap). Live: 0% FP on crAPI decoys, 4 real undocumented Juice Shop params found. webui/MCP toggle deferred.
+- ffuf-style multi-position fuzzing reaffirmed out of scope 2026-09-08 → [Parked](#parked--revisit-on-a-trigger-or-after-an-eval).
 
-**Confirmed actionable finding (demo spine):** `www.nettix.com.pe` serves the
-full WordPress author list unauthenticated at `/wp-json/wp/v2/users/` — 200 +
-`application/json`, `X-Wp-Total: 3`, slugs `arodriguez` / **`admin`** /
-`mandrade` (the slug is the `wp-login.php` login name; `admin` still active).
-CWE-200, feeds credential stuffing / password spraying.
+### Apex re-run 2026-09-08 — 24 hosts, 5 findings confirmed by hand
 
-Secondary (human version→CVE correlation): `erp.nettix.com.pe` +
-`ixn.nettix.com.pe` expose a **Dolibarr ERP/CRM 23.0.3** login to the
-internet, version leaked in page source (`?version=23.0.3` on every asset,
-`<meta name="author" content="Dolibarr Development Team">`). 23.0.3 is behind
-23.0.4+ and affected by CVE-2026-85401 (critical, Legacy File Manager access
-control, public exploit), CVE-2026-19350 (TakePOS auth bypass), and the
-dol_eval RCE family. HackerFive produces `dolibarr-panel` + version extraction
-+ missing CSP/HSTS; installer is correctly locked (`install.lock`),
-`/documents/` not traversable — no FP. Ruled out: `wiki.nettix.com.pe`
-DokuWiki is current (`2026-07-14c "Mort"`); `soporte.nettix.com.pe` throwing
-502s.
+`recon --scope '*.nettix.com.pe' --recon-depth full` → 24 hosts / 66 endpoints / 66 tech facts. Hand-verified actionable surface (all read-only GET):
 
-- **LT-97 ✅ done 2026-09-08.** The `misconfig` detector had no first-party
-  WordPress REST user-enumeration check — it was reachable only via the
-  nuclei `wp-user-enum` template, which a real-target corpus run reliably
-  **fails to reach**: against 5–10 live nettix hosts at `--rate-limit`
-  10–25, the shared limiter + `--max-target-duration` cap let the engine
-  dispatch "roughly 0–1 of 5343" templates per host in 6–8 min, so
-  `http/vulnerabilities/wordpress/wp-user-enum.yaml` never fired even with
-  `wordpress` in the tag scope. Fix: new `misconfig.checkWPUserEnum` (always
-  runs in the native pass, immune to the corpus starvation) — GET
-  `/wp-json/wp/v2/users/`, finding requires **all of** 200 + JSON
-  content-type + non-empty JSON array + `"id"`/`"slug"`/`"name"` all present
-  (the AND on `"slug"` rejects WordPress's hardened
-  `{"code":"rest_user_cannot_view",...}` response, which is 200 JSON but has
-  no slug) + not a `looksLikeBaselinePage` echo; emits
-  `misconfig-wordpress-user-enumeration` (medium/high) with the disclosed
-  slugs in `Evidence["usernames"]`. `pkg/detectors/misconfig/{rules,detector}.go`
-  (`WPUserEnumPath`, `wpUserObjectMarkers`, `containsAll`, `wpUserSlugRe`).
-  Tests: `TestMisconfigWPUserEnum_{Hit,LockedDown_NoFinding,401_NoFinding,EmptyArray_NoFinding,HTMLNotJSON_NoFinding}`.
-  Verified live: native-only scan (`--templates <empty>`) of
-  `www.nettix.com.pe` produces it in 15 s. **→ demo prep; broadens misconfig
-  coverage per CLAUDE.md detection philosophy.**
-- **LT-98 — the tag-scoped corpus scan reaches only a random slice of its
-  templates inside the per-target time budget (dispatch half — cheap, split
-  from the old LT-98 on 2026-09-08).** Root of LT-97's workaround. At
-  dispatch, `filepath.WalkDir`'s lexical order puts `http/cves/**` first and
-  `http/vulnerabilities/**` (the detection templates) last, so when
-  `--max-target-duration` fires mid-corpus the templates that got skipped are
-  the useful ones. And the `scan-partial-time-budget` message's "roughly N of
-  5343 templates started" prints `len(tf)` — the **findings** count, not a
-  dispatch count (`pkg/scanner/budget.go` / `engine.go` `runTemplates`
-  returns findings) — so it always reads 0–2 and understates coverage.
-  **Fix (contained, do now):** (1) thread a real atomic dispatch counter
-  through `runTemplates` into `timeBudgetFinding`; (2) sort the loaded
-  template slice by a category-priority key
-  (`technologies`/`vulnerabilities`/`misconfiguration` before `cves/**`)
-  before fan-out. Dispatch-order + reporting only — no correctness change.
-  The corpus *load* cost and the shared rate-limit bucket are **LT-106**.
-  **→ demo-prep candidate (pending the baseline run); not demo-blocking
-  (LT-97 sidesteps it).**
-  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):** both parts
-  done. (1) `runTemplates` returns a dispatched count; `timeBudgetFinding` /
-  `adaptiveAbortFinding` report it. (2) Priority is keyed off
-  `info.severity` (nuclei templates carry no per-file path) — descending
-  severity band, CVE-specific templates last within a band — plus native
-  templates dispatched ahead of the nuclei corpus; sorted once in
-  `loadTemplates`, `pkg/scanner/dispatchorder.go`. See the LT-114 resolution
-  note under the 2026-09-08 baseline section.
-- **LT-106 — corpus-load performance: parsed-corpus cache + on-disk tag
-  index + per-target rate share (the expensive half of the old LT-98, split
-  out 2026-09-08).** Template **load** of the ~9.6k-file synced corpus is
-  minutes of wall-clock before the first request (a bare
-  `scan … --tags wp,wordpress` against a non-resolving host had not printed
-  "loaded N templates" after 3 min), and a tag filter still has to parse
-  every file to read its `tags:` block — so narrowing speeds up dispatch, not
-  loading. At runtime one shared `--rate-limit` token bucket is split across
-  every in-flight target, and broad tags barely narrow (`--tags wp,wordpress`
-  → 1656 templates, `--tags dolibarr,panel` → 1592, `panel` alone ~1.5k).
-  **Needs a design pass** — the options are a list, not a chosen approach: a
-  parsed-corpus cache keyed by the pinned corpus commit hash; a generated
-  on-disk tag→file index (extend the existing `templates/index.json`); a
-  per-target rate-limit share, or scan-one-target-at-a-time when the loaded
-  set is large. **→ Phase 8/9 scan-engine-perf backlog; post-demo; not
-  demo-blocking.**
-  **Resolved 2026-09-09 (branch `fix-lt106-parse-cache-and-rate-share`) —
-  both halves the user named:**
-  - *Per-target rate share (runtime half).* `pkg/scanner/targetshare.go`:
-    `effectiveTargetConcurrency(configured, rateLimit, nucleiCount, targets)`
-    caps the cross-target worker pool so each in-flight target keeps
-    ≥ `minPerTargetShareQPS` (5) of the shared `--rate-limit` bucket once
-    `largeCorpusShareThreshold` (500) nuclei templates are loaded — the LT's
-    "scan fewer targets at a time when the loaded set is large" option, and
-    the fix for LT-114 (8 hosts × `--rate-limit 10` → 1.25 req/s each →
-    ~0 templates dispatched before the per-target budget fired). Wired in
-    `Engine.Run` right after `loadTemplates`, with an `info` line naming the
-    old and new pool size. Small `--templates`/native-only runs and
-    single-target scans are untouched. Tests: `targetshare_test.go` (8 cases).
-  - *Parsed-corpus cache (load half).* `pkg/scanner/parsecache.go`: a
-    self-maintaining sidecar under `os.UserCacheDir()/hackerfive/parsecache/`,
-    keyed by a fingerprint of every template file's rel-path + size + mtime.
-    After any full parse the engine records each template's id / tags /
-    severity / format / rel-path; on the next **tag-scoped** run, if the
-    fingerprint still matches, `loadDirViaParseCache` resolves the wanted tags
-    to a file list from the sidecar and parses only those (~1.6k for
-    `--tags wp,wordpress`) via new `nuclei.LoadFiles` / `native.LoadFiles`,
-    skipping the full ~9.6k YAML-parse+DSL-typecheck. Pure optimisation: a
-    fingerprint match means the files — and therefore every `tags:` block —
-    are byte-identical to when the sidecar was built from an authoritative
-    parse, and `filterNucleiByTags`/`filterNativeByTags` still run on the
-    result as a backstop (can only narrow, never widen). Any mismatch
-    (missing/stale sidecar, an entry with no recorded path, a listed file
-    that no longer parses) falls back to a full parse and rewrites the
-    sidecar. Kill switch: `HACKERFIVE_DISABLE_PARSE_CACHE=1`. New
-    `nuclei.PeekDirIDs` backs the id→path rebuild. Tests:
-    `parsecache_test.go`, `tests/unit/loader_loadfiles_test.go`.
-  - *Still open (folded back into this LT, lower priority):* the sidecar
-    rebuild adds one extra whole-dir `os.ReadFile` pass (`PeekDirIDs`) on the
-    cache-**miss** path — cheap relative to the parse it accompanies, but
-    removable by threading the file path back through `LoadDirDetailed`; and
-    a full-corpus run (`--all-templates`, no tag scope) still can't use the
-    cache to narrow, only to warm it. The `templates/index.json` "on-disk
-    tag→file index" option was **not** taken — it can drift from the on-disk
-    corpus (only `IndexDriftWarning`'s ratio guards it), so it's weaker than
-    the fingerprinted sidecar's pure-optimisation guarantee.
-- **LT-107 — coverage-gap ledger (deterministic, no LLM).** After a
-  recon+scan, emit a structured record per `(host, fingerprinted
-  product/version)` that no loaded template tag and no native detector
-  matched — the concrete artifact that makes the native-vs-template decision
-  data-driven instead of a judgement call, and the trigger input LT-108 (and
-  doc90 I4) consume. Draws on the capability registry (`pkg/registry`, I1),
-  the decision engine's `TechFact`→tag match (I3), and the loaded template
-  set. Pure read over data that already exists post-scan; standalone-useful
-  for a human operator. **→ thin slice of doc90 Group E/I; near-term.** ✅
-  done 2026-09-10 — `pkg/coveragegap.Ledger` + `registry.CoverageStatus`;
-  now [Phase 7](16-implementation-plan-ph7.md) **Step 7**.
-- **LT-108 — `hackerfive suggest <scan-output>` (one stateless frontier
-  call).** Takes LT-107's ledger + the scan's findings and returns a
-  structured, printed-only list of proposed next actions — templates to draft
-  (→ `templates-proposed/`, the existing rung-0 pipeline), second-pass leaves to run
-  (I3 + `hostnameProductHints`), recon to redo (LT-99/LT-100/LT-101), triage
-  groupings. **No auto-apply, no re-scan** — the operator reads it and acts.
-  doc90 Decision 5's shape (stateless, per-decision-point, schema-in/out, one
-  frontier-tier call) at minimal scope, and the missing "re-plan from
-  results" half of the end-of-scan loop — everything downstream (draft →
-  `proposed/` → human promote → re-run) already ships (v0.6.0 + Phase 7).
-  Bounded by the existing per-plan spend ceiling (H5). **→ near-term; builds
-  on LT-107.** Now [Phase 7](16-implementation-plan-ph7.md) **Step 7** (with
-  LT-107; renumbered 2026-09-10 from "Step 8"). ✅ done 2026-09-10 —
-  `llmfallback.Suggest` + `hackerfive suggest` CLI command.
-- **LT-109 — `hackerfive templates promote <name>` + a webui "review proposed
-  templates" panel (rung 3 of the end-of-scan ladder).** Today an I4-drafted
-  template lands in `templates-proposed/` (a sibling of `templates/`, on no
-  loader's path — `pkg/llmfallback/resolve.go` `writeProposedTemplate`) and the
-  only way to promote it is a manual `mv` into `templates/`. This item is the
-  explicit one-action promotion: a CLI command and a webui panel that lists
-  each `templates-proposed/` draft with its source leaf / ledger row, the
-  rejection-pipeline result, and a diff, then moves it on an operator click.
-  Formalises E2's optional "`templates promote` command if worth building"
-  line. **Still human-gated — no auto-promote.** **→ after LT-108; not
-  scheduled into a phase step yet (rungs 3–5 are named-not-built in doc16
-  Step 8).**
-- **LT-110 — webui "Apply and Run" (rungs 4–5: the closed loop).** Takes the
-  operator's selected LT-108 suggestions and executes the mechanical ones:
-  draft the named templates into `templates-proposed/`, queue the second-pass
-  I3 + `hostnameProductHints` leaves, then present the lot at the **existing
-  Plan Preview approve/reject gate** (C5). On approval, launch a **fresh
-  scoped scan Job** through the normal launch path — never an in-place edit of
-  the finished job. The new job's own LT-107 ledger can feed LT-108 again,
-  bounded by the per-plan spend ceiling (H5) and a hard max-iteration cap;
-  every iteration re-crosses the approve gate. This is the item the user's
-  "if user clicks 'Apply and Run', HackerFive generates new templates + does
-  the other suggested things + scans another round" describes. **Needs a
-  design pass** (job-lineage model, iteration cap, how a promoted-this-round
-  template is scoped to just the re-scan). **→ after LT-109; Phase 8/9 window;
-  not demo-blocking.**
+| # | Finding | Host(s) | Detector status |
+| --- | --- | --- | --- |
+| A | WordPress REST user enumeration | `www`, `soporte` | ✅ `checkWPUserEnum` |
+| B | Dolibarr ERP 23.0.3 exposed, outdated | `erp`, `ixn` | ✅ `checkDolibarrOutdated` |
+| C | Nextcloud `status.php` unauth version disclosure | `cloud01`, `cloud02` | ✅ `checkNextcloudStatus` |
+| D | Nextcloud 28.0.5 outdated (EOL major + 4 CVEs) | `cloud01`, `cloud02` | ✅ `checkNextcloudStatus` |
+| E | phpMyAdmin exposed | `chasqui03` | ✅ `checkPhpMyAdmin` |
 
-### Re-run 2026-09-08 (Step 0 inventory) — seed-host subdomain-enum starvation
+Not hand-verified: Webmin :10000, Apache Guacamole (`guacamole01`), a webmail stack, DokuWiki (current, ruled out).
 
-- **LT-101 — a `www.<domain>` seed target starves Wave 1 subdomain
-  enumeration; a 39-host surface collapsed to 1.** `hackerfive recon -t
-  https://www.nettix.com.pe --scope '*.nettix.com.pe' --recon-depth full`
-  returned **3 host rows (all `www.` / apex), 10 endpoints, 11 tech facts** —
-  versus the 2026-09-08 earlier round's 24 hosts. Cause: Wave 1 runs
-  `subfinder -d <seedhost>` with the seed host verbatim, so it enumerated
-  subdomains *of* `www.nettix.com.pe` (there are none) instead of the
-  registrable domain `nettix.com.pe`. `subfinder -d nettix.com.pe` run by
-  hand immediately returned **39 names** — `erp` / `ixn` (Dolibarr),
-  `wiki`, `soporte`, `guacamole01`, `nagios`, `cloud01/02`, `gateway`,
-  `mail` / `correo`, plus ~20 app-shaped hosts (`bridgestoneweb`,
-  `chasqui0N`, `polimundo0N`, `sinchi0N`, `gtu0N`, `es01`, `web01-03`,
-  `is-consulting01/02`, `firmas`, …). The apex *was* later derived (Wave 1
-  WHOIS + a `www`→apex redirect both recorded `nettix.com.pe` as a host) but
-  **after** subfinder had already run, so it never fed enumeration. Naabu on
-  the apex did surface port **10000 (Webmin)** and **2000** alongside
-  22/80/443/mail — a surface the `www`-only view hid. **Fix:** before Wave 1,
-  reduce every seed host to its registrable domain (public-suffix list — Go
-  `golang.org/x/net/publicsuffix` is already an indirect dep via `net/http`
-  cookiejar, confirm footprint) and enumerate *that*; keep the original seed
-  host in the probe set. Also: when `--scope` carries `*.<domain>` and the
-  seed is `www.<domain>` or a bare host under it, warn if subfinder returns
-  0 names (it almost always should return ≥1 for a real domain). **→ recon
-  correctness; demo-blocking for the Step 0 inventory — worked around this
-  round by re-seeding at the apex, fix proper in [Phase 8](17-implementation-plan-ph8.md)
-  Step 6 / recon backlog.**
+- LT-101 ✅ done 2026-09-08 — a `www.<domain>` seed starved Wave 1 subdomain enum (39-host surface collapsed to 1, since subfinder ran against the `www.` host, not the registrable domain). **Still open:** the registrable-domain reduction itself (this round worked around it by re-seeding at the apex by hand); real fix → Phase 8 Step 6/recon backlog.
+- LT-102 ✅ done 2026-09-08 — `app_surface: none` suppressed the plan on a 24-host result where a majority of hosts were walled but several served real, distinct content → `classifyAppSurface` now weighs distinct-real-content hosts, not just the majority verdict.
+- LT-103 ✅ done 2026-09-08 — a CMS login page that renders for many paths (Dolibarr/DokuWiki) was flagged `catchall` despite katana crawling real distinct routes on it → suppressed when katana itself extracted ≥2 distinct non-asset routes. **Residual (open):** depends on katana actually reaching the host inside the flat 60s wave cap on a large sweep (fixed for a focused 2-6-host scan, not a 24-host one) — filed toward LT-38/a `uniformwall` follow-up.
+- **LT-140 (open)** — `ReconResult.UniformResponse` is one fact, not one per host, so D6's corpus-skip (LT-59) only ever protects a single host per multi-host recon run — `aggregator.setUniformResponse` keeps only "the first verdict seen," and all three frontends build `UniformWallHosts` (already a `map[string]string`) from that one fact. **Fix:** widen `UniformResponseFact` to a per-host collection (versioned schema change), `setUniformResponse`/`classifyAppSurface` keyed by host, all 4 call sites (`cmd/hackerfive/scan.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_plan.go`/`tools_scan.go`) build the full map. → [Phase 8](17-implementation-plan-ph8.md) Step 6, alongside LT-64/65/84's per-host fact attribution theme. Not demo-blocking (a focused 2-6-host scan usually has only one wall anyway).
+- LT-104 ✅ done — scan-side face done 2026-09-08 (a second-canary `detectCatchAll` check suppresses exposed-path/dir-listing FPs on a confirmed soft-404 catch-all host); recon-side face done 2026-09-10 via LT-66's tail (above) — the phantom `wave3-common-path-probe` endpoints themselves are now dropped on a catch-all host.
+- LT-105 (open) — a `WordPress:7.1` tech fact is a misparse (plugin/asset version bleeding into the core-product fact, cf. LT-21) — poisons any affected-version CVE gating. Needs shape-validation / a `/wp-includes/version.php`-adjacent signal instead of an httpx guess.
+- LT-118 ✅ done 2026-09-09 — `misconfig-exposed-path-admin` structurally false-positives on any app whose `/admin` redirects to a login page (every WordPress site) → `looksLikeAuthLoginPage` suppresses it.
+- Native product-fingerprint checks (Dolibarr/Nextcloud/phpMyAdmin/Webmin) ✅ done 2026-09-08 — `checkDolibarrOutdated`, `checkNextcloudStatus`, `checkPhpMyAdmin`, `checkWebmin`, all gated on a hard structural marker + an NVD-verified `KnownVulnerableVersions` CVE table shared across products. Negative control: DokuWiki correctly yields zero product findings.
 
-### Apex re-run 2026-09-08 (Step 0 inventory) — 24 hosts, and 5 findings confirmed by hand
+### Baseline run 2026-09-08 — engine multi-host findings (pre-implementation)
 
-`hackerfive recon -t https://nettix.com.pe --scope '*.nettix.com.pe'
---recon-depth full` → **24 hosts, 66 endpoints, 66 tech facts**. Confirmed
-actionable surface (all read-only GET, owned-target authorization):
+Ran current `main` against `nettix.com.pe` before any new implementation: **the native product checks — the entire value of the work above — did not fire against the live Dolibarr hosts**, silently missing the demo's headline finding. All four causes ✅ done 2026-09-08 (`fix-baseline-lt113-111-114`):
+- LT-111 recon's wave-time cap was a hard-coded 60s const, non-deterministically starving subdomain enum on a large sweep → `--wave-timeout` flag + env override, default unchanged. Host-count auto-scaling (LT-38's tail) still open.
+- LT-112 subfinder emitted an FTP-banner-prefixed hostname (`220-sinchi01…`) that silently voided the entire httpx batch (zero output, no error) → `normalizeHostname` strips/rejects malformed entries; httpx-wave now warns on an unexpected zero-live-host result.
+- LT-113 **#1 demo-blocker** — the misconfig check loop forfeited every remaining check once the host-error breaker tripped, and the 5 product-fingerprint checks were ordered *last* → they're now a `priorityChecks` tier, run first, exempt from the breaker; a check error is now non-fatal instead of aborting the whole detector. Root-response-cache dedup (reduces the request volume that trips the breaker at all) still open.
+- LT-114 a multi-target corpus scan dispatched ~0 templates/host inside any sane budget (shared rate bucket ÷ N hosts, plus `cves/**`-first dispatch order wasting what little got through) → real dispatched-count reporting, native-before-corpus + severity-band dispatch ordering, and (via LT-106) a per-target rate-limit share once a large corpus is loaded.
+- LT-106 ✅ done 2026-09-09 — corpus-load perf: `pkg/scanner/targetshare.go`'s `effectiveTargetConcurrency` caps cross-target concurrency so each in-flight target keeps ≥5 req/s of the shared bucket once a large corpus is loaded; `pkg/scanner/parsecache.go`'s fingerprinted sidecar cache skips a full ~9.6k-template parse on a tag-scoped re-run. Kill switch: `HACKERFIVE_DISABLE_PARSE_CACHE=1`. **Tail still open (low priority):** one extra dir-read pass on a cache miss; `--all-templates` can't use the cache to narrow, only to warm it.
+- LT-107 ✅ done 2026-09-10 — coverage-gap ledger (`pkg/coveragegap.Ledger` + `registry.CoverageStatus`): a structured record per `(host, fingerprinted product/version)` that no loaded tag/detector matched. [Phase 7](16-implementation-plan-ph7.md) Step 7 (renumbered from "Step 8").
+- LT-108 ✅ done 2026-09-10 — `hackerfive suggest <scan-output>` CLI command (`llmfallback.Suggest`): one stateless frontier call over LT-107's ledger + findings, printed-only proposed next actions. No auto-apply, no re-scan. Phase 7 Step 7, builds on LT-107.
+- LT-109 (open) — `hackerfive templates promote <name>` + a webui review panel for an I4-drafted template sitting in `templates-proposed/` (today: manual `mv`). Still human-gated. → after LT-108, not yet scheduled into a step.
+- LT-110 (open) — webui "Apply and Run": execute LT-108's mechanical suggestions (draft templates, queue second-pass leaves), present at the existing Plan Preview gate, launch a fresh scoped Job on approval. Needs a design pass (job-lineage model, iteration cap). → after LT-109, Phase 8/9 window.
 
-| # | Finding | Host(s) | Evidence | Detector status |
-| --- | --- | --- | --- | --- |
-| A | **WordPress REST user enumeration** (CWE-200) | `www.nettix.com.pe` (`x-wp-total: 3`, `admin`/`arodriguez`/`mandrade`), `soporte.nettix.com.pe` (`x-wp-total: 6`, `agarcia` +5) | `GET /wp-json/wp/v2/users/` → 200 `application/json`, real user array | ✅ **`checkWPUserEnum` (PR #2)** — fires on both hosts |
-| B | **Dolibarr ERP 23.0.3 exposed to the internet, outdated** | `erp.nettix.com.pe`, `ixn.nettix.com.pe` | login title `Login @ 23.0.3`; `<meta name="author" content="Dolibarr Development Team">`; `/api/index.php/status` → 200 (login-gated). 23.0.3 < 24.0.0 → CVE-2026-81728 (HIGH 8.6, CSV/XLSX-import SQLi); 23.0.3 < 23.0.4 → CVE-2026-85401 (LOW 2.1, public exploit). *(Earlier "CVE-2026-85401 critical / CVE-2026-19350 / dol_eval RCE" was wrong — NVD-verified 2026-09-08: 85401 is LOW; 19350 not a Dolibarr CVE; the dol_eval RCEs CVE-2026-22666/23500 were fixed in 23.0.2/23.0.0, before 23.0.3.)* | ✅ **`checkDolibarrOutdated` (Step 3, this branch)** — medium finding, fires on both hosts |
-| C | **Nextcloud `status.php` unauthenticated version disclosure** (CWE-200) | `cloud01.nettix.com.pe`, `cloud02.nettix.com.pe` | `GET /status.php` → 200 `{"version":"28.0.5.1","versionstring":"28.0.5","productname":"Nextcloud",…}` no auth | ✅ **`checkNextcloudStatus` (Step 4, this branch)** — `misconfig-nextcloud-status-disclosure` low, always-on when the JSON shape matches |
-| D | **Nextcloud 28.0.5 outdated** (major 28 EOL; maintained 32/33/34, current 34.0.3) | `cloud01`, `cloud02` | versionstring from (C) | ✅ **`checkNextcloudStatus` (Step 4)** — `misconfig-nextcloud-outdated` medium: EOL-major note + 4 NVD-verified sub-28.0.13 CVEs (CVE-2025-47791, CVE-2024-52523/52518/52517, all medium) |
-| E | **phpMyAdmin exposed to the internet** | `chasqui03.nettix.com.pe` (title "Arminet") | `GET /` → 303 to the pma login; `phpMyAdmin` fingerprint | ✅ **`checkPhpMyAdmin` (Step 4)** — `misconfig-phpmyadmin-exposed` medium; probes `/`, `/phpmyadmin/`, `/pma/`, gated on the `pma_username`+`pma_password` form-field pair |
-
-Additional surface not hand-verified this round: **Webmin on :10000** (ns1 /
-web01 / web02 / sinchi01 / firmas / mail / www — behind HTTP Basic, login page
-usually leaks the version), **Apache Guacamole** (`guacamole01`, hostname hint +
-:8443 — LT-9 `hostnameProductHints` should dispatch a `guacamole` leaf), a
-webmail stack (`mail` / `correo` / `chasqui04`), **DokuWiki** (`wiki`, current
-"Mort" — ruled out). Out-of-scope redirects correctly flagged on
-`chasqui01`→altira.cloud and `ns2`/`ns6`/`gateway`/`sinchi03`→alespinosa.mx
-(LT-64).
-
-**Demo-blockers this run surfaced:**
-
-- **LT-102 ✅ done 2026-09-08.** `classifyAppSurface` (`pkg/recon/aggregate.go`)
-  no longer lets a single host-scoped `UniformResponseFact` force the whole
-  multi-host result to `none`: it counts distinct hosts that served a real
-  application (`endpointShowsRealApp` — a crawled non-asset route, or a 2xx
-  with a non-generic page title; `isGenericPageTitle` filters stock
-  server/landing/challenge pages), and when any host *other* than the walled
-  one qualifies it classifies on the live-endpoint scale (`thin`, or `full`
-  at >3 real-app hosts) with the wall noted in the reason instead of
-  `none`. Single-target recon (every prior live round) is unchanged — no
-  other real-app host ⇒ still `none`. Tests:
-  `TestClassifyAppSurface` (LT-102 cases). Original:
-  **`app_surface` verdict came back `none` ("every recon probe hit a
-  waf-block wall — recon is blind from this vantage") for a 24-host /
-  66-endpoint / 66-tech-fact result that fingerprinted WordPress, Dolibarr,
-  Nextcloud, phpMyAdmin and DokuWiki with real page titles and katana-crawled
-  real Nextcloud/Dolibarr routes.** The earlier 2026-09-08 round on the same
-  target reported `app_surface: full`. `classifyAppSurface` aggregates
-  per-host Wave-3 canary outcomes and tipped to `none` because a majority of
-  hosts are 401-walled (the Webmin/Basic-auth hosts) or catch-all-200
-  (Dolibarr/DokuWiki/mail login pages) — it does not weight the hosts that
-  plainly served distinct real content. **This is LT-68/LT-82 at the aggregate
-  level, and it is demo-blocking: `app_surface: none` suppresses the plan
-  (LT-68), so `plan`/the Web UI Launch against this recon file produces an
-  empty tree.** Fix: `classifyAppSurface` must not return `none` when ≥N hosts
-  each show distinct real content — a non-error `<title>` differing across
-  hosts, a katana-crawled non-asset app route, or a confidently fingerprinted
-  CMS/product. Contributing: LT-38's deferred "scale `waveTimeout` by host
-  count" — wave-2 naabu and wave-3 katana both hit the flat 60 s cap with 24
-  hosts, so each host got a rushed, ambiguous probe. **→ recon correctness;
-  demo-blocking.**
-- **LT-103 ✅ done 2026-09-08.** `recordUniformResponse` (`pkg/recon/crawl.go`)
-  now also drops a `catchall` verdict — not `waf-block` — when
-  `crawlRoutesRefuteCatchall` finds ≥2 distinct non-asset routes that
-  **katana itself extracted and followed** (`Source` contains `katana`,
-  2xx/3xx, path below root, not a static asset) on the host. A storage
-  bucket / SPA shell has no internal links to distinct server-side routes for
-  a crawler to discover, so this stays clear of the model catch-all
-  (linkpop's bucket, whose 200s all came from recon's own fixed-path probe).
-  Complements LT-82's 404-among-200s test with a lower bar for the specific
-  "product login page renders widely but the app routes" shape. Emits an
-  `LT-103` suppression warning. Tests: `TestCrawlRoutesRefuteCatchall`.
-  **Verified live 2026-09-08** (apex re-run): `erp.nettix.com.pe`'s catchall
-  verdict was suppressed ("katana crawled 2 distinct non-asset route(s)…").
-  **Residual:** the sibling `ixn.nettix.com.pe` (identical Dolibarr) was *not*
-  suppressed that run because katana — sharing a flat 60 s wave cap across 24
-  hosts (LT-38, still deferred) — crawled 0 routes on it; an earlier run with
-  more katana budget had crawled 3. So LT-103's correctness depends on katana
-  actually reaching the host, which the flat cap doesn't guarantee on a large
-  estate. A vantage-independent fix — recognise that the uniform "one page"
-  is itself a product login page (title `Login @ <version>`, a known
-  `<meta name="author">`, a product-specific asset path) and treat that as a
-  *login wall*, not a catch-all, in `pkg/uniformwall` — is the real answer
-  and is filed toward LT-38 / a `uniformwall` follow-up. For a **focused**
-  scan (the demo path: 2–6 named hosts, not a 24-host sweep) katana is not
-  starved and LT-103 fires for both Dolibarr hosts.
-  Original: **Dolibarr (`erp`/`ixn`) and DokuWiki (`wiki`) each flagged
-  `uniform SPA/catch-all … no real routing to map` (LT-30 / D6 / LT-43)
-  while katana simultaneously crawled distinct real routes on them**
-  (`erp`/`ixn`: `/index.php`, `/viewimage.php`, `/core/js/lib_head.js.php`,
-  `/api`). A CMS whose *login page* renders for many unauthenticated paths is
-  not a catch-all bucket. LT-82's `crawlEvidenceRefutesWall` suppresses a
-  `catchall`/`waf-block` verdict when the host has ≥5 distinct endpoints
-  spanning a 404 among 2xx — it evidently isn't firing here (too few distinct
-  wave-2/3 endpoints per host after the 60 s cap, or it doesn't cover the
-  Wave-3-canary `catchall` path). **Demo-relevant:** the D6 short-circuit
-  (LT-59) would make `scan` skip the template corpus for `erp`/`ixn`, killing
-  the finding-B path. Fix: extend `crawlEvidenceRefutesWall` to the Wave-3
-  canary `catchall` verdict and lower its distinct-endpoint threshold when a
-  CMS is fingerprinted on the host. **→ recon correctness; demo-relevant.**
-- **Step 3 (version→CVE, native Dolibarr) ✅ done 2026-09-08** — finding B.
-  `pkg/detectors/misconfig`: new always-on `checkDolibarrOutdated` — GET `/`,
-  gate on the exact `<meta name="author" content="Dolibarr Development Team">`
-  tag, parse the version from the login `<title>`'s upstream-deliberate
-  ` @ <version>` suffix (`login.tpl.php`), fall back to the `&version=` on any
-  themed CSS/JS URL, then AND it against a curated NVD-verified
-  `DolibarrCVEs []VersionCVERule` table (`rules.go`) via a local
-  `versionLessThan` (no semver dep — same hand-rolled precedent as
-  `pkg/template/dsl`). Finding `misconfig-dolibarr-outdated`, severity =
-  highest matched CVSS band capped at `high` (never `critical` on a
-  version-only match), confidence `high`. 23.0.3 → medium, cites
-  CVE-2026-81728 + CVE-2026-85401; a 22.x install → high (adds
-  CVE-2026-23500 9.4). Same LT-98-immune shape as `checkWPUserEnum`. Tests:
-  6 cases in `tests/unit/detector_misconfig_test.go` (`TestMisconfigDolibarr_*`).
-  `DolibarrLatestStable` const carries a refresh-date note (24.0.1, checked
-  2026-09-08). Step 5 later lifted `DolibarrCVEs` into the shared
-  `KnownVulnerableVersions` table (see below).
-- **Step 4 (native Nextcloud + phpMyAdmin) ✅ done 2026-09-08** — findings C, D, E.
-  `pkg/detectors/misconfig`, two more always-on checks:
-  - `checkNextcloudStatus` — GET `/status.php`; AND-gate on the
-    `installed`/`version`/`versionstring`/`productname` key set
-    (`nextcloudStatusMarkers`). Always emits `misconfig-nextcloud-status-disclosure`
-    (low, CWE-200). Then, if the parsed `versionstring` is an EOL major
-    (`< nextcloudOldestMaintainedMajor`, 32) **or** below any `NextcloudCVEs`
-    row, also emits `misconfig-nextcloud-outdated` (medium; severity bumps to
-    high only on a matched CVSS ≥ 9.0 — none in the 28-line). `NextcloudCVEs`
-    is 4 NVD-verified rows (fixes in 28.0.11–28.0.13, all medium). Consts
-    `NextcloudLatestStable` (34.0.3) / `nextcloudOldestMaintainedMajor` carry
-    a 2026-09-08 refresh note.
-  - `checkPhpMyAdmin` — probes `/`, `/phpmyadmin/`, `/pma/` (root first: the
-    live host `chasqui03` mounts pma at `/`); AND-gate on the
-    `pma_username`+`pma_password` login-form field pair (unchanged across
-    pma 5.x), baseline-page guard, best-effort `?v=` version from an asset
-    URL. Emits `misconfig-phpmyadmin-exposed` (medium). Not an `ExposedPaths`
-    row because that table has no root-probe semantics and the pair-gate
-    needs an AND.
-  - Shared helper `majorOf`; `firstSubmatchString`/`versionLessThan` reused
-    from Step 3. Tests: 6 cases (`TestMisconfigNextcloudStatus_*`,
-    `TestMisconfigPhpMyAdmin_*`). Full gate green.
-- **Step 5 (generic cross-product version→CVE table + phpMyAdmin/Webmin) ✅ done 2026-09-08.**
-  `pkg/detectors/misconfig`:
-  - `DolibarrCVEs` + `NextcloudCVEs` collapsed into one
-    `KnownVulnerableVersions []VersionCVERule` table; `VersionCVERule` gained a
-    `Product` field (discriminator; `Product*` name consts). Two shared
-    helpers in `detector.go`: `matchKnownCVEs(product, detectedVersion)`
-    (filters the table by product, returns matched rows + the version-only
-    severity band — medium, → high on a matched CVSS ≥ 9.0, never critical)
-    and `formatCVEDetails` (the `"CVE-x (CVSS n.n, fixed in v[, public
-    exploit]): summary"` rendering). `checkDolibarrOutdated` /
-    `checkNextcloudStatus` refactored onto them — identical findings/evidence,
-    ~60 fewer lines.
-  - `checkPhpMyAdmin` now also emits `misconfig-phpmyadmin-outdated` when the
-    `?v=` asset version is below a `KnownVulnerableVersions` phpMyAdmin row.
-    Rows: CVE-2025-24530 + CVE-2025-24529 (both PMASA-2025, fixed 5.2.2,
-    medium/CVSS 6.4, NVD-verified 2026-09-08). `PhpMyAdminLatestStable` =
-    5.2.3. The live `chasqui03` 5.2.1 login page now yields exposure **+**
-    outdated.
-  - New always-on `checkWebmin` — GET `/`, hard gate on the
-    `Server: MiniServ` header (the bespoke server behind Webmin/Usermin/
-    Virtualmin, nothing else), confirmed by `session_login.cgi` in the body,
-    version from the `MiniServ/<ver>` token. Emits
-    `misconfig-webmin-login-exposed` (medium — a root-priv admin panel on the
-    open internet) and, below a fix line, `misconfig-webmin-outdated`. One
-    NVD-verified row: CVE-2026-56020 (miniserv.pl SSL-client-cert DN spoof /
-    auth bypass, fixed 2.202, critical/CVSS v4 9.2 → outdated finding is
-    high). Two other 2026 Webmin XSS/file-disclosure CVEs deliberately
-    omitted — secondary sources disagree on the fix version (`2.641` vs
-    `2.202`); flagged, not guessed. `WebminLatestStable` = 2.202.
-  - Negative control: `TestMisconfigNativeChecks_DokuWikiNegativeControl` —
-    a DokuWiki root (`wiki.nettix.com.pe`; release names "Mort"/"Igor", no
-    dotted version) plus 404 for every product probe path → zero product
-    findings. Tests: `TestMisconfigPhpMyAdmin_{Outdated_Hit,Current_ExposedOnly}`,
-    `TestMisconfigWebmin_{Exposed_Hit,Current_ExposedOnly,NotMiniServ_NoFinding}`,
-    the DokuWiki control. Full gate green (`build`/`vet`/`test -race`/
-    `golangci-lint` 0 issues).
-  - **Follow-up:** `checkWebmin` adds a 4th GET `/` per run (also done by
-    `checkDolibarrOutdated`, `checkCommentLeaks`, `checkMissingHeaders`) —
-    a root-response cache shared across the misconfig checks would remove all
-    the duplication. Logged, not demo-blocking.
-- **LT-104 — `wiki.nettix.com.pe/{api,graphql,swagger/v1/swagger.json}`
-  recorded as `wave3-common-path-probe` endpoints (status 200) on a host
-  recon *also* flagged catch-all** — LT-66's per-endpoint bucket-catch-all
-  cleanup confirmed still open, live. These are false endpoints (DokuWiki
-  serving its index for every path). Fix per LT-66 tail: when
-  `UniformResponse.Kind == "catchall"`, drop that host's
-  `wave3-common-path-probe` endpoints unless the body hash differs across ≥2
-  probed paths.
-  **Scan-side face resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):**
-  the same catch-all also produced a false `misconfig-exposed-path-swagger-ui.html`
-  in the baseline run. `misconfig.Detector` now probes a **second** unrelated
-  guaranteed-nonexistent path (`detectCatchAll`) and, when both canaries come
-  back 2xx with the same template shape, sets `baselineCatchAll`, emits one
-  `misconfig-soft-404-catchall` (info) note, and suppresses exposed-path /
-  dir-listing / verbose-error findings whose body is within an
-  adaptive-to-the-two-canaries' own per-path variance of that template
-  (`looksLikeCatchAllServed`). A genuinely distinct/larger resource on the
-  same host still surfaces. The single-canary `looksLikeBaselinePage` missed
-  this because DokuWiki renders the requested page name into the body, so its
-  one canary drifted from a real probe by the reflected-path text alone.
-  Tests: `TestMisconfigLT104_CatchAllSuppressesExposedPathFP`,
-  `TestMisconfigLT104_CatchAllStillSurfacesDistinctResource`. The **recon-side
-  face** (dropping the phantom `wave3-common-path-probe` endpoints on a
-  catch-all host — LT-66 tail) is still open.
-- **LT-105 — `WordPress:7.1` tech fact on `www.nettix.com.pe`.** WordPress
-  core is 6.x; "7.1" is a misparse (a plugin / Block-Editor asset version
-  bleeding into the core product fact — cf. LT-21's cache-hash-as-version).
-  A wrong core version poisons any affected-version CVE gating (P0-1b / LT-7 /
-  Phase 8 Step 5) — it must be shape-validated / sourced from
-  `/wp-includes/version.php`-adjacent signals, not an httpx `-tech-detect`
-  guess. **→ recon fingerprint correctness.** Re-confirmed live in the
-  2026-09-08 baseline run (below).
-- **LT-118 — `misconfig-exposed-path-admin` is a structural false positive on
-  any app whose `/admin` redirects to a login page (every WordPress site).**
-  `ExposedPaths` carries `{Path: "/admin", Keywords: ["admin","login","dashboard"]}`
-  (`rules.go`). `checkExposedPaths` GETs `/admin` with the scan HTTP client's
-  redirect-following on, so on WordPress the chain `/admin → /wp-admin/ →
-  /wp-login.php` lands on a 200 login page whose body contains "login", the
-  keyword matches, and `looksLikeBaselinePage` / `looksLikeCatchAllServed`
-  don't suppress it (the login page is a real distinct page, not a soft-404).
-  Fires `misconfig-exposed-path-admin` medium/high. The rule's intent is
-  "`/admin` serves an admin panel *without auth*" — a redirect to a login page
-  is the opposite signal. Re-confirmed live 2026-09-09 on `www.nettix.com.pe`
-  ("borderline" note in the 2026-09-08 baseline inventory was this).
-  **Fix:** in `checkExposedPaths`, drop (or downgrade to `info`) when the
-  response is a login page — a redirect chain landed on a `*login*` URL, or the
-  body has a password input with no post-auth dashboard markers. Keep the
-  finding for a genuine unauthenticated panel. Small, well-contained; a
-  `TestMisconfigExposedPath_AdminRedirectsToLogin_NotFlagged` case.
-  **→ detector false-positive; demo-visible (shows in the nettix Findings
-  table); do before 2026-09-10.**
-  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
-  new `looksLikeAuthLoginPage(finalURL, body)` — true when the redirect chain
-  landed on a conventional auth path (`wp-login.php`, `/login`, `/signin`,
-  `/users/sign_in`, `session_login.cgi`, …) or the body carries a password
-  input with none of the post-login markers (`logout`, `wp-admin`,
-  `adminmenu`, `#wpadminbar`, …). `checkExposedPaths` resolves the final URL
-  from `resp.Request.URL` and `continue`s on a match. Tests:
-  `TestMisconfigExposedPath_AdminRedirectsToLogin_NotFlagged`,
-  `TestMisconfigExposedPath_RealAdminPanel_StillFlagged` (positive guard).
-
-### Baseline run 2026-09-08 (pre-implementation, apex-seeded) — engine multi-host findings
-
-Ran the current `main` (`10a1ddb`, PR #3 merged: LT-97 + Step 3/4/5 native
-checks) against `nettix.com.pe` end-to-end, before any new implementation, to
-establish what the tool produces today. **Result: the native product checks —
-the entire value-add of PR #2/#3 — do not fire against the live Dolibarr hosts,
-and the demo's headline finding (Dolibarr 23.0.3 outdated + CVEs on two
-internet-facing ERP hosts) is silently missed.** Four distinct defects, each
-demo-blocking on its own:
-
-- **LT-111 — `recon` wave time cap is a hard-coded 60 s const with no flag or
-  env override (`pkg/recon/recon.go:378 const waveTimeout = 60 * time.Second`);
-  it non-deterministically starves subdomain enumeration.** Apex-seeded
-  `recon -t https://nettix.com.pe --scope … --recon-depth full` returned **3
-  host rows** (www + apex). stderr: `wave1: subfinder: hit the 1m0s wave time
-  cap — results may be partial` and the same for `wave3: katana`. A hand-run
-  `subfinder -d nettix.com.pe` returns **40 names in ~44 s** — right at the cap,
-  so one run yields the 24-host surface the 2026-09-08 table above enumerates
-  and the next yields 3. Every downstream step then runs against 2 hosts.
-  `app_surface` came back `thin` ("2 endpoint(s) served real content") purely
-  because of the collapse. This is LT-38's deferred "scale `waveTimeout` by
-  host count" **plus** a plain operator override: a single-domain subfinder
-  seed with no host fan-out still loses the race, so auto-scaling alone won't
-  fix it. **Fix:** a `--wave-timeout` flag + `HACKERFIVE_RECON_WAVE_TIMEOUT`
-  env (default stays 60 s), and/or scale by in-scope host count as LT-38
-  sketched. **→ recon completeness; demo-blocking (demo target is nettix).**
-  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):** `--wave-timeout`
-  duration flag on `hackerfive recon` + `HACKERFIVE_RECON_WAVE_TIMEOUT` env,
-  both funnelled through `recon.WithWaveTimeout` / `recon.New` so webui / plan /
-  mcp pick up the env var too; default unchanged at `DefaultWaveTimeout = 60s`;
-  precedence default < env < explicit option; the "hit the Ns wave time cap"
-  warning now names the configured value, not a hard-coded 1m0s. Host-count
-  auto-scaling (LT-38) still open. Tests: `pkg/recon/recon_test.go`
-  (`TestEnvWaveTimeout`, `TestNew_WaveTimeoutPrecedence`,
-  `TestWithWaveTimeout_WarningNamesConfiguredCap`).
-- **LT-112 — subfinder emits FTP-banner-prefixed hostnames (`220-sinchi01.nettix.com.pe`),
-  and one malformed line silently voids the entire httpx batch.** The hand-run
-  subfinder list contained `220-sinchi01.nettix.com.pe` / `220-sinchi03.nettix.com.pe`
-  — `220-` is an FTP multiline-greeting continuation prefix a subfinder source
-  leaked into the name and subfinder didn't sanitize. Feeding that list to
-  `httpx -l` produced **zero output** (exit 0, no error); removing the two bad
-  lines → 22 live hosts. Recon's own Wave-2 httpx invocation takes the same
-  file. **Fix:** (a) validate/strip host lines against a hostname charset before
-  use (drop or repair, don't pass through); (b) httpx-wave wrapper must not
-  treat "0 results" as success when the input had N lines and some were
-  rejected — log the rejects. **→ recon robustness; contributes to LT-111's
-  collapse.**
-  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`):** new
-  `normalizeHostname` (`pkg/recon/hostname.go`) — lowercases, strips a
-  trailing FQDN dot and a leading `*.` wildcard label, validates LDH label
-  structure + an alphabetic TLD, and rejects a leading FTP/SMTP banner
-  prefix (`^\d{3}-`, the `220-` case, which is valid LDH so the charset
-  check alone misses it). `runWave1` funnels every subfinder/tlsx result
-  through it and emits one `wave1: dropped N malformed host name(s) … (LT-112)`
-  warning. `runHTTPX` now warns `wave2: httpx returned no live host for N
-  input(s) …` instead of silently treating an empty non-timeout result as
-  "nothing alive". Tests: `pkg/recon/hostname_test.go`,
-  `TestRunWave1_DropsMalformedSubfinderHosts`.
-- **LT-113 — the `misconfig` check loop forfeits every remaining check when the
-  host-error breaker trips, and the always-on product-fingerprint checks are
-  ordered last, so they are the first casualties.** `Detector.Run`
-  (`pkg/detectors/misconfig/detector.go:216-228`): the loop is
-  `for _, check := range checks { if d.hostErrors.ShouldSkip(host) { break }; fs, err := check(...); if err != nil { return findings, err } … }`.
-  `checkExposedPaths` / `checkDirListing` / `checkDisallowedMethods` (PUT/DELETE/PATCH
-  + a comparison GET each) / `checkDefaultCreds` run **before** `checkWPUserEnum`
-  (9th), `checkDolibarrOutdated` (10th), `checkNextcloudStatus` (11th),
-  `checkPhpMyAdmin` (12th), `checkWebmin` (13th). On `erp`/`ixn`
-  (nginx + Dolibarr 23.0.3, `<meta name="author" content="Dolibarr Development Team">`
-  + `<title>Login @ 23.0.3</title>` both confirmed by curl, root in 0.4 s) the
-  unusual-verb / default-cred bursts stall or feed 5 consecutive errors to
-  `hosterrors` (`DefaultThreshold = 5`), `ShouldSkip` trips, the loop `break`s,
-  and the Dolibarr/Nextcloud/phpMyAdmin/Webmin checks never run. **Reproduced
-  three ways:** the 8-host corpus scan (erp: 0 findings, ixn: generic headers
-  only); a native-only 6-host scan (`--tags __none__`, erp: 0, ixn: comment-leak
-  only); and **erp alone, native-only, `--rate-limit 20`, no contention → still
-  only 3 findings (comment-leak + 2 missing-header), nothing past check 4.**
-  `cloud02` (302 root, clean verb responses) is the only Dolibarr/Nextcloud-class
-  host that reached its product check — `misconfig-nextcloud-status-disclosure`
-  + `misconfig-nextcloud-outdated` (28.0.5, 4 CVEs) fired there and `cloud01`
-  (identical, 302 root) got 0. **This directly contradicts LT-97's "native
-  checks are immune to LT-98 corpus starvation" premise** — they share the
-  slice and the breaker. **Fix:** (1) run the cheap single-request product
-  checks *first*, before the multi-request `checkExposedPaths` /
-  `checkDirListing` / `checkDisallowedMethods` / `checkDefaultCreds`; (2) a
-  breaker `break` (or a check returning `err`) should not permanently forfeit
-  the 1-request always-on product checks — either exempt them or `continue`
-  past a check error instead of `return findings, err`; (3) the shared
-  root-response cache already logged under Step 5's follow-up removes most of
-  the pre-product request volume that trips the breaker. **→ detector
-  correctness; #1 demo-blocker.**
-  **Resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`), fixes (1)+(2):**
-  `Detector.Run` now splits the check slice into `priorityChecks` (the five
-  product-fingerprint checks — `checkWPUserEnum` / `checkDolibarrOutdated` /
-  `checkNextcloudStatus` / `checkPhpMyAdmin` / `checkWebmin`) and
-  `standardChecks` (the eight broad probes). Priority checks run first and are
-  **not** gated by `hostErrors.ShouldSkip` — only a per-target `ctx` deadline
-  stops them; the breaker `break` still applies to the standard tier. A check
-  returning a non-nil error is now non-fatal (skip its results, keep going)
-  instead of `return findings, err`. Fix (3) — the shared root-response cache —
-  is still open (its own Step 5 follow-up). Test:
-  `tests/unit/detector_misconfig_test.go`
-  (`TestMisconfigDolibarr_ProductCheckRunsBeforeHostErrorBreaker`).
-- **LT-114 — a multi-target corpus scan dispatches ~0 templates per host inside
-  any sane per-target budget.** The 8-host `--detector misconfig` scan loaded
-  3745 templates then reported, for **every** target,
-  `stopped dispatching templates … after the --max-target-duration budget of
-  8m0s (roughly 0–3 of 3745 templates started)`. One useful corpus template
-  fired across all 8 hosts (`CVE-2023-5561`, WP user-enum, on `soporte`).
-  `--rate-limit 10` (default) shared across 8 concurrent targets ≈ 1.25 req/s
-  each, and `filepath.WalkDir` order puts `http/cves/**` first so the 0–3 that
-  do start are the least useful. This is LT-98 (dispatch order + the
-  `templates_started` counter still printing a findings count — evidence:
-  `templates_started = 2` in the `scan-partial-time-budget` evidence while
-  other hosts logged "roughly 3") and LT-106 (shared rate bucket, no per-target
-  share) combined, and it is **much worse in practice than "reaches a random
-  slice"** — against these hosts the corpus contributes essentially nothing, so
-  the run rests entirely on the native checks that LT-113 is also breaking.
-  **→ scan-engine throughput; demo-blocking for any >2-host scan. Raises the
-  priority of LT-98 (do-now half) and LT-106 (design half).**
-  **Partly resolved 2026-09-08 (branch `fix-baseline-lt113-111-114`) — the
-  do-now half:** (a) `runTemplates` now returns the real dispatched-template
-  count and `timeBudgetFinding` / `adaptiveAbortFinding` report it as
-  `templates_started` instead of `len(findings)`; (b) native templates dispatch
-  ahead of the nuclei corpus (curated, few); (c) `loadTemplates` sorts the
-  nuclei corpus once into dispatch-priority order (descending `info.severity`
-  band, CVE-specific templates last within a band, stable within ties) via
-  `pkg/scanner/dispatchorder.go`, replacing `filepath.WalkDir`'s lexical
-  `http/cves/**`-first order. The design half — a per-target share of the
-  shared `--rate-limit` token bucket — is still LT-106. Tests:
-  `pkg/scanner/dispatchorder_test.go`,
-  `tests/unit/engine_test.go` (`TestEngineRun_TimeBudgetFinding_ReportsDispatchedNotFindingCount`).
-  **Design half now done 2026-09-09 (branch `fix-lt106-parse-cache-and-rate-share`):**
-  the per-target rate share landed under LT-106 —
-  `effectiveTargetConcurrency` caps cross-target concurrency so each in-flight
-  target keeps ≥5 req/s of the shared bucket once a large corpus is loaded,
-  so an 8-host corpus scan now dispatches a real per-target slice instead of
-  ~0. See the LT-106 resolution note.
-
-**Baseline finding inventory (what the tool actually produced, 8-host corpus
-run, 20 findings post-dedup):** `www.nettix.com.pe` — `misconfig-wordpress-user-enumeration`
-(✅ `checkWPUserEnum`; users `arodriguez`/`admin`/`mandrade`), `misconfig-exposed-path-admin`
-(medium; `/admin` is actually a 302 to wp-login — borderline), 2× missing-header,
-1× missing referrer-policy. `soporte.nettix.com.pe` — `nuclei-CVE-2023-5561`
-(WP user-enum via `?search=@`, the one corpus template that landed).
-`cloud02.nettix.com.pe` — `misconfig-nextcloud-status-disclosure` +
-`misconfig-nextcloud-outdated` (✅ `checkNextcloudStatus`; 28.0.5;
-CVE-2025-47791 + 3×CVE-2024-525xx), `.well-known/security.txt`. `ixn.nettix.com.pe`
-— comment-leak + 2× missing-header + 5× nuclei missing-security-headers +
-`scan-partial-time-budget`. `wiki.nettix.com.pe` (DokuWiki) —
-`misconfig-exposed-path-swagger-ui.html` **(FALSE POSITIVE** — `/swagger-ui.html`,
-`/this-path-does-not-exist-12345` and `/zzz.html` all return 200; DokuWiki
-catch-all, the scan-side face of **LT-104**; the native-only re-run instead
-produced `misconfig-exposed-path-debug` on the same host — the FP path is
-whichever `ExposedPaths` probe the catch-all happens to answer). `erp.nettix.com.pe`,
-`cloud01.nettix.com.pe`, `gateway.nettix.com.pe` — **0 findings each** (LT-113).
-**Missed vs. the hand-verified table above:** Dolibarr 23.0.3 outdated on
-`erp` + `ixn` (finding B — LT-113), Webmin on `gateway:10000` (recon never
-surfaced the port as a scan target — the target list was `:443`, a 301),
-phpMyAdmin on `chasqui03` (host never discovered — LT-111).
-
-### Capability-gap review (2026-09-08, demo-prep) — recon depth / param surface
-
-Three recon-completeness gaps raised while reviewing what would widen *real
-actionable* findings on nettix and future targets. Priorities are relative to
-the general roadmap, **not** the 2026-09-10 nettix demo — nettix is WordPress +
-Dolibarr (server-rendered), so none of these three change the demo finding set;
-they matter for the modern-SPA / API targets that dominated the four prior live
-rounds.
-
-- **LT-99 — no headless / JS-rendered crawl; katana's default pass misses
-  `fetch()`-driven API calls.** Live-confirmed against crAPI (Step E,
-  2026-09-08): non-headless katana on crAPI's React root found **4 endpoints /
-  0 IDOR candidates**, versus 40 routes from the ingested OpenAPI spec — the
-  entire XHR/`fetch` API surface of a SPA is invisible to a link-following
-  crawl. This is **LT-8's still-open tail** ("the opt-in headless/JS-rendered
-  katana mode"), now with a concrete yield measurement. Direction is settled:
-  opt-in `katana -hl` (headless Chromium — already installed in WSL,
-  `~/.cache/ms-playwright`), gated behind `--recon-depth full` or an explicit
-  `--headless-crawl` flag so the request cost and browser dependency are
-  opt-in; **not** a second crawler. Pairs with LT-89 (`--openapi-spec`
-  ingest already covers the case where a spec exists; headless crawl is the
-  fallback when it doesn't). **→ Scheduled 2026-09-08 as [Phase 8](17-implementation-plan-ph8.md)
-  Step 6's third tranche (6c)** — promoted from this backlog to a real step
-  (Design + Files + Verification + DoD line) on the strength of the crAPI
-  yield measurement; supersedes LT-8's open tail. Post-demo; real, high
-  general value, zero nettix-demo value.
-  **Resolved 2026-09-09 (branch `feat-lt99-headless-crawl`).** `--headless-crawl`
-  on `recon` and `plan` (`recon.WithHeadlessCrawl`), effective only at
-  `--recon-depth full`; a no-op with a stderr note otherwise. `runKatana` then
-  appends `-headless -no-sandbox -xhr-extraction`, resolves a local Chrome
-  (`$PATH`, then the Playwright cache) and passes `-system-chrome-path` when one
-  is found — else katana self-provisions a Chromium into `~/.cache/rod` on first
-  use and a warning says so. The invocation runs under
-  `DefaultHeadlessCrawlTimeout` (180s, `HACKERFIVE_RECON_HEADLESS_TIMEOUT`, or a
-  larger `--wave-timeout` if set) instead of the per-wave timeout, since a
-  real-browser crawl is slower per page. Hits are tagged `katana-headless` (the
-  one downstream `strings.Contains(Source,"katana")` check still matches; it
-  replaces the link-crawl pass rather than running as a second one, so no
-  dedup). `looksLikeEscapedJSArtifact` widened to also drop mis-parsed
-  inline-`<script>` fragments (`<`/`>`/`"` raw or `%3C`/`%3E`/`%22`) — the
-  headless pass, executing JS, surfaces those. **Re-measured against crAPI**
-  (`:8888` React shell, `--recon-depth full`): 4 endpoints link-crawled → 7
-  headless, including the real `/chatbot/genai/state` `fetch()` call the link
-  crawl never saw (the doc's 4-vs-40 was OpenAPI-spec-wide across all backend
-  services; a headless crawl of one shell recovers what that shell's own JS
-  calls). Tests: `TestRunKatana_HeadlessCrawl`, `TestPlaywrightChrome`,
-  `TestResolveHeadlessChrome_FallsBackToSelfProvision`,
-  `TestRunKatana_EscapedJSArtifacts_Dropped` (extended).
-  **Deferred:** the webui Launch form and the MCP `recon` tool get no
-  `--headless-crawl` toggle in this pass — neither wires `--crawl-depth` today
-  either, so surfacing crawl-tuning on them is its own task, and a heavy
-  browser crawl triggered from a web form wants its own UX thought.
-- **LT-100 — no hidden-parameter mining (Arjun-style).** HackerFive discovers
-  parameters only from what recon literally observes (crawled query strings,
-  spec `parameters`, JS-extracted names); a param that the app honours but
-  never advertises — the classic source of reflected-XSS / LFI / SSRF / IDOR
-  on a real target — is never found. No Go-native equivalent exists, so this
-  is a **first-party addition on top of the existing rate-limited
-  `httpclient`**, not a new dependency: a curated candidate-name wordlist
-  (start small — a few hundred high-signal names: `id`, `user`, `file`,
-  `url`, `redirect`, `debug`, `admin`, `callback`, `path`, `template`, …),
-  chunked many-per-request with binary-search narrowing on a hit, and a
-  response-diff oracle (reflection of the sent token, status-class change,
-  body-length bucket shift, param-count echo in a validation error). Feeds
-  the existing `idor` / `ssrf` / redirect leaves and the Phase 9 injection
-  detectors directly. **Risks to design against:** response-diffing is noisy
-  (must stay inside the <5%-FP target — require ≥2 corroborating signals
-  before emitting), and the request volume interacts with LT-98's shared
-  rate-limiter (budget it like content-discovery: `--recon-depth full` only,
-  hard request cap per host). Pairs with LT-83 (numeric query-param ID
-  candidates), LT-96 (body-param SSRF). **→ Scheduled 2026-09-08 as
-  [Phase 8](17-implementation-plan-ph8.md) Step 6's third tranche (6c)** —
-  promoted from this backlog to a real step (Design + Files + Verification +
-  DoD line), and the "Explicitly out of scope" parameter-fuzzing note narrowed
-  to distinguish this first-party diff-oracle pass from ffuf-as-a-tool (still
-  out). Its *active* consumption pairs with [Phase 9](18-implementation-plan-ph9.md)
-  Step 4. Post-demo; arguably higher long-term actionable-finding value than
-  LT-99. No nettix-demo value (the interesting params on WP/Dolibarr are
-  auth-gated).
-  **Resolved 2026-09-09 (branch `feat-lt100-param-mining`).** `--param-mining`
-  on `recon`/`plan` (DepthFull only; no-op + stderr note otherwise),
-  `--param-mining-wordlist <path>` override, `--param-mining-request-cap`
-  override. `pkg/recon/parammine.go` mines the top `maxParamMineEndpoints` (6)
-  ranked GET endpoints (query-string / `/api`-ish paths rank up; 2xx/401/403
-  only; in-scope) through the **rate-limited `r.client`**, hard-capped at
-  `maxParamMineRequests` (160) for the whole run. Per endpoint: 2 control
-  requests set a baseline (status, body-length, and `statusNoisy`/`lenNoisy`
-  flags that disable those signals on a too-dynamic endpoint), then batches of
-  24 candidate names ride one request each with a unique per-name marker
-  value. **Corroboration gate (≥2 signals, same param):** `reflect` (marker
-  value in body, not baseline) and `nameEcho` (distinctive param name in body,
-  not baseline; stoplist for common words) pinpoint a param; `status-class
-  change` and a significant `body-length shift` (>64 B **and** >5%) each count
-  only when exactly one param in the batch was pinpointed. **FP guards:**
-  reflect-all endpoints (>8 markers echoed in a batch, or the baseline
-  reflecting an unsent marker, or >6 params corroborated) are dropped whole;
-  binary-search narrowing was **dropped** — a status/length-only isolate is 1
-  signal, which the gate rejects anyway, so it only cost requests.
-  `pkg/recon/wordlists/params.txt` (`go:embed`, ~239 names, provenance header
-  cites the public Arjun / SecLists lists). Hits → `EndpointFact{Source:
-  "wave3-param-mining", URL: "path?key=<v>"}` — `<v>=1` for id-shaped keys
-  (feeds `idShapedQueryCandidate` → IDOR), else value-less (feeds
-  `SuggestSSRFParamsFromRecon` on a keyword match). **webui/mcp toggle
-  deferred** (same reasoning as LT-99). Tests: `parammine_test.go` (7 —
-  emit-on-2-signals, decoys→nothing, reflect-all suppressed, request cap,
-  feeds SSRF+IDOR suggesters, off-by-default, wordlist override).
-  **Live:** crAPI `:8888` + `--headless-crawl` — 478 candidate probes over 2
-  genuinely-non-honoring endpoints, **0 emitted (decoy-set FP = 0%)**; Juice
-  Shop — **4 real undocumented params found** (`sort`, `scope` on the
-  auto-REST `/api/Challenges/` and `/api/Quantitys/`), 72 requests, within cap.
-- **ffuf-style multi-position fuzzing — reaffirmed out of scope** (was Phase 8
-  Step 6's out-of-scope note; restated here so it isn't re-evaluated blind).
-  Real capability gap, but deliberately deferred: (1) content discovery is
-  already handled by riding `httpx -path` with a curated embedded wordlist
-  (no second traffic-generating tool); (2) parameter discovery is better
-  served first-party by LT-100's targeted diff-oracle than by a generic
-  multi-thousand-request `FUZZ` sweep; (3) the request volume of true
-  multi-position fuzzing (`FUZZ` in path × header × param simultaneously,
-  large wordlists) does not reconcile with the shared `--rate-limit` bucket
-  or LT-98's per-target starvation. **→ Parked** (see the Parked section);
-  un-parks only if a live engagement shows a concrete surface that LT-100 +
-  `httpx -path` provably can't reach.
+**Baseline finding inventory (20 findings post-dedup, before the fixes above):** `www` got WP-user-enum + 2 FPs; `soporte` got one lucky corpus hit; `cloud02` got its Nextcloud findings but `cloud01` (identical) got 0 — all from LT-113. `erp`/`cloud01`/`gateway` got 0 findings each. `wiki` produced a false `misconfig-exposed-path-swagger-ui.html` (the scan-side face of LT-104). Missed vs. the hand-verified table: Dolibarr on `erp`/`ixn` (LT-113), Webmin on `gateway:10000` (port never scanned), phpMyAdmin on `chasqui03` (host never discovered, LT-111).
 
 ### Web UI review 2026-09-08 (Playwright, demo-prep)
 
-Surfaced driving `hackerfive serve` through Playwright against a live
-`erp.nettix.com.pe` on `main` (post-PR-#5), to rehearse the 2026-09-10 demo.
-The scan itself was clean — `misconfig-dolibarr-outdated` fired end-to-end in
-the Web UI (LT-113 confirmed beyond the CLI), `misconfig-soft-404-catchall`
-present, the `nettix-demo-focus.txt` exact-host scope file bounded recon to the
-one host, 5 findings / 0 false positives. Three UI gaps noted:
-
-- **LT-115 — the Web UI Launch form has no multi-target input; a focused
-  N-host scan needs N separate launches.** The Target field is a single URL
-  (`launchTargetScheme(form.Target)`), and `--scope` is an allow-list *filter*,
-  not a *seed list* — `runWave1` seeds `candidates` from the one target host
-  only, and subdomain fan-out (subfinder/tlsx) runs solely when the scope
-  carries a `*.` wildcard (LT-35). So there is no way to point one Web UI job
-  at an operator-chosen set of hosts (e.g. the 7 nettix demo hosts): you either
-  run one launch per host, or one apex launch with a `*.` scope and take
-  whatever recon discovers (~24 for nettix). CLI `scan -t <file>` already
-  accepts a newline-delimited targets file — the gap is Web-UI-only (`recon -t`
-  is also single-URL). **Fix:** a multi-line targets textarea (or a
-  targets-file-path field) on the Launch form → one recon+scan per host inside
-  the same Job, mirroring `scan -t <file>`. The status page already groups
-  findings by host and `registry.Resolve` / Plan Preview already handle a
-  multi-host recon result (the apex sweep exercises both today). Design notes:
-  per-host recon vs. one shared recon pass; interaction with the shared
-  `--rate-limit` bucket across the now-N concurrent targets (LT-106); whether
-  each host gets its own Job row or all share one. **→ Web UI ergonomics; not
-  demo-blocking (workaround: per-host launches with
-  `.engagements/owned-sites/nettix-demo-focus.txt` as the scope filter). Post-demo.**
-  **Resolved 2026-09-09 (branch `feat-lt115-multi-target-launch`) — scoped MVP
-  (user decision):** a new optional **"Additional targets"** textarea on the
-  Launch form (`launch.html`, `LaunchFormData.ExtraTargets`). `parseExtraTargets`
-  normalises the scheme, validates each entry as a URL-with-host (a bad entry
-  is a form error, not a silent drop), strips `#` comments / blank lines
-  (comma-separated also accepted), and dedups against the primary and itself;
-  `parseLaunchSubmission` builds `allTargets = [primary, …extras]` onto every
-  detector's `scanner.Config.Targets`, and `scanner.Engine`'s own per-target
-  loop (plus the LT-106 per-target rate share) fans the scan across them in the
-  one Job. An empty textarea is byte-identical to the previous single-target
-  path. **Deferred to the full version (still open under LT-115):** recon runs
-  **once, against the primary host only** — its tech-stack narrowing and
-  recon-filled idor/authbypass/ssrf fields then apply to every target, so a
-  mixed-technology host set (nettix: WP + Dolibarr + Nextcloud) should leave
-  "scope templates to detected tech stack" unchecked. Plan Preview still
-  resolves against the primary's recon result. Per-host recon + a merged
-  multi-host `ReconResult` + host-outer `runLaunchJob` is the larger follow-up.
-  Tests: `TestParseExtraTargets`,
-  `TestParseLaunchSubmission_ExtraTargets_MultiTargetConfig` /
-  `_InvalidLineRejected` / `TestParseLaunchSubmission_NoExtraTargets_SingleTargetUnchanged`,
-  `TestStartLaunch_MultiTarget_ScansEveryHost`.
-- **LT-116 — the "Plan Preview" link is invisible during a running scan.**
-  `scan_status.html`'s header line renders it only `{{if .Snapshot.ReconResult}}`,
-  and that `<p>` is part of the initial server render, not any `sse-swap`
-  region — `ReconResult` is nil at submit time and never updated in place, so
-  the link only appears after a manual page reload once recon has finished. The
-  log line carrying the `/plan-preview?job=<id>` URL is the only in-run pointer.
-  **Fix:** move the link into an SSE-swapped block (it could ride the
-  `recon`-channel swap that already repaints `#recon-results`), or always
-  render it (GET `/plan-preview` already 409s cleanly before recon completes).
-  **→ Web UI correctness; ~half-hour fix; worth doing before the demo if Plan
-  Preview is shown.**
-  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
-  both halves. (1) The header link moved into a stable
-  `<span id="plan-preview-link">` rendered by a new `fragment_plan_preview_link`
-  (`PlanPreviewLinkData{JobID, ReconDone, OOB}`); it's re-rendered with
-  `hx-swap-oob` piggybacked on the recon SSE event (`renderRecon` closure in
-  `handlers_launch.go`) and on the catchup re-sync (`CatchupData.PlanPreviewLink`),
-  so the link appears the moment recon finishes with no reload. (2)
-  `fragment_plan_node.html` now renders `.Class` (`misconfig` / `templates` /
-  `recon-followup` + a "vuln class" badge) for a GroupIntoClassNodes
-  intermediate node instead of a second copy of the hostname — the "two same
-  www.nettix.com.pe" the operator saw. Tests: `TestScanCatchup_*PlanPreviewLink*`,
-  `TestStartLaunch_ReconOnly_*` link assertion, `TestPlanPreview_RendersNested*`
-  class-label assertion.
-- **"Plan Preview" → "Suggested Checks" rename (demo-prep, 2026-09-09, same
-  branch).** The page was misnamed — it's a supplementary, opt-in
-  decision-engine pass ranked from recon signal, *not* a preview of the main
-  scan (which runs un-previewed) and *not* the whole plan (it omits the native
-  detector checks). Renamed the `<h1>`, the header link + its `title`, and the
-  "recon also suggests …" log line to "Suggested Checks", and added a
-  one-line subtitle on the page saying what it is. Route (`/plan-preview…`),
-  Go identifiers, and template file names are unchanged — label only.
-- **LT-117 — the recon Endpoints table is swamped by katana-crawled JS-library
-  internals.** On `erp` the table carried ~50 rows of
-  `includes/jquery/plugins/select2/dist/js/i18n/*` and `*.js.php` fragments —
-  katana following minified-JS string literals as if they were routes. The
-  existing "N static build/CDN asset endpoint(s) omitted" collapse
-  (`recon_view.go`) keys off `IsStaticAssetPath`, which doesn't catch a `.php`
-  suffix on an asset path (`style.css.php`, `lib_head.js.php`) or a vendored
-  library subtree (`includes/jquery/…`, `node_modules/…`, `*/dist/js/*`,
-  `*/i18n/*`). **Fix:** widen the static-asset / vendor-path recognizer used by
-  both the endpoint-table collapse and the idor/authbypass/ssrf candidate
-  filters (`IsStaticAssetPath` / `IsPlausibleURLPath`) so these fold into the
-  "omitted" count. Read-only, display + candidate-quality only — see the
-  no-negative-impact analysis in the answer that logged this. **→ recon
-  signal-to-noise; helps every crawl-heavy target, worst on jQuery/Dolibarr
-  stacks like nettix.**
-  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
-  new `recon.derivedAssetPath` (unexported) recognizes a server-script wrapper
-  over a static asset (`lib_head.js.php`, `style.css.php`) and a
-  dependency-manager / build-output subtree (`/node_modules/`,
-  `/bower_components/`, `/dist/js/`, `/dist/css/`). Display half: the Endpoints
-  table collapse (`recon_view.go`) now calls the widened
-  `recon.IsNonRouteAssetPath` (`= IsStaticAssetPath || derivedAssetPath`).
-  Candidate half: `SuggestAuthBypassPathsFromRecon`'s `looksLikeStaticAssetOrJunk`
-  also drops them; `SuggestIDOREndpointCandidates` drops them **only when
-  inert** — a plain GET with no query string — so a real `foo.js.php?id=5`
-  still generates an `{{id}}` candidate. `IsStaticAssetPath` itself is
-  unchanged (kept narrow for its other callers). Tests:
-  `TestIsNonRouteAssetPath`, `TestSuggestIDOREndpointCandidates` (+3 cases),
-  `TestSuggestAuthBypassPathsFromRecon` (+2 facts),
-  `TestCollapseEndpoints_JsPhpWrappersAndVendorTree_CountedNotRendered`.
+Drove `hackerfive serve` against a live `erp.nettix.com.pe` to rehearse the demo — the scan itself was clean (5 findings, 0 FP). Three UI gaps, all ✅ done 2026-09-09 unless noted:
+- LT-115 ✅ scoped MVP — the Launch form had no multi-target input (a focused N-host scan needed N launches) → an optional "Additional targets" textarea, one Job fans across all targets. **Deferred to a fuller version:** recon still runs once, against the primary host only — its tech-narrowing/field-fill then apply to every target, so a mixed-tech host set should leave tech-stack narrowing unchecked. Per-host recon + a merged multi-host result is the larger follow-up, still open.
+- LT-116 ✅ the "Plan Preview" link was invisible during a running scan (only appeared after a manual reload) → moved into an SSE-swapped block, appears the moment recon finishes. Also renamed the page "Suggested Checks" for clarity (label only).
+- LT-117 ✅ the recon Endpoints table was swamped by katana-crawled JS-library internals (`includes/jquery/…`, `*.js.php`) → widened static-asset/vendor-path recognizer (`IsNonRouteAssetPath`) used by both the table collapse and the idor/authbypass/ssrf candidate filters.
 
 ## Live Testing — www.aalberts.com (2026-09-09)
 
-First full recon+scan (`recon --recon-depth full --wave-timeout 180s` →
-`scan --detector misconfig --recon-file --narrow-by-tech --rate-limit 20`)
-of an owned demo domain that had only ever been recon'd before (`.engagements/owned-sites/scope.txt`).
-Apex-seeded, 10 hosts. It's a hardened corporate estate — Cloudflare (`tmo`),
-M365/SharePoint SSO gateways (`intelligence`/`support`/`one` all redirect to
-`login.microsoftonline.com`), catch-all SPA shells (`tmo`/`videowall`/`one`),
-HTTP Basic auth (`agent`), S3/AWS-fronted apex — so the real scannable surface
-is `aalberts.com` / `www` / `brandhub` only. **17 findings post-dedup; the
-actionable set is thin** (1 `misconfig-cors` on `agent` worth a manual look;
-~3 valid missing-header findings) **and several are false positives that this
-run surfaced as fix opportunities.** LT-102/103/104 all behaved: `app_surface:
-full` despite the `agent` WAF wall, `misconfig-soft-404-catchall` on `tmo`,
-D6 corpus-skip on `agent`. The LT-74 adaptive throttle correctly aborted
-`aalberts.com` mid-scan on a source-IP block (~1528/3746 templates).
+First full recon+scan of an owned domain only ever recon'd before. A hardened corporate estate — Cloudflare, M365/SharePoint SSO gateways, catch-all SPA shells, HTTP Basic auth, S3-fronted apex — real scannable surface is 3 of 10 hosts. 17 findings post-dedup, actionable set thin (1 `misconfig-cors` worth a look, ~3 valid missing-header rows); the adaptive throttle correctly aborted the scan mid-run on a source-IP block. **Demo verdict: not a candidate, do not re-evaluate** (see the Demo-target selection block above) — kept as an FP-regression fixture only.
 
-**Demo verdict (2026-09-09): not a demo candidate — do not re-evaluate.**
-Hardened corporate estate (Cloudflare / M365 SSO gateways / HTTP Basic /
-S3-fronted apex), real scannable surface is 3 hosts, the actionable set is
-thin (1 `misconfig-cors` worth a manual look, ~3 valid missing-header rows),
-and the scan was source-IP-blocked mid-run. Same dead-end class as valmo
-(Akamai), shopify (Cloudflare), ALSCO (WAF + IP-block). Keep `*.aalberts.com`
-as an FP-regression fixture only. For an actionable end-to-end demo, crAPI
-(13 verified findings, 0 FP) stays the strongest; the 2026-09-10 Web UI demo
-uses `nettix.com.pe`. (Local scratch note: `.engagements/owned-sites/DEMO-TARGETS.md`,
-that dir is gitignored.)
+All four FP fixes below ✅ done 2026-09-09 (`fix-webui-plan-preview-and-misconfig-fps`):
+- LT-119 `/.well-known/security.txt` flagged as an exposed path, despite RFC 9116 *requiring* it be public → dropped from `ExposedPaths` (whole `/.well-known/` namespace).
+- LT-120 `checkDisallowedMethods` treated a uniform 401 (HTTP Basic wall) as "method accepted" → `401`/`407` added to `rejected()` alongside `403`.
+- LT-121 `misconfig-cors` fired high/high off an auth-wall-only 401 response → down-ranked to medium/medium with a note, when every observed status on the host is an auth-wall status.
+- LT-122 ✅ done 2026-09-09 — the Scan form started blank after every `serve` restart (in-memory job store) → client-side-only `localStorage` prefill of non-secret fields (never auth tokens/headers/the authorized checkbox/`allow_writes`).
 
-- **LT-119 — `/.well-known/security.txt` is flagged as
-  `misconfig-exposed-path-.well-known-security.txt` (low).** RFC 9116 *requires*
-  this file to be publicly served at exactly this path — it is the opposite of
-  an exposed sensitive resource. The `ExposedPaths` rule matches it on its own
-  mandatory keyword content (`contact` / `policy` / …). Recon already fetches
-  and *uses* `security.txt` as a positive policy signal (`pkg/preflight`), so
-  the detector contradicting that is doubly wrong. **Fix:** drop
-  `/.well-known/security.txt` from `ExposedPaths` (and `/.well-known/` generally
-  — `security.txt`, `mta-sts.txt`, `openid-configuration` are all
-  meant-to-be-public). Trivial. **→ detector false-positive; demo-visible.**
-  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
-  the `/.well-known/security.txt` row is removed from `misconfig.ExposedPaths`
-  with a comment noting the whole `/.well-known/` namespace stays out.
-  Test `TestMisconfigExposedPath_WellKnownSecurityTxt_NotFlagged`.
-- **LT-120 — `checkDisallowedMethods` treats HTTP 401 as "method accepted".**
-  On `agent.aalberts.com` (HTTP Basic auth → every request 401) PUT / DELETE /
-  PATCH each produced a `misconfig-method-*-root` finding at **medium /
-  high**: *"PUT appears to be accepted (status 401) instead of rejected"*. Root
-  cause: `rejected()` (`detector.go:608`) lists `403` but **not `401`**, and
-  `methodResponseMatchesGET` bails at its `statusCode >= 400` guard before it
-  can compare the verb's 401 to a plain GET's identical 401. A 401 is the auth
-  layer refusing the request, not the origin accepting the verb. **Fix:** add
-  `http.StatusUnauthorized` to `rejected()` — it belongs there for the same
-  reason `403` does (a 401 to PUT is a correct rejection whether the endpoint
-  is 200-to-GET-but-auth-gated-for-writes or uniformly auth-walled). One line +
-  a `TestMisconfigDisallowedMethod_401AuthWall_NotFlagged` case. **→ detector
-  false-positive (3 medium/high FPs from one gap); demo-relevant (any
-  Basic-auth / 401-walled host trips it).**
-  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
-  new `isAuthWallStatus(status)` helper (`401` / `403` / `407`); `rejected()`
-  now returns true for any of them (folding in the `403` it already had and
-  adding `401` + `407`), so `checkDisallowedMethods` no longer reads a
-  uniform-401 auth wall as method acceptance. Test
-  `TestMisconfigDisallowedMethod_401AuthWall_NotFlagged`.
-- **LT-121 — `misconfig-cors` fires `high/high` off an auth-wall-only
-  response.** `agent.aalberts.com` returns 401 for every path and method; the
-  CORS check saw its 401 reflect the probe `Origin` with
-  `Access-Control-Allow-Credentials: true` and emitted a **high/high**
-  arbitrary-origin-with-credentials finding. A cross-origin caller still can't
-  read a 401 body, so the practical impact is far lower than the same config on
-  a 200 that returns authenticated data — the severity/confidence overstate it
-  on the evidence gathered. **Fix:** when every observed response on the host
-  is an auth-wall status (401/403/407) — the `misconfig-waf-blocked` /
-  `looksLikeInterceptedPage` signal the detector already computes — down-rank a
-  CORS finding to `medium/medium` with a "observed only on an auth-walled
-  response; verify against an authenticated 200" note, rather than suppressing
-  it (the misconfig may well extend to the real API behind the wall). **→
-  detector precision; fold into the LT-120 change (same file, same host class).**
-  **Resolved 2026-09-09 (branch `fix-webui-plan-preview-and-misconfig-fps`):**
-  `checkCORS` down-ranks a reflected-origin-with-credentials finding to
-  `medium/medium` and appends a "observed only on an auth-walled response
-  (status N); verify against an authenticated 200" note when the probe
-  response's own status is `isAuthWallStatus` (401/403/407) — not suppressed.
-  Test `TestMisconfigCORS_AuthWallResponse_DownRanked`
-  (`TestMisconfigCORS_WildcardWithCredentials`'s 200 case still asserts `high`).
-- **LT-122 — the Scan form starts blank after every `hackerfive serve`
-  restart.** The async-job store is in-memory (doc12), so rebuilding the binary
-  and restarting the server drops every job and its "New scan" prefill link;
-  the operator re-types the whole form (target + LT-115 additional targets +
-  Advanced Settings) each iteration of the build → scan → rebuild loop. The
-  server has nowhere durable to keep the last submission, and adding one would
-  mean a credential-bearing payload at rest. **Fix (user decision — client-side
-  only):** `launch.html` inline script writes the last submission's non-secret
-  fields to `localStorage["hf.launch.v1"]` on submit and prefills them into a
-  pristine form (no validation errors showing, no `?target=` deep link, target
-  box empty). Survives a rebuild for free — the server never sees it.
-  Deliberately **never persisted:** `auth_token`, `other_auth_token`, the
-  extra-headers box (can carry a session `Cookie:`), the "I am authorized" tick
-  (fresh per launch), `allow_writes` (deliberate mutating-checks opt-in per
-  CLAUDE.md). Prefill only — it never submits. A "Clear saved values" link wipes
-  the key and `form.reset()`s. Restore skips any field the form no longer has,
-  so a form change between builds degrades cleanly. **Resolved 2026-09-09
-  (branch `feat-lt122-launch-form-prefill`, stacked on `feat-lt115-...`).**
-- **Datapoints for existing items (no new LT):**
-  - **LT-6 tail** — `tmo.aalberts.com` produced 5 separate
-    `nuclei-http-missing-security-headers-*` **info** rows (permissions-policy,
-    x-permitted-cross-domain-policies, COEP, COOP, CORP) plus
-    `nuclei-missing-cookie-samesite-strict-0`. On a target with real findings
-    this noise buries the signal. Reinforces the case for an info-severity
-    floor on missing-optional-header findings (drop unless `--include-info`), or
-    collapsing the COEP/COOP/CORP/permissions-policy set into one
-    "modern-isolation-headers absent" finding.
-  - **LT-26 / Phase 8 Step 3** — the `--narrow-by-tech` tag scope resolved to
-    `misconfig, exposure, config, default-login, panel, bot, linkedin` — the
-    `Amazon S3` / `Amazon Web Services` tech facts on the apex contributed **no**
-    `aws` / `s3` tag, so the S3-bucket / AWS-key templates the 2026-09-05
-    `plan` had ranked never ran. Re-confirms the "generic cloud-provider fact →
-    no usable product tag" gap.
+**Datapoints for existing items (no new LT):** LT-6's info-severity header-noise case reappeared on `tmo.aalberts.com` (5 separate info rows); LT-26's "generic cloud-provider fact contributes no usable tag" gap reconfirmed (S3/AWS facts on the apex produced no `aws`/`s3` tag that round — since closed by Phase 8 Step 3).
 
 ## Scan-Engine Request Efficiency
 
-Design-review follow-on to LT-18 (2026-09-06), which closed causes (a)–(d) of "a scan spends its wall-clock on work unrelated to the target". These two are the remaining cut: the executor re-issues *identical* HTTP requests it has no reason to. Both scheduled [Phase 7](16-implementation-plan-ph7.md) Step 4 (new item **D5**) — they share one `pkg/template/nuclei` plumbing pass and one correctness-carve-out review.
-
-- **LT-54 The template executor has no cross-request response cache — the same URL is re-fetched once per template.** ✅ **done 2026-09-07 (`ph7-step4b`, D5).** New `pkg/template/nuclei/respcache.go`: an `Executor`-scoped, `sync.Mutex`-guarded, 512-entry FIFO-evicted cache keyed on `sha256(method \n full URL \n Host \n sorted rendered headers \n body)`, consulted by `tryPath` before `e.client.Do` and populated after. Carve-outs (always hit the network, never cached), all in `respCacheableKey`: `req.usesInteractsh`, the new load-time `req.usesTiming` flag (any matcher/extractor referencing bare `duration` / `duration_N` — `loader.go`'s `usesTimingRef`), `req.pathCorrelated`, a multi-value `payloads:` iteration (`idSuffix`), any non-GET/HEAD method, and `raw:` blocks entirely (`tryRaw`/`tryPathCorrelatedIteration` never consult the cache). Bodies over 512 KiB aren't stored. Default-on in `nuclei.New`. Tests: `tests/unit/nuclei_respcache_test.go` (identical-GET coalesced to one request while both templates still report; distinct URLs / differing headers not coalesced; timing / interactsh / payloads templates each still fire every request).
-- **LT-55 Recon already knows which paths 404, but the scan re-probes them.** ✅ **done 2026-09-07 (`ph7-step4b`, D5).** `recon.ReconResult.DeadPaths()` (new `pkg/recon/deadpaths.go`) collects the distinct normalized paths recon saw return 404 (GET / method-unspecified only); `cmd/hackerfive/scan.go` threads them into `scanner.Config.KnownDeadPaths` → `nuclei.Executor.WithKnownDeadPaths`. `respcache.go`'s `knownDeadSkip` then makes a lone single-request, single-path, matcher-only, no-extractor GET/HEAD template whose one path is known-dead fire no request at all — **gated to a scan carrying no `--header` credential**, since an unauthenticated recon 404 isn't a guaranteed authenticated-scan 404. Tests: `pkg/recon/deadpaths_test.go`, `tests/unit/nuclei_respcache_test.go` (`TestExecutorKnownDeadPaths_*` — skipped unauthenticated, fired when a credential is present, never skipped for a multi-request template).
-- **LT-56 PlanTree seeding is best-effort and single-case — no explicit dependency edges, narrow `Finding→Config` extraction.** `ph7-step3b` (C7a) landed the structural hook: `ExecOptions.SeedFn` + `planexec.EndpointSeedFromFindings` lets a completed same-host leaf's finding fill a still-pending idor/ssrf leaf's blank `EndpointTemplate`/`SSRFParams`, but a seed only lands if its target leaf hasn't started yet (priority ordering makes that likely, not guaranteed), the extractor only pulls URLs out of `Finding.Target`/`Evidence`, and there is no way for a leaf to *declare* it depends on another. **Fix (design, unscheduled — trigger-gated, see the low-priority roll-up below):** an explicit `PlanNode.DependsOn []string` the executor honours by holding a dependent leaf until its dependencies finish (a real in-class two-phase dispatch, not the current concurrent best-effort), plus a broader seed extractor — discovered auth endpoints → authbypass `ProtectedPaths`, discovered params → ssrf beyond URL-valued ones, a template-ID leaf's match → a follow-on targeted leaf. Only worth it once a real multi-leaf agent run shows the best-effort version dropping seeds that mattered.
+Design-review follow-on to LT-18, closing the remaining redundant-request waste. Both ✅ done 2026-09-07 (`ph7-step4b`, D5):
+- LT-54 the template executor had no cross-request response cache (same URL re-fetched once per template) → `pkg/template/nuclei/respcache.go`, a 512-entry FIFO cache keyed on method+URL+headers+body; carved out: interactsh/timing/path-correlated/multi-payload/non-GET/`raw:` requests always hit the network.
+- LT-55 the scan re-probed paths recon already knew were 404 → `ReconResult.DeadPaths()` → `scanner.Config.KnownDeadPaths`, skips a lone single-request matcher-only template on a known-dead path (gated to an unauthenticated scan only).
+- **LT-56 (open)** — PlanTree seeding is best-effort and single-case: `ExecOptions.SeedFn` lets a completed leaf's finding fill a still-pending one, but there's no explicit `DependsOn` edge and the extractor only pulls URLs from `Finding.Target`/`Evidence`. **Fix (design, unscheduled — trigger-gated):** explicit `PlanNode.DependsOn []string` + a real two-phase in-class dispatch, plus a broader `Finding→Config` seed extractor. **Trigger:** a real multi-leaf agent run observed dropping a seed that mattered.
 
 ## Low-priority / trigger-gated open items (roll-up)
 
-Small residual tails and design items that are genuinely open but **not** worth
-front-loading — each is either tiny, non-blocking, or waiting on a concrete trigger.
-Rolled up here (2026-09-07) so they're visible in one place rather than buried in
-their parent LT entries. Pick any of these up opportunistically alongside a nearby
-change; none is on the critical path.
+Small residual tails, genuinely open but not worth front-loading. Pick up opportunistically; none is on the critical path.
 
-- **LT-6 tail** ✅ **done 2026-09-10.** `reporter.DropSupersededNucleiFindings`
-  (new, `pkg/reporter/supersedednuclei.go`) is the template-ID skip-list: a
-  `supersededNucleiTemplates` map (`"weak-hsts-detect" -> "misconfig-weak-hsts-max-age"`)
-  drops the nuclei duplicate for any target where the native counterpart also
-  fired. Wired into all three finding-producing paths, run before `Dedup`
-  (mirroring `SplitAggregates`' placement): `cmd/hackerfive/scan.go`,
-  `pkg/webui/handlers_scan.go`'s `exportJSON`, and `pkg/mcpserver/tools_scan.go`'s
-  scan-tool output (the latter two previously called neither `Dedup` nor
-  `SplitAggregates` at all). Tests: `tests/unit/reporter_supersedednuclei_test.go`.
-- **LT-29** — `TestEngineRun_HundredTargetsPerformance` lands ~13 s over its 2 m
-  doc03 budget, deterministically. Stale metric (misconfig's request fan-out grew
-  since doc03), not an engine regression, and CI's default `go test ./...` doesn't
-  run the `integration`-tagged test. Fix: re-baseline to ~2m30s with the floor-math
-  comment, or measure a rate-limit-normalized figure.
-- **LT-40 tail (a)** — GraphQL SDL / introspection walking. Needs a POST
-  introspection query (a read-only-boundary call worth a design note) + a
-  schema→candidate mapping that doesn't map cleanly to REST paths. Deferred until a
-  live target with a real GraphQL endpoint justifies it. *(The YAML-body (b) and
-  spec-probe-path-widening (c) tail shipped 2026-09-07 with the Step 6a batch.)*
-- **LT-56** — explicit `PlanNode.DependsOn []string` edges + a real two-phase
-  in-class dispatch, plus a broader `Finding→Config` seed extractor (auth endpoints →
-  authbypass `ProtectedPaths`, non-URL params → ssrf, template-ID match → follow-on
-  leaf). C7a's best-effort `SeedFn` covers the common case. **Trigger:** a real
-  multi-leaf agent run observed dropping a seed that mattered.
-- **LT-61 tail** — per-resolved-IP ASN classification (today only the target
-  domain's own Wave-1 ASN is run through the CDN table, not every resolved address);
-  and a `lookupASN` test seam so a Run-level integration test can exercise the naabu
-  skip. Both small; the table itself already ships.
-- **LT-66 tail** ✅ **done 2026-09-10.** `pkg/recon/crawl.go`'s
-  `probeCommonPaths` now keeps a per-call `[]commonPathHit` (body hash +
-  bucket-marker-header flag) for every `wave3-common-path-probe` endpoint it
-  adds; `recordUniformResponse` now returns the `uniformwall.Verdict` it
-  classified, and when it's `VerdictCatchall`, `dropCatchallCommonPathEndpoints`
-  drops any of that batch's endpoints whose body hash duplicates another
-  probed path's (≥2 identical bodies) or whose response carried an
-  `x-goog-*`/`x-amz-*`/`x-guploader-uploadid` header — exactly the linkpop
-  shape the canary-only comparison couldn't catch. A probed path with a
-  genuinely unique body and no bucket marker is left alone. Tests:
-  `pkg/recon/catchall_endpoints_test.go`.
-- **`report_intents` create — unconfirmed live** (see "Reporting & Integrations"
-  below). Needs one deliberately-incomplete trial `CreateReportIntent` call to read
-  the real API's `422` body. Credential/engagement-gated.
-- **GitHub Action `scan-action`** (see "Reporting & Integrations"). A CI
-  self-scanning wrapper — a different audience than opportunistic hunting. Parallel
-  track, blocks nothing, not started.
+- **LT-6 tail** ✅ done 2026-09-10 — `reporter.DropSupersededNucleiFindings` is the template-ID skip-list (weak-HSTS's native/nuclei pair); wired into all three finding-producing paths (CLI, webui `exportJSON`, MCP scan-tool output — the latter two previously called neither `Dedup` nor `SplitAggregates` at all). Test: `tests/unit/reporter_supersedednuclei_test.go`.
+- **LT-29** — `TestEngineRun_HundredTargetsPerformance` lands ~13s over its 2m doc03 budget, deterministically (misconfig's request fan-out grew since doc03 was written, not an engine regression; CI's default `go test ./...` doesn't run this `integration`-tagged test). Re-baseline to ~2m30s with the floor-math comment, or measure a rate-limit-normalized figure.
+- **LT-40 tail (a)** — GraphQL SDL/introspection walking. Deferred until a live target with a real GraphQL endpoint justifies the design work.
+- **LT-56** (see Scan-Engine Request Efficiency above).
+- **LT-61 tail** — per-resolved-IP ASN classification; a `lookupASN` test seam. Both small; the table itself already ships.
+- **`report_intents` create — unconfirmed live** (see Reporting & Integrations below).
+- **GitHub Action `scan-action`** (see Reporting & Integrations below).
 
 ## Parked — revisit on a trigger or after an eval
 
-Genuinely deferred: the value is real but not yet actionable, or unclear until a later
-measurement. Not scheduled into any phase; each entry names what would un-park it.
+Genuinely deferred: real value, not yet actionable. Each entry names what would un-park it.
 
-- **Template signing.** Premature while every template is project-authored or pinned-upstream. Un-parks when a community repo starts accepting outside template submissions. Not in [Phase 7](16-implementation-plan-ph7.md)'s ecosystem step as scoped (that's a staging dir + human promotion, no signing).
-- **DOM-based XSS via Chromedp.** Passive/reflected template XSS covers the bulk at far lower cost; Chromedp adds a dependency + a sandboxing burden, and [Phase 8](17-implementation-plan-ph8.md) / [Phase 9](18-implementation-plan-ph9.md) explicitly keep it out (first-party DOM-XSS validation stays its own sandboxed item). Un-parks when [Phase 7](16-implementation-plan-ph7.md) Step 6 / [Phase 9](18-implementation-plan-ph9.md) Step 4 eval numbers show reflected-XSS live yield justifies the cost.
-- **Playwright/Caido-style richer recon signal** (JS-rendered DOM crawl + traffic analysis as a passive recon wave). Largely overlaps [Phase 8](17-implementation-plan-ph8.md) Step 3 (JS static analysis) + Step 6 (katana JS-rendered crawl). Un-parks when those land and a concrete residual delta (full request/response capture, real browser automation) is worth sizing.
-- **ffuf-style multi-position fuzzing as its own tool.** Reaffirmed out of scope 2026-09-08 (detail in the "Capability-gap review" above): content discovery already rides `httpx -path`; parameter discovery is better served first-party by LT-100's diff-oracle; and true multi-position `FUZZ` volume doesn't reconcile with the shared rate limiter / LT-98. Un-parks only if a live engagement surfaces something LT-100 + `httpx -path` provably cannot reach.
-- **Baseline-mode account provisioning guidance** for a real bounty/VDP target — only lab-target-specific steps exist ([20-setup-testing-targets.md](20-setup-testing-targets.md)). LT-123 (above) now automates this for the common case (`--auto-provision-account`); this item is narrower — operator-facing guidance for the residual manual cases (e.g. an email-verification-gated signup LT-123 fails closed on). Un-parks when a real engagement needs it — write the guidance from that engagement.
-- **Self-hosted `interactsh-server`.** The public-server default (retry-hardened, `pkg/oob`) covers owned-site scanning. Un-parks when a real third-party engagement needs a private OOB server (operational, not code).
+- **Template signing.** Un-parks when a community repo starts accepting outside template submissions.
+- **DOM-based XSS via Chromedp.** Un-parks when a Phase 7/8/9 eval shows reflected-XSS live yield justifies the dependency + sandboxing cost.
+- **Playwright/Caido-style richer recon signal.** Largely overlaps Phase 8 Steps 3+6; un-parks once those land and a concrete residual delta is worth sizing.
+- **ffuf-style multi-position fuzzing as its own tool.** Reaffirmed out of scope 2026-09-08 — content discovery rides `httpx -path`, param discovery is served by LT-100's diff-oracle, and true multi-position volume doesn't reconcile with the shared rate limiter. Un-parks only if a live engagement shows a surface LT-100+`httpx -path` provably can't reach.
+- **Baseline-mode account-provisioning guidance for a real bounty/VDP target.** LT-123 automates the common case; this is narrower operator-facing guidance for the residual manual cases. Un-parks when a real engagement needs it.
+- **Self-hosted `interactsh-server`.** The public-server default covers owned-site scanning. Un-parks when a real third-party engagement needs a private OOB server.
 
 ## Reporting & Integrations
 
 - **`report_intents` create still unconfirmed live.** `ListWeaknesses`/`ListStructuredScopes` are live-verified; the create-report request-body schema is unexercised against the real API — a deliberately incomplete trial call's `422` body is the fastest confirmation.
-- **GitHub Action (`scan-action`)** — thin CI wrapper for continuous self-scanning, a different audience than opportunistic bounty/VDP hunting. Not started; parallel track, not blocking any phase.
+- **GitHub Action (`scan-action`).** Thin CI wrapper for continuous self-scanning, a different audience than opportunistic hunting. Not started; parallel track, not blocking any phase.
 
 ## Testing & Verification Gaps
 
-- **Auth-bypass integration tests** (`authbypass_crapi_test.go`/`authbypass_vapi_test.go`) ✅ **re-verified live 2026-09-10** against a fresh crAPI + vAPI Docker Compose bring-up on this machine (not just the original 2026-08-28 Phase 2 run against whatever instance was up that day): `TestAuthBypassAgainstCRAPI`, `TestAuthBypassAgainstVAPI_API1`, `TestAuthBypassAgainstVAPI_JWTUser` all pass (`go test -tags=integration ./tests/integration/...`). Folded into [Phase 7](16-implementation-plan-ph7.md) Step 6 (renumbered 2026-09-10 from "Step 7") — which also now owns the **crAPI credentialed recon→plan→scan→export round trip**, also ✅ live-verified 2026-09-10: `hackerfive recon` (active depth, owner token) → `hackerfive plan --recon-file` (real idor/authbypass/misconfig pending leaves resolved) → `hackerfive scan --recon-file` with both crAPI account tokens (7 real `idor-*` findings against the mechanic-report BOLA, 8 real `authbypass-*`/`coverage-gap-*` findings including 3 critical `alg:none` JWT bypasses and the LT-92 BFLA check firing on `/workshop/api/management/users/all`) → `--format markdown` export. (moved there 2026-09-06 from Phase 6 Step 5; the round-trip mechanism itself was already proven by the DVWA + WebGoat e2e runs — this closes the credentialed/auth-token variant against the heavier crAPI stack.)
-- **`--scope` live verification** against a real authorized target ✅ **done 2026-09-10** — `hackerfive scan -t http://localhost:8888 --scope <file with "localhost">` scans normally; the identical target as `http://127.0.0.1:8888` (a different literal hostname, domain scoping is host-based) is correctly skipped with `skipping http://127.0.0.1:8888: not covered by --scope ...` and an empty finding set. Folded into [Phase 7](16-implementation-plan-ph7.md) Step 6.
-- **LT-29 `TestEngineRun_HundredTargetsPerformance` deterministically over its 2m budget.** 2026-09-06: three back-to-back runs all landed at **2m13.00s** (byte-identical to the millisecond — not machine-load jitter; stopping every other container changed nothing) against the doc03 Phase 1b `<2m` metric. The test pins `--rate-limit 50`; its own doc comment computes a ~99s rate-limiter floor for misconfig's ~50 requests/target × 100 targets, leaving only ~21s for all engine overhead, and the real overhead is now ~34s. Cause is almost certainly misconfig's rule set having grown since doc03 was written (more requests/target → more limiter pacing), not an engine regression — `git log` shows no perf-relevant `pkg/scanner` change, and the test imports only `pkg/scanner`. Options: re-baseline the budget to ~2m30s with a comment explaining the floor math; or measure CPU-time / a rate-limit-normalized figure instead of raw wall-clock; or trim/parallelize misconfig's per-target request fan-out. Not blocking — it's a stale metric, and CI's default `go test ./...` doesn't run the `integration`-tagged perf test.
-- **✅ done 2026-09-03 — CI coverage gate 79.0% → 77.0% → 80.0%.** Real repo-wide coverage had quietly drifted to ~77% across several Phase 6 commits, uncaught because `go test -race` was failing first on unrelated network-flakiness (later steps don't run after an earlier failure). Gate temporarily dropped to 77.0% once the masking was fixed, then closed back to a real 83.5% with new unit tests; gate raised to 80.0% (margin below the real number, not pinned to it). **Reusable hazard found**: this dev machine has real `subfinder`/`tlsx` binaries + a synced corpus at `os.UserConfigDir()`, so a naive "happy path against a local httptest target" test silently shelled out to them / loaded the full corpus — fixed via `t.Setenv("PATH", ""); t.Setenv("HOME", t.TempDir()); t.Setenv("XDG_CONFIG_HOME", "")` (`isolateFromInstalledReconBinaries` in `cmd/hackerfive` + `pkg/mcpserver` test helpers). Same bug class as the WHOIS/ASN loopback fix (doc15 addendum 7).
+- **Auth-bypass integration tests** (crAPI/vAPI) ✅ re-verified live 2026-09-10 against a fresh crAPI+vAPI Compose bring-up — `TestAuthBypassAgainstCRAPI`/`…VAPI_API1`/`…VAPI_JWTUser` all pass. [Phase 7](16-implementation-plan-ph7.md) Step 6 (renumbered from "Step 7") — which also now owns the credentialed crAPI recon→plan→scan→export round trip, itself live-verified 2026-09-10 (7 real `idor-*` + 8 real `authbypass-*`/`coverage-gap-*` findings incl. 3 critical alg:none JWT bypasses).
+- **`--scope` live verification** against a real authorized target ✅ done 2026-09-10 — `localhost` vs. `127.0.0.1` (same target, different literal hostname) scans/skips correctly per `--scope`. Folded into Phase 7 Step 6.
+- **LT-29** (see the roll-up above).
+- **✅ done 2026-09-03 — CI coverage gate 79.0%→77.0%→80.0%.** Real coverage had drifted to ~77% unnoticed (an earlier network-flakiness failure was masking it); gate re-closed to 80.0% after new unit tests brought real coverage to 83.5%. Reusable hazard found and fixed: a naive "happy path" test on a dev machine with real recon binaries on `PATH` silently shelled out to them — fixed via `isolateFromInstalledReconBinaries` test helpers (`cmd/hackerfive` + `pkg/mcpserver` + `pkg/webui`).
 
 ## See also
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — protocol scope and template-security boundaries referenced above
 - [03-development-roadmap.md](03-development-roadmap.md) / [09](09-implementation-plan-ph1a.md) / [10](10-implementation-plan-ph1b.md) / [11](11-implementation-plan-ph2.md) / [13](13-implementation-plan-ph4.md) — implementation detail behind the items above
 - [15](15-implementation-plan-ph6.md) / [16](16-implementation-plan-ph7.md) / [17](17-implementation-plan-ph8.md) / [18](18-implementation-plan-ph9.md) — phase plans scheduling the deferred items above; doc17 § "Execution order" is the single cross-phase backlog
-- [discussions.md](discussions.md) — narrative decision/research write-ups (OOB defaults, Go-vs-Python architecture, XBOW research)
+- [follow-up-archive.md](follow-up-archive.md) — the unabridged original write-up behind every compressed item above
