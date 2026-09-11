@@ -476,9 +476,15 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 		// Wave 3's crawl just collected, no new network round trip. Only
 		// reachable at DepthFull since Endpoints (agg.endpoints) are empty
 		// before Wave 3 runs.
-		for _, t := range wordPressPluginFacts(agg.endpoints) {
+		pluginFacts := wordPressPluginFacts(agg.endpoints)
+		for _, t := range pluginFacts {
 			agg.addTech(t)
 		}
+		// LT-105 (docs/follow-up.md): must run after the tech facts above
+		// (needs the "WordPress" core fact httpx-tech-detect may already
+		// have added in Wave 2) and after pluginFacts is computed (its own
+		// versions are the sanitizer's comparison set).
+		agg.sanitizeWordPressCoreVersion(pluginFacts)
 	}
 
 	return agg.finalize(), nil

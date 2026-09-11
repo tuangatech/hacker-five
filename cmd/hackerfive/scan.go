@@ -202,12 +202,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 			}
 
 			// D6 (doc16 Phase 7 Step 4, docs/follow-up.md LT-59): if recon
-			// classified the target host as a uniform response wall, hand that
-			// to the engine so it skips the per-target template corpus (the
+			// classified any host as a uniform response wall, hand that to the
+			// engine so it skips the per-target template corpus for it (the
 			// engine also probes inline for a target with no recon hint).
-			if reconResult != nil && reconResult.UniformResponse != nil {
-				u := reconResult.UniformResponse
-				cfg.UniformWallHosts = map[string]string{u.Host: u.Kind}
+			// LT-140: every walled host, not just the first one probed.
+			if reconResult != nil {
+				cfg.UniformWallHosts = reconResult.UniformWallHosts()
 			}
 
 			// D5 (doc16 Phase 7 Step 4, docs/follow-up.md LT-55): hand the

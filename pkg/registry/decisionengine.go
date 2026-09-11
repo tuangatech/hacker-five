@@ -11,6 +11,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/template/dsl"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
@@ -196,18 +197,17 @@ func techEndpointSignatureHit(techName, host string, endpoints []recon.EndpointF
 // interestingPorts is a small, hand-authored table of non-HTTP service
 // ports worth surfacing when naabu finds one open (P1-2, docs/follow-up.md)
 // — real recon signal that currently goes entirely unused downstream of a
-// single low-confidence fingerprint-port TechFact. Deliberately produces
-// only a visible StatusUnresolved leaf, never a dispatched one: no built-in
-// detector or loadable template can check any of these today —
-// pkg/template/nuclei/loader.go's disallowedBlocks hard-rejects any
-// template with a top-level tcp:/network: block at load time, so the
-// entire class of templates that could test "anonymous FTP" or "unauth
-// Redis" is unloadable in this codebase, not just currently unmatched. A
-// real TCP-capable detector is tracked separately (follow-up.md's
-// "Detection Coverage — TCP" row) — this is visibility only, closing the
-// gap for an MCP client, whose planOutput carries no raw ReconResult and
-// so has no other way to see an open port at all (the Web UI's own Hosts
-// table already shows this for a human operator).
+// single low-confidence fingerprint-port TechFact. Every entry gets at
+// least a visible StatusUnresolved leaf; netserviceCheckedPorts names the
+// subset (originally none — Phase 8 Step 1 first lifted tcp: out of
+// pkg/template/nuclei/loader.go's disallowedBlocks and added
+// pkg/detectors/netservice for a first batch of these — now most of them)
+// that instead gets promoted straight to a real dispatchable "netservice"
+// leaf below. This table itself still exists to close the visibility gap
+// for an MCP client, whose planOutput carries no raw ReconResult and so has
+// no other way to see an open port at all, for whichever entries
+// netserviceCheckedPorts doesn't (yet) cover (the Web UI's own Hosts table
+// already shows this for a human operator either way).
 //
 // Known, accepted cost: an unresolved leaf reaches
 // llmfallback.ResolveTreeLeaves like any other, which fires a real
@@ -225,14 +225,19 @@ var interestingPorts = map[int]string{
 	27017: "mongodb",
 }
 
-// netserviceCheckedPorts is the subset of interestingPorts Phase 8 Step 1
-// (docs/17-implementation-plan-ph8.md) actually has a first-party detector
-// for (pkg/detectors/netservice: anonymous-FTP, empty-password MySQL,
-// unauthenticated Redis) — a real dispatchable "netservice" leaf, not just
-// visibility. Every other interestingPorts entry (telnet/postgresql/
-// elasticsearch/mongodb) still gets the plain StatusUnresolved leaf below
-// until its own check lands (docs/follow-up.md LT-142).
-var netserviceCheckedPorts = map[int]bool{21: true, 3306: true, 6379: true}
+// netserviceCheckedPorts is the subset of interestingPorts that
+// pkg/detectors/netservice actually has a first-party check for (anonymous-
+// FTP and empty-password MySQL/unauthenticated Redis from Phase 8 Step 1,
+// docs/17-implementation-plan-ph8.md; trust-auth PostgreSQL and
+// unauthenticated-listDatabases MongoDB added for docs/follow-up.md's
+// LT-142) — a real dispatchable "netservice" leaf, not just visibility.
+// telnet (23) and elasticsearch (9200) still get the plain StatusUnresolved
+// leaf below: telnet names no specific misconfiguration this package could
+// check for beyond "the port is open" (which the visibility leaf already
+// says), and elasticsearch's real exposure check is arguably HTTP (an
+// unauthenticated GET / on 9200), not a tcp:/netservice shape — a
+// different, unbuilt item, not this one's scope.
+var netserviceCheckedPorts = map[int]bool{21: true, 3306: true, 5432: true, 6379: true, 27017: true}
 
 // hostnameProductHints maps a first-DNS-label token (lowercased, trailing
 // digits stripped — so "guacamole01" -> "guacamole") to a tech name whose
@@ -510,6 +515,9 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 		if !ok {
 			continue
 		}
+		if !versionInAffectedRange(version, entry.AffectedRange) {
+			continue // LT-7 / Phase 8 Step 4: fingerprinted version is outside this template's declared affected range — drop, not just penalize
+		}
 		cands = append(cands, scored{entry, score, year})
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
@@ -640,10 +648,19 @@ func reconShowsAdminSurface(result *recon.ReconResult) bool {
 	// is only an admin-surface signal if its path is discriminating — an
 	// auth-boundary heuristic hit or an admin/login-shaped URL — not the
 	// status code alone.
-	wafWalled := result.UniformResponse != nil && result.UniformResponse.Kind == "waf-block"
+	//
+	// LT-140: this is now checked per-endpoint-host rather than once for
+	// the whole result — a multi-host recon run can have one walled host
+	// and several normal ones, and a blanket wafWalled here would have
+	// suppressed a real 401/403 admin signal on an *unwalled* host just
+	// because some other host in the same run was behind a WAF.
 	for _, ep := range result.Endpoints {
 		if ep.Source == "wave3-auth-boundary-heuristic" {
 			return true
+		}
+		wafWalled := false
+		if u := result.UniformResponseForHost(endpointHostname(ep.URL)); u != nil {
+			wafWalled = u.Kind == "waf-block"
 		}
 		if !wafWalled && (ep.StatusCode == 401 || ep.StatusCode == 403) {
 			return true
@@ -900,6 +917,44 @@ func techVersionSuffix(name string) string {
 		return strings.TrimSpace(name[i+1:])
 	}
 	return ""
+}
+
+// versionInAffectedRange reports whether version satisfies at least one
+// OR'd AND-clause of ranges (templatesync.Entry.AffectedRange) — the same
+// semantics the template's own compare_versions() matcher would apply at
+// scan time, run here ahead of time so a template whose declared range the
+// fingerprinted version falls outside of never gets selected as a candidate
+// leaf at all (LT-7, Phase 8 Step 4; see nuclei.Template.
+// AffectedVersionRanges for how ranges is derived). No declared range (nil/
+// empty) or no fingerprinted version (version == "", which every constraint
+// then fails to parse against) both return true unconditionally — an
+// absent signal must never suppress a template, only a *contradicting* one
+// does. A constraint version can't parse against (a non-numeric fragment,
+// which real corpus sampling never showed but a future template author
+// could still write) is treated as "can't rule it out" the same way, for
+// the same reason: a missed CVE is a worse failure mode than one
+// unnecessary scan.
+func versionInAffectedRange(version string, ranges [][]string) bool {
+	if len(ranges) == 0 {
+		return true
+	}
+	for _, clause := range ranges {
+		satisfied := true
+		for _, constraint := range clause {
+			ok, err := dsl.SatisfiesVersionConstraint(version, constraint)
+			if err != nil {
+				return true
+			}
+			if !ok {
+				satisfied = false
+				break
+			}
+		}
+		if satisfied {
+			return true
+		}
+	}
+	return false
 }
 
 // cveYear extracts the year from a CVE-YYYY-NNNN identifier in the entry's
@@ -1722,7 +1777,7 @@ func hostServesDynamicContent(host string, result *recon.ReconResult) bool {
 	if result == nil {
 		return true
 	}
-	if u := result.UniformResponse; u != nil && u.Kind == "catchall" && (u.Host == "" || u.Host == host) {
+	if u := result.UniformResponseForHost(host); u != nil && u.Kind == "catchall" {
 		return false
 	}
 	if result.AppSurface != nil && result.AppSurface.Verdict == "none" {

@@ -57,6 +57,16 @@ write, or data exfil, exactly as blind-SSRF verification already works.
 [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md), and the `v0.9.0` tag
 is cut when this phase's work is a coherent, green batch — not on a step count.
 
+**Deliberately unscheduled / parked items are not a phase step.** A handful of
+open enhancements (signal-shape polish, test-timing rebaselines, trigger-gated
+design work, HackerOne/CI integrations) are real but not ready to build, either
+because nothing has yet justified the cost or because there's no live signal to
+size them against. Turning them into a numbered step here would misrepresent
+them as scheduled, dated work, which they aren't — they live in
+[follow-up.md](follow-up.md)'s "Low-priority / trigger-gated open items"
+roll-up and "Parked" sections instead, each with the condition that would pick
+it up. Check there, not here, for "did we forget this."
+
 **Explicitly out of scope for this plan, named rather than silently dropped:**
 - **Literal command execution on a target.** OOB verification (Step 1) gets the
   detection value without it; it conflicts with the read/enumerate-only rule and

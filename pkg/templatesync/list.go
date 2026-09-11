@@ -21,6 +21,18 @@ type Entry struct {
 	Severity string   `json:"severity"`
 	Tags     []string `json:"tags"`
 	Source   string   `json:"source"` // caller-supplied label for the dir this entry loaded from, e.g. "bundled" | "synced"
+
+	// AffectedRange is this template's statically-extracted affected-version
+	// gate (LT-7, Phase 8 Step 4) — a []AND-clause of compare_versions()-
+	// style constraint strings ("< 8.10.2", ">= 8.0.0", ...); the template
+	// is potentially applicable to a version when it satisfies ANY one
+	// clause (OR across clauses, AND within one). nil/empty for a native
+	// entry (no compare_versions() concept) or a nuclei entry whose matchers
+	// weren't shaped for safe static extraction — pkg/registry's
+	// matchTemplateTags treats that as unconditionally in-scope, unchanged
+	// from before this field existed. See nuclei.Template.AffectedVersionRanges
+	// for what is and isn't extracted, and why.
+	AffectedRange [][]string `json:"affected_range,omitempty"`
 }
 
 // List loads every template under each of dirs (same nuclei.LoadDirDetailed/
@@ -52,12 +64,13 @@ func List(dirs, sourceLabels, tags []string) (entries []Entry, rejected int, err
 		nt, nErrs := nuclei.LoadDirDetailed(dir)
 		for _, t := range nt {
 			entries = append(entries, Entry{
-				ID:       t.ID,
-				Name:     t.Info.Name,
-				Format:   "nuclei",
-				Severity: t.Info.Severity,
-				Tags:     splitTags(t.Info.Tags),
-				Source:   source,
+				ID:            t.ID,
+				Name:          t.Info.Name,
+				Format:        "nuclei",
+				Severity:      t.Info.Severity,
+				Tags:          splitTags(t.Info.Tags),
+				Source:        source,
+				AffectedRange: t.AffectedVersionRanges(),
 			})
 		}
 
@@ -113,12 +126,13 @@ func LoadByIDs(dirs, sourceLabels []string, ids []string) (entries []Entry, err 
 		nt, _ := nuclei.LoadDirByIDs(dir, want)
 		for _, t := range nt {
 			entries = append(entries, Entry{
-				ID:       t.ID,
-				Name:     t.Info.Name,
-				Format:   "nuclei",
-				Severity: t.Info.Severity,
-				Tags:     splitTags(t.Info.Tags),
-				Source:   source,
+				ID:            t.ID,
+				Name:          t.Info.Name,
+				Format:        "nuclei",
+				Severity:      t.Info.Severity,
+				Tags:          splitTags(t.Info.Tags),
+				Source:        source,
+				AffectedRange: t.AffectedVersionRanges(),
 			})
 		}
 

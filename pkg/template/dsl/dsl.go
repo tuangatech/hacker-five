@@ -916,6 +916,19 @@ func compareVersions(args []any) (bool, error) {
 // mistaken for a "<" followed by a stray "=".
 var versionConstraintOps = []string{"<=", ">=", "==", "!=", "<", ">", "="}
 
+// SatisfiesVersionConstraint reports whether version satisfies constraint,
+// in the exact "<op><version>" shape a compare_versions() call's own
+// constraint arguments accept (see compareVersions above) — e.g. "< 8.10.2",
+// ">=12.0.0", or a bare "9.0.0" (defaults to "=="). Exported for
+// pkg/registry's affected-version template-selection gate (LT-7, Phase 8
+// Step 4): it needs to apply the identical version comparison
+// compare_versions() itself runs at scan time, ahead of time against a
+// recon-fingerprinted version, without re-implementing version-segment
+// parsing a second time.
+func SatisfiesVersionConstraint(version, constraint string) (bool, error) {
+	return satisfiesConstraint(version, constraint)
+}
+
 func satisfiesConstraint(version, constraint string) (bool, error) {
 	constraint = strings.TrimSpace(constraint)
 	op := "=="

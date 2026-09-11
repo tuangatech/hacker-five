@@ -1,6 +1,9 @@
 package recon
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestWordPressPluginFacts_ExtractsSlugAndVersionFromCrawledURL(t *testing.T) {
 	endpoints := []EndpointFact{
@@ -122,5 +125,71 @@ func TestWordPressPluginFacts_ThemePath_AlsoExtracted(t *testing.T) {
 
 	if len(facts) != 1 || facts[0].Name != "astra:4.6.5" {
 		t.Fatalf("got %+v, want one %q fact", facts, "astra:4.6.5")
+	}
+}
+
+// TestSanitizeWordPressCoreVersion_MatchesPluginVersion_Stripped is LT-105:
+// a "WordPress:7.1" core fact whose version exactly matches a plugin's own
+// version on the same host is the described misattribution — the version
+// suffix is dropped, falling back to bare "WordPress".
+func TestSanitizeWordPressCoreVersion_MatchesPluginVersion_Stripped(t *testing.T) {
+	agg := &aggregator{}
+	agg.addTech(TechFact{Name: "WordPress:7.1", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+	pluginFacts := []TechFact{
+		{Name: "some-plugin:7.1", Host: "example.com", Source: "recon-wp-plugin-path", Confidence: ConfidenceMedium},
+	}
+
+	agg.sanitizeWordPressCoreVersion(pluginFacts)
+
+	result := agg.finalize()
+	if len(result.TechStack) != 1 || result.TechStack[0].Name != "WordPress" {
+		t.Fatalf("got %+v, want a bare unversioned %q fact", result.TechStack, "WordPress")
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "LT-105") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an LT-105 warning, got %+v", result.Warnings)
+	}
+}
+
+// TestSanitizeWordPressCoreVersion_NoMatchingPluginVersion_Unchanged: a
+// core version that does NOT match any plugin/theme version on the same
+// host is left alone — the sanitizer only catches the specific bleed-through
+// mechanism it's designed for, not every version it can't independently
+// verify.
+func TestSanitizeWordPressCoreVersion_NoMatchingPluginVersion_Unchanged(t *testing.T) {
+	agg := &aggregator{}
+	agg.addTech(TechFact{Name: "WordPress:6.7.1", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+	pluginFacts := []TechFact{
+		{Name: "some-plugin:2.3.0", Host: "example.com", Source: "recon-wp-plugin-path", Confidence: ConfidenceMedium},
+	}
+
+	agg.sanitizeWordPressCoreVersion(pluginFacts)
+
+	result := agg.finalize()
+	if len(result.TechStack) != 1 || result.TechStack[0].Name != "WordPress:6.7.1" {
+		t.Fatalf("got %+v, want the version left unchanged", result.TechStack)
+	}
+}
+
+// TestSanitizeWordPressCoreVersion_DifferentHost_NotConfused: a plugin
+// version match on a DIFFERENT host must not strip the core fact on this
+// one.
+func TestSanitizeWordPressCoreVersion_DifferentHost_NotConfused(t *testing.T) {
+	agg := &aggregator{}
+	agg.addTech(TechFact{Name: "WordPress:7.1", Host: "a.example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+	pluginFacts := []TechFact{
+		{Name: "some-plugin:7.1", Host: "b.example.com", Source: "recon-wp-plugin-path", Confidence: ConfidenceMedium},
+	}
+
+	agg.sanitizeWordPressCoreVersion(pluginFacts)
+
+	result := agg.finalize()
+	if len(result.TechStack) != 1 || result.TechStack[0].Name != "WordPress:7.1" {
+		t.Fatalf("got %+v, want the version left unchanged on the unrelated host", result.TechStack)
 	}
 }

@@ -11,9 +11,9 @@ import (
 // uniform response wall?" for Run's D6 corpus short-circuit
 // (docs/16-implementation-plan-ph7.md Step 4, docs/follow-up.md LT-59). It
 // reads the verdict a prior recon pass recorded on
-// ReconResult.UniformResponse, threaded in via cfg.UniformWallHosts by the
-// frontend (cmd/hackerfive/scan.go's --recon-file parse, pkg/webui,
-// pkg/mcpserver).
+// ReconResult.UniformResponses (one entry per walled host, LT-140), threaded
+// in via cfg.UniformWallHosts by the frontend (cmd/hackerfive/scan.go's
+// --recon-file parse, pkg/webui, pkg/mcpserver).
 //
 // The engine deliberately does NOT probe inline: a scan run without a
 // --recon-file is already scoped to the misconfig category floor (no tech

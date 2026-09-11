@@ -100,9 +100,9 @@ var Capabilities = []Capability{
 	{
 		Name:           "netservice",
 		Kind:           KindDetector,
-		Description:    "Unauthenticated-exposure checks for common non-HTTP network services: anonymous-FTP login, empty-password MySQL login, unauthenticated Redis PING (Phase 8 Step 1, docs/17-implementation-plan-ph8.md).",
-		WhenToUse:      "naabu found an open port on a service this detector covers (21/ftp, 3306/mysql, 6379/redis) — registry.resolvePortFacts dispatches this automatically once that port fact exists.",
-		WhenNotToUse:   "The open port is a protocol this detector does not cover yet (telnet/postgresql/elasticsearch/mongodb — docs/follow-up.md LT-142) or the port is closed/unreachable.",
+		Description:    "Unauthenticated-exposure checks for common non-HTTP network services: anonymous-FTP login, empty-password MySQL login, trust-auth PostgreSQL login, unauthenticated Redis PING, unauthenticated MongoDB listDatabases (Phase 8 Step 1, docs/17-implementation-plan-ph8.md; PostgreSQL/MongoDB added for LT-142).",
+		WhenToUse:      "naabu found an open port on a service this detector covers (21/ftp, 3306/mysql, 5432/postgresql, 6379/redis, 27017/mongodb) — registry.resolvePortFacts dispatches this automatically once that port fact exists.",
+		WhenNotToUse:   "The open port is a protocol this detector does not cover yet (telnet/elasticsearch — docs/follow-up.md LT-142's residual) or the port is closed/unreachable.",
 		Cost:           "Read-only; one bounded connect/handshake per port, no data enumerated.",
 		Risk:           "Read-only — the empty-password/anonymous-credential attempt this makes never scrambles or guesses a real secret; a login that succeeds means the account already had none.",
 		InputsRequired: []string{"a \"tcp://host:port\" target for a covered port"},

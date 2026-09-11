@@ -3,6 +3,7 @@ package recon
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -27,11 +28,17 @@ type aggregator struct {
 	warnings       []string
 	outOfScopeM    map[string]bool
 
-	// uniformResponse is set by probeCommonPaths (Wave 3) when a host answers
-	// every probe with one generic page — see UniformResponseFact. First
-	// writer wins (recon usually has one directly-probed host); a later
-	// seed's VerdictNone never clears an earlier wall verdict.
-	uniformResponse *UniformResponseFact
+	// uniformResponses is set by probeCommonPaths (Wave 3) when a host
+	// answers every probe with one generic page — see UniformResponseFact.
+	// Keyed by NormalizeHost(Host), same convention as cdnEdgeHosts/addTech's
+	// techIndex below (LT-14) — a www./differently-cased probe of the same
+	// host collapses into the same entry rather than producing a spurious
+	// second one. Per host, first writer wins (a later, weaker signal for
+	// that same host never clears an earlier wall verdict). LT-140: widened
+	// from a single first-host-wins fact to one verdict per host, so D6's
+	// corpus-skip (LT-59) protects every walled host in a multi-host recon
+	// run, not just the first one probed.
+	uniformResponses map[string]UniformResponseFact
 
 	// policy signals from Wave 0 (pkg/preflight's D2 input) — see PolicySignals.
 	securityTxt       string
@@ -57,13 +64,20 @@ func (a *aggregator) cdnEdgeFor(host string) (string, bool) {
 	return cdn, ok
 }
 
-// setUniformResponse records the first uniform-wall verdict seen for a host
-// (Phase 7 Step 4 D6). Ignored once one is set, and never overwritten by a
-// later, weaker signal.
+// setUniformResponse records the first uniform-wall verdict seen for f's
+// host (Phase 7 Step 4 D6; widened per-host by LT-140). Ignored once that
+// host already has a verdict, and never overwritten by a later, weaker
+// signal for the same host — a different host gets its own independent
+// entry.
 func (a *aggregator) setUniformResponse(f UniformResponseFact) {
-	if a.uniformResponse == nil {
-		a.uniformResponse = &f
+	key := NormalizeHost(f.Host)
+	if _, exists := a.uniformResponses[key]; exists {
+		return
 	}
+	if a.uniformResponses == nil {
+		a.uniformResponses = make(map[string]UniformResponseFact)
+	}
+	a.uniformResponses[key] = f
 }
 
 func (a *aggregator) addHost(h HostFact) {
@@ -75,11 +89,28 @@ func (a *aggregator) addEndpoint(e EndpointFact) {
 }
 
 // techKey identifies "the same observed technology" across independent
-// detection passes — see addTech.
-type techKey struct{ name, host string }
+// detection passes — see addTech. product is the version-stripped identity
+// (techProductKey(Name)), not the raw Name, so a later pass that resolves a
+// real version for a product an earlier pass already saw unversioned (e.g.
+// httpx-tech-detect's bare "Nginx" vs. a Server:-header parse's
+// "Nginx:1.25.3" for the same host, Phase 8 Step 4) merges into one
+// row instead of producing a second, redundant one.
+type techKey struct{ product, host string }
+
+// techProductKey returns name's version-stripped, case-folded product
+// identity ("Nginx:1.25.3" -> "nginx") — the same "everything before the
+// first ':'" convention pkg/registry.NormalizeTechName applies downstream,
+// reimplemented locally rather than imported: pkg/registry already imports
+// pkg/recon, so the reverse import would cycle.
+func techProductKey(name string) string {
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		name = name[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
 
 // addTech merges a new TechFact into an existing one sharing the same
-// (Name, Host) rather than always appending — found live, 2026-09-01:
+// (product, Host) rather than always appending — found live, 2026-09-01:
 // httpx's own tech-detect (runHTTPX) and pkg/fingerprint's header/body/
 // port/favicon signature matching (runWave2) both independently detect the
 // same technology on the same host (e.g. "Cloudflare" via both) and were
@@ -103,7 +134,7 @@ type techKey struct{ name, host string }
 // treating it as one is the same kind of spurious-duplicate this
 // function's own (Name, Host) merge already exists to close.
 func (a *aggregator) addTech(t TechFact) {
-	key := techKey{strings.ToLower(t.Name), NormalizeHost(t.Host)}
+	key := techKey{techProductKey(t.Name), NormalizeHost(t.Host)}
 	if idx, ok := a.techIndex[key]; ok {
 		existing := &a.techStack[idx]
 		if !contains(a.techSources[key], t.Source) {
@@ -112,6 +143,15 @@ func (a *aggregator) addTech(t TechFact) {
 		}
 		if confidenceRank(t.Confidence) > confidenceRank(existing.Confidence) {
 			existing.Confidence = t.Confidence
+		}
+		// Phase 8 Step 4: an existing unversioned fact upgrades to a
+		// later pass's versioned Name for the same product+host (first-
+		// VERSIONED-writer wins — a second, possibly-conflicting version
+		// never overwrites the one already recorded, same "don't flip-flop
+		// on later, weaker evidence" posture as uniformResponses/
+		// cdnEdgeHosts above).
+		if !strings.Contains(existing.Name, ":") && strings.Contains(t.Name, ":") {
+			existing.Name = t.Name
 		}
 		return
 	}
@@ -218,21 +258,37 @@ func (a *aggregator) finalize() *ReconResult {
 	if a.securityTxt != "" || a.robotsDisallowAll {
 		policy = &PolicySignals{SecurityTxt: a.securityTxt, RobotsDisallowAll: a.robotsDisallowAll}
 	}
+	// LT-140: uniformResponses is keyed by NormalizeHost for dedup, but the
+	// output is a plain slice — sorted by that same key so the result is
+	// deterministic (repeat runs / test fixtures don't depend on Go's
+	// unordered map iteration).
+	var uniform []UniformResponseFact
+	if len(a.uniformResponses) > 0 {
+		keys := make([]string, 0, len(a.uniformResponses))
+		for k := range a.uniformResponses {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		uniform = make([]UniformResponseFact, 0, len(keys))
+		for _, k := range keys {
+			uniform = append(uniform, a.uniformResponses[k])
+		}
+	}
 	return &ReconResult{
-		Target:          a.target,
-		Hosts:           a.hosts,
-		Endpoints:       a.endpoints,
-		TechStack:       a.techStack,
-		APISpec:         a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
-		SignupEndpoint:  a.signupEndpoint,
-		CouponEndpoint:  a.couponEndpoint,
-		Secrets:         a.secrets,
-		UniformResponse: a.uniformResponse,
-		AppSurface:      classifyAppSurface(a.endpoints, a.techStack, a.uniformResponse),
-		OutOfScope:      a.outOfScope,
-		Policy:          policy,
-		Warnings:        a.warnings,
-		GeneratedAt:     time.Now().UTC(),
+		Target:           a.target,
+		Hosts:            a.hosts,
+		Endpoints:        a.endpoints,
+		TechStack:        a.techStack,
+		APISpec:          a.apiSpec, // presence-only, never parsed — see pkg/recon package doc / doc14 Step 3 Context
+		SignupEndpoint:   a.signupEndpoint,
+		CouponEndpoint:   a.couponEndpoint,
+		Secrets:          a.secrets,
+		UniformResponses: uniform,
+		AppSurface:       classifyAppSurface(a.endpoints, a.techStack, a.uniformResponses),
+		OutOfScope:       a.outOfScope,
+		Policy:           policy,
+		Warnings:         a.warnings,
+		GeneratedAt:      time.Now().UTC(),
 	}
 }
 
@@ -249,7 +305,13 @@ func (a *aggregator) finalize() *ReconResult {
 // honoured as "recon is blind" when no *other* host mapped a real
 // application surface; otherwise the result is classified on the same
 // live-endpoint scale as a wall-free run, with the wall noted in the reason.
-func classifyAppSurface(endpoints []EndpointFact, tech []TechFact, uniform *UniformResponseFact) *AppSurfaceFact {
+//
+// LT-140: uniform is now keyed by NormalizeHost(Host) and can carry more
+// than one walled host — "blind" now means every host that mapped a real
+// application surface is itself one of the walled hosts (not just a single
+// named one), so a second/third wall in the same multi-host run is judged
+// the same way a single one always was.
+func classifyAppSurface(endpoints []EndpointFact, tech []TechFact, uniform map[string]UniformResponseFact) *AppSurfaceFact {
 	live2xx, redirects := 0, 0
 	realAppHosts := map[string]bool{}
 	for _, ep := range endpoints {
@@ -266,26 +328,43 @@ func classifyAppSurface(endpoints []EndpointFact, tech []TechFact, uniform *Unif
 		}
 	}
 
-	if uniform != nil {
-		blindReason := fmt.Sprintf("every recon probe hit a %s wall — recon is blind from this vantage", uniform.Kind)
+	if len(uniform) > 0 {
 		blind := true
 		for h := range realAppHosts {
-			if h != NormalizeHost(uniform.Host) {
+			if _, walled := uniform[h]; !walled {
 				blind = false
 				break
 			}
 		}
+		wallHosts := make([]string, 0, len(uniform))
+		var soleKind string
+		for _, u := range uniform {
+			wallHosts = append(wallHosts, u.Host)
+			soleKind = u.Kind
+		}
+		sort.Strings(wallHosts)
 		if blind {
-			return &AppSurfaceFact{Verdict: "none", Reason: blindReason}
+			kind := soleKind
+			if len(uniform) > 1 {
+				kind = "uniform-response"
+			}
+			return &AppSurfaceFact{
+				Verdict: "none",
+				Reason:  fmt.Sprintf("every recon probe hit a %s wall — recon is blind from this vantage", kind),
+			}
 		}
 		verdict := "thin"
 		if len(realAppHosts) > 3 {
 			verdict = "full"
 		}
+		wallDesc := fmt.Sprintf("a %s wall on %s", soleKind, wallHosts[0])
+		if len(uniform) > 1 {
+			wallDesc = fmt.Sprintf("a uniform-response wall on %d host(s) (%s)", len(uniform), strings.Join(wallHosts, ", "))
+		}
 		return &AppSurfaceFact{
 			Verdict: verdict,
-			Reason: fmt.Sprintf("%d host(s) mapped a real application surface (a %s wall on %s notwithstanding)",
-				len(realAppHosts), uniform.Kind, uniform.Host),
+			Reason: fmt.Sprintf("%d host(s) mapped a real application surface (%s notwithstanding)",
+				len(realAppHosts), wallDesc),
 		}
 	}
 

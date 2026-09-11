@@ -204,9 +204,9 @@ type PolicySignals struct {
 	RobotsDisallowAll bool   `json:"robots_disallow_all,omitempty"` // robots.txt has "User-agent: *" + "Disallow: /"
 }
 
-// UniformResponseFact records that a host answers effectively every request
-// with one generic page rather than routing — a WAF/bot/auth block wall
-// ("waf-block") or a SPA-shell / storage-bucket catch-all ("catchall").
+// UniformResponseFact records that one host answers effectively every
+// request with one generic page rather than routing — a WAF/bot/auth block
+// wall ("waf-block") or a SPA-shell / storage-bucket catch-all ("catchall").
 // Set by probeCommonPaths (Wave 3) from the guaranteed-nonexistent canary
 // probe plus the host's root response, via pkg/uniformwall.Classify — the
 // one primitive Phase 7 Step 4's D6 wires into the decision engine
@@ -214,7 +214,9 @@ type PolicySignals struct {
 // LT-58) and the scan engine (skip the per-target template corpus, LT-59).
 // BlockedRatio is the fraction of this host's Wave 3 HTTP probes that came
 // back intercepted (canary-shaped or 401/403/429) — at ~1.0, recon is
-// effectively blind here and plan says so (LT-62).
+// effectively blind here and plan says so (LT-62). ReconResult.UniformResponses
+// holds one of these per walled host (LT-140) — see UniformWallHosts /
+// UniformResponseForHost for the common lookups.
 type UniformResponseFact struct {
 	Host         string  `json:"host"`
 	Kind         string  `json:"kind"` // "waf-block" | "catchall"
@@ -242,18 +244,18 @@ type AppSurfaceFact struct {
 // docs/schema/recon-result.schema.json. Never raw tool stdout in an agent's
 // context (docs/91-research-recon-phase.md §4).
 type ReconResult struct {
-	Target          string               `json:"target"`
-	Hosts           []HostFact           `json:"hosts,omitempty"`
-	Endpoints       []EndpointFact       `json:"endpoints,omitempty"`
-	TechStack       []TechFact           `json:"tech_stack,omitempty"`
-	APISpec         *APISpecFact         `json:"api_spec,omitempty"`
-	SignupEndpoint  *SignupFact          `json:"signup_endpoint,omitempty"`
-	CouponEndpoint  *CouponFact          `json:"coupon_endpoint,omitempty"`
-	Secrets         []JSSecretFact       `json:"secrets,omitempty"`
-	UniformResponse *UniformResponseFact `json:"uniform_response,omitempty"`
-	AppSurface      *AppSurfaceFact      `json:"app_surface,omitempty"`
-	OutOfScope      []string             `json:"out_of_scope,omitempty"`
-	Policy          *PolicySignals       `json:"policy,omitempty"`
-	Warnings        []string             `json:"warnings,omitempty"`
-	GeneratedAt     time.Time            `json:"generated_at"`
+	Target           string                `json:"target"`
+	Hosts            []HostFact            `json:"hosts,omitempty"`
+	Endpoints        []EndpointFact        `json:"endpoints,omitempty"`
+	TechStack        []TechFact            `json:"tech_stack,omitempty"`
+	APISpec          *APISpecFact          `json:"api_spec,omitempty"`
+	SignupEndpoint   *SignupFact           `json:"signup_endpoint,omitempty"`
+	CouponEndpoint   *CouponFact           `json:"coupon_endpoint,omitempty"`
+	Secrets          []JSSecretFact        `json:"secrets,omitempty"`
+	UniformResponses []UniformResponseFact `json:"uniform_responses,omitempty"`
+	AppSurface       *AppSurfaceFact       `json:"app_surface,omitempty"`
+	OutOfScope       []string              `json:"out_of_scope,omitempty"`
+	Policy           *PolicySignals        `json:"policy,omitempty"`
+	Warnings         []string              `json:"warnings,omitempty"`
+	GeneratedAt      time.Time             `json:"generated_at"`
 }
