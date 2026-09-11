@@ -463,7 +463,7 @@ correction and one real scoring bug the tests caught before it shipped broken:
 
 ---
 
-## Step 4: Affected-Version (Semver) Gating for Template Selection (Week 63) — ⬜ not yet implemented — closes P0-1b / LT-7
+## Step 4: Affected-Version (Semver) Gating for Template Selection (Week 63) — ✅ done 2026-09-11 — closes P0-1b / LT-7
 
 ### Design
 
@@ -473,36 +473,87 @@ never an affected-range gate — so every Nginx host gets the identical top-8 CV
 regardless of its actual version. The blocker is data, not logic: `templates/index.json`
 carries no affected-version constraints.
 
-- **Index schema** — `templatesync`'s index generator extracts a template's
-  `metadata`/`classification` affected-version data (nuclei templates commonly carry
-  `metadata: { max-version, min-version }` or a `compare_versions(...)` matcher whose
-  constraint is machine-readable) into a new optional `AffectedRange` field on
-  `templatesync.Entry`. Absent for templates that don't declare one — those keep
-  today's tag+severity+recency scoring unchanged.
-- **Gating in `matchTemplateTags`** — when the `TechFact` carries a parseable
-  `:version` *and* the candidate template carries an `AffectedRange`, a version outside
-  the range drops the template (not just penalizes it). Inside the range, or no range
-  declared, or no fingerprinted version → unchanged behavior. Reuses `pkg/template/dsl`'s
-  already-hand-rolled `compareVersionSegments` — no new dependency.
-- **Per-tech version extraction** — recon captures a version for WordPress plugins
-  (P1-3) and httpx tech-detect already yields some (`WooCommerce:11.1.0`), but not for
-  Nginx/Apache/etc. Add a Wave 2/3 `Server:`-header + known-path version parse for the
-  handful of high-value server products, feeding the same `:version` suffix shape
-  `matchTemplateTags` already consumes. Also close the **P1-3 leftover**: for a
-  WordPress plugin/theme slug whose crawled URLs carried no `?ver=`, one `readme.txt` /
-  `style.css` GET per unversioned slug (the only new active fetch in this step) parsing
-  `Stable tag:` / `Version:`, so plugin-CVE gating has a real version to work against.
+**Corrected at implementation time against the real synced corpus (9,651 templates,
+2026-09-11)** — the plan below is what was actually built; see the struck-through
+original assumptions for what changed and why:
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/templatesync/index.go` — `Entry.AffectedRange`; the generator's extraction pass.
-- `pkg/registry/decisionengine.go` — `matchTemplateTags`/`scoreTemplateForTech` gain the range gate; `techVersionSuffix` reused.
-- `pkg/recon/` — server-product version parse (`Server:` header + a small known-path table), and `wpplugins.go`'s `readme.txt`/`style.css` probe for unversioned plugin/theme slugs (P1-3 leftover), folded into `TechStack` as a `:version` suffix.
-- `tests/unit/` — index-extraction fixtures; `decisionengine_test.go` cases proving an out-of-range CVE is dropped and an in-range one kept.
+- **Index schema** — `templatesync`'s `List`/`LoadByIDs` call a new
+  `nuclei.Template.AffectedVersionRanges()` (`pkg/template/nuclei/affectedversion.go`)
+  per loaded template and store the result in a new `AffectedRange [][]string` field on
+  `templatesync.Entry` (an OR-of-AND-clauses of `compare_versions()`-style constraint
+  strings). ~~nuclei templates commonly carry `metadata: { max-version, min-version }`~~
+  — measured: **0 of 9,651 real templates use that convention.** The only real
+  machine-readable signal is a `dsl:` matcher's own `compare_versions()` call(s) (388
+  templates use it at least once), so extraction parses that instead — conservatively:
+  a template whose matcher shape means an *unrelated* matcher could still fire it
+  independent of version (`matchers-condition: or` across 2+ matchers, or more than one
+  `http:` request block) is left ungated entirely, and within an AND'd matcher a
+  non-`compare_versions()` sibling entry (e.g. upstream's real `nginx-eol.yaml`:
+  `compare_versions(version, '<1.28.0') && contains(server, 'nginx')`) is simply
+  excluded from the extracted range rather than voiding it — false inclusion (an
+  applicable template scored as if it had no range) is always preferred over false
+  exclusion (dropping one that's still applicable). Net: 59 of 9,452 loadable templates
+  gained a real range, including the whole `*-eol` family and a real spread of product
+  CVEs (VMware vRealize's CVE-2022-31704/31706/31711, disjoint two-range shape; Ivanti's
+  CVE-2025-0282; ...) — templates absent a range keep today's tag+severity+recency
+  scoring unchanged, same as before this existed.
+- **Gating in `matchTemplateTags`** — when the candidate template carries an
+  `AffectedRange`, a fingerprinted version outside every declared clause drops the
+  template (not just penalizes it) — implemented as-planned. No fingerprinted version,
+  no declared range, or a version inside any one clause → unchanged behavior. Reuses
+  `pkg/template/dsl`'s existing constraint comparator via a newly-exported
+  `dsl.SatisfiesVersionConstraint` (the unexported `compareVersionSegments` the original
+  plan named is one layer below that — the exported wrapper is what selection-time
+  gating and the executor's own scan-time `compare_versions()` evaluation now share, so
+  the two can never disagree) — no new dependency, as planned.
+- **Per-tech version extraction (Server-header half, as planned)** — a Wave 2
+  `Server:`-header parse (`pkg/recon/serverversion.go`) versions the handful of
+  high-value products that actually gate on it today (Nginx/Apache/IIS) — httpx's own
+  tech-detect confirmed live to never version these. `aggregator.addTech`'s dedup key
+  (LT-14's `NormalizeHost` host-folding convention) widened to also fold Name on
+  version-stripped product identity, so the versioned fact upgrades the existing bare
+  httpx-tech-detect one in place rather than duplicating the row —
+  first-versioned-writer-wins, matching `uniformResponses`/`cdnEdgeHosts`'s existing
+  "don't flip-flop on later, weaker evidence" posture.
+- **Per-tech version extraction (P1-3/WordPress half) — deliberately NOT built.**
+  ~~One `readme.txt`/`style.css` GET per unversioned plugin/theme slug, so plugin-CVE
+  gating has a real version to work against.~~ Measured: **all 237 real templates**
+  using the WordPress-plugin/theme `compare_versions()` idiom
+  (`compare_versions(internal_detected_version, concat("< ", last_version))`) pair that
+  check with `matchers-condition: or` against a second, unrelated "plugin is present"
+  regex matcher — a discovery template, not a hard CVE gate (the dsl matcher is a named
+  sub-check for Finding labeling; `AffectedVersionRanges`' own `or`-with-2-matchers
+  conservatism above correctly never extracts a range from these). A version probe here
+  would feed a gate this entire population never actually uses — real active-fetch
+  complexity for zero measured payoff; not built.
+- **LT-105, bundled in** — a pre-existing bug this step's own hard-drop gate turns from
+  cosmetic into actively dangerous: httpx-tech-detect occasionally misattributes a
+  plugin's/asset's version to the WordPress *core* fact ("WordPress:7.1" — real
+  WordPress has never shipped a 7.x). `aggregator.sanitizeWordPressCoreVersion`
+  (`pkg/recon/wpplugins.go`) strips a core version that exactly matches a plugin/theme
+  version found on the same host — the described bleed-through mechanism itself, not a
+  plausibility ceiling that ages out every release.
+
+### Files
+- `pkg/template/nuclei/affectedversion.go` (new) — `Template.AffectedVersionRanges()` and its `compare_versions()`-call parsing.
+- `pkg/template/dsl/dsl.go` — `SatisfiesVersionConstraint` exported.
+- `pkg/templatesync/list.go` — `Entry.AffectedRange`; `List`/`LoadByIDs` populate it.
+- `pkg/registry/decisionengine.go` — `matchTemplateTags` gains `versionInAffectedRange`; the range gate.
+- `pkg/recon/serverversion.go` (new), `pkg/recon/active.go` — Wave 2 `Server:`-header version parse.
+- `pkg/recon/aggregate.go` — `addTech`'s dedup key widened to version-stripped product identity; version-upgrade merge.
+- `pkg/recon/wpplugins.go`, `pkg/recon/recon.go` — `sanitizeWordPressCoreVersion` (LT-105).
+- `tests/unit/affectedversion_test.go`, `pkg/registry/decisionengine_test.go`, `pkg/recon/{aggregate,active,serverversion,wpplugins}_test.go` — extraction shape fixtures (literal/OR/AND-tolerant/rejected-discovery/multi-request), the gate itself, the tech-fact merge, and the LT-105 sanitizer.
 
 ### Verification
-Unit: a fixture index with declared ranges + a `TechFact` version on either side of the
-boundary. Live: re-run the LT-7 evidence scenario (multiple real Nginx hosts at
-different versions) and confirm they now get *different* template lists.
+Unit: `nuclei.Template.AffectedVersionRanges()` against 9 fixture shapes covering every
+extraction/rejection case above; `matchTemplateTags`/`versionInAffectedRange` against a
+fixture index with declared ranges and a `TechFact` version on either side of the
+boundary (including the OR-of-clauses and no-fingerprinted-version cases);
+`aggregator.addTech`'s version-upgrade-merge and first-version-wins cases. Also
+re-verified against the real synced corpus directly (a throwaway probe test, not
+committed) — 59/9,452 templates gain a real range, 0 false hits on the 237-template
+WordPress-discovery population. Full `go build`/`go vet`/`go test -race`/`golangci-lint`
+gate clean.
 
 ---
 
@@ -809,8 +860,9 @@ of Done as that doc's Steps 1-4).
 - [ ] A `tls` detector reports expired/weak/mismatched certs, sub-1.2 protocols, and weak ciphers, via stdlib `crypto/tls`, no new dependency
 - [ ] Served-JS static analysis folds extracted endpoints into `ReconResult.Endpoints` (`Source: "js-static"`) and reports high-signal hardcoded secrets as `misconfig` findings, with its decoy-set false-positive rate measured
 - [ ] Cloud-provider exposure facts (`aws`/`s3`/`gcp`) are extracted from headers / URL shapes and dispatch the corpus's cloud-exposure templates (P1-5 closed)
-- [ ] `templates/index.json` carries optional `AffectedRange` data; `matchTemplateTags` drops an out-of-affected-range CVE template when the `TechFact` version is known, and real multi-version Nginx hosts get different template lists (LT-7 closed)
-- [ ] An unversioned WordPress plugin/theme slug gets a `readme.txt`/`style.css` version probe (P1-3 leftover closed)
+- [x] **LT-7 (2026-09-11):** `templates/index.json` carries optional `Entry.AffectedRange` data; `matchTemplateTags` drops a candidate template when the `TechFact` version falls outside its declared range. Real corpus measurement (9,651 synced templates) first *corrected* this step's own original design: the documented nuclei `metadata: {max-version, min-version}` convention has 0 real hits — the only real machine-readable affected-version signal lives in a `dsl:` matcher's own `compare_versions()` call(s), so `nuclei.Template.AffectedVersionRanges()` (new, `pkg/template/nuclei/affectedversion.go`) parses that instead, conservatively (a template shaped so an unrelated matcher could still fire it independent of version — `matchers-condition: or` across 2+ matchers, or a multi-request template — is left ungated rather than risk dropping a still-applicable CVE check; a missed CVE is worse than an unnecessary scan). 59 of 9,452 loadable templates gained a real range this way, including the whole `*-eol` family (`nginx-eol`, `apache-httpd-eol`, `wordpress-eol`, `php-eol`, `confluence-eol`, ...) and a real spread of product CVEs (VMware vRealize's CVE-2022-31704/31706/31711 two-disjoint-range shape, Ivanti's CVE-2025-0282, ...) — exactly LT-7's own "same Nginx host, same list regardless of version" symptom class. `dsl.SatisfiesVersionConstraint` (newly exported) reuses the executor's own `compare_versions()` comparator so selection-time gating and scan-time evaluation can never disagree. A Wave 2 `Server:`-header parse (`pkg/recon/serverversion.go`) now versions the handful of products that gate on it (Nginx/Apache/IIS) — httpx's own tech-detect never versions these; `aggregator.addTech`'s dedup key (LT-14's `NormalizeHost` convention) widened to fold on version-stripped product identity so the versioned fact upgrades the existing bare one in place instead of duplicating the row.
+- [x] **P1-3 leftover — deliberately NOT implemented (2026-09-11), evidence-based:** the doc's original plan was a `readme.txt`/`style.css` active version probe for unversioned WordPress plugin/theme slugs, on the assumption it would feed this same affected-range gate. Real corpus measurement found otherwise: all 237 WordPress-plugin/theme templates using `compare_versions()` (the `internal_detected_version` / `concat("< ", last_version)` idiom) pair that check with `matchers-condition: or` against a second, unrelated "plugin is present" regex matcher — a discovery template, not a hard CVE gate (the dsl matcher is a *named* sub-check for Finding labeling, correctly excluded by `AffectedVersionRanges`' own `or`-with-2-matchers conservatism above). A recon-side version probe would therefore feed a gate these templates never actually use — real, but currently zero-payoff work; not built.
+- [x] **LT-105 (2026-09-11, bundled into this step):** LT-7's new hard-drop gate turns a pre-existing, previously-cosmetic bug into an active false-negative risk — an httpx-tech-detect misparse occasionally attributes a plugin's/asset's version to the WordPress *core* fact instead (real example: "WordPress:7.1"; every real WordPress.org release to date is still on the 6.x line), which would wrongly drop `wordpress-eol.yaml`-style templates for a genuinely old, genuinely EOL install. `aggregator.sanitizeWordPressCoreVersion` (`pkg/recon/wpplugins.go`) strips the core fact's version when it exactly matches a plugin/theme version `wordPressPluginFacts` separately recorded on the same host — the bleed-through mechanism itself, not a hardcoded plausibility ceiling that would age out with every new WordPress release.
 - [x] Crawl depth is configurable (default unchanged) — 2026-09-07, first tranche
 - [x] **LT-99 (5c):** an opt-in JS-rendered crawl (`--headless-crawl`, `--recon-depth full` only) runs Wave 3's katana in real-browser headless mode under a larger timeout ceiling (`DefaultHeadlessCrawlTimeout` 180s / `HACKERFIVE_RECON_HEADLESS_TIMEOUT`), recovering `fetch()`/XHR endpoints the link crawl misses; hits tagged `katana-headless`. Supersedes LT-8's open tail — **done 2026-09-09** (branch `feat-lt99-headless-crawl`). CLI (`recon`/`plan`) + `recon.WithHeadlessCrawl`; `-headless -no-sandbox -xhr-extraction`, `-system-chrome-path` when a local/Playwright Chrome resolves (else katana self-provisions with a logged one-time-download warning). Re-measured against crAPI's `:8888` React shell: 4 endpoints link-crawled → 7 headless, incl. the real `/chatbot/genai/state` fetch call (the doc's 4-vs-40 was OpenAPI-spec-wide; a headless crawl of one shell recovers what that shell's JS calls). `looksLikeEscapedJSArtifact` widened to drop mis-parsed inline-`<script>` fragments the headless pass surfaces. webui/mcp surface deferred (neither wires `--crawl-depth` today either — see follow-up.md LT-99)
 - [ ] An opt-in (`--recon-depth full` only) bounded content-discovery pass probes a curated embedded wordlist via `httpx -path`, `--scope`-gated, and its hits reach `resolveEndpointFacts` as `wave3-content-discovery` endpoints

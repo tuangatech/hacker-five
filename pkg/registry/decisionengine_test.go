@@ -847,6 +847,78 @@ func TestMatchTemplateTags_KnownVersionDeprioritizesAncientCVE(t *testing.T) {
 	assert.Equal(t, "CVE-2023-4444", got[0].ID, "a modern version makes the 2012 CVE implausible — it should rank second")
 }
 
+// TestMatchTemplateTags_AffectedRangeDropsOutOfRangeVersion is LT-7/Phase 8
+// Step 4's headline case: a template declaring an affected-version range
+// (nginx-eol.yaml's real shape) is dropped, not just deprioritized, when
+// the fingerprinted version is outside it.
+func TestMatchTemplateTags_AffectedRangeDropsOutOfRangeVersion(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "nginx-eol", Name: "Nginx End-of-Life", Tags: []string{"nginx", "eol"}, Severity: "info", AffectedRange: [][]string{{"<1.28.0"}}},
+	}
+	assert.Empty(t, matchTemplateTags("Nginx:1.29.1", index), "1.29.1 does not satisfy <1.28.0 — the template must not be selected")
+}
+
+// TestMatchTemplateTags_AffectedRangeKeepsInRangeVersion is the same
+// template with a version that DOES satisfy the declared range.
+func TestMatchTemplateTags_AffectedRangeKeepsInRangeVersion(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "nginx-eol", Name: "Nginx End-of-Life", Tags: []string{"nginx", "eol"}, Severity: "info", AffectedRange: [][]string{{"<1.28.0"}}},
+	}
+	got := matchTemplateTags("Nginx:1.20.0", index)
+	require.Len(t, got, 1)
+	assert.Equal(t, "nginx-eol", got[0].ID)
+}
+
+// TestMatchTemplateTags_AffectedRangeNoFingerprintedVersionKeepsTemplate
+// covers the "no fingerprinted version" case the doc explicitly calls out:
+// a bare "Nginx" TechFact (no ":version" suffix) can't be compared against
+// any range at all, so the template stays in scope — an absent signal must
+// never suppress a candidate the way a contradicting one does.
+func TestMatchTemplateTags_AffectedRangeNoFingerprintedVersionKeepsTemplate(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "nginx-eol", Name: "Nginx End-of-Life", Tags: []string{"nginx", "eol"}, Severity: "info", AffectedRange: [][]string{{"<1.28.0"}}},
+	}
+	got := matchTemplateTags("Nginx", index)
+	require.Len(t, got, 1)
+	assert.Equal(t, "nginx-eol", got[0].ID)
+}
+
+// TestMatchTemplateTags_AffectedRangeOrClauseEitherSatisfiesKeeps covers a
+// two-clause (disjoint-range) AffectedRange, mirroring CVE-2022-31704.yaml's
+// real shape: a version satisfying the SECOND clause alone still keeps the
+// template (OR across clauses).
+func TestMatchTemplateTags_AffectedRangeOrClauseEitherSatisfiesKeeps(t *testing.T) {
+	index := []templatesync.Entry{
+		{ID: "CVE-2022-31704", Name: "vRealize RCE", Tags: []string{"vmware", "cve", "rce"}, Severity: "critical",
+			AffectedRange: [][]string{{">= 3.0", "< 4.8"}, {">= 8.0.0", "< 8.10.2"}}},
+	}
+	got := matchTemplateTags("VMware:8.5.0", index)
+	require.Len(t, got, 1, "8.5.0 satisfies the second clause even though it fails the first")
+}
+
+func TestVersionInAffectedRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+		ranges  [][]string
+		want    bool
+	}{
+		{"no declared range", "1.0.0", nil, true},
+		{"in single clause", "1.27.0", [][]string{{"<1.28.0"}}, true},
+		{"out of single clause", "1.29.0", [][]string{{"<1.28.0"}}, false},
+		{"satisfies second of two OR clauses", "8.5.0", [][]string{{">= 3.0", "< 4.8"}, {">= 8.0.0", "< 8.10.2"}}, true},
+		{"satisfies neither OR clause", "5.0.0", [][]string{{">= 3.0", "< 4.8"}, {">= 8.0.0", "< 8.10.2"}}, false},
+		{"AND clause partially satisfied fails", "9.0.0", [][]string{{">= 8.0.0", "< 8.10.2"}}, false},
+		{"unparseable version can't be ruled out", "not-a-version", [][]string{{"<1.28.0"}}, true},
+		{"empty version can't be ruled out", "", [][]string{{"<1.28.0"}}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, versionInAffectedRange(c.version, c.ranges))
+		})
+	}
+}
+
 // TestMatchTemplateTags_NoProductTagNoMatch is the new contract after the
 // ID/Name-token tier was dropped (it pulled in product-prefixed false
 // friends like "weaver-jquery-file-upload" on the live corpus): a template

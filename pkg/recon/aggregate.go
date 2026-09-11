@@ -89,11 +89,28 @@ func (a *aggregator) addEndpoint(e EndpointFact) {
 }
 
 // techKey identifies "the same observed technology" across independent
-// detection passes — see addTech.
-type techKey struct{ name, host string }
+// detection passes — see addTech. product is the version-stripped identity
+// (techProductKey(Name)), not the raw Name, so a later pass that resolves a
+// real version for a product an earlier pass already saw unversioned (e.g.
+// httpx-tech-detect's bare "Nginx" vs. a Server:-header parse's
+// "Nginx:1.25.3" for the same host, Phase 8 Step 4) merges into one
+// row instead of producing a second, redundant one.
+type techKey struct{ product, host string }
+
+// techProductKey returns name's version-stripped, case-folded product
+// identity ("Nginx:1.25.3" -> "nginx") — the same "everything before the
+// first ':'" convention pkg/registry.NormalizeTechName applies downstream,
+// reimplemented locally rather than imported: pkg/registry already imports
+// pkg/recon, so the reverse import would cycle.
+func techProductKey(name string) string {
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		name = name[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
 
 // addTech merges a new TechFact into an existing one sharing the same
-// (Name, Host) rather than always appending — found live, 2026-09-01:
+// (product, Host) rather than always appending — found live, 2026-09-01:
 // httpx's own tech-detect (runHTTPX) and pkg/fingerprint's header/body/
 // port/favicon signature matching (runWave2) both independently detect the
 // same technology on the same host (e.g. "Cloudflare" via both) and were
@@ -117,7 +134,7 @@ type techKey struct{ name, host string }
 // treating it as one is the same kind of spurious-duplicate this
 // function's own (Name, Host) merge already exists to close.
 func (a *aggregator) addTech(t TechFact) {
-	key := techKey{strings.ToLower(t.Name), NormalizeHost(t.Host)}
+	key := techKey{techProductKey(t.Name), NormalizeHost(t.Host)}
 	if idx, ok := a.techIndex[key]; ok {
 		existing := &a.techStack[idx]
 		if !contains(a.techSources[key], t.Source) {
@@ -126,6 +143,15 @@ func (a *aggregator) addTech(t TechFact) {
 		}
 		if confidenceRank(t.Confidence) > confidenceRank(existing.Confidence) {
 			existing.Confidence = t.Confidence
+		}
+		// Phase 8 Step 4: an existing unversioned fact upgrades to a
+		// later pass's versioned Name for the same product+host (first-
+		// VERSIONED-writer wins — a second, possibly-conflicting version
+		// never overwrites the one already recorded, same "don't flip-flop
+		// on later, weaker evidence" posture as uniformResponses/
+		// cdnEdgeHosts above).
+		if !strings.Contains(existing.Name, ":") && strings.Contains(t.Name, ":") {
+			existing.Name = t.Name
 		}
 		return
 	}

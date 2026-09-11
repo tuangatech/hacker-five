@@ -212,6 +212,38 @@ func TestAddTech_DifferentName_StaysDistinct(t *testing.T) {
 	assert.Len(t, result.TechStack, 2)
 }
 
+// TestAddTech_UnversionedThenVersioned_UpgradesInPlace is Phase 8 Step 4:
+// httpx-tech-detect's bare "Nginx" arrives first, a later
+// Server:-header parse resolves "Nginx:1.25.3" for the same host — the
+// existing row upgrades to the versioned Name instead of producing a second,
+// redundant row.
+func TestAddTech_UnversionedThenVersioned_UpgradesInPlace(t *testing.T) {
+	agg := &aggregator{}
+	agg.addTech(TechFact{Name: "Nginx", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+	agg.addTech(TechFact{Name: "Nginx:1.25.3", Host: "example.com", Source: "recon-server-header", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	if assert.Len(t, result.TechStack, 1, "the versioned fact must merge into the existing row, not add a second one") {
+		assert.Equal(t, "Nginx:1.25.3", result.TechStack[0].Name)
+		assert.Contains(t, result.TechStack[0].Source, "httpx-tech-detect")
+		assert.Contains(t, result.TechStack[0].Source, "recon-server-header")
+	}
+}
+
+// TestAddTech_SecondConflictingVersion_FirstVersionWins guards against
+// flip-flopping: once a version is recorded, a second, different version
+// for the same product+host never overwrites it.
+func TestAddTech_SecondConflictingVersion_FirstVersionWins(t *testing.T) {
+	agg := &aggregator{}
+	agg.addTech(TechFact{Name: "Nginx:1.25.3", Host: "example.com", Source: "recon-server-header", Confidence: ConfidenceMedium})
+	agg.addTech(TechFact{Name: "Nginx:1.24.0", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	if assert.Len(t, result.TechStack, 1) {
+		assert.Equal(t, "Nginx:1.25.3", result.TechStack[0].Name, "first-recorded version wins, never overwritten by a later one")
+	}
+}
+
 func TestAddTech_SameSourceTwice_SourceNotDuplicatedInString(t *testing.T) {
 	agg := &aggregator{}
 	agg.addTech(TechFact{Name: "Cloudflare", Host: "example.com", Source: "httpx-tech-detect", Confidence: ConfidenceMedium})

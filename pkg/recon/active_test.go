@@ -133,3 +133,36 @@ func TestRunHTTPX_SpuriousCDNTechWithoutHeader(t *testing.T) {
 	backed := run(`["Cloudflare"]`, `{"server":"cloudflare","cf-ray":"abc-LHR"}`)
 	assert.True(t, hasTech(backed, "Cloudflare"), "Cloudflare backed by a real edge header is kept")
 }
+
+// TestRunHTTPX_ServerHeaderVersion_MergesIntoTechFact is LT-7/Phase 8 Step
+// 4: httpx-tech-detect's bare "Nginx" and the Server:-header version parse
+// both fire for the same host — the result carries one merged, versioned
+// TechFact, not two.
+func TestRunHTTPX_ServerHeaderVersion_MergesIntoTechFact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+	host := hostOnly(srv.URL)
+
+	fake := func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
+		if name == "httpx" {
+			return []byte(`{"url":"` + srv.URL + `","host":"` + host + `","host_ip":"` + host + `","status_code":200,` +
+				`"tech":["Nginx"],"header":{"server":"nginx/1.25.3"}}`), nil
+		}
+		return nil, nil
+	}
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthActive)
+	require.NoError(t, err)
+
+	var nginxFacts []TechFact
+	for _, tf := range result.TechStack {
+		if strings.HasPrefix(strings.ToLower(tf.Name), "nginx") {
+			nginxFacts = append(nginxFacts, tf)
+		}
+	}
+	if assert.Len(t, nginxFacts, 1, "must merge into one row, not add a second") {
+		assert.Equal(t, "Nginx:1.25.3", nginxFacts[0].Name)
+		assert.Contains(t, nginxFacts[0].Source, "httpx-tech-detect")
+		assert.Contains(t, nginxFacts[0].Source, "recon-server-header")
+	}
+}

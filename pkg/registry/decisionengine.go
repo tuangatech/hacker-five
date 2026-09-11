@@ -11,6 +11,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/template/dsl"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
 
@@ -514,6 +515,9 @@ func matchTemplateTags(techName string, index []templatesync.Entry) []templatesy
 		if !ok {
 			continue
 		}
+		if !versionInAffectedRange(version, entry.AffectedRange) {
+			continue // LT-7 / Phase 8 Step 4: fingerprinted version is outside this template's declared affected range — drop, not just penalize
+		}
 		cands = append(cands, scored{entry, score, year})
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
@@ -913,6 +917,44 @@ func techVersionSuffix(name string) string {
 		return strings.TrimSpace(name[i+1:])
 	}
 	return ""
+}
+
+// versionInAffectedRange reports whether version satisfies at least one
+// OR'd AND-clause of ranges (templatesync.Entry.AffectedRange) — the same
+// semantics the template's own compare_versions() matcher would apply at
+// scan time, run here ahead of time so a template whose declared range the
+// fingerprinted version falls outside of never gets selected as a candidate
+// leaf at all (LT-7, Phase 8 Step 4; see nuclei.Template.
+// AffectedVersionRanges for how ranges is derived). No declared range (nil/
+// empty) or no fingerprinted version (version == "", which every constraint
+// then fails to parse against) both return true unconditionally — an
+// absent signal must never suppress a template, only a *contradicting* one
+// does. A constraint version can't parse against (a non-numeric fragment,
+// which real corpus sampling never showed but a future template author
+// could still write) is treated as "can't rule it out" the same way, for
+// the same reason: a missed CVE is a worse failure mode than one
+// unnecessary scan.
+func versionInAffectedRange(version string, ranges [][]string) bool {
+	if len(ranges) == 0 {
+		return true
+	}
+	for _, clause := range ranges {
+		satisfied := true
+		for _, constraint := range clause {
+			ok, err := dsl.SatisfiesVersionConstraint(version, constraint)
+			if err != nil {
+				return true
+			}
+			if !ok {
+				satisfied = false
+				break
+			}
+		}
+		if satisfied {
+			return true
+		}
+	}
+	return false
 }
 
 // cveYear extracts the year from a CVE-YYYY-NNNN identifier in the entry's

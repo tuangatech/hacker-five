@@ -97,3 +97,60 @@ func wordPressPluginFacts(endpoints []EndpointFact) []TechFact {
 	}
 	return facts
 }
+
+// sanitizeWordPressCoreVersion drops a "WordPress" core TechFact's version
+// suffix when it exactly matches a plugin/theme version pluginFacts (this
+// same wordPressPluginFacts pass) separately recorded for the same host —
+// LT-105 (docs/follow-up.md): a live-observed httpx-tech-detect failure
+// mode where its embedded fingerprint catalog occasionally attributes a
+// bundled asset's or plugin's version to the WordPress *core* product fact
+// instead (real example: "WordPress:7.1" — WordPress core has never shipped
+// a 7.x release; every real WordPress.org release to date is still on the
+// 6.x line). Left uncaught, that poisoned core version would have fed
+// straight into Phase 8 Step 4's affected-range gate and wrongly dropped
+// wordpress-eol.yaml-style templates (a genuinely old, genuinely EOL core
+// install misreported as implausibly new).
+//
+// Rather than a hardcoded plausibility ceiling on WordPress's version
+// number (fragile — it ages out every time WordPress ships a new release),
+// this checks for the bug's own described mechanism directly: does the
+// core fact's version exactly match a version this SAME pass independently
+// attributed to a plugin/theme slug on the same host? An unversioned
+// "WordPress" fact is strictly safer than a wrong one — matchTemplateTags'
+// affected-range gate (versionInAffectedRange) already treats "no
+// fingerprinted version" as "can't rule a template out", the identical
+// posture this function's own sibling (wordPressPluginFacts, above) already
+// takes for an individual plugin with no trustworthy version.
+func (a *aggregator) sanitizeWordPressCoreVersion(pluginFacts []TechFact) {
+	suspect := make(map[string]map[string]bool) // NormalizeHost(host) -> version -> true
+	for _, f := range pluginFacts {
+		i := strings.IndexByte(f.Name, ':')
+		if i < 0 {
+			continue
+		}
+		host := NormalizeHost(f.Host)
+		if suspect[host] == nil {
+			suspect[host] = map[string]bool{}
+		}
+		suspect[host][f.Name[i+1:]] = true
+	}
+	if len(suspect) == 0 {
+		return
+	}
+
+	for i := range a.techStack {
+		t := &a.techStack[i]
+		if techProductKey(t.Name) != "wordpress" {
+			continue
+		}
+		ci := strings.IndexByte(t.Name, ':')
+		if ci < 0 {
+			continue
+		}
+		version := t.Name[ci+1:]
+		if suspect[NormalizeHost(t.Host)][version] {
+			t.Name = t.Name[:ci]
+			a.addWarning("wave3: %s: WordPress core version %q matches a plugin/theme's own version — likely an httpx tech-detect misattribution, dropped rather than trusted (LT-105)", t.Host, version)
+		}
+	}
+}

@@ -345,6 +345,15 @@ func (r *Recon) runHTTPX(ctx context.Context, agg *aggregator, hosts []string) (
 				}
 				agg.addTech(TechFact{Name: tech, Host: host, Source: "httpx-tech-detect", Confidence: ConfidenceMedium})
 			}
+			// LT-7/Phase 8 Step 4: a real version for the handful of
+			// high-value server products httpx's own tech-detect never
+			// versions — addTech's merge upgrades the bare "Nginx"/"Apache"
+			// fact just added above in place rather than adding a second row.
+			if sv := headerValue(rec.Header, "server"); sv != "" {
+				if name, version, ok := serverProductVersion(sv); ok {
+					agg.addTech(TechFact{Name: name + ":" + version, Host: host, Source: "recon-server-header", Confidence: ConfidenceMedium})
+				}
+			}
 		}
 	}
 	// LT-112 (docs/follow-up.md): httpx exits 0 with no output both when
