@@ -24,7 +24,7 @@ import (
 // breaker (LT-4) that abandons a host's remaining Wave 3 probes: a host
 // that serves "/" and "/robots.txt" fine but hangs on ".well-known/*" is
 // not down, and dropping the endpoints it already yielded because two paths
-// tarpitted was the LT-86 regression (docs/follow-up.md, Phase 8 Step 6).
+// tarpitted was the LT-86 regression (docs/follow-up.md, Phase 8 Step 5).
 func isRequestTimeout(err error) bool {
 	if err == nil {
 		return false
@@ -187,7 +187,7 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 		r.probeSignupCandidates(ctx, agg, seed)
 	}
 
-	// LT-76 (docs/follow-up.md, Phase 8 Step 6): give the highest-interest
+	// LT-76 (docs/follow-up.md, Phase 8 Step 5): give the highest-interest
 	// paths that Wave 0 lifted from robots.txt / sitemap.xml but never
 	// probed a live status, so resolveEndpointFacts can reason over them.
 	r.probeUnprobedEndpoints(ctx, agg, seeds)

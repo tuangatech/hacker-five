@@ -583,7 +583,9 @@ func callFunc(name string, args []any) (any, error) {
 	// reference, not memory. substr/to_string/date_time/generate_jwt are
 	// deliberately still deferred (substr's end-vs-length semantics need
 	// verifying; the latter two need strftime parsing / JWT signing) — see
-	// Phase 8 Step 7.
+	// Phase 9 Step 2 (docs/18-implementation-plan-ph9.md) — moved out of
+	// Phase 8 entirely in the 2026-09-07 split, this comment previously
+	// still pointed at the old "Phase 8 Step 7" label.
 	case "to_upper", "toupper":
 		s, err := oneStringArg(name, args)
 		if err != nil {

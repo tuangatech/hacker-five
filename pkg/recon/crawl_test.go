@@ -55,7 +55,7 @@ func TestRunKatana_OutOfScopeFetchedEndpoint_DivertedToOutOfScope(t *testing.T) 
 	assert.True(t, found, "the in-scope seed-host endpoint must still be kept")
 }
 
-// TestRunKatana_CrawlDepth guards Phase 8 Step 6 / LT-8: the katana -depth
+// TestRunKatana_CrawlDepth guards Phase 8 Step 5 / LT-8: the katana -depth
 // argument tracks WithCrawlDepth, and an unset depth is byte-for-byte the
 // pre-knob default of 2.
 func TestRunKatana_CrawlDepth(t *testing.T) {
@@ -539,7 +539,7 @@ func TestRunKatana_EscapedJSArtifacts_Dropped(t *testing.T) {
 }
 
 // TestProbeCommonPaths_PathTarpit_DoesNotTripHostBreaker guards LT-86
-// (docs/follow-up.md, Phase 8 Step 6): a host that answers some paths but
+// (docs/follow-up.md, Phase 8 Step 5): a host that answers some paths but
 // tarpits others (never responds) must keep the endpoints it did serve —
 // the timing-out paths count as per-path skips, not toward the LT-4
 // host-down breaker — and it warns about the tarpit rather than about the

@@ -18,7 +18,7 @@ func TestPathInterestRank(t *testing.T) {
 	assert.Equal(t, len(interestingPathHints), pathInterestRank("/totally/plain"))
 }
 
-// TestProbeUnprobedEndpoints guards LT-76 (Phase 8 Step 6): the bounded,
+// TestProbeUnprobedEndpoints guards LT-76 (Phase 8 Step 5): the bounded,
 // name-ranked pass gives a live status to the most interesting robots/
 // sitemap paths that had none, skips static assets, honours the cap, and
 // leaves already-probed / crawl-sourced facts alone.
