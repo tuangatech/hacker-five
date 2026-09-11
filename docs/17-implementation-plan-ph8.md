@@ -222,23 +222,19 @@ Both pieces shipped as designed, plus a few implementation-time corrections:
   accepted by the lenient YAML decoder but wired to nothing (LT-143,
   docs/follow-up.md) — no consumer exists yet since `tcp:` has no
   `flow:`/chaining.
-- **`netservice` detector** covers 3 of `interestingPorts`' 7 entries:
-  anonymous-FTP (USER/PASS), empty-password MySQL, and unauthenticated Redis
-  (PING). The MySQL check is the one genuinely nontrivial piece: it hand-
-  rolls just enough of the wire protocol (packet framing, `HandshakeV10`
-  parse, a minimal `HandshakeResponse41`) to attempt a `root` login with a
-  **zero-length auth-response field** — MySQL's protocol represents "empty
-  password" as literally no scrambled bytes at all, so this needs no
-  scrambling/hashing and is not a credential-list attack, just the one
-  well-known "does this account have no password" case. Telnet/PostgreSQL/
-  Elasticsearch/MongoDB stay `StatusUnresolved`-only (LT-142,
-  docs/follow-up.md) — Elasticsearch's real exposure check is arguably HTTP
-  (unauthenticated `GET /` on 9200), not a `tcp:`/`netservice` shape, and
-  Mongo's `hello`/`isMaster` handshake is a bounded but unbuilt follow-on.
-  `registry.resolvePortFacts` promotes exactly those 3 covered ports from
-  the visibility-only leaf to a real `Detector: "netservice"` /
-  `Status: StatusPending` leaf whose `Target` is `"tcp://host:port"`
-  (`netserviceCheckedPorts`); the dedup key is per-port
+- **`netservice` detector** originally shipped covering 3 of
+  `interestingPorts`' 7 entries: anonymous-FTP (USER/PASS), empty-password
+  MySQL, and unauthenticated Redis (PING). The MySQL check is the one
+  genuinely nontrivial piece: it hand-rolls just enough of the wire
+  protocol (packet framing, `HandshakeV10` parse, a minimal
+  `HandshakeResponse41`) to attempt a `root` login with a **zero-length
+  auth-response field** — MySQL's protocol represents "empty password" as
+  literally no scrambled bytes at all, so this needs no scrambling/hashing
+  and is not a credential-list attack, just the one well-known "does this
+  account have no password" case. `registry.resolvePortFacts` promotes
+  exactly the covered ports from the visibility-only leaf to a real
+  `Detector: "netservice"` / `Status: StatusPending` leaf whose `Target` is
+  `"tcp://host:port"` (`netserviceCheckedPorts`); the dedup key is per-port
   (`pendingDedupKey(host, "netservice-<port>")`), since two covered ports
   open on the same host must each get their own leaf. `--detector
   netservice` is CLI-reachable directly (`hackerfive scan --detector
@@ -251,6 +247,33 @@ Both pieces shipped as designed, plus a few implementation-time corrections:
   recon port-scan already produced, which the launch form has no
   equivalent field for. Its real front door is the agent/Plan-Preview
   path, not a hand-typed target.
+- **LT-142 (2026-09-11): extended to 5 of 7 `interestingPorts` entries.**
+  Added trust-auth PostgreSQL (`checkPostgresTrustAuth`: a `StartupMessage`
+  for the `postgres`/`postgres` user/database, no SSL negotiation attempted
+  first; a reply of `AuthenticationOk` with zero password exchange at all
+  is the finding — a server demanding any real credential type is a clean
+  non-match) and unauthenticated MongoDB (`checkMongoUnauthListDatabases`,
+  OP_MSG wire protocol, 3.6+ servers only). **Deliberately not `hello`/
+  `isMaster`** despite that being LT-142's own original phrasing: those
+  always succeed with zero authentication by design (MongoDB's topology-
+  discovery convention every driver relies on pre-auth), so a successful
+  reply to either would false-positive on every correctly-secured server.
+  `listDatabases` is the real signal — it needs the `listDatabases`
+  privilege once authorization is enabled, so `ok:1` on it with no
+  credential ever sent is genuine unauthenticated access; `ok:0` (typically
+  `code: 13`, `Unauthorized`) is not. Needed a minimal hand-rolled BSON
+  codec (`pkg/detectors/netservice/mongo.go`) — encode-only for the two
+  element types the outgoing command uses (int32/string), decode covering
+  every scalar/compound type a real reply commonly carries so an unwanted
+  field can still be correctly skipped over, erroring closed (never a
+  finding) on anything else. Telnet (23) and Elasticsearch (9200) remain
+  `StatusUnresolved`-only — telnet names no specific check beyond "the port
+  is open", and Elasticsearch's real exposure check is arguably HTTP (an
+  unauthenticated `GET /` on 9200), not a `tcp:`/`netservice` shape; a
+  separate, unbuilt item. Tests: `pkg/detectors/netservice/{postgres,mongo}_test.go`
+  (vulnerable/not-vulnerable against local fakes, plus a BSON round-trip
+  and a multi-field-skip test); `pkg/registry/decisionengine_test.go` gained
+  the dispatch-leaf counterpart for both new ports.
 - **Real bug caught by the tests, fixed before shipping**: `Resolve`'s
   per-host loop ends with an LT-93 pass (docs/follow-up.md) that
   unconditionally upgrades every leaf's `Target` from the bare host to the
@@ -277,16 +300,16 @@ Both pieces shipped as designed, plus a few implementation-time corrections:
   literal-port-resolves and needs-`{{Port}}`-skips cases);
   `tests/unit/detector_netservice_test.go` (black-box `Run` dispatch only:
   an uncovered port, an invalid/portless target — no real listener needed);
-  `pkg/detectors/netservice/{ftp,mysql,redis}_test.go` (package-internal,
-  mirroring `pkg/scanner`'s own external-black-box-plus-internal-package
-  test split — FTP/Redis/MySQL vulnerable and not-vulnerable against local
-  fakes bound to an OS-assigned ephemeral port, a non-MySQL banner, an
-  AuthSwitchRequest reply, a raw MySQL packet-framing round-trip. Needed
-  because `Run` dispatches on the literal port named in the target
-  (21/3306/6379), and a test can't safely bind a real listener to those —
-  21 is privileged, 3306/6379 might already be owned by a real local
-  service). No test talks to a real FTP/MySQL/Redis server or any real
-  external host.
+  `pkg/detectors/netservice/{ftp,mysql,redis,postgres,mongo}_test.go`
+  (package-internal, mirroring `pkg/scanner`'s own external-black-box-plus-
+  internal-package test split — each protocol's vulnerable/not-vulnerable
+  cases against local fakes bound to an OS-assigned ephemeral port, plus a
+  wire-framing round-trip and (Mongo) a multi-field-type BSON-skip test.
+  Needed because `Run` dispatches on the literal port named in the target
+  (21/3306/5432/6379/27017), and a test can't safely bind a real listener
+  to those — 21 is privileged, the rest might already be owned by a real
+  local service). No test talks to a real FTP/MySQL/PostgreSQL/Redis/
+  MongoDB server or any real external host.
 
 ---
 
@@ -795,6 +818,7 @@ of Done as that doc's Steps 1-4).
 - [x] A bounded, name-ranked sample of unprobed `robots.txt`/`sitemap.xml` endpoints is probed for status and reaches `resolveEndpointFacts`, so `/oauth/*`, `*/bounce`, `/pay/*` can seed `authbypass`/`ssrf`/redirect leaves (LT-76 closed) — 2026-09-07, first tranche
 - [x] An endpoint-name → redirect-parameter-probe rule flags a `*/bounce` / OAuth / SSO / logout-shaped path into the `redirect`-tagged corpus check (LT-77 partial, first tranche); a first-party per-param off-origin-`Location` probe is [Phase 9](18-implementation-plan-ph9.md) Step 4
 - [x] Recon records `redirect_chain` / `final_url` and warns when an in-scope root redirects out of scope; a `TechFact`'s observed host is tracked and a cross-host (post-redirect / CDN-not-in-own-headers) fact does not seed the target's plan (LT-64 / LT-65 / LT-84b closed) — 2026-09-07, first tranche
+- [x] **LT-140 (2026-09-11):** `ReconResult.UniformResponse` widened from a single first-host-wins fact to `UniformResponses []UniformResponseFact` (schema v1.13, a deliberately breaking rename — `uniform_response` → `uniform_responses` — agreed since no real external MCP consumer depends on the old shape yet), so D6's corpus-skip (LT-59) protects every walled host in a multi-host recon run, not just the first one probed. Same per-host-fact-attribution lineage as LT-64/65/84 above: `aggregator.uniformResponses` keyed by `NormalizeHost` (first writer wins per host, mirrors `addTech`'s LT-14 dedup convention); `classifyAppSurface` (LT-68/LT-102) judges "blind" against every walled host, not one named host; two new `ReconResult` helpers — `UniformWallHosts()` (host→verdict map) and `UniformResponseForHost(host)` — replace each of the 4 frontends' (`cmd/hackerfive/scan.go`, `pkg/webui/handlers_launch.go`, `pkg/mcpserver/tools_plan.go`/`tools_scan.go`) hand-rolled single-entry map. `reconShowsAdminSurface` (LT-58) and `hostServesDynamicContent` (LT-67) in `pkg/registry/decisionengine.go` now resolve the wall verdict per endpoint/leaf host instead of once for the whole result — closes a latent cross-host bug the single-fact shape had baked in (a WAF wall on host A could blanket-suppress a real 401/403 admin signal or secret-grep leaf on unrelated host B in the same run).
 - [x] A numeric-valued query parameter that varies across crawled URLs becomes an `/?param={{id}}` ID candidate, not a blind `/{{id}}` (LT-83 closed) — 2026-09-07, first tranche
 - [x] A Wave-3 path timeout counts toward a per-path skip, not the host-down breaker; a host serving `/` but tarpitting some paths keeps its endpoints/tech in the result (LT-86 closed) — 2026-09-07, first tranche
 - [x] A reachable OpenAPI/Swagger doc (JSON or YAML, at any of the framework-convention paths) is walked into `api-spec` `EndpointFact`s that feed `resolveEndpointFacts` (LT-40) — JSON 2026-09-07 (second tranche, live-validated against crAPI); YAML bodies + widened spec-probe path set 2026-09-07 (Phase 7 Step 6a batch). Tail open: GraphQL SDL/introspection (a)

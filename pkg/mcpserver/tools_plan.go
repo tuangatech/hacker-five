@@ -263,11 +263,10 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 
 	baseCfg := buildBaseExecConfig(in, sc)
 	// D6 (docs/16-implementation-plan-ph7.md Step 4): carry recon's
-	// uniform-response-wall verdict into execution so RunPlan's per-leaf
-	// scans skip the template corpus for a walled host (LT-59).
-	if result.UniformResponse != nil {
-		baseCfg.UniformWallHosts = map[string]string{result.UniformResponse.Host: result.UniformResponse.Kind}
-	}
+	// uniform-response-wall verdicts into execution so RunPlan's per-leaf
+	// scans skip the template corpus for a walled host (LT-59). LT-140:
+	// every walled host, not just the first one probed.
+	baseCfg.UniformWallHosts = result.UniformWallHosts()
 	// LT-137 (docs/follow-up.md, found live 2026-09-10 running the G1 agent
 	// eval): unlike cmd/hackerfive/scan.go and pkg/webui, plan execution
 	// never narrowed the template corpus by tech — every executed leaf ran

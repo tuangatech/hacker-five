@@ -211,9 +211,10 @@ type Config struct {
 
 	// UniformWallHosts maps a host to a uniform-response verdict
 	// ("waf-block" | "catchall") a prior recon pass recorded on
-	// ReconResult.UniformResponse (Phase 7 Step 4 D6). A frontend
-	// (cmd/hackerfive/scan.go's --recon-file parse, pkg/webui, pkg/mcpserver)
-	// populates it from that recon fact. When a target's host resolves to a
+	// ReconResult.UniformResponses (Phase 7 Step 4 D6; one entry per walled
+	// host as of LT-140). A frontend (cmd/hackerfive/scan.go's --recon-file
+	// parse, pkg/webui, pkg/mcpserver) populates it via
+	// ReconResult.UniformWallHosts(). When a target's host resolves to a
 	// wall, the per-target template corpus is skipped (it would fetch the
 	// one block/catch-all page thousands of times for zero findings — LT-59)
 	// and one `misconfig-waf-blocked` / `misconfig-uniform-catchall` finding

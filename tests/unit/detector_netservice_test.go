@@ -24,11 +24,12 @@ import (
 // listener at all.
 
 func TestNetservice_Run_UncoveredPort_NoFindingNoError(t *testing.T) {
-	// Port 5432 (PostgreSQL) has no check yet (registry.netserviceCheckedPorts)
-	// — Run's port lookup misses before ever dialing, so this returns
-	// cleanly with nothing listening at all.
+	// Port 9200 (Elasticsearch) has no check yet (registry.netserviceCheckedPorts
+	// — its real exposure check is arguably HTTP-shaped, not tcp:/netservice,
+	// see that map's own doc comment) — Run's port lookup misses before
+	// ever dialing, so this returns cleanly with nothing listening at all.
 	d := netservice.New()
-	findings, err := d.Run(context.Background(), "tcp://127.0.0.1:5432")
+	findings, err := d.Run(context.Background(), "tcp://127.0.0.1:9200")
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }

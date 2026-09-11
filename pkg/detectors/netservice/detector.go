@@ -1,7 +1,8 @@
-// Package netservice implements Phase 8 Step 1's first-party checks for
-// unauthenticated exposure of common non-HTTP network services (FTP,
-// MySQL, Redis today — see docs/17-implementation-plan-ph8.md's Design
-// section). Each check is a single, bounded, read-only handshake that
+// Package netservice implements first-party checks for unauthenticated
+// exposure of common non-HTTP network services (FTP, MySQL, Redis from
+// Phase 8 Step 1's original design — see docs/17-implementation-plan-ph8.md's
+// Design section — plus PostgreSQL and MongoDB added for docs/follow-up.md's
+// LT-142). Each check is a single, bounded, read-only handshake that
 // stops at "did it let me in" — never enumerating data, never a real
 // password guess against a real account, never anything beyond the one
 // empty/anonymous-credential attempt every check below documents. Directly
@@ -64,9 +65,11 @@ func New(opts ...Option) *Detector {
 // controls whether a leaf gets dispatched here at all; this one decides
 // what runs once it is).
 var portChecks = map[int]func(d *Detector, ctx context.Context, addr, target string) ([]detectors.Finding, error){
-	21:   (*Detector).checkFTPAnonymous,
-	3306: (*Detector).checkMySQLEmptyPassword,
-	6379: (*Detector).checkRedisUnauth,
+	21:    (*Detector).checkFTPAnonymous,
+	3306:  (*Detector).checkMySQLEmptyPassword,
+	5432:  (*Detector).checkPostgresTrustAuth,
+	6379:  (*Detector).checkRedisUnauth,
+	27017: (*Detector).checkMongoUnauthListDatabases,
 }
 
 // Run checks target — a "tcp://host:port" leaf (registry.resolvePortFacts'
