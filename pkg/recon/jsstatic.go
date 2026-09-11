@@ -310,6 +310,16 @@ func (r *Recon) recordCloudBucketRef(agg *aggregator, ref cloudBucketRef) {
 // bucket-URL fingerprinting over Wave 3's already-fetched JS bodies — pure
 // functions over data recon already has in hand, no new request, no new
 // dependency.
+//
+// LT-144 (docs/follow-up.md): extractJSEndpoints's absolute-URL branch only
+// checks path *shape* (IsPlausibleURLPath/IsNonRouteAssetPath), never host —
+// a page can reference an absolute URL on a completely unrelated third-party
+// domain (a namespace URI, a CDN, a vendor's own site) and that host must
+// clear --scope before its fact is kept, exactly like recordCloudBucketRef
+// already does for bucket URLs a few lines above. Silently dropping an
+// out-of-scope endpoint here isn't enough on its own — addOutOfScope logs it
+// the same way every other out-of-scope path in this codebase does, so a
+// surprising extraction is loud, not silently absent.
 func (r *Recon) runJSStaticAnalysis(agg *aggregator, assets []jsAsset) {
 	endpointsAdded, secretsAdded := 0, 0
 	endpointsTruncated, secretsTruncated := false, false
@@ -319,6 +329,10 @@ func (r *Recon) runJSStaticAnalysis(agg *aggregator, assets []jsAsset) {
 			if endpointsAdded >= maxJSStaticEndpoints {
 				endpointsTruncated = true
 				break
+			}
+			if r.scope != nil && !r.scope.Allowed(epURL) {
+				agg.addOutOfScope(hostOnly(epURL))
+				continue
 			}
 			agg.addEndpoint(EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static", Confidence: ConfidenceLow})
 			endpointsAdded++

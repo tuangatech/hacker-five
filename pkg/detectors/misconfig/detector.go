@@ -165,14 +165,61 @@ type Detector struct {
 	baselineCatchAll        bool
 	baselineCatchAllChecked bool
 	baselineBody2           []byte
+
+	// logFn backs WithLogCallback — see its doc comment.
+	logFn func(level, msg string)
+}
+
+// Option configures a Detector at construction time.
+type Option func(*Detector)
+
+// WithLogCallback registers fn to receive informational/warning log lines
+// produced outside the normal Finding-returning path — currently only the
+// priority product-fingerprint checks' (checkWPUserEnum/checkDolibarrOutdated/
+// checkNextcloudStatus/checkPhpMyAdmin/checkWebmin) doRequest-failure notice
+// (LT-151, docs/follow-up.md). Mirrors idor.Detector's identical seam (see
+// pkg/scanner/engine.go's idorOptions) so both detectors route through the
+// same pkg/scanner.Engine.warnf.
+func WithLogCallback(fn func(level, msg string)) Option {
+	return func(d *Detector) {
+		d.logFn = fn
+	}
+}
+
+// log is a nil-safe wrapper around logFn.
+func (d *Detector) log(level, msg string) {
+	if d.logFn != nil {
+		d.logFn(level, msg)
+	}
+}
+
+// logPriorityCheckRequestErr is LT-151's fix (docs/follow-up.md): every
+// priority product-fingerprint check (checkWPUserEnum/checkDolibarrOutdated/
+// checkNextcloudStatus/checkPhpMyAdmin/checkWebmin) treated any doRequest
+// error as a silent "not this product" (return nil, nil) — indistinguishable
+// from a genuine transient network hiccup. Live-observed on nettix.com.pe:
+// cloud01 and cloud02 served byte-identical Nextcloud /status.php bodies, yet
+// only cloud02 got a finding, with zero trace of why in the log — a transient
+// error on cloud01's very first priority-check request would have looked
+// exactly like this and been undiagnosable without an independent live curl.
+// This logs "couldn't even ask" (a real request/connection failure) at warn,
+// distinct from "asked, and the response just isn't this product" (which
+// stays silent — a 404/403/wrong-body on a live target is the expected,
+// harmless common case and would be noise at this volume).
+func (d *Detector) logPriorityCheckRequestErr(check, target string, err error) {
+	d.log("warn", fmt.Sprintf("misconfig %s: request to %s failed, skipping this check for this target: %v", check, target, err))
 }
 
 // New constructs a Detector.
-func New(client *httpclient.Client) *Detector {
-	return &Detector{
+func New(client *httpclient.Client, opts ...Option) *Detector {
+	d := &Detector{
 		client:     client,
 		hostErrors: hosterrors.New(hosterrors.DefaultThreshold),
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // Run checks target against every built-in rule category and returns every
@@ -789,6 +836,7 @@ var wpUserSlugRe = regexp.MustCompile(`"slug"\s*:\s*"([^"]{1,80})"`)
 func (d *Detector) checkWPUserEnum(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, WPUserEnumPath, authToken, nil, nil)
 	if err != nil {
+		d.logPriorityCheckRequestErr("checkWPUserEnum", target, err)
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -871,6 +919,7 @@ var dolibarrAssetVersionRe = regexp.MustCompile(`[?&](?:amp;)?version=(\d+\.\d+\
 func (d *Detector) checkDolibarrOutdated(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "/", authToken, nil, nil)
 	if err != nil {
+		d.logPriorityCheckRequestErr("checkDolibarrOutdated", target, err)
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(DolibarrAuthorMeta)) {
@@ -1029,6 +1078,7 @@ var nextcloudProductnameRe = regexp.MustCompile(`"productname"\s*:\s*"([^"]{1,60
 func (d *Detector) checkNextcloudStatus(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, NextcloudStatusPath, authToken, nil, nil)
 	if err != nil {
+		d.logPriorityCheckRequestErr("checkNextcloudStatus", target, err)
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -1131,6 +1181,7 @@ func (d *Detector) checkPhpMyAdmin(ctx context.Context, target, host, authToken 
 	for _, path := range PhpMyAdminProbePaths {
 		req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, path, authToken, nil, nil)
 		if err != nil {
+			d.logPriorityCheckRequestErr("checkPhpMyAdmin", target+path, err)
 			continue
 		}
 		if notServedStatus(resp.StatusCode) {
@@ -1223,6 +1274,7 @@ var webminServerVersionRe = regexp.MustCompile(`(?i)MiniServ/(\d+\.\d+(?:\.\d+)?
 func (d *Detector) checkWebmin(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {
 	req, resp, body, err := d.doRequest(ctx, http.MethodGet, target, host, "/", authToken, nil, nil)
 	if err != nil {
+		d.logPriorityCheckRequestErr("checkWebmin", target, err)
 		return nil, nil
 	}
 	server := resp.Header.Get("Server")
