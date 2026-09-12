@@ -29,23 +29,25 @@ const reconRunTimeout = 10 * time.Minute
 
 func newReconCmd(root *rootFlags) *cobra.Command {
 	var (
-		target              string
-		depth               string
-		scopeFile           string
-		allowNoScope        bool
-		rateLimit           int
-		concurrency         int
-		crawlDepth          int
-		headlessCrawl       bool
-		paramMining         bool
-		paramMiningWordlist string
-		paramMiningReqCap   int
-		waveTimeout         time.Duration
-		verbose             bool
-		policyFile          string
-		allowPolicyOverride bool
-		headers             []string
-		openAPISpecs        []string
+		target                   string
+		depth                    string
+		scopeFile                string
+		allowNoScope             bool
+		rateLimit                int
+		concurrency              int
+		crawlDepth               int
+		headlessCrawl            bool
+		paramMining              bool
+		paramMiningWordlist      string
+		paramMiningReqCap        int
+		contentDiscovery         bool
+		contentDiscoveryWordlist string
+		waveTimeout              time.Duration
+		verbose                  bool
+		policyFile               string
+		allowPolicyOverride      bool
+		headers                  []string
+		openAPISpecs             []string
 	)
 
 	cmd := &cobra.Command{
@@ -96,8 +98,11 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 			if paramMining && d != recon.DepthFull {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), `recon: --param-mining has no effect below --recon-depth full (Wave 3 doesn't run) — ignoring`)
 			}
+			if contentDiscovery && d != recon.DepthFull {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), `recon: --content-discovery has no effect below --recon-depth full (Wave 3 doesn't run) — ignoring`)
+			}
 
-			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency), recon.WithCrawlDepth(crawlDepth), recon.WithHeadlessCrawl(headlessCrawl), recon.WithParamMining(paramMining), recon.WithParamMiningWordlist(paramMiningWordlist), recon.WithParamMiningRequestCap(paramMiningReqCap), recon.WithWaveTimeout(waveTimeout)}
+			opts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency), recon.WithCrawlDepth(crawlDepth), recon.WithHeadlessCrawl(headlessCrawl), recon.WithParamMining(paramMining), recon.WithParamMiningWordlist(paramMiningWordlist), recon.WithParamMiningRequestCap(paramMiningReqCap), recon.WithContentDiscovery(contentDiscovery), recon.WithContentDiscoveryWordlist(contentDiscoveryWordlist), recon.WithWaveTimeout(waveTimeout)}
 			if s != nil {
 				opts = append(opts, recon.WithScope(s))
 			}
@@ -146,6 +151,8 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&paramMining, "param-mining", false, "probe a curated hidden-parameter candidate list against the top endpoints (--recon-depth full only), emitting only params the app measurably honours; hard per-run request cap shared across every target (LT-100)")
 	cmd.Flags().StringVar(&paramMiningWordlist, "param-mining-wordlist", "", "path to a hidden-parameter candidate list (one name per line) to use instead of the small built-in one (LT-100)")
 	cmd.Flags().IntVar(&paramMiningReqCap, "param-mining-request-cap", 0, "override the per-run request ceiling (shared across every target) for --param-mining (default 160)")
+	cmd.Flags().BoolVar(&contentDiscovery, "content-discovery", false, "probe a curated wordlist of common unlinked paths (admin panels, backup files, dir indexes, config endpoints) against every seed via httpx's own -path flag (--recon-depth full only); embedded default is SecLists' common.txt, MIT-licensed, 4,751 entries")
+	cmd.Flags().StringVar(&contentDiscoveryWordlist, "content-discovery-wordlist", "", "path to a path/wordlist file to use instead of the embedded default for --content-discovery — no size cap, the operator's own choice and cost to bear")
 	cmd.Flags().DurationVar(&waveTimeout, "wave-timeout", recon.DefaultWaveTimeout, "wall-clock cap on each external recon binary invocation (subfinder/tlsx/dnsx/naabu/httpx/katana); raise it when enumerating a broad apex where subfinder needs more than the default to finish (LT-111). Also settable via HACKERFIVE_RECON_WAVE_TIMEOUT")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave progress to stderr as recon runs (LT-11, docs/follow-up.md) — off by default so scripted invocations see no output change")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "path to a program-policy declaration (see policy.yaml.example) for the D2 pre-flight check; default: the --scope file's sibling policy.yaml, else .engagements/policy.yaml if present (doc15 Step 3)")

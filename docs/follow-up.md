@@ -30,7 +30,7 @@ Resolved, kept for traceability:
 
 ## Detection Coverage — Protocol/Capability Expansion
 
-Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase 8](17-implementation-plan-ph8.md): TCP banner-grab Step 1 ✅ done 2026-09-11, TLS passive checks Step 2 ✅ done 2026-09-12, JS static analysis Step 3 ✅, semver gating Step 4 ✅ done 2026-09-11, richer crawl Step 5) and depth/active ([Phase 9](18-implementation-plan-ph9.md): OOB blind-RCE Step 1, template-format gaps Step 2, AI-agent surface Step 3, WAF-aware + injection detectors Step 4). Phases 6/7 explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style fuzzing stays a separate opt-in-only item (Phase 8 Step 5's out-of-scope note, reaffirmed 2026-09-08 — see Parked).
+Scheduled 2026-09-05 as Phase 8, split 2026-09-07 into breadth/precision ([Phase 8](17-implementation-plan-ph8.md): TCP banner-grab Step 1 ✅ done 2026-09-11, TLS passive checks Step 2 ✅ done 2026-09-12, JS static analysis Step 3 ✅, semver gating Step 4 ✅ done 2026-09-11, richer crawl Step 5 🟡 done except LT-63) and depth/active ([Phase 9](18-implementation-plan-ph9.md): OOB blind-RCE Step 1, template-format gaps Step 2, AI-agent surface Step 3, WAF-aware + injection detectors Step 4). Phases 6/7 explicitly scope detector/vuln-class expansion out. A large-wordlist sweep or ffuf-style fuzzing stays a separate opt-in-only item (Phase 8 Step 5's out-of-scope note, reaffirmed 2026-09-08 — see Parked).
 
 ## Template Engine & Detection Backlog
 

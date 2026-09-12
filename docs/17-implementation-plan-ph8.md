@@ -607,7 +607,7 @@ gate clean.
 
 ---
 
-## Step 5: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07; 5c: LT-99 + LT-100 done 2026-09-09; only bounded content-discovery + LT-63 left — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86, LT-99, LT-100
+## Step 5: Recon-Depth, Content Discovery & JS-Rendered Crawl (Week 63) — 🟡 first + second tranche landed 2026-09-07; 5c: LT-99 + LT-100 done 2026-09-09; content-discovery done 2026-09-12; only LT-63 left — closes LT-8, LT-40, LT-50, LT-61, LT-64, LT-65, LT-76, LT-83, LT-84, LT-86, LT-99, LT-100
 
 **🟡 First tranche landed 2026-09-07** (build / `go vet` / `go test -race` / `golangci-lint` all clean):
 
@@ -630,8 +630,32 @@ gate clean.
 - **LT-91 (Step C) ✅ done 2026-09-08** (surfaced by the Step B crAPI live round). `registry.resolveEndpointFacts` fans out **one `idor` leaf per `SuggestIDOREndpointCandidates` candidate** (`PlanNode.EndpointTemplate`, new additive field; capped `maxEndpointDrivenIdorLeaves` 12; bare tech-capability idor leaf dropped when any fanned leaf exists), so a multi-`{{id}}` spec no longer collapses to one "ambiguous" field miss that drops idor without an LLM key. `planexec.runLeaf` copies the per-leaf template into a blank config pre-dispatch (no LLM, no SeedFn); MCP/CLI field-suggestion passes suppress the now-moot idor escalation. Detail in [follow-up.md](follow-up.md) § "Step B — crAPI live round 1".
 - **LT-93 (Step E) ✅ done 2026-09-08** (demo-blocking; surfaced by the Step E full-pipeline run). Decision-engine leaves carried a **bare hostname** as `Target`; the executor hands that to `scanner.Engine` as the request base, so `idor`/`authbypass`/`ssrf` built `"127.0.0.1/path"` (no scheme/port) and every request failed — the plan→execute path had never actually worked against a real host. `Resolve` now rewrites each dispatchable leaf's `Target` to the observed `scheme://host[:port]` (`reconHostBaseURL`: probed endpoint URL → `result.Target`/`APISpec.URL` → port heuristic → `https://` fallback); structural node IDs stay bare. Detail in [follow-up.md](follow-up.md) § "Step E — crAPI live round 2".
 - **LT-94 (Step E) ✅ done 2026-09-08.** `planexec.RunPlan` relied on the caller to pre-fill `baseCfg.ProtectedPaths`/`SSRFParams` from recon — the MCP `plan` tool does, the webui `executePlan` (Plan Preview → Approve) path does **not**, so its endpoint-driven `authbypass`/`ssrf` leaves were skipped. Symmetric with LT-91: `resolveEndpointFacts` stashes the derived paths/params on the leaf (`PlanNode.ProtectedPaths`/`SSRFParams`, additive), `planexec.applyLeafReconFields` fills a blank config pre-dispatch, and `dropBareCapabilityLeavesSupersededByEndpointDriven` removes the bare tech-capability leaf. Detail in [follow-up.md](follow-up.md) § "Step E".
-- Bounded content-discovery + embedded wordlist (`--content-discovery` — needs a vetted ~4-5k list with documented provenance/licence).
-- **LT-63** CT-log sibling-API discovery.
+- **Bounded content-discovery + embedded wordlist. ✅ done 2026-09-12.**
+  `--content-discovery` on `recon`/`plan` (`--recon-depth full` only),
+  `--content-discovery-wordlist` override. `pkg/recon/contentdiscovery.go`
+  runs httpx's own `-path <file>` against every Wave 3 seed — no second
+  traffic-generating tool, request volume rides the same `--rate-limit`
+  every other httpx/katana call already honors. Wordlist decision: SecLists'
+  `Discovery/Web-Content/common.txt` (MIT-licensed, verified against the
+  repo's own `LICENSE` file; 4,751 entries, matching this step's own
+  "~4-5k entries" spec exactly), embedded verbatim/unmodified via
+  `go:embed` (`pkg/recon/wordlists/common.txt` +
+  `LICENSE-seclists.txt` for the MIT attribution notice) — kept free of any
+  injected header comment, since httpx's `-path` reader has no documented
+  `#`-comment-strip convention and a header line would fire as a literal,
+  bogus probe. `-mc 200,201,204,301,302,307,308,401,403` discards the
+  overwhelming 404 volume before it ever reaches this process. Hits land as
+  `EndpointFact{Source: "wave3-content-discovery"}`; a host
+  `probeCommonPaths` already classified as a uniform wall (D6) this run is
+  skipped entirely — a wordlist "hit" there is the wall, not a finding.
+  webui/mcp toggle deferred, same posture as LT-99/LT-100 above. No size
+  cap on an operator-supplied `--content-discovery-wordlist` override
+  (unlike LT-100's capped one) — the operator's own stated choice/cost,
+  bounded only by httpx's own `-rl`/`-threads` and `--wave-timeout`.
+- **LT-63 (open)** CT-log sibling-API discovery — a separate, still-unbuilt
+  Step 5 item (not the content-discovery wordlist sweep above, despite an
+  earlier revision of this doc's own "Execution order" summary bundling
+  both onto one line).
 - **LT-99 — opt-in headless / JS-rendered katana. ✅ done 2026-09-09** (branch
   `feat-lt99-headless-crawl`). `--headless-crawl` on `recon`/`plan` (effective at
   `--recon-depth full` only) → `runKatana` runs `-headless -no-sandbox
