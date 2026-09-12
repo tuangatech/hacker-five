@@ -98,7 +98,7 @@ config field had to be hand-typed that recon could plausibly derive; a scope-saf
 surfaces (fix same-session, never backlog); a performance/reliability/cost issue changed
 what the run could cover; or a [doc22](22-authorized-targets.md) judgment turned out wrong.
 
-To log it: get the next `LT-` number (`grep -oE 'LT-[0-9]+' docs/follow-up.md docs/follow-up-archive.md | sort -t- -k2 -n | tail -1`), add a dated `## Live Testing — <target> (<date>)` section to [follow-up.md](follow-up.md) with the command run, what was hand-verified, and the fix/test if applied — then route it to a phase doc if it fits planned work, or leave it open with a Value/Effort note. Save raw artifacts under `.engagements/<target>/` and update its `results.md`.
+To log it: get the next `LT-` number (`grep -ohE 'LT-[0-9]+' docs/follow-up.md docs/follow-up-archive.md | sort -t- -k2 -n | tail -1` — the `-h` matters: without it, grep's two-file `filename:` prefix adds its own hyphens and `sort -t-` picks the wrong field, undercounting), add a dated `## Live Testing — <target> (<date>)` section to [follow-up.md](follow-up.md) with the command run, what was hand-verified, and the fix/test if applied — then route it to a phase doc if it fits planned work, or leave it open with a Value/Effort note. Save raw artifacts under `.engagements/<target>/` and update its `results.md`.
 
 ## 5. What a human researcher would likely flag
 
