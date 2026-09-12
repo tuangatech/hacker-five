@@ -18,6 +18,7 @@ var recognizedDetectors = map[string]bool{
 	"ssrf":          true,
 	"businesslogic": true,
 	"netservice":    true,
+	"sqli":          true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -123,6 +124,18 @@ type Config struct {
 	// SSRFParams alone remains a valid, required-field-satisfying
 	// configuration.
 	SSRFBodyParams []string
+
+	// SQLiPath/SQLiParams are the sqli detector's required fields
+	// (docs/18-implementation-plan-ph9.md Step 4, LT-87) — required for
+	// --detector sqli. SQLiPath is an observed path+query (e.g.
+	// "/product?id=5"), joined with each target exactly like idor's
+	// EndpointTemplate; SQLiParams names which of that path's query
+	// parameters to test (append-payload, never replace — see
+	// pkg/detectors/sqli's doc comment). Normally recon-derived
+	// (recon.SuggestSQLiTargets) rather than hand-supplied, but both are
+	// real CLI flags (--sqli-path/--sqli-param) for a manual run.
+	SQLiPath   string
+	SQLiParams []string
 
 	// OOBServers are the base URL(s) of Interactsh-protocol server(s) (from
 	// repeatable --oob-server) the ssrf detector's blind callback check
@@ -323,6 +336,7 @@ type ValidateOptions struct {
 	SkipEndpointRequired       bool // idor's EndpointTemplate may be blank for now
 	SkipProtectedPathsRequired bool // authbypass's ProtectedPaths may be blank for now
 	SkipSSRFParamsRequired     bool // ssrf's SSRFParams may be blank for now
+	SkipSQLiFieldsRequired     bool // sqli's SQLiPath/SQLiParams may be blank for now
 	SkipAuthTokenRequired      bool // idor/authbypass may run fully unauthenticated
 
 	// SkipDetectorRequired allows Detector == "" to pass validation — a
@@ -375,6 +389,9 @@ func (c Config) validate(opts ValidateOptions) error {
 	}
 	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 && len(c.SSRFBodyParams) == 0 && !opts.SkipSSRFParamsRequired {
 		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param (query) or a recon-derived body param (LT-96)")
+	}
+	if c.Detector == "sqli" && (c.SQLiPath == "" || len(c.SQLiParams) == 0) && !opts.SkipSQLiFieldsRequired {
+		return fmt.Errorf("validating config: sqli detector requires --sqli-path and at least one --sqli-param")
 	}
 	if c.Detector == "businesslogic" && c.AuthToken == "" {
 		return fmt.Errorf("validating config: businesslogic detector requires --auth-token (or its env var equivalent)")

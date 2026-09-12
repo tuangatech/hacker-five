@@ -18,6 +18,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
 	"github.com/tuangatech/hacker-five/pkg/detectors/netservice"
+	"github.com/tuangatech/hacker-five/pkg/detectors/sqli"
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
@@ -1102,6 +1103,10 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "ssrf":
 		detector := ssrf.New(e.client, e.ssrfOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.SSRFBodyParams, e.cfg.OOBServers)
+	case "sqli":
+		sqliURL := strings.TrimRight(target, "/") + e.cfg.SQLiPath
+		detector := sqli.New(e.client, sqli.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat), sqli.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }))
+		return detector.Run(ctx, []sqli.Target{{URL: sqliURL, Params: e.cfg.SQLiParams}}, e.cfg.AuthToken)
 	case "businesslogic":
 		detector := businesslogic.New(e.client, e.businesslogicOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.AllowWrites)

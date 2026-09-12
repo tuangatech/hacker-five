@@ -182,6 +182,120 @@ func TestSuggestIDORSeedIDs_NilResult(t *testing.T) {
 	}
 }
 
+// TestSuggestSQLiTargets covers doc18 Step 4's two signals: an ID-named
+// query key with an ID-shaped value (single observation), and LT-83's
+// unnamed-numeric-key signal (>= 2 distinct observed values on the same
+// path).
+func TestSuggestSQLiTargets(t *testing.T) {
+	cases := []struct {
+		name       string
+		urls       []string
+		wantPath   string
+		wantParams []string
+	}{
+		{
+			name:       "ID-named key, single observation is enough",
+			urls:       []string{"https://example.com/product?product_id=482&ref=email"},
+			wantPath:   "/product?product_id=482&ref=email",
+			wantParams: []string{"product_id"},
+		},
+		{
+			name: "unnamed numeric key needs >= 2 distinct values",
+			urls: []string{
+				"https://example.com/article?article=3",
+				"https://example.com/article?article=7",
+			},
+			wantPath:   "/article?article=3",
+			wantParams: []string{"article"},
+		},
+		{
+			name:       "unnamed numeric key, single observation is NOT enough",
+			urls:       []string{"https://example.com/article?article=3"},
+			wantPath:   "",
+			wantParams: nil,
+		},
+		{
+			name:       "pagination-shaped key excluded even with an ID-shaped name check bypassed",
+			urls:       []string{"https://example.com/list?page=1", "https://example.com/list?page=2"},
+			wantPath:   "",
+			wantParams: nil,
+		},
+		{
+			name:       "static asset path excluded",
+			urls:       []string{"https://example.com/app.js?id=1"},
+			wantPath:   "",
+			wantParams: nil,
+		},
+		{
+			name:       "ID-named key, non-ID-shaped value excluded",
+			urls:       []string{"https://example.com/search?user_id=not-an-id"},
+			wantPath:   "",
+			wantParams: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &ReconResult{}
+			for _, u := range tc.urls {
+				result.Endpoints = append(result.Endpoints, EndpointFact{URL: u})
+			}
+			got := SuggestSQLiTargets(result)
+			if tc.wantPath == "" {
+				if len(got) != 0 {
+					t.Fatalf("got %+v, want no targets", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %+v, want exactly 1 target", got)
+			}
+			if got[0].Path != tc.wantPath {
+				t.Fatalf("got Path %q, want %q", got[0].Path, tc.wantPath)
+			}
+			if len(got[0].Params) != len(tc.wantParams) {
+				t.Fatalf("got params %v, want %v", got[0].Params, tc.wantParams)
+			}
+			for i := range got[0].Params {
+				if got[0].Params[i] != tc.wantParams[i] {
+					t.Fatalf("got params %v, want %v", got[0].Params, tc.wantParams)
+				}
+			}
+		})
+	}
+}
+
+// TestSuggestSQLiTargets_GroupsMultipleParamsOnSamePath confirms two
+// distinct candidate params on the same path fold into one Target rather
+// than two.
+func TestSuggestSQLiTargets_GroupsMultipleParamsOnSamePath(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/order?order_id=100&user_id=5"},
+	}}
+	got := SuggestSQLiTargets(result)
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want exactly 1 target", got)
+	}
+	if got[0].Path != "/order?order_id=100&user_id=5" {
+		t.Fatalf("got Path %q, want /order?order_id=100&user_id=5", got[0].Path)
+	}
+	want := []string{"order_id", "user_id"}
+	if len(got[0].Params) != len(want) {
+		t.Fatalf("got params %v, want %v", got[0].Params, want)
+	}
+	for i := range want {
+		if got[0].Params[i] != want[i] {
+			t.Fatalf("got params %v, want %v", got[0].Params, want)
+		}
+	}
+}
+
+func TestSuggestSQLiTargets_NilResult(t *testing.T) {
+	if got := SuggestSQLiTargets(nil); got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+}
+
 func TestSuggestSSRFParamsFromRecon(t *testing.T) {
 	cases := []struct {
 		name string

@@ -637,6 +637,116 @@ func SuggestSSRFParamsFromRecon(result *ReconResult) []string {
 	return params
 }
 
+// SQLiTarget pairs one concrete, already-observed path+query (scheme+host
+// stripped — same contract as scanner.Config.EndpointTemplate/
+// SuggestIDOREndpointCandidates, joined onto a target later by
+// pkg/scanner/engine.go's runDetector) with the query-parameter names on it
+// recon judges worth testing for SQL injection
+// (docs/18-implementation-plan-ph9.md Step 4) — the same ID-/value-shaped
+// param surface idorCandidatesAndSeeds already mines for IDOR, since both
+// vulnerability classes share it: a parameter that carries a database ID is
+// exactly where a SQL query's WHERE clause is built from untrusted input.
+type SQLiTarget struct {
+	Path   string
+	Params []string
+}
+
+// SuggestSQLiTargets walks result's EndpointFacts for query parameters
+// worth SQLi-testing, grouped by path so one Target carries every candidate
+// param for that route. Two signals, same discipline idorCandidatesAndSeeds
+// already applies:
+//
+//   - an ID-named key ("id", "report_id") holding an ID-shaped value — a
+//     single observation is enough, since the key's own name already
+//     signals intent (idShapedQueryCandidate's rule);
+//   - LT-83's unnamed-numeric-key signal (numericQueryIDCandidates): a
+//     value that varies across >= 2 distinct observations on the same path
+//     even when the key name gives no hint ("article", "topic").
+//
+// Each returned Target.Path is one representative path+query observed for
+// that route — good enough to mutate one param at a time from (sqli.Detector
+// never needs more than one base request per path).
+func SuggestSQLiTargets(result *ReconResult) []SQLiTarget {
+	if result == nil {
+		return nil
+	}
+
+	type target struct {
+		pathQuery string
+		params    map[string]bool
+	}
+	targets := map[string]*target{}
+	var order []string
+	get := func(p, repPathQuery string) *target {
+		t, ok := targets[p]
+		if !ok {
+			t = &target{pathQuery: repPathQuery, params: map[string]bool{}}
+			targets[p] = t
+			order = append(order, p)
+		}
+		return t
+	}
+
+	for _, ep := range result.Endpoints {
+		u, err := url.Parse(ep.URL)
+		if err != nil || u.RawQuery == "" {
+			continue
+		}
+		p := u.Path
+		if IsStaticAssetPath(p) || !IsPlausibleURLPath(p) {
+			continue
+		}
+		for _, pair := range strings.Split(u.RawQuery, "&") {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) != 2 || kv[0] == "" {
+				continue
+			}
+			val, err := url.QueryUnescape(kv[1])
+			if err != nil || !looksLikeIDKey(kv[0]) || !isIDShaped(val) {
+				continue
+			}
+			get(p, p+"?"+u.RawQuery).params[kv[0]] = true
+		}
+	}
+	for _, tmpl := range numericQueryIDCandidates(result.Endpoints) {
+		parts := strings.SplitN(tmpl, "?", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		p, key := parts[0], strings.TrimSuffix(parts[1], "={{id}}")
+		repPathQuery := firstQueryPathForPath(result.Endpoints, p)
+		if repPathQuery == "" {
+			continue
+		}
+		get(p, repPathQuery).params[key] = true
+	}
+
+	var out []SQLiTarget
+	for _, p := range order {
+		t := targets[p]
+		params := make([]string, 0, len(t.params))
+		for k := range t.params {
+			params = append(params, k)
+		}
+		sort.Strings(params)
+		out = append(out, SQLiTarget{Path: t.pathQuery, Params: params})
+	}
+	return out
+}
+
+// firstQueryPathForPath returns the first observed "path?query" (scheme+
+// host stripped) whose path is p and which carries a query string, "" if
+// none.
+func firstQueryPathForPath(endpoints []EndpointFact, p string) string {
+	for _, ep := range endpoints {
+		u, err := url.Parse(ep.URL)
+		if err == nil && u.Path == p && u.RawQuery != "" {
+			return p + "?" + u.RawQuery
+		}
+	}
+	return ""
+}
+
 // SuggestSSRFBodyParamsFromRecon matches EndpointFact.BodyParamKeys entries
 // (populated only from an api-spec fact's requestBody schema, see
 // walkOpenAPISpec) against ssrfParamKeywords — LT-96, docs/follow-up.md's

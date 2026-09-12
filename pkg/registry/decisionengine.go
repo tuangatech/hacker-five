@@ -33,6 +33,11 @@ const maxTemplateLeavesPerTech = 8
 // stable order, so the truncation is deterministic.
 const maxEndpointDrivenIdorLeaves = 12
 
+// maxEndpointDrivenSQLiLeaves is maxEndpointDrivenIdorLeaves' sqli
+// counterpart (doc18 Step 4, LT-87) — bounds how many per-candidate sqli
+// leaves resolveEndpointFacts fans out from SuggestSQLiTargets.
+const maxEndpointDrivenSQLiLeaves = 12
+
 // minTemplateLeafScore is the relevance floor a scored template entry must
 // clear before it becomes its own leaf (LT-48, docs/follow-up.md).
 // scoreTemplateForTech gives a primary product-tag hit a base of 100 and a
@@ -585,6 +590,11 @@ var detectorTemplateTagFloor = map[string][]string{
 	// 1 lifted "tcp" out of loader.go's disallowedBlocks); takes effect
 	// once the corpus is next synced/re-indexed.
 	"netservice": {"network"},
+	// "sqli"/"sql-injection" is the corpus's own conventional tag family for
+	// SQL-injection templates — doc18 Step 4's native sqli detector is
+	// additive to that corpus, not a replacement for it, same floor
+	// convention as every other detector above.
+	"sqli": {"sqli", "sql-injection"},
 }
 
 // DetectorTemplateTags returns the tech-agnostic category-tag floor for a
@@ -1083,12 +1093,15 @@ type LeafContext struct {
 }
 
 // builtinDetectorClasses is the set of leaf Detector values that are one of
-// planexec's five recognized built-in detectors rather than a raw template
-// ID — mirrors planexec.recognizedDetectors and pkg/scanner's own set
-// (small, stable list; each copy is documented). LeafClass uses it to label
-// a leaf's vuln-class node.
+// pkg/scanner's recognized built-in detectors rather than a raw template ID
+// — mirrors scanner.recognizedDetectors (small, stable list; each copy is
+// documented). LeafClass uses it to label a leaf's vuln-class node. Was
+// missing "netservice" until doc18 Step 4 added "sqli" and this was fixed
+// alongside it — both omissions were cosmetic (LeafClass fell through to
+// "templates" instead of the detector's own name), never a dispatch bug.
 var builtinDetectorClasses = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
+	"netservice": true, "sqli": true,
 }
 
 // LeafClass returns the vuln-class label a leaf belongs under in the
@@ -1471,6 +1484,22 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, coupon *r
 		// bare RunPlan caller) otherwise skipped this leaf for a field recon
 		// had already derived. The MCP path pre-fills baseCfg and is unaffected.
 		leaf.ProtectedPaths = protected
+		leaves = append(leaves, leaf)
+	}
+	// doc18 Step 4 (LT-87): fan out one sqli leaf per recon-derived
+	// candidate path, same "all candidates are usable, not just one
+	// ambiguous pick" treatment the idor block above already gets (LT-91) —
+	// a spec/crawl that surfaces several ID-/value-shaped query params
+	// across different routes should test every one.
+	sqliTargets := recon.SuggestSQLiTargets(hostResult)
+	if len(sqliTargets) > maxEndpointDrivenSQLiLeaves {
+		sqliTargets = sqliTargets[:maxEndpointDrivenSQLiLeaves]
+	}
+	for _, sqliTarget := range sqliTargets {
+		leaf := newEndpointLeaf(host, "sqli", endpointConf,
+			fmt.Sprintf("recon derived the SQLi-candidate parameter(s) %s on %s", strings.Join(sqliTarget.Params, ", "), sqliTarget.Path), leafIdx)
+		leaf.SQLiPath = sqliTarget.Path
+		leaf.SQLiParams = sqliTarget.Params
 		leaves = append(leaves, leaf)
 	}
 	params := recon.SuggestSSRFParamsFromRecon(hostResult)
