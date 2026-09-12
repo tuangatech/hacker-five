@@ -472,15 +472,15 @@ Version tags are cut on batch-readiness, not step number.
 - [ ] `tcp:` templates load and run (bounded connect/probe/banner-match); `code:`-carrying `tcp:` still rejected
 - [ ] `netservice` detector: anonymous-FTP / unauth-DB / open-Elasticsearch, read-only, `--scope`-gated; `resolvePortFacts` dispatches it (closes LT-23's structural gap)
 
-#### Week 59: TLS/SSL passive checks — ⬜ not started
-- [ ] `tls` detector: expired/weak/mismatched certs, sub-1.2 protocols, weak ciphers, via stdlib `crypto/tls`, no new dependency
+#### Week 59: TLS/SSL passive checks — ✅ done 2026-09-12
+- [x] `tls` detector: expired/weak/mismatched certs, sub-1.2 protocols, weak ciphers, via stdlib `crypto/tls`, no new dependency — see [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) Step 2
 
 #### Weeks 60-61: JS static analysis — ✅ done 2026-09-09
 - [x] Served-JS endpoint extraction folded into `ReconResult.Endpoints` (`Source: "js-static"`), widening the idor/ssrf candidate surface
 - [x] High-signal hardcoded-secret detection as `misconfig` findings, decoy-set false-positive rate measured
 
 #### Week 63: Version gating + richer crawl — 🟡 Step 6 partly landed 2026-09-07
-- [ ] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b)
+- [x] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b) — done 2026-09-11, see [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) Step 4
 - [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8) — `--crawl-depth` done; opt-in headless crawl done 2026-09-09 (`--headless-crawl`, LT-99); content-discovery still open
 - [x] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); redirect-flow rule for `*/bounce`/OAuth/SSO/logout paths (LT-77 partial); redirect-chain fidelity + per-host tech-fact attribution (LT-64/LT-65/LT-84b); numeric-query-param ID candidates (LT-83); per-path-timeout vs host-down breaker (LT-86); OpenAPI-JSON spec walker (LT-40); known-CDN-ASN naabu skip (LT-61) — 2026-09-07
 - [x] Opt-in first-party hidden-parameter mining (`--param-mining`, LT-100) — done 2026-09-09

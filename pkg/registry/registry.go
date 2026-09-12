@@ -107,6 +107,16 @@ var Capabilities = []Capability{
 		Risk:           "Read-only — the empty-password/anonymous-credential attempt this makes never scrambles or guesses a real secret; a login that succeeds means the account already had none.",
 		InputsRequired: []string{"a \"tcp://host:port\" target for a covered port"},
 	},
+	{
+		Name:           "tls",
+		Kind:           KindDetector,
+		Description:    "Passive TLS/SSL handshake checks via stdlib crypto/tls: expired/not-yet-valid/near-expiry certificate, untrusted chain, hostname mismatch, a below-TLS-1.2 default or accepted-under-downgrade protocol, and a weak cipher suite accepted when nothing better is offered (Phase 8 Step 2, docs/17-implementation-plan-ph8.md).",
+		WhenToUse:      "recon confirmed the host speaks TLS at all — a live https:// endpoint, or an open 443/8443 port even with no HTTP-layer probe — registry.resolveTLSFact dispatches this automatically once that signal exists.",
+		WhenNotToUse:   "The host is plain-HTTP-only with no TLS listener on any known port.",
+		Cost:           "Read-only; up to three bounded handshakes per host (default negotiation, a protocol-downgrade probe, a weak-cipher probe), no data sent beyond each handshake itself.",
+		Risk:           "Read-only — no target state mutation, nothing beyond a TLS ClientHello/handshake reaches the target.",
+		InputsRequired: []string{"a target with a live https:// endpoint or an open 443/8443 port"},
+	},
 	// --- Recon tools (pkg/recon/, shelled out via fixed subprocess calls) ---
 	{Name: "subfinder", Kind: KindReconTool, Description: "Passive subdomain/DNS enumeration (Wave 1).", WhenToUse: "Any domain-shaped target, before any active probe.", WhenNotToUse: "Target is a bare IP with no domain to enumerate against.", Cost: "Zero-touch against the target — queries third-party passive OSINT sources only.", Risk: "Read-only, no direct target contact.", InputsRequired: []string{"a domain"}},
 	{Name: "tlsx", Kind: KindReconTool, Description: "TLS certificate SAN inspection (Wave 1) — a common source of sibling environments a wordlist alone would miss.", WhenToUse: "Target serves TLS.", WhenNotToUse: "Target is plaintext HTTP only.", Cost: "One TLS handshake per host.", Risk: "Read-only.", InputsRequired: []string{"a host:port"}},

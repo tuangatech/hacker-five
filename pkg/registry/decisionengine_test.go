@@ -1842,6 +1842,99 @@ func TestResolve_NetserviceLeaf_TargetSurvivesHTTPBaseURLUpgrade(t *testing.T) {
 	assert.Equal(t, "https://staging.example.test", misconfigLeaf.Target, "a non-netservice leaf must still get the real HTTP base URL upgrade")
 }
 
+// TestResolve_TLSSignal_OpenPort443_ProducesDispatchableLeaf is Phase 8
+// Step 2's counterpart to the netservice tests above: a bare open 443 port
+// (even with no HTTP-layer probe at all — a naabu-only host, same shape as
+// LT-23) is enough on its own to dispatch a "tls" leaf, since
+// pkg/detectors/tls dials the port directly.
+func TestResolve_TLSSignal_OpenPort443_ProducesDispatchableLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "vpn.example.test", Ports: []recon.PortFact{{Port: 443, Protocol: "tcp", Source: "naabu"}}},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "vpn.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "tls" })
+	require.NotNil(t, leaf)
+	assert.Equal(t, agenttask.StatusPending, leaf.Status)
+	assert.Equal(t, agenttask.ConfidenceHigh, leaf.Confidence)
+}
+
+func TestResolve_TLSSignal_OpenPort8443_ProducesDispatchableLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "admin.example.test", Ports: []recon.PortFact{{Port: 8443, Protocol: "tcp", Source: "naabu"}}},
+		},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "admin.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "tls" })
+	require.NotNil(t, leaf)
+}
+
+// TestResolve_TLSSignal_HTTPSEndpoint_ProducesDispatchableLeaf confirms a
+// directly-observed https:// EndpointFact alone (no port-scan data at all)
+// is also sufficient — the "any host with a live https:// endpoint" half
+// of doc17 Step 2's dispatch condition.
+func TestResolve_TLSSignal_HTTPSEndpoint_ProducesDispatchableLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "https://example.test",
+		Endpoints: []recon.EndpointFact{{URL: "https://example.test/", Method: "GET", StatusCode: 200, Source: "httpx"}},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "tls" })
+	require.NotNil(t, leaf)
+	assert.Equal(t, "https://example.test", leaf.Target, "must get the real HTTP base URL upgrade like every other non-netservice leaf")
+}
+
+// TestResolve_TLSSignal_HTTPOnlyHost_NoLeaf is the negative case: a host
+// recon only ever saw on plain HTTP (port 80, an http:// endpoint) gets no
+// "tls" leaf at all — there is no real signal this host speaks TLS
+// anywhere to justify one.
+func TestResolve_TLSSignal_HTTPOnlyHost_NoLeaf(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://example.test",
+		Hosts: []recon.HostFact{
+			{Host: "example.test", Ports: []recon.PortFact{{Port: 80, Protocol: "tcp", Source: "naabu"}}},
+		},
+		TechStack: []recon.TechFact{{Name: "Nginx", Host: "example.test", Source: "httpx-tech-detect", Confidence: "high"}},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	leaf := findLeaf(t, tree, "example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "tls" })
+	assert.Nil(t, leaf)
+}
+
+// TestResolve_TLSSignal_PortAndEndpointBothPresent_OneLeafOnly guards
+// pendingDedupKey's role here: a host with both an open 443 port *and* a
+// directly-observed https:// endpoint (the common case) must still
+// produce exactly one "tls" leaf, not two.
+func TestResolve_TLSSignal_PortAndEndpointBothPresent_OneLeafOnly(t *testing.T) {
+	result := &recon.ReconResult{
+		Target:    "https://example.test",
+		Hosts:     []recon.HostFact{{Host: "example.test", Ports: []recon.PortFact{{Port: 443, Protocol: "tcp", Source: "naabu"}}}},
+		Endpoints: []recon.EndpointFact{{URL: "https://example.test/", Method: "GET", StatusCode: 200, Source: "httpx"}},
+	}
+
+	tree, _ := Resolve(result, nil)
+
+	tlsLeaves := 0
+	for _, l := range hostLeaves(t, tree, "example.test") {
+		if l.Detector == "tls" {
+			tlsLeaves++
+		}
+	}
+	assert.Equal(t, 1, tlsLeaves)
+}
+
 // TestResolve_MultipleInterestingPorts_AllProduceLeaves is a regression
 // guard for a real bug caught against the saved andertone.com recon data
 // (staging.andertone.com has both 21 and 3306 open): unresolvedDedupKey
