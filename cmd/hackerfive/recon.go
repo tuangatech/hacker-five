@@ -167,11 +167,24 @@ func newReconCmd(root *rootFlags) *cobra.Command {
 // registered by any CLI command. Factored out as a plain func(wave, status
 // string) — not a recon.Option directly — so it's testable without needing
 // a real *recon.Recon.
+//
+// Each line is prefixed with elapsed time since verboseProgress itself was
+// called (LT-149, docs/follow-up.md): the previous "%s: %s" format gave no
+// idea which wave was slow or whether a wave's own internal timeout fired —
+// live-observed against a 24-host target where naabu/katana each silently
+// hit their 2-minute wave cap with only the warnings array, not the
+// progress log, showing it afterward.
 func verboseProgress(stderr io.Writer) func(wave, status string) {
+	start := verboseProgressNow()
 	return func(wave, status string) {
-		_, _ = fmt.Fprintf(stderr, "%s: %s\n", wave, status)
+		elapsed := verboseProgressNow().Sub(start).Round(time.Second)
+		_, _ = fmt.Fprintf(stderr, "[+%s] %s: %s\n", elapsed, wave, status)
 	}
 }
+
+// verboseProgressNow is time.Now, indirected so tests can drive
+// verboseProgress's elapsed-time output deterministically.
+var verboseProgressNow = time.Now
 
 // newReconSetupCmd is `hackerfive recon setup` — installs the 6 recon
 // binaries pkg/recon shells out to (subfinder/tlsx/dnsx/naabu/httpx/
