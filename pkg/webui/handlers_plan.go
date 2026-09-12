@@ -120,7 +120,10 @@ func (h *handlers) resolvePlanLeaves(w http.ResponseWriter, r *http.Request) {
 		map[string]any{"unresolved_leaves": unresolvedBefore, "spend_ceiling_usd": tree.SpendCeilingUSD},
 	)
 
-	fb, fbErr := llmfallback.New()
+	// LT-146 (docs/follow-up.md): heartbeat/retry lines land in this job's
+	// own log stream, the same Job.AppendLog sink handlers_plan_exec.go's
+	// OnLog/Notify already use for execution-phase logging.
+	fb, fbErr := llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) { job.AppendLog(level, msg) }))
 	escalations := llmfallback.ResolveTreeLeaves(r.Context(), fb, fbErr, tree, registry.Capabilities, index, leafContexts)
 	// C7b (doc16 Phase 7 Step 3): plausibility pass over the confident leaves,
 	// folded into the escalation list the Plan Preview page shows. A no-op

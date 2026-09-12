@@ -64,7 +64,11 @@ func newSuggestCmd(root *rootFlags) *cobra.Command {
 			result := suggestOutput{CoverageGaps: ledger}
 
 			if llmAssist {
-				fb, fbErr := llmfallback.New()
+				// LT-146 (docs/follow-up.md): heartbeat/retry visibility for
+				// Suggest's one single-shot, whole-ledger-plus-findings call.
+				fb, fbErr := llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "suggest: %s\n", msg)
+				}))
 				if fbErr != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "suggest: --llm-assist requested but no LLM tier is configured (local runtime and/or OPENROUTER_API_KEY): %v — printing the ledger only\n", fbErr)
 				} else {

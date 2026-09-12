@@ -45,7 +45,8 @@ func (c *Client) Suggest(ctx context.Context, ledger []coveragegap.GapRow, findi
 	}
 
 	user := buildSuggestPrompt(ledger, findings)
-	text, cost, err := c.completeBestAvailable(ctx, suggestSystemPrompt, user)
+	label := fmt.Sprintf("Suggest (%d ledger row(s), %d finding(s))", len(ledger), len(findings))
+	text, cost, err := c.completeBestAvailableLabeled(ctx, suggestSystemPrompt, user, label, requestTimeoutLong)
 	if err != nil {
 		return SuggestResult{}, cost, err
 	}

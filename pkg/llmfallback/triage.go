@@ -32,7 +32,8 @@ func (c *Client) TriageFindings(ctx context.Context, findings []detectors.Findin
 	}
 
 	user := buildTriagePrompt(findings)
-	text, cost, err := c.completeBestAvailable(ctx, triageSystemPrompt, user)
+	label := fmt.Sprintf("TriageFindings (%d finding(s))", len(findings))
+	text, cost, err := c.completeBestAvailableLabeled(ctx, triageSystemPrompt, user, label, requestTimeoutLong)
 	if err != nil {
 		return TriageResult{}, 0, err
 	}

@@ -21,7 +21,7 @@ type fieldResponse struct {
 // ResolveField is I4's second caller: detector/field name and the raw
 // candidates a doc14 Step 7 suggester left ambiguous (zero, or — for idor's
 // EndpointTemplate specifically — more than one). One stateless call via
-// completeBestAvailable — local tier first when reachable, falling back to
+// completeBestAvailableLabeled — local tier first when reachable, falling back to
 // the frontier tier when the local tier is unreachable/unconfigured, or
 // when it's reachable but the actual call fails (e.g. the configured model
 // isn't pulled — found live, 2026-09-04: a real Ollama server answered
@@ -37,7 +37,8 @@ func (c *Client) ResolveField(ctx context.Context, detector, field string, candi
 	user := fmt.Sprintf("Detector: %s\nField: %s\nCandidates found (%d): %s",
 		detector, field, len(candidates), strings.Join(candidates, ", "))
 
-	text, cost, err := c.completeBestAvailable(ctx, fieldSystemPrompt, user)
+	label := fmt.Sprintf("ResolveField %s.%s", detector, field)
+	text, cost, err := c.completeBestAvailableLabeled(ctx, fieldSystemPrompt, user, label, requestTimeout)
 	if err != nil {
 		return FieldDecision{}, cost, err
 	}

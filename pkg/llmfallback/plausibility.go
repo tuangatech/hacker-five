@@ -64,7 +64,8 @@ func (c *Client) VetPendingLeaves(ctx context.Context, leaves []*agenttask.PlanN
 		return PlausibilityResult{}, 0, nil
 	}
 
-	text, cost, err := c.completeBestAvailable(ctx, plausibilitySystemPrompt, buildPlausibilityPrompt(leaves))
+	label := fmt.Sprintf("VetPendingLeaves (%d leaf/leaves)", len(leaves))
+	text, cost, err := c.completeBestAvailableLabeled(ctx, plausibilitySystemPrompt, buildPlausibilityPrompt(leaves), label, requestTimeoutLong)
 	if err != nil {
 		return PlausibilityResult{}, cost, err
 	}

@@ -53,7 +53,11 @@ func newTriageCmd(root *rootFlags) *cobra.Command {
 				return nil
 			}
 
-			fb, fbErr := llmfallback.New()
+			// LT-146 (docs/follow-up.md): heartbeat/retry visibility for
+			// TriageFindings' one single-shot, whole-finding-list call.
+			fb, fbErr := llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "triage: %s\n", msg)
+			}))
 			if fbErr != nil {
 				return fmt.Errorf("triage needs an LLM tier configured (local runtime and/or OPENROUTER_API_KEY): %w", fbErr)
 			}
