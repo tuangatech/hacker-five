@@ -82,6 +82,7 @@ export HACKERFIVE_AUTH_TOKEN="..."   # only if the in-scope paths require it
 - **Don't run `--detector idor` here without a plan for the accounts it needs** — see step 2 above.
 
 ## See also
+- [23-live-testing-playbook.md](23-live-testing-playbook.md) — the operational runbook this doc feeds into: current full-pipeline settings, what to monitor/verify during a run, and how to log what you find
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — authorization, legal/ethical rules, the HackerOne joining workflow this doc assumes is already done
 - [20-setup-testing-targets.md](20-setup-testing-targets.md) — local lab targets for validating the tool itself, before ever pointing it at something real
 - [22-authorized-targets.md](22-authorized-targets.md) — living registry of real targets already vetted against step 1's authorization rules, so the vetting isn't repeated per scan
