@@ -4,16 +4,13 @@
 
 An operational runbook for running HackerFive against a real, authorized target: settings
 to run, what to monitor mid-run, what to verify before trusting a result, and how to log an
-enhancement. Assumes authorization is already settled — see
-[05-hackerone-and-legal.md](05-hackerone-and-legal.md) and
-[22-authorized-targets.md](22-authorized-targets.md) first.
+enhancement.
 
 ---
 
 ## 0. Before you start
 
-- Check [doc22](22-authorized-targets.md) for this target's rules (rate caps, disallowed
-  detectors) and `.engagements/<target>/results.md` for prior-round context.
+- Check  `.engagements/<target>/results.md` for prior-round context.
 - Rebuild against current `main`.
 - Decide which mutating flags this program actually permits: `--allow-writes`
   (businesslogic), `--allow-mutating-bfla` (fires a real DELETE),
@@ -29,8 +26,7 @@ exception.
   shallower pass looks thin; `full`'s crawl gets expensive at host-count scale.
 - `--openapi-spec <path|url>` whenever a spec exists — the single highest-leverage flag
   for detector precision (concrete IDs, auth requirements, body schemas).
-- `--headless-crawl` / `--param-mining` — opt-in for a JS-heavy app that a plain crawl
-  visibly under-finds, not a default toggle.
+- `--headless-crawl` / `--param-mining` — opt-in for a JS-heavy app that a plain crawl visibly under-finds, not a default toggle.
 - `--wave-timeout` — raise it on a large sweep; a starved wave fails silently (a short
   host list, no error), so a thin recon result is a reason to re-run longer, not trust it.
 
@@ -120,10 +116,3 @@ during a live round rather than waiting to be asked:
 - **WAF/filter-bypass sophistication** — a fixed mutation set generally lags a human's
   manual creativity.
 - **Multi-account/workflow ergonomics** across several concurrent programs.
-
-## See also
-
-- [21-scanning-real-targets.md](21-scanning-real-targets.md) — first-time-against-a-target mechanics this playbook assumes are done
-- [22-authorized-targets.md](22-authorized-targets.md) — per-target vetting registry to check/update every round
-- [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — authorization/legal rules, the "lead, not a report" duty
-- [follow-up.md](follow-up.md) / [follow-up-archive.md](follow-up-archive.md) — full write-ups this playbook is distilled from
