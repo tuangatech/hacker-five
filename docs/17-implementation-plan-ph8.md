@@ -77,8 +77,8 @@ release steps as terminal gates of their phase. Current order:
 **Tier 2 — Phase 8 (breadth & precision; each near self-contained, dependencies already satisfied):**
 1. **Step 1** ✅ **done 2026-09-11** — TCP + `netservice` detector. Biggest single new class, live-confirmed on a real target (LT-23, closed). Fully independent. See § Step 1's As-built.
 2. **Step 3** ✅ **done 2026-09-09** — JS static analysis + cloud-provider fingerprinting. Directly widens the thin idor/ssrf endpoint surface every live run has complained about; closes P1-5. Minor `resolveTechFact` merge overlap with Step 5 / LT-84 still open (unaffected by Step 3's own changes).
-3. **Step 4** — affected-version (semver) gating. Removes a concrete false-positive class (LT-7); `staleCVEPenalty` is only a stopgap today. Minor `matchTemplateTags` merge overlap with Phase 7 F3.
-4. **Step 2** — TLS/SSL passive checks. Small, clean, fully independent.
+3. **Step 4** ✅ **done 2026-09-11** — affected-version (semver) gating. Removes a concrete false-positive class (LT-7); `staleCVEPenalty` is only a stopgap today. Minor `matchTemplateTags` merge overlap with Phase 7 F3. See § Step 4's design/Files/Verification.
+4. **Step 2** ✅ **done 2026-09-12** — TLS/SSL passive checks. Small, clean, fully independent. See § Step 2's design/Files/Verification.
 5. **Step 5 third tranche (5c)** — the two recon-surface items promoted from
    [follow-up.md](follow-up.md) on 2026-09-08 because each has a measured
    endpoint-yield gap, not just a hypothetical one:
@@ -313,14 +313,25 @@ Both pieces shipped as designed, plus a few implementation-time corrections:
 
 ---
 
-## Step 2: TLS/SSL Passive Checks (Week 59) — ⬜ not yet implemented
+## Step 2: TLS/SSL Passive Checks (Week 59) — ✅ done 2026-09-12
 
 ### Design
 
 [follow-up.md](follow-up.md) Detection Coverage: "Add — passive checks (expired/weak
 certs, deprecated protocols, weak ciphers) via stdlib `crypto/tls`, no new dependency."
-Recon's Wave 2 already runs `tlsx`; this is the first-party detector that turns that
-signal into findings and covers hosts `tlsx` didn't reach.
+
+**Corrected at implementation time.** ~~Recon's Wave 2 already runs `tlsx`; this is
+the first-party detector that turns that signal into findings.~~ — measured: `tlsx`
+is only ever invoked in Wave 1 (`Recon.runTLSX`), and only for SAN-based subdomain
+discovery (its output feeds `addCandidate`, never a stored per-host TLS fact) — there
+is no existing "tlsx-derived fact" for this detector to consume. `registry.resolveTLSFact`
+instead gates on real structural signal already available on `recon.ReconResult`: a
+directly-observed `https://` `EndpointFact`, or an open 443/8443 `PortFact` — the
+latter alone is enough (a naabu-only host with no HTTP-layer probe at all, LT-23's
+shape, still gets checked, since this package dials the port directly and never
+depends on an HTTP response existing). `Confidence: High`, not Low like
+`resolveLiveHostBaseline`'s misconfig baseline: an open port or an observed scheme is
+a hard structural fact, not a heuristic.
 
 A `tls` detector that, per in-scope host:port, completes a handshake with
 `InsecureSkipVerify` (so an expired/self-signed cert is inspected, not fatal) and
@@ -330,16 +341,55 @@ on Go's known-weak list; missing SNI/hostname match. All read-only — one hands
 no data sent. `Confidence: high` for cert-date/protocol facts (unambiguous),
 `Confidence: low` for cipher-preference heuristics.
 
-### Files (anticipated, confirm at implementation time)
-- `pkg/detectors/tls/` (new) — the handshake + inspection logic, stdlib `crypto/tls` only.
-- `pkg/registry/decisionengine.go` — a `tls` capability; recon's `tlsx`-derived facts (and any host with a live `https://` endpoint) drive a `tls` leaf.
-- `pkg/scanner/{config,engine}.go` — `tls` wired into `runDetector`.
-- `tests/unit/detector_tls_test.go` — against `httptest.NewTLSServer` and hand-built expired/self-signed cert fixtures.
+**Found writing the tests, fixed before landing:** gating the *entire* probe sequence
+on the first (maximally-permissive-on-version) handshake succeeding was itself a
+detection gap — a server enabling *only* suites Go's own client refuses to offer in a
+normal `ClientHello` (every suite `tls.InsecureCipherSuites()` names; Go's default
+enabled set for TLS ≤1.2 already excludes them) would never complete that first
+handshake at all, so `Run` returned `(nil, nil)` before the dedicated weak-cipher
+probe — which offers exactly those suites and *would* succeed — ever ran. Fixed:
+the weak-cipher probe is now always attempted independent of the baseline
+handshake's own outcome; `Run` only returns `(nil, nil)` when every handshake it
+tries fails. A worse-configured server now gets a *more* complete report, not a
+silently empty one.
+
+Target-port handling: a `tls` leaf's `Target` is upgraded to the ordinary
+`scheme://host[:port]` `reconHostBaseURL` gives every other non-`netservice` leaf
+(not a separate `tls://host:port` scheme) — `pkg/detectors/tls.dialAddr` always
+re-derives port 443 from it regardless of the URL's own scheme/default port, so an
+`http://host` base URL (a host recon only ever saw on port 80 at the HTTP layer,
+while still carrying a 443 `PortFact`) still probes the right port.
+
+**Also fixed while wiring this in (found, not designed for):** `pkg/planexec.executor.go`'s
+own `recognizedDetectors` — a hand-duplicated copy of `pkg/scanner/config.go`'s set —
+was missing `"sqli"` entirely: `registry.resolveEndpointFacts` genuinely emits sqli
+leaves (LT-87's endpoint-driven fan-out), but with `"sqli"` absent here every one of
+them silently skipped as an "unrecognized detector/template-ID" on every webui/MCP
+Plan Preview run — reachable only via a hand-typed `--detector sqli` CLI invocation.
+Fixed alongside `"tls"`/`"mutatebfla"` (the latter unreachable today, added only for
+the completeness the file's own comment already promised).
+
+### Files (as-built)
+- `pkg/detectors/tls/detector.go` (new) — the handshake + inspection logic, stdlib `crypto/tls` only; `WithRootPool` is a test-only seam (production always verifies against the system root pool).
+- `pkg/detectors/tls/detector_test.go` (new) — real local `tls.Listen` fixtures (hand-built certs: expired/not-yet-valid/near-expiry/hostname-mismatch/untrusted-chain/TLS-1.0-only/downgrade-accepted/weak-cipher-accepted) plus `dialAddr` unit coverage.
+- `pkg/registry/decisionengine.go` — `hostHasLiveTLSSignal`/`resolveTLSFact`; `"tls"` added to `builtinDetectorClasses` and `detectorTemplateTagFloor` (`{"ssl", "tls"}` — real Nuclei tag convention, zero effect today since `scripts/sync-nuclei-templates.sh` only checks out `http/*` categories, same as `netservice`'s `"network"` floor).
+- `pkg/scanner/config.go` — `"tls"` added to `recognizedDetectors`.
+- `pkg/scanner/engine.go` — `"tls"` wired into `runDetector`.
+- `pkg/planexec/executor.go` — `"tls"` (and the pre-existing `"sqli"`/`"mutatebfla"` gaps, see above) added to its own `recognizedDetectors` copy, so a plan-driven (webui/MCP) run actually dispatches a `tls` leaf as a built-in detector rather than treating `"tls"` as a raw template ID.
+- `pkg/mcpserver/tools_scan.go`, `pkg/registry/registry.go`, `cmd/hackerfive/scan.go` — `tls` added to the MCP `scan` tool's `detector` jsonschema hint, the capability registry (`tools.search`), and the CLI `--detector` flag's help text.
+- `tests/unit/detector_tls_test.go` (new) — `Run`'s target-parsing/dispatch behavior only (mirrors `detector_netservice_test.go`'s own split; the real handshake-outcome coverage lives next to the detector).
+- `pkg/registry/decisionengine_test.go` — `resolveTLSFact` dispatch coverage (443/8443 port, https endpoint, http-only negative case, dedup when both signals are present, target base-URL upgrade).
 
 ### Verification
-Unit tests with a fixture cert set (expired, self-signed, wrong-host, TLS 1.0-only
-server). Live: run against a known-good target (no findings) and a deliberately
-weak lab endpoint (findings match the fixture expectations).
+`go build`/`go vet`/`go test -race`/`golangci-lint` all clean. Unit: 16 tests in
+`pkg/detectors/tls` against real local TLS listeners (clean/trusted → zero findings;
+each of expired/not-yet-valid/near-expiry/untrusted-chain/hostname-mismatch isolated
+to its own single finding; a TLS-1.0-only server vs. a modern-by-default server that
+still accepts a downgrade, each producing the right one of the two
+`tls-deprecated-protocol-*` finding shapes; a weak-cipher-only server caught via the
+always-attempted probe even though its own baseline handshake fails outright) plus 6
+`registry.Resolve` dispatch tests. No live-target run yet — see doc23's live-testing
+playbook for the next authorized-target round.
 
 ---
 

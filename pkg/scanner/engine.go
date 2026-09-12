@@ -21,6 +21,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors/netservice"
 	"github.com/tuangatech/hacker-five/pkg/detectors/sqli"
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
+	"github.com/tuangatech/hacker-five/pkg/detectors/tls"
 	"github.com/tuangatech/hacker-five/pkg/scanner/hosterrors"
 	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 	"github.com/tuangatech/hacker-five/pkg/scanner/ratelimit"
@@ -1132,6 +1133,9 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		return detector.Run(ctx, targets, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.AllowMutatingBFLA)
 	case "netservice":
 		detector := netservice.New(netservice.WithTimeout(e.cfg.Timeout))
+		return detector.Run(ctx, target)
+	case "tls":
+		detector := tls.New(tls.WithTimeout(e.cfg.Timeout))
 		return detector.Run(ctx, target)
 	default:
 		return nil, fmt.Errorf("unsupported detector %q", e.cfg.Detector)

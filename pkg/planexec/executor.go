@@ -37,9 +37,23 @@ import (
 // template-tag-match case, or an I4 use_existing_tag decision naming a
 // template rather than a built-in detector) is dispatched separately, as a
 // templates-only run — see RunPlan's eligibility loop and runLeaf, below.
+//
+// Was missing "sqli" until Phase 8 Step 2 (found live while wiring "tls"
+// in): registry.resolveEndpointFacts genuinely emits sqli leaves (LT-87's
+// endpoint-driven fan-out), but with "sqli" absent from this map, line 196's
+// eligibility check (recognizedDetectors[leaf.Detector] ||
+// knownTemplateIDs[leaf.Detector]) failed both halves for every one of
+// them — a real sqli leaf silently skipped as an "unrecognized
+// detector/template-ID" on every webui/MCP Plan Preview run, findable only
+// via a hand-typed `--detector sqli` CLI invocation. "mutatebfla" is added
+// for the same completeness this comment already promises, even though
+// registry.Resolve never emits one today (Detector Prerequisites'
+// DeleteURL/VerifyURL/Marker have no deterministic source) — harmless if
+// unreachable, and correctly fails safe via the detector's own
+// --allow-mutating-bfla gate if a future LLM-proposed leaf ever names it.
 var recognizedDetectors = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
-	"netservice": true,
+	"netservice": true, "sqli": true, "mutatebfla": true, "tls": true,
 }
 
 // executionResult is one leaf's dispatch outcome, folded into RunPlan's

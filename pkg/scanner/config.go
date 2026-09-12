@@ -20,6 +20,7 @@ var recognizedDetectors = map[string]bool{
 	"netservice":    true,
 	"sqli":          true,
 	"mutatebfla":    true,
+	"tls":           true,
 }
 
 // Config is passed from the CLI into the Engine.

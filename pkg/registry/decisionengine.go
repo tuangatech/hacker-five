@@ -601,6 +601,14 @@ var detectorTemplateTagFloor = map[string][]string{
 	// than an explicit --tags" documented default businesslogic already
 	// gets.
 	"mutatebfla": nil,
+	// "ssl"/"tls" are real Nuclei's own conventional tags on its ssl/
+	// (network-protocol) template category — same "narrows away the ~9.5k
+	// http:-only corpus" role as netservice's "network" floor above, and
+	// the same zero-effect-today caveat: scripts/sync-nuclei-templates.sh
+	// only checks out http/* categories, so no ssl/-category template is in
+	// the committed templates/index.json yet. Takes effect once that
+	// category is added to the sync (Phase 8 Step 2, docs/17-implementation-plan-ph8.md).
+	"tls": {"ssl", "tls"},
 }
 
 // DetectorTemplateTags returns the tech-agnostic category-tag floor for a
@@ -1107,7 +1115,7 @@ type LeafContext struct {
 // "templates" instead of the detector's own name), never a dispatch bug.
 var builtinDetectorClasses = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
-	"netservice": true, "sqli": true, "mutatebfla": true,
+	"netservice": true, "sqli": true, "mutatebfla": true, "tls": true,
 }
 
 // LeafClass returns the vuln-class label a leaf belongs under in the
@@ -1252,6 +1260,7 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 		resolvePortFacts(host, portsByHost[host], &leafIdx, addLeaf, leafContexts)
 		resolveHostnameHints(host, templateIndex, &leafIdx, addLeaf)
 		resolveLiveHostBaseline(host, result.Endpoints, &leafIdx, addLeaf)
+		resolveTLSFact(host, result.Endpoints, portsByHost[host], &leafIdx, addLeaf)
 		hostNode.Children = dropBareCapabilityLeavesSupersededByEndpointDriven(hostNode.Children)
 		if len(hostNode.Children) == 0 {
 			continue // every TechFact/endpoint on this host was non-actionable or produced no signal (P0-5) — no empty host node
@@ -2002,6 +2011,65 @@ func resolveLiveHostBaseline(host string, endpoints []recon.EndpointFact, leafId
 	}
 	*leafIdx++
 	addLeaf(leaf, pendingDedupKey(host, "misconfig"))
+}
+
+// hostHasLiveTLSSignal reports whether host has real evidence of speaking
+// TLS at all: a directly-observed https:// EndpointFact, or an open
+// 443/8443 PortFact. Either is sufficient on its own — a raw port-scan hit
+// with no HTTP-layer probe (e.g. a naabu-only host, LT-23's shape) still
+// deserves a handshake-level check, since pkg/detectors/tls dials the port
+// directly and never depends on an HTTP response existing.
+//
+// An EndpointFact only counts when its Source is one
+// liveBaselineEndpointSources trusts as an actual connection this
+// project's own recon made — the same "a link seen on a page is not proof
+// anyone ever connected to it" reasoning resolveLiveHostBaseline already
+// applies. Without this gate a katana-crawl-observed https:// link (found
+// in another page's HTML, never itself fetched — TestResolve_
+// WAFBlockedHost_KatanaOnlyRoot403_NoLeaf's exact shape) would wrongly
+// promote an otherwise-empty, correctly-dropped host node into a real one.
+func hostHasLiveTLSSignal(host string, endpoints []recon.EndpointFact, ports []recon.PortFact) bool {
+	for _, ep := range endpointsForHost(host, endpoints) {
+		if !liveBaselineEndpointSources[ep.Source] {
+			continue
+		}
+		if u, err := url.Parse(ep.URL); err == nil && u.Scheme == "https" {
+			return true
+		}
+	}
+	for _, p := range ports {
+		if p.Port == 443 || p.Port == 8443 {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveTLSFact emits one ConfidenceHigh "tls" leaf for a host recon
+// confirmed speaks TLS (Phase 8 Step 2, docs/17-implementation-plan-ph8.md)
+// — an https:// endpoint or an open 443/8443 port. Confidence is High, not
+// Low like resolveLiveHostBaseline's misconfig baseline: hostHasLiveTLSSignal
+// is a hard structural fact (a scheme or a port number), not a heuristic.
+// Target starts as the bare host and is upgraded to the real
+// scheme://host[:port] by Resolve's baseURL pass below, same as every
+// other non-netservice leaf — pkg/detectors/tls.dialAddr then always
+// re-derives port 443 from that unless the URL names one explicitly, so an
+// http-scheme baseURL (a host recon only ever saw on port 80) still probes
+// the right port.
+func resolveTLSFact(host string, endpoints []recon.EndpointFact, ports []recon.PortFact, leafIdx *int, addLeaf func(*agenttask.PlanNode, string)) {
+	if !hostHasLiveTLSSignal(host, endpoints, ports) {
+		return
+	}
+	leaf := &agenttask.PlanNode{
+		ID:         fmt.Sprintf("%s-leaf-%d", host, *leafIdx),
+		Target:     host,
+		Detector:   "tls",
+		Rationale:  "recon found a live https:// endpoint or an open 443/8443 port on this host — running the tls detector's passive cert/protocol/cipher handshake checks",
+		Status:     agenttask.StatusPending,
+		Confidence: agenttask.ConfidenceHigh,
+	}
+	*leafIdx++
+	addLeaf(leaf, pendingDedupKey(host, "tls"))
 }
 
 // resolveAPISpecFact dispatches result.APISpec — recorded at most once per
