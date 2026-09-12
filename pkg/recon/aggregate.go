@@ -16,6 +16,8 @@ import (
 type aggregator struct {
 	target         string
 	hosts          []HostFact
+	hostIndex      map[string]int
+	hostSources    map[string][]string
 	endpoints      []EndpointFact
 	techStack      []TechFact
 	techIndex      map[techKey]int
@@ -80,8 +82,60 @@ func (a *aggregator) setUniformResponse(f UniformResponseFact) {
 	a.uniformResponses[key] = f
 }
 
+// addHost merges a new HostFact into an existing one for the same
+// NormalizeHost'd host rather than always appending — found live, 2026-09-11
+// (LT-147, docs/follow-up.md): Wave 1's passive WHOIS/ASN lookup and Wave 2's
+// httpx/naabu probe each independently record a HostFact for the apex target
+// itself (Source "passive-whois-asn" carrying .Notes, Source "httpx"
+// carrying .Ports) — every other discovered host got exactly one entry, but
+// the apex got two, indistinguishable from a real duplicate row in the Web
+// UI's Hosts table. Same class of bug LT-14 fixed for TechFact via addTech;
+// mirrors that function's shape (NormalizeHost-keyed index, comma-joined
+// Source, best-Confidence-wins) but unions Notes/Ports instead of Name.
 func (a *aggregator) addHost(h HostFact) {
+	key := NormalizeHost(h.Host)
+	if idx, ok := a.hostIndex[key]; ok {
+		existing := &a.hosts[idx]
+		if !contains(a.hostSources[key], h.Source) {
+			a.hostSources[key] = append(a.hostSources[key], h.Source)
+			existing.Source = strings.Join(a.hostSources[key], ", ")
+		}
+		existing.Notes = append(existing.Notes, h.Notes...)
+		existing.Ports = mergePortFacts(existing.Ports, h.Ports)
+		if confidenceRank(h.Confidence) > confidenceRank(existing.Confidence) {
+			existing.Confidence = h.Confidence
+		}
+		return
+	}
+	if a.hostIndex == nil {
+		a.hostIndex = make(map[string]int)
+		a.hostSources = make(map[string][]string)
+	}
+	a.hostIndex[key] = len(a.hosts)
+	a.hostSources[key] = []string{h.Source}
 	a.hosts = append(a.hosts, h)
+}
+
+// mergePortFacts unions add into existing, skipping a (Port, Protocol) pair
+// existing already has — addHost's Ports merge, factored out since a plain
+// append would duplicate a port both waves happened to observe.
+func mergePortFacts(existing, add []PortFact) []PortFact {
+	if len(add) == 0 {
+		return existing
+	}
+	seen := make(map[string]bool, len(existing))
+	for _, p := range existing {
+		seen[fmt.Sprintf("%d/%s", p.Port, p.Protocol)] = true
+	}
+	for _, p := range add {
+		k := fmt.Sprintf("%d/%s", p.Port, p.Protocol)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		existing = append(existing, p)
+	}
+	return existing
 }
 
 func (a *aggregator) addEndpoint(e EndpointFact) {

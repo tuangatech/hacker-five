@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
@@ -419,8 +420,18 @@ func (e *Engine) runTemplates(
 		findings   []detectors.Finding
 		wg         sync.WaitGroup
 		sem        = make(chan struct{}, conc)
-		dispatched int // templates that took a slot and launched — the honest "started" count for timeBudgetFinding (LT-114)
+		dispatched int          // templates that took a slot and launched — the honest "started" count for timeBudgetFinding (LT-114)
+		completed  atomic.Int64 // dispatched templates whose Run has returned, read from startDispatchHeartbeat's ticker goroutine (LT-149, heartbeat.go) — atomic since fire() runs on many goroutines
 	)
+	total := len(nativeTemplates) + len(nucleiTemplates)
+
+	// LT-149 (docs/follow-up.md): a periodic "still working" line for the
+	// duration between "loaded N templates" and this target's own scan
+	// completion — previously silent regardless of how long dispatch took.
+	// stopHeartbeat is deferred so it always fires once wg.Wait() below
+	// returns, however this function exits.
+	stopHeartbeat := startDispatchHeartbeat(target, total, &completed, e.warnf)
+	defer stopHeartbeat()
 
 	// acquire takes a concurrency slot, or reports false if ctx ends first
 	// (or the adaptive throttle has given up on this target, LT-74/LT-88) so
@@ -439,6 +450,7 @@ func (e *Engine) runTemplates(
 	fire := func(id string, run func() ([]detectors.Finding, error)) {
 		defer wg.Done()
 		defer func() { <-sem }()
+		defer completed.Add(1)
 		fs, err := run()
 		if err != nil {
 			if ctx.Err() != nil {
