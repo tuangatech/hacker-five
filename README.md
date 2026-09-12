@@ -100,7 +100,7 @@ Validated against **crAPI, DVWA, Juice Shop, vAPI, WebGoat, bWAPP, and AIGoat** 
 - [Architecture & Tech Stack](docs/02-architecture-and-tech-stack.md) — design principles, module map, the agent pipeline
 - [Development Roadmap](docs/03-development-roadmap.md) — phases 1–9
 - [HackerOne & Legal](docs/05-hackerone-and-legal.md) — bug-bounty workflow, safe harbor
-- [Scanning a Real Target](docs/21-scanning-real-targets.md) · [Test Targets](docs/20-setup-testing-targets.md) · [Template Writing Guide](docs/template-writing-guide.md)
+- [Scanning a Real Target](docs/21-scanning-real-targets.md) · [Live-Testing Playbook](docs/23-live-testing-playbook.md) · [Test Targets](docs/20-setup-testing-targets.md) · [Template Writing Guide](docs/template-writing-guide.md)
 
 Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) · [CLAUDE.md](CLAUDE.md). Vulnerability in HackerFive itself: [SECURITY.md](SECURITY.md).
 

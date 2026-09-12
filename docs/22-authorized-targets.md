@@ -89,4 +89,5 @@ Found via the same disclose.io search; recorded here so they aren't re-researche
 
 ## See also
 - [21-scanning-real-targets.md](21-scanning-real-targets.md) — the workflow this registry feeds: recon, `--tags`-based template selection, running the scan itself
+- [23-live-testing-playbook.md](23-live-testing-playbook.md) — check before every round and update after: settings, monitoring, verification, and how to log a new enhancement
 - [05-hackerone-and-legal.md](05-hackerone-and-legal.md) — authorization/legal rules this registry's vetting is checked against
