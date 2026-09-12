@@ -47,7 +47,7 @@ write, or data exfil, exactly as blind-SSRF verification already works.
 1. ⬜ **OOB blind-RCE verification** (Week 65) — *originally Phase 8 Step 4*
 2. ⬜ **Remaining template-format gaps** (Weeks 66-67) — `xpath`, `flow:` cross-block `_N`, `flow:` script constructs, `substr`/`date_time`/`generate_jwt` DSL — *originally Phase 8 Step 7*
 3. ⬜ **AI-agent surface modeling — `llms.txt` / `SKILL.md` / MCP** (Week 68) — closes LT-78; *originally Phase 8 Step 8*
-4. ⬜ **WAF-aware probing + active injection / upload-bypass detectors** (Weeks 69-70) — closes LT-87; *originally Phase 8 Step 9*. The one phase that adds active vulnerability-class detectors.
+4. 🟡 **WAF-aware probing + active injection / upload-bypass detectors** (Weeks 69-70) — closes LT-87; *originally Phase 8 Step 9*. The one phase that adds active vulnerability-class detectors. (2026-09-11: native `sqli` detector shipped — error/boolean/time-based, recon-driven via `SuggestSQLiTargets`; `xss`/`lfi`/`uploadbypass` and the WAF-detect fact + 403-is-signal retry are still open, see this step's own section below and follow-up.md's LT-87.)
 5. ⬜ **Trust & agent-output hardening** (Week 70) — the OWASP Agentic Top 10 **full** re-walk (Ph7 D4) + `templates/proposed/` isolation (Ph7 E2) + triage-assist annotations (Ph7 F1) + structured feedback capture (Ph7 F2)
 6. ⬜ **Eval maturity + release** (Week 70) — `v0.9.0`
 
@@ -252,7 +252,7 @@ enumeration runs read-only.
 
 ---
 
-## Step 4: WAF-Aware Probing + Active Injection / Upload-Bypass Detectors (Weeks 69-70) — ⬜ not yet implemented — closes LT-87
+## Step 4: WAF-Aware Probing + Active Injection / Upload-Bypass Detectors (Weeks 69-70) — 🟡 partially implemented (native `sqli` detector shipped 2026-09-11; see below) — closes LT-87
 
 *Originally [Phase 8](17-implementation-plan-ph8.md) Step 9.*
 

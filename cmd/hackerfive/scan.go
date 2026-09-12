@@ -48,6 +48,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		logoutPaths          string
 		headers              []string
 		ssrfParams           []string
+		sqliPath             string
+		sqliParams           []string
 		oobServers           []string
 		noOOB                bool
 		allowWrites          bool
@@ -156,6 +158,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				LogoutPaths:             parseTags(logoutPaths),
 				ExtraHeaders:            extraHeaders,
 				SSRFParams:              ssrfParams,
+				SQLiPath:                sqliPath,
+				SQLiParams:              sqliParams,
 				OOBServers:              expandedOOBServers,
 				AllowWrites:             allowWrites,
 				CouponMintPath:          couponMintPath,
@@ -377,7 +381,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "cross-target worker pool size")
 	cmd.Flags().IntVar(&templateConcurrency, "template-concurrency", 0, "how many loaded templates fire in parallel against a single target (doc15 Step 6b); 0 = built-in default (10). Still bounded by --rate-limit; auto-capped to 5 when a prompt-injection template is loaded")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 10, "requests/sec across the whole scan (conservative default — raise it explicitly for a lab benchmark; most bounty/VDP programs' own limits are lower still)")
-	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", "businesslogic", or "netservice" (unauthenticated-exposure checks against a "tcp://host:port" target, e.g. a naabu-discovered open port — see Phase 8 Step 1, docs/17-implementation-plan-ph8.md)`)
+	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", "sqli" (native SQL-injection — see doc18 Step 4), "businesslogic", or "netservice" (unauthenticated-exposure checks against a "tcp://host:port" target, e.g. a naabu-discovered open port — see Phase 8 Step 1, docs/17-implementation-plan-ph8.md)`)
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().BoolVar(&idorPreview, "idor-preview", false, "fire one extra preflight GET against the resolved --endpoint before enumeration begins, logging its status/body-length — off by default so scripted invocations see no behavior change")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")
@@ -391,6 +395,8 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&logoutPaths, "logout-paths", "", `comma-separated candidate logout paths for authbypass's broken-session check (default: authbypass's built-in generic guesses, e.g. "/logout")`)
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every template-driven request (repeatable) — e.g. a session cookie a login flow issued outside this scan, since template placeholders can't carry one yet`)
 	cmd.Flags().StringArrayVar(&ssrfParams, "ssrf-param", nil, `candidate URL-accepting query parameter name for the ssrf detector to probe (repeatable), e.g. "url", "webhook", "callback" — required for --detector ssrf`)
+	cmd.Flags().StringVar(&sqliPath, "sqli-path", "", `endpoint path+query observed with a candidate parameter, e.g. "/product?id=5" (required for --detector sqli) — normally recon-derived (recon.SuggestSQLiTargets), see docs/18-implementation-plan-ph9.md Step 4`)
+	cmd.Flags().StringArrayVar(&sqliParams, "sqli-param", nil, `candidate query parameter name on --sqli-path for the sqli detector to test (repeatable) — required for --detector sqli`)
 	cmd.Flags().StringArrayVar(&oobServers, "oob-server", ssrf.DefaultOOBServers, `base URL of an Interactsh-protocol server for the ssrf detector's blind out-of-band check (repeatable — tried in order, falls back if one is unreachable); the literal value "public" expands to ProjectDiscovery's full known public server pool (6 servers) — an explicit, real leak tradeoff (see docs/follow-up.md and docs/discussions.md). Defaults to 2 of those public servers (oast.pro, oast.live) when omitted entirely — pass --no-oob to disable for a real third-party engagement, where sending target-request data to a public server is not appropriate`)
 	cmd.Flags().BoolVar(&noOOB, "no-oob", false, "disable the ssrf detector's blind out-of-band check entirely, overriding --oob-server's default public servers — use for a real, authorized third-party engagement (see --oob-server's own help text)")
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks (coupon self-mint/apply, apply-race) to run — the one explicit exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a warning")

@@ -178,6 +178,17 @@ type PlanNode struct {
 	// alongside SSRFParams on the same endpoint-driven ssrf leaf — additive,
 	// not a replacement; a leaf may carry either, both, or neither.
 	SSRFBodyParams []string `json:"ssrf_body_params,omitempty"`
+	// SQLiPath / SQLiParams are the recon-derived required-field values for
+	// an endpoint-driven sqli leaf (docs/18-implementation-plan-ph9.md Step
+	// 4, LT-87): one leaf per recon.SuggestSQLiTargets candidate path, same
+	// "fan out one leaf per candidate" treatment EndpointTemplate above
+	// already gets for idor. SQLiPath is path+query with scheme+host
+	// stripped (EndpointTemplate's own contract); SQLiParams is the subset
+	// of its query-parameter names worth testing. planexec.runLeaf copies
+	// both into a blank scanner.Config just before dispatch. Empty on every
+	// other leaf.
+	SQLiPath   string   `json:"sqli_path,omitempty"`
+	SQLiParams []string `json:"sqli_params,omitempty"`
 	// CouponMintPath / CouponApplyPath / CouponCodeField / CouponAmountField
 	// are LT-135's (docs/follow-up.md) recon-derived required-field values
 	// for an endpoint-driven businesslogic leaf: a spec-documented

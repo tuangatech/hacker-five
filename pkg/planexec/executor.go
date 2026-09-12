@@ -417,6 +417,13 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 			notify(fmt.Sprintf("ssrf: probing recon-derived body param(s) %s (LT-96)", strings.Join(leaf.SSRFBodyParams, ", ")))
 		}
 	}
+	if leaf.SQLiPath != "" && cfg.SQLiPath == "" {
+		cfg.SQLiPath = leaf.SQLiPath
+		cfg.SQLiParams = append([]string(nil), leaf.SQLiParams...)
+		if notify != nil {
+			notify(fmt.Sprintf("sqli: testing recon-derived endpoint %s (doc18 Step 4)", leaf.SQLiPath))
+		}
+	}
 	if leaf.CouponMintPath != "" && cfg.CouponMintPath == "" && cfg.CouponApplyPath == "" {
 		cfg.CouponMintPath = leaf.CouponMintPath
 		cfg.CouponApplyPath = leaf.CouponApplyPath
@@ -441,6 +448,10 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 	case "ssrf":
 		if len(cfg.SSRFParams) == 0 && len(cfg.SSRFBodyParams) == 0 {
 			return "no --ssrf-param given and recon found no usable query or body param candidate"
+		}
+	case "sqli":
+		if cfg.SQLiPath == "" || len(cfg.SQLiParams) == 0 {
+			return "no --sqli-path/--sqli-param given and recon found no usable candidate"
 		}
 	case "businesslogic":
 		if !cfg.AllowWrites {
