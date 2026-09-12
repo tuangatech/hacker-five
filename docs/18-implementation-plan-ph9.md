@@ -308,6 +308,13 @@ dependency; a bounded first-party subset), and the `uploadbypass` success oracle
 need pinning. Descopable sub-item by sub-item with a stated reason if the weeks run short;
 the WAF-detect signal + `403`-is-signal retry are the minimum that changes outcomes.
 
+**Adjacent, not a numbered sub-item here:** LT-132 (docs/follow-up.md) — mutating-method
+(`DELETE`) BFLA/BOLA, `pkg/detectors/mutatebfla`, shipped 2026-09-12 — was routed to this
+step for the same "parameter-aware, non-GET-shaped probing" theme, but is its own
+detector/flag/design (`--allow-mutating-bfla`, safety-first read-verify), not part of the
+four sqli/xss/lfi/uploadbypass pieces above. See follow-up.md for the full write-up;
+`PUT`/`PATCH` remain open there as a near-identical follow-up.
+
 ### Files (anticipated, confirm at implementation time)
 - `pkg/recon/waf.go` (new) — the `ReconResult.WAF` fact (block-page fingerprint reuse from `pkg/uniformwall`, header set, benign-vs-payload delta); `docs/schema/recon-result.schema.json` bump.
 - `pkg/template/nuclei/executor.go` — the bounded `403`-is-signal mutation/encoding retry, gated on the WAF fact; a `waf-bypass` finding shape.

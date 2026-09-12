@@ -595,6 +595,12 @@ var detectorTemplateTagFloor = map[string][]string{
 	// additive to that corpus, not a replacement for it, same floor
 	// convention as every other detector above.
 	"sqli": {"sqli", "sql-injection"},
+	// mutatebfla is native-only, same as businesslogic above: a single
+	// concrete-resource DELETE probe (LT-132), not a corpus template
+	// category — nil floor falls through to the same "no filtering, other
+	// than an explicit --tags" documented default businesslogic already
+	// gets.
+	"mutatebfla": nil,
 }
 
 // DetectorTemplateTags returns the tech-agnostic category-tag floor for a
@@ -1101,7 +1107,7 @@ type LeafContext struct {
 // "templates" instead of the detector's own name), never a dispatch bug.
 var builtinDetectorClasses = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
-	"netservice": true, "sqli": true,
+	"netservice": true, "sqli": true, "mutatebfla": true,
 }
 
 // LeafClass returns the vuln-class label a leaf belongs under in the
