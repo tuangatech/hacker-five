@@ -72,6 +72,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		noAdaptiveThrottle   bool
 		autoProvisionAccount bool
 		provisionEmail       string
+		allowMutatingBFLA    bool
+		mutateBFLADeletePath string
+		mutateBFLAVerifyPath string
+		mutateBFLAMarker     string
 	)
 
 	cmd := &cobra.Command{
@@ -174,6 +178,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				DisableAdaptiveThrottle: noAdaptiveThrottle,
 				AutoProvisionAccount:    autoProvisionAccount,
 				ProvisionEmailTemplate:  provisionEmail,
+				AllowMutatingBFLA:       allowMutatingBFLA,
+				MutateBFLADeletePath:    mutateBFLADeletePath,
+				MutateBFLAVerifyPath:    mutateBFLAVerifyPath,
+				MutateBFLAMarker:        mutateBFLAMarker,
 			}
 			// LT-34 / A6 (doc16 Phase 7 Step 1): parse --recon-file once, up
 			// front — it feeds both the template scoping below and the
@@ -381,7 +389,7 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", 25, "cross-target worker pool size")
 	cmd.Flags().IntVar(&templateConcurrency, "template-concurrency", 0, "how many loaded templates fire in parallel against a single target (doc15 Step 6b); 0 = built-in default (10). Still bounded by --rate-limit; auto-capped to 5 when a prompt-injection template is loaded")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 10, "requests/sec across the whole scan (conservative default — raise it explicitly for a lab benchmark; most bounty/VDP programs' own limits are lower still)")
-	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", "sqli" (native SQL-injection — see doc18 Step 4), "businesslogic", or "netservice" (unauthenticated-exposure checks against a "tcp://host:port" target, e.g. a naabu-discovered open port — see Phase 8 Step 1, docs/17-implementation-plan-ph8.md)`)
+	cmd.Flags().StringVar(&detector, "detector", "", `detector to run (required): "idor", "misconfig", "authbypass", "ssrf", "sqli" (native SQL-injection — see doc18 Step 4), "mutatebfla" (mutating-method DELETE BFLA/BOLA — see LT-132, docs/follow-up.md), "businesslogic", or "netservice" (unauthenticated-exposure checks against a "tcp://host:port" target, e.g. a naabu-discovered open port — see Phase 8 Step 1, docs/17-implementation-plan-ph8.md)`)
 	cmd.Flags().StringVar(&endpointTemplate, "endpoint", "", `endpoint path with an {{id}} placeholder to enumerate, e.g. "/workshop/api/mechanic/mechanic_report?report_id={{id}}" (required for --detector idor)`)
 	cmd.Flags().BoolVar(&idorPreview, "idor-preview", false, "fire one extra preflight GET against the resolved --endpoint before enumeration begins, logging its status/body-length — off by default so scripted invocations see no behavior change")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token (env: HACKERFIVE_AUTH_TOKEN)")
@@ -405,6 +413,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&couponCodeField, "coupon-code-field", "", `request-body field name the businesslogic detector sends the coupon code under (default: crAPI's real "coupon_code"; LT-135)`)
 	cmd.Flags().StringVar(&couponAmountField, "coupon-amount-field", "", `request-body field name the businesslogic detector sends the coupon amount under (default: crAPI's real "amount"; LT-135)`)
 	cmd.Flags().IntVar(&raceConcurrency, "race-concurrency", 0, "simultaneous requests the businesslogic detector's apply-race check fires via last-byte-sync (default: 15)")
+	cmd.Flags().BoolVar(&allowMutatingBFLA, "allow-mutating-bfla", false, "allow the mutatebfla detector to fire its real DELETE against --mutatebfla-delete-path (LT-132) — a third, independently-scoped exception to this tool's read/enumerate-only default (never --allow-writes/--auto-provision-account); omitted, the detector is skipped with a warning")
+	cmd.Flags().StringVar(&mutateBFLADeletePath, "mutatebfla-delete-path", "", `path+query of a resource with its real, concrete ID already substituted in, e.g. "/workshop/api/merchant/video/delete/42" (required for --detector mutatebfla) — the ID must be one you have independently confirmed --auth-token's own account owns; this detector never enumerates a range the way idor does`)
+	cmd.Flags().StringVar(&mutateBFLAVerifyPath, "mutatebfla-verify-path", "", `GET path+query used to read the resource's state before/after the mutating attempt, as --auth-token; defaults to --mutatebfla-delete-path (the common case: a RESTful resource shares its GET/DELETE path) — set explicitly when a target splits them (e.g. a delete-by-id path with no GET-by-id sibling, verified instead via a list endpoint)`)
+	cmd.Flags().StringVar(&mutateBFLAMarker, "mutatebfla-marker", "", `substring that must appear in --mutatebfla-verify-path's response body while the resource still exists (typically its own ID) — required for --detector mutatebfla; the detector refuses to mutate a target it cannot itself confirm via this marker`)
 	cmd.Flags().StringVar(&format, "format", "json", `output format: "json", "markdown", "html", or "hackerone-json" (an offline, best-effort HackerOne report_intent draft — see "hackerfive report" for the live API workflow)`)
 	cmd.Flags().StringVar(&reconFile, "recon-file", "", "path to a prior 'hackerfive recon --output <path>' JSON result — when given, its detected tech stack adds product-specific template tags on top of the --detector category floor (LT-16/LT-17, docs/follow-up.md)")
 	cmd.Flags().BoolVar(&narrowByTech, "narrow-by-tech", true, "scope the loaded template corpus to the --detector's categories (plus --recon-file's tech stack, if given) instead of loading all ~9.5k synced templates (doc15 Step 6a). On by default; set --narrow-by-tech=false or --all-templates to load everything. Never overrides an explicit --tags.")

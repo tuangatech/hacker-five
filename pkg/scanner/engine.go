@@ -17,6 +17,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors/businesslogic"
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
+	"github.com/tuangatech/hacker-five/pkg/detectors/mutatebfla"
 	"github.com/tuangatech/hacker-five/pkg/detectors/netservice"
 	"github.com/tuangatech/hacker-five/pkg/detectors/sqli"
 	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
@@ -546,6 +547,9 @@ func (e *Engine) loadScope() (*scope.Scope, error) {
 func (e *Engine) warnIfWritesUngated() {
 	if e.cfg.Detector == "businesslogic" && !e.cfg.AllowWrites {
 		e.warnf("warn", "--allow-writes not set — businesslogic's mutating checks (coupon self-mint/apply, apply-race) will be skipped; pass --allow-writes to run them")
+	}
+	if e.cfg.Detector == "mutatebfla" && !e.cfg.AllowMutatingBFLA {
+		e.warnf("warn", "--allow-mutating-bfla not set — the mutatebfla detector will be skipped; pass --allow-mutating-bfla to run it (LT-132: it fires a real DELETE against the resource, gated behind its own flag per CLAUDE.md)")
 	}
 }
 
@@ -1110,6 +1114,22 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 	case "businesslogic":
 		detector := businesslogic.New(e.client, e.businesslogicOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.AllowWrites)
+	case "mutatebfla":
+		base := strings.TrimRight(target, "/")
+		verifyPath := e.cfg.MutateBFLAVerifyPath
+		if verifyPath == "" {
+			verifyPath = e.cfg.MutateBFLADeletePath
+		}
+		detector := mutatebfla.New(e.client,
+			mutatebfla.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat),
+			mutatebfla.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }),
+		)
+		targets := []mutatebfla.Target{{
+			DeleteURL: base + e.cfg.MutateBFLADeletePath,
+			VerifyURL: base + verifyPath,
+			Marker:    e.cfg.MutateBFLAMarker,
+		}}
+		return detector.Run(ctx, targets, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.AllowMutatingBFLA)
 	case "netservice":
 		detector := netservice.New(netservice.WithTimeout(e.cfg.Timeout))
 		return detector.Run(ctx, target)

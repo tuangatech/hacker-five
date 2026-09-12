@@ -19,6 +19,7 @@ var recognizedDetectors = map[string]bool{
 	"businesslogic": true,
 	"netservice":    true,
 	"sqli":          true,
+	"mutatebfla":    true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -302,6 +303,39 @@ type Config struct {
 	AutoProvisionAccount   bool
 	ProvisionEmailTemplate string
 
+	// AllowMutatingBFLA (from --allow-mutating-bfla) gates the mutatebfla
+	// detector's Run entirely (docs/follow-up.md LT-132) — a *third*,
+	// independently-scoped exception to this tool's read/enumerate-only
+	// default, deliberately its own flag rather than folded into
+	// AllowWrites (scoped to businesslogic) or AutoProvisionAccount (scoped
+	// to pkg/provision): CLAUDE.md requires any new mutating capability get
+	// its own equally-scoped gate. Absent (the default, false), the
+	// detector returns no findings with a stderr warning printed once per
+	// scan (pkg/scanner/engine.go), same treatment as AllowWrites' absence.
+	AllowMutatingBFLA bool
+
+	// MutateBFLADeletePath/MutateBFLAVerifyPath/MutateBFLAMarker are the
+	// mutatebfla detector's required fields for --detector mutatebfla
+	// (docs/follow-up.md LT-132). Both paths are path+query with
+	// scheme+host stripped, joined with each target exactly like
+	// EndpointTemplate/SQLiPath — MutateBFLADeletePath is the resource's
+	// real, concrete ID already substituted in (this detector never
+	// enumerates a range the way idor does: the ID under test must be one
+	// the operator has independently confirmed the owner account owns).
+	// MutateBFLAVerifyPath, if empty, defaults to MutateBFLADeletePath
+	// (the common case: a RESTful resource shares its GET/DELETE path).
+	// MutateBFLAMarker is a substring the operator asserts uniquely
+	// identifies the resource in the verify GET's body (typically its own
+	// ID) — required; the detector refuses to mutate a target it cannot
+	// itself confirm via this marker. CLI-flag-driven only for now: unlike
+	// EndpointTemplate/SQLiPath, recon has no way to determine which
+	// concrete ID belongs to which account, so there is no
+	// decisionengine/planexec auto-derivation yet (see mutatebfla's own
+	// package doc comment).
+	MutateBFLADeletePath string
+	MutateBFLAVerifyPath string
+	MutateBFLAMarker     string
+
 	// IDORPreview (from --idor-preview) fires one extra preflight GET against
 	// the resolved --endpoint before idor's real ID-enumeration loop begins,
 	// logging its status/body-length — closes the "a wrong EndpointTemplate
@@ -395,6 +429,14 @@ func (c Config) validate(opts ValidateOptions) error {
 	}
 	if c.Detector == "businesslogic" && c.AuthToken == "" {
 		return fmt.Errorf("validating config: businesslogic detector requires --auth-token (or its env var equivalent)")
+	}
+	if c.Detector == "mutatebfla" {
+		if c.AuthToken == "" || c.OtherAuthToken == "" {
+			return fmt.Errorf("validating config: mutatebfla detector requires both --auth-token and --other-auth-token (or their env var equivalents) — there is no single-account mode")
+		}
+		if c.MutateBFLADeletePath == "" || c.MutateBFLAMarker == "" {
+			return fmt.Errorf("validating config: mutatebfla detector requires --mutatebfla-delete-path and --mutatebfla-marker")
+		}
 	}
 	if c.AutoProvisionAccount && c.ProvisionEmailTemplate == "" {
 		return fmt.Errorf("validating config: --auto-provision-account requires --provision-email (no default/fabricated email domain is ever used)")
