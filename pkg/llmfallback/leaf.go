@@ -93,7 +93,7 @@ type draftTemplateResponse struct {
 func (c *Client) ResolveLeaf(ctx context.Context, leaf *agenttask.PlanNode, leafCtx registry.LeafContext, capabilities []registry.Capability, templates []templatesync.Entry) (LeafDecision, float64, error) {
 	prompt := buildLeafPrompt(leaf, leafCtx, capabilities, templates)
 
-	text, cost, err := c.completeBestAvailable(ctx, leafSystemPrompt, prompt)
+	text, cost, err := c.completeBestAvailableLabeled(ctx, leafSystemPrompt, prompt, "ResolveLeaf "+leaf.ID, requestTimeout)
 	if err != nil {
 		return LeafDecision{}, 0, err
 	}
@@ -123,7 +123,7 @@ func (c *Client) ResolveLeaf(ctx context.Context, leaf *agenttask.PlanNode, leaf
 			}
 			return LeafDecision{EscalateToHuman: fmt.Sprintf("no existing tag fits (%s) and no frontier tier is configured to draft a new template", reason)}, cost, nil
 		}
-		draftText, draftCost, err := c.complete(ctx, tierFrontier, draftTemplateSystemPrompt, prompt)
+		draftText, draftCost, err := c.completeLabeled(ctx, tierFrontier, draftTemplateSystemPrompt, prompt, "ResolveLeaf "+leaf.ID+" draft_template", requestTimeout)
 		if err != nil {
 			return LeafDecision{}, cost, err
 		}
@@ -370,20 +370,3 @@ func isTagWordRune(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 }
 
-// completeBestAvailable tries the local tier first (the routine, low-cost
-// case doc15 I4 describes), falling back to the frontier tier only if the
-// local tier is unconfigured — draft-template authoring's own frontier call
-// happens separately in ResolveLeaf, this is just "make the first,
-// classification call somehow."
-func (c *Client) completeBestAvailable(ctx context.Context, system, user string) (string, float64, error) {
-	if c.localAvailable {
-		text, cost, err := c.complete(ctx, tierLocal, system, user)
-		if err == nil {
-			return text, cost, nil
-		}
-		if c.openRouterKey == "" {
-			return "", 0, err
-		}
-	}
-	return c.complete(ctx, tierFrontier, system, user)
-}

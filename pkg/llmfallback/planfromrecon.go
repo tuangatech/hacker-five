@@ -128,7 +128,7 @@ func (c *Client) PlanFromRecon(ctx context.Context, result *recon.ReconResult, c
 		fmt.Fprintf(&p, "- %s: %s\n", cap.Name, cap.Description)
 	}
 
-	text, cost, err := c.completeBestAvailable(ctx, planFromReconSystemPrompt, p.String())
+	text, cost, err := c.completeBestAvailableLabeled(ctx, planFromReconSystemPrompt, p.String(), "PlanFromRecon", requestTimeoutLong)
 	if err != nil {
 		return nil, cost, err
 	}

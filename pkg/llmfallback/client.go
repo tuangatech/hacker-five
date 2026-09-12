@@ -37,18 +37,33 @@ const (
 	// that changes on its own schedule.
 	defaultOpenRouterModel = "openrouter/auto"
 
-	// requestTimeout must cover the slowest real call this client makes.
-	// Two calls dominate: ResolveLeaf's draft-template authoring call (a
+	// requestTimeout bounds a per-leaf/classification call: ResolveLeaf's
+	// classification call and its draft-template authoring follow-up (a
 	// full YAML template plus, for reasoning-capable models, hidden
-	// reasoning tokens — observed live to exceed 60s), and PlanFromRecon's
-	// recon-wide proposal call (the whole summarized recon output in, a
-	// reasoning model's multi-leaf proposal list out — observed live against
-	// a real OpenRouter model to time out mid-response-body-read even at
-	// 180s, docs/follow-up.md LT-25). Classification/triage/field calls
-	// finish in a few seconds, so this single shared ceiling is sized for
-	// those two outliers, not the common case.
+	// reasoning tokens — observed live to exceed 60s), ResolveField.
 	requestTimeout = 240 * time.Second
+
+	// requestTimeoutLong bounds the handful of single-shot calls that reason
+	// over a whole dataset rather than one leaf/field: PlanFromRecon (the
+	// whole summarized recon output), VetPendingLeaves (every StatusPending
+	// leaf), TriageFindings and Suggest (every finding in a scan). LT-146
+	// (docs/follow-up.md): PlanFromRecon's and VetPendingLeaves' calls both
+	// timed out live at the old shared 240s ceiling in one real run against
+	// a 24-host target — this gives the whole "one call over everything"
+	// shape more room, not just those two observed failures, since
+	// TriageFindings/Suggest are structurally identical and would hit the
+	// same wall on a large enough scan.
+	requestTimeoutLong = 420 * time.Second
 )
+
+// heartbeatInterval is LT-146's "still waiting" signal: a call outstanding
+// this long gets a periodic log line (via logCB) instead of staying silent
+// until it times out or returns — previously indistinguishable from a
+// genuine hang, the single biggest complaint from the same live round (zero
+// mid-call visibility, only a completion/failure line at the very end). A
+// var, not a const, so a test can shrink it rather than waiting out a real
+// 30s tick — same convention as pkg/scanner's dispatchHeartbeatInterval.
+var heartbeatInterval = 30 * time.Second
 
 // ErrNoTierAvailable is returned when neither a local runtime nor
 // OpenRouter is reachable/configured — the caller should treat this exactly
@@ -69,6 +84,24 @@ type Client struct {
 	openRouterModel     string
 	openRouterInputUSD  float64 // per 1M input tokens
 	openRouterOutputUSD float64 // per 1M output tokens
+
+	logCB func(level, msg string) // nil-safe; see WithLogCallback
+}
+
+// Option configures a Client at construction — the same functional-options
+// shape idor.Option/misconfig.Option already use in this codebase.
+type Option func(*Client)
+
+// WithLogCallback registers fn to receive LT-146's heartbeat ("still
+// waiting on <call>, Ns elapsed") and bounded-retry ("<call> timed out —
+// retrying once") lines. Additive: a Client with no callback registered
+// just never calls it (log/logf below are nil-safe), so every existing
+// caller's behavior is unchanged until it opts in. Callers that already
+// have a log sink wire it through (CLI's cmd.ErrOrStderr(), webui's
+// Job.AppendLog); pkg/mcpserver's plan/triage tools have no sink of their
+// own yet (LT-131, docs/follow-up.md) and simply omit this.
+func WithLogCallback(fn func(level, msg string)) Option {
+	return func(c *Client) { c.logCB = fn }
 }
 
 // New builds a Client from environment variables. It does not error when a
@@ -76,15 +109,22 @@ type Client struct {
 // (e.g. local-only in an offline lab environment); it only errors when
 // neither tier is usable, since every fallback call would otherwise fail
 // anyway.
-func New() (*Client, error) {
+func New(opts ...Option) (*Client, error) {
 	c := &Client{
-		httpClient: &http.Client{Timeout: requestTimeout},
+		// The shared http.Client-level timeout is fixed at the longer of
+		// the two per-call ceilings below so it never preempts a shorter
+		// per-call ctx deadline (completeOnce wraps every real call in its
+		// own context.WithTimeout) — this is just the outer backstop.
+		httpClient: &http.Client{Timeout: requestTimeoutLong},
 
 		localURL:   strings.TrimSuffix(getenvDefault(envLocalModelURL, defaultLocalModelURL), "/"),
 		localModel: getenvDefault(envLocalModelName, defaultLocalModelName),
 
 		openRouterKey:   os.Getenv(envOpenRouterKey),
 		openRouterModel: getenvDefault(envOpenRouterModel, defaultOpenRouterModel),
+	}
+	for _, opt := range opts {
+		opt(c)
 	}
 	c.openRouterInputUSD = getenvFloat(envOpenRouterInputPrice, 3.0)
 	c.openRouterOutputUSD = getenvFloat(envOpenRouterOutPrice, 15.0)
@@ -94,6 +134,12 @@ func New() (*Client, error) {
 		return nil, ErrNoTierAvailable
 	}
 	return c, nil
+}
+
+func (c *Client) logf(level, format string, args ...any) {
+	if c.logCB != nil {
+		c.logCB(level, fmt.Sprintf(format, args...))
+	}
 }
 
 // getenvDefault falls back to fallback only when key is entirely unset —
@@ -269,6 +315,93 @@ func (c *Client) complete(ctx context.Context, t tier, system, user string) (tex
 		addGlobalSpend(costUSD) // process-lifetime total, independent of any one Client/plan-call
 	}
 	return cr.Choices[0].Message.Content, costUSD, nil
+}
+
+// completeLabeled wraps complete with LT-146's reliability behavior for one
+// logical call: a per-call context deadline (timeout — distinct from
+// httpClient's own fixed, longer ceiling, which exists only as an outer
+// backstop), a periodic "still waiting" heartbeat via logCB once the call
+// has been outstanding past heartbeatInterval, and exactly one retry when
+// the failure was specifically this per-call deadline firing — not the
+// caller's own ctx already being canceled/expired (the whole operation is
+// stopping regardless, a retry would just hang again), and not a real
+// API/decode error (retrying an auth failure or a malformed response wastes
+// a second call for nothing). label identifies the call in every heartbeat/
+// retry line logCB sees — e.g. "ResolveLeaf leaf-10", "PlanFromRecon".
+func (c *Client) completeLabeled(ctx context.Context, t tier, system, user, label string, timeout time.Duration) (text string, costUSD float64, err error) {
+	text, costUSD, err = c.completeOnce(ctx, t, system, user, label, timeout)
+	if err != nil && isOwnTimeout(ctx, err) {
+		c.logf("warn", "%s: timed out after %s — retrying once", label, timeout)
+		var retryText string
+		var retryCost float64
+		retryText, retryCost, err = c.completeOnce(ctx, t, system, user, label, timeout)
+		costUSD += retryCost
+		if err == nil {
+			text = retryText
+		}
+	}
+	return text, costUSD, err
+}
+
+// completeOnce is one attempt within completeLabeled: a fresh per-call
+// deadline plus the heartbeat goroutine, wrapping complete's single HTTP
+// round trip. The heartbeat goroutine's stop is synchronous (it waits for
+// the goroutine to actually exit, not just signals it to) so no goroutine
+// outlives this function, mirroring pkg/scanner's startDispatchHeartbeat
+// (LT-149) — the two are independent, package-local implementations of the
+// same "periodic progress line on a long operation" shape rather than a
+// shared dependency, since each logs through its own package's seam.
+func (c *Client) completeOnce(ctx context.Context, t tier, system, user, label string, timeout time.Duration) (string, float64, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	start := time.Now()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				c.logf("info", "%s: still waiting on the model, %s elapsed", label, time.Since(start).Round(time.Second))
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	text, cost, err := c.complete(callCtx, t, system, user)
+	close(done)
+	<-stopped
+	return text, cost, err
+}
+
+// isOwnTimeout reports whether err is completeOnce's own per-call deadline
+// firing (worth completeLabeled's one retry) rather than the caller's outer
+// callerCtx already being canceled/expired, or a non-timeout error.
+func isOwnTimeout(callerCtx context.Context, err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) && callerCtx.Err() == nil
+}
+
+// completeBestAvailableLabeled tries the local tier first, falling back to
+// the frontier tier if local errored or isn't available — the tiered
+// fallback order every caller in this package shares (ResolveLeaf's
+// classification call, ResolveField, PlanFromRecon, TriageFindings,
+// VetPendingLeaves, Suggest), routed through completeLabeled so each gets
+// LT-146's heartbeat/timeout/retry behavior with a label/timeout it chooses.
+func (c *Client) completeBestAvailableLabeled(ctx context.Context, system, user, label string, timeout time.Duration) (string, float64, error) {
+	if c.localAvailable {
+		text, cost, err := c.completeLabeled(ctx, tierLocal, system, user, label, timeout)
+		if err == nil {
+			return text, cost, nil
+		}
+		if c.openRouterKey == "" {
+			return "", 0, err
+		}
+	}
+	return c.completeLabeled(ctx, tierFrontier, system, user, label, timeout)
 }
 
 // ModelLabel names the model a call would actually use right now: the

@@ -883,7 +883,10 @@ func fillReconFields(ctx context.Context, job *Job, cfgs []scanner.Config) []sca
 	var fbLoaded bool
 	fallbackClient := func() (*llmfallback.Client, error) {
 		if !fbLoaded {
-			fb, fbErr = llmfallback.New()
+			// LT-146 (docs/follow-up.md): give this job's own log stream the
+			// heartbeat/retry visibility llmfallback.Client now emits, same as
+			// handlers_plan.go's resolve call.
+			fb, fbErr = llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) { job.AppendLog(level, msg) }))
 			fbLoaded = true
 		}
 		return fb, fbErr

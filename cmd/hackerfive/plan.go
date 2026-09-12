@@ -201,7 +201,14 @@ func newPlanCmd(root *rootFlags) *cobra.Command {
 			// already treats that as "every unresolved leaf escalates," the
 			// same graceful-degrade posture every other caller of New() uses.
 			if llmAssist {
-				fb, fbErr := llmfallback.New()
+				// LT-146 (docs/follow-up.md): heartbeat ("still waiting on
+				// the model") and bounded-retry-on-timeout lines land on the
+				// same stderr stream as this command's other llm-assist
+				// lines below, instead of the phase going silent for minutes
+				// with no signal of whether a given call is slow or hung.
+				fb, fbErr := llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "llm-assist: %s\n", msg)
+				}))
 				ceiling := llmfallback.PerCallDefaultSpendCeilingUSD()
 				tree.SpendCeilingUSD = ceiling
 
