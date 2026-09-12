@@ -265,3 +265,85 @@ func TestAddTech_LowerConfidenceArrivesSecond_DoesNotDowngrade(t *testing.T) {
 		assert.Equal(t, ConfidenceHigh, result.TechStack[0].Confidence, "a later, lower-confidence source must never downgrade an already-higher confidence")
 	}
 }
+
+// TestAddHost_SameHost_MergesInsteadOfDuplicating guards the LT-147 fix
+// (docs/follow-up.md): a real target's Hosts table showed the apex host
+// twice — once from Wave 1's passive WHOIS/ASN lookup (Source
+// "passive-whois-asn", carrying .Notes) and once from Wave 2's httpx/naabu
+// probe (Source "httpx", carrying .Ports) — every other discovered host got
+// exactly one entry. Mirrors TestAddTech_SameNameAndHost_
+// MergesInsteadOfDuplicating's shape.
+func TestAddHost_SameHost_MergesInsteadOfDuplicating(t *testing.T) {
+	agg := &aggregator{}
+	agg.addHost(HostFact{Host: "nettix.com.pe", Notes: []string{"asn: AS12345 | Example ISP | PE"}, Source: "passive-whois-asn", Confidence: ConfidenceMedium})
+	agg.addHost(HostFact{Host: "nettix.com.pe", Ports: []PortFact{{Port: 443, Protocol: "tcp", Service: "https"}}, Source: "httpx", Confidence: ConfidenceHigh})
+
+	result := agg.finalize()
+	if assert.Len(t, result.Hosts, 1, "the apex host observed by two waves must merge into one row, not two") {
+		host := result.Hosts[0]
+		assert.Equal(t, "passive-whois-asn, httpx", host.Source)
+		assert.Equal(t, []string{"asn: AS12345 | Example ISP | PE"}, host.Notes, "Notes from the first source must be kept, not dropped")
+		if assert.Len(t, host.Ports, 1, "Ports from the second source must be unioned in, not dropped") {
+			assert.Equal(t, 443, host.Ports[0].Port)
+		}
+		assert.Equal(t, ConfidenceHigh, host.Confidence, "confidence must promote to the higher of the two sources")
+	}
+}
+
+// TestAddHost_WwwAndCaseHostVariants_MergeInsteadOfDuplicating mirrors
+// TestAddTech_WwwAndCaseHostVariants_MergeInsteadOfDuplicating — the same
+// NormalizeHost key addHost now shares with addTech.
+func TestAddHost_WwwAndCaseHostVariants_MergeInsteadOfDuplicating(t *testing.T) {
+	agg := &aggregator{}
+	agg.addHost(HostFact{Host: "www.nettix.com.pe", Source: "httpx", Confidence: ConfidenceMedium})
+	agg.addHost(HostFact{Host: "Nettix.com.pe", Source: "httpx", Confidence: ConfidenceMedium})
+	agg.addHost(HostFact{Host: "nettix.com.pe", Source: "httpx", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	assert.Len(t, result.Hosts, 1, "www./bare/mixed-case variants of the same host must merge into one row, not three")
+}
+
+func TestAddHost_DifferentHost_StaysDistinct(t *testing.T) {
+	agg := &aggregator{}
+	agg.addHost(HostFact{Host: "a.example.com", Source: "httpx", Confidence: ConfidenceMedium})
+	agg.addHost(HostFact{Host: "b.example.com", Source: "httpx", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	assert.Len(t, result.Hosts, 2, "two distinct hosts is genuinely distinct information, not a duplicate")
+}
+
+func TestAddHost_SameSourceTwice_SourceNotDuplicatedInString(t *testing.T) {
+	agg := &aggregator{}
+	agg.addHost(HostFact{Host: "example.com", Source: "httpx", Confidence: ConfidenceMedium})
+	agg.addHost(HostFact{Host: "example.com", Source: "httpx", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	if assert.Len(t, result.Hosts, 1) {
+		assert.Equal(t, "httpx", result.Hosts[0].Source, "the same source reported twice must not repeat itself in the merged string")
+	}
+}
+
+func TestAddHost_LowerConfidenceArrivesSecond_DoesNotDowngrade(t *testing.T) {
+	agg := &aggregator{}
+	agg.addHost(HostFact{Host: "example.com", Source: "httpx", Confidence: ConfidenceHigh})
+	agg.addHost(HostFact{Host: "example.com", Source: "passive-whois-asn", Confidence: ConfidenceMedium})
+
+	result := agg.finalize()
+	if assert.Len(t, result.Hosts, 1) {
+		assert.Equal(t, ConfidenceHigh, result.Hosts[0].Confidence, "a later, lower-confidence source must never downgrade an already-higher confidence")
+	}
+}
+
+// TestAddHost_DuplicatePort_NotDuplicated guards mergePortFacts: two waves
+// that both happen to observe the same (Port, Protocol) on a host must not
+// produce two identical PortFact rows.
+func TestAddHost_DuplicatePort_NotDuplicated(t *testing.T) {
+	agg := &aggregator{}
+	agg.addHost(HostFact{Host: "example.com", Ports: []PortFact{{Port: 443, Protocol: "tcp"}}, Source: "httpx"})
+	agg.addHost(HostFact{Host: "example.com", Ports: []PortFact{{Port: 443, Protocol: "tcp"}, {Port: 21, Protocol: "tcp"}}, Source: "naabu"})
+
+	result := agg.finalize()
+	if assert.Len(t, result.Hosts, 1) {
+		assert.Len(t, result.Hosts[0].Ports, 2, "the port both sources agree on must appear once, the new one must still be added")
+	}
+}

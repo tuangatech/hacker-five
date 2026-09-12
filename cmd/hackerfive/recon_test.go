@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,10 +195,16 @@ func TestNewReconCmd_FlagDefaults(t *testing.T) {
 // pairs recon.WithProgressCallback fires, not silently drop them.
 func TestVerboseProgress_WritesWaveStatusToStderr(t *testing.T) {
 	var buf bytes.Buffer
-	fn := verboseProgress(&buf)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	origNow := verboseProgressNow
+	verboseProgressNow = func() time.Time { return now }
+	defer func() { verboseProgressNow = origNow }()
 
+	fn := verboseProgress(&buf)
 	fn("wave0", "running")
+	now = start.Add(5 * time.Second)
 	fn("wave0", "done")
 
-	assert.Equal(t, "wave0: running\nwave0: done\n", buf.String())
+	assert.Equal(t, "[+0s] wave0: running\n[+5s] wave0: done\n", buf.String())
 }
