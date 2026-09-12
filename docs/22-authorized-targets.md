@@ -14,16 +14,6 @@ A living list of real, authorized targets (found via disclose.io/HackerOne per [
 
 ## Active targets
 
-### a16z.com
-- **Source:** disclose.io / own `security.txt`
-- **Policy:** [a16z.com/security-policy](https://a16z.com/security-policy) — confirmed via `/.well-known/security.txt` (Contact `cirt@a16z.com`, Expires 2027-07-15)
-- **Scope:** a16z.com domain and subdomains
-- **Safe harbor:** explicit — exempts good-faith research from ToS/AUP and applicable anti-hacking law claims within their control
-- **Restrictions:** avoid privacy violations/disruption/unauthorized access/data destruction; limit data access to the minimum needed to demonstrate a PoC; stop and report immediately if real user data is encountered; **only interact with test accounts you own or have explicit permission for** — no cross-account testing without one; 90-day disclosure window before going public
-- **Bounty:** none (pure VDP)
-- **Fit for HackerFive:** good for `--detector misconfig` (read-only, no account needed). `idor`/`authbypass` cross-account checks are out unless a test account is separately arranged — the policy explicitly requires owning or being permitted to use any account tested.
-- **Vetted:** 2026-09-12
-
 ### a2x.io
 - **Source:** disclose.io
 - **Policy:** [a2x.io/security-policy](https://a2x.io/security-policy) — confirmed via `/.well-known/security.txt` (Contact + Policy fields consistent)
@@ -145,6 +135,7 @@ Found via the same disclose.io search; recorded here so they aren't re-researche
 | `zenity.io` | Safe harbor explicit, but scope is only "any digital assets owned by Zenity Ltd/Inc" — no domain named at all, unlike a2x.io's "this domain, its subdomains" wording. Nothing concrete to point HackerFive at without asking them to name assets first. |
 | `zerocopter.com` | The URL checked (`/coordinated-vulnerability-disclosure-policy/`) is Zerocopter's own generic CVD-platform template page, not a specific customer's scoped program — it names no company's domain to test. Not a vettable target on its own; a real Zerocopter-hosted customer program page would be. |
 | `webflow-vdp-pro` (Bugcrowd) | Page is JS-rendered — automated fetch only returned the nav/login shell, no scope/policy text. Inconclusive, same as `abax.com`/`ab.co` above — needs a manual browser check or the Bugcrowd API before deciding. |
+| `a16z.com` | Removed 2026-09-12 (previously listed as an Active target with a verified VDP) — the real-world a16z.com site is subscription/paywalled with little scannable surface. The free-content alternative, `a16z.news`, is just a16z's Substack newsletter (third-party-hosted, no app surface) — checked its `/.well-known/security.txt` (404) and found no a16z-specific security/VDP content there at all, only Substack's own generic policies. Neither is a good HackerFive target; don't re-add without a different, actually-scannable a16z-owned asset. |
 
 ## See also
 - [21-scanning-real-targets.md](21-scanning-real-targets.md) — the workflow this registry feeds: recon, `--tags`-based template selection, running the scan itself
