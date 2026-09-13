@@ -149,9 +149,18 @@ type Recon struct {
 	paramMining         bool
 	paramMiningWordlist string
 	paramMineRequestCap int
-	runBinary           runFunc
-	progress            func(wave, status string)
-	headers             map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
+
+	// contentDiscovery runs Wave 3's bounded unlinked-path sweep (Phase 8
+	// Step 5 remainder, docs/17-implementation-plan-ph8.md): probe a curated
+	// wordlist of common admin/backup/config-shaped paths a link-following
+	// crawl can't reach, via httpx's own -path flag. Opt-in, DepthFull only,
+	// same structural gate as headlessCrawl/paramMining above.
+	contentDiscovery         bool
+	contentDiscoveryWordlist string
+
+	runBinary runFunc
+	progress  func(wave, status string)
+	headers   map[string]string // static request headers applied to every direct HTTP call and passed to httpx/katana via -H (LT-36)
 
 	openAPISpecRefs []string // operator-supplied OpenAPI docs to walk into api-spec EndpointFacts (LT-89)
 }
@@ -246,6 +255,34 @@ func WithParamMiningRequestCap(n int) Option {
 	return func(r *Recon) {
 		if n > 0 {
 			r.paramMineRequestCap = n
+		}
+	}
+}
+
+// WithContentDiscovery enables Phase 8 Step 5's bounded unlinked-path sweep
+// for Wave 3 — a curated wordlist of common admin/backup/config-shaped
+// paths probed via httpx's own -path flag against every seed, recorded as
+// `wave3-content-discovery` EndpointFacts. Opt-in, DepthFull only. false is
+// a no-op.
+func WithContentDiscovery(on bool) Option {
+	return func(r *Recon) {
+		if on {
+			r.contentDiscovery = true
+		}
+	}
+}
+
+// WithContentDiscoveryWordlist points the content-discovery sweep at an
+// operator-supplied path list instead of the embedded default (SecLists'
+// Discovery/Web-Content/common.txt, MIT-licensed, 4,751 entries — see
+// contentdiscovery.go). Unlike WithParamMiningWordlist's capped override,
+// a larger list here is the operator's own explicit choice and cost to
+// bear — httpx's own -rl/-threads and this run's --wave-timeout are the
+// only limits. Empty keeps the embedded default.
+func WithContentDiscoveryWordlist(path string) Option {
+	return func(r *Recon) {
+		if strings.TrimSpace(path) != "" {
+			r.contentDiscoveryWordlist = path
 		}
 	}
 }

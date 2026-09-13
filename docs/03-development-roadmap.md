@@ -481,11 +481,12 @@ Version tags are cut on batch-readiness, not step number.
 
 #### Week 63: Version gating + richer crawl — 🟡 Step 6 partly landed 2026-09-07
 - [x] `templates/index.json` carries `AffectedRange`; out-of-range CVE templates dropped when the tech version is known (closes LT-7 / P0-1b) — done 2026-09-11, see [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) Step 4
-- [ ] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8) — `--crawl-depth` done; opt-in headless crawl done 2026-09-09 (`--headless-crawl`, LT-99); content-discovery still open
+- [x] Configurable crawl depth (default unchanged) + opt-in JS-rendered crawl with a per-host timeout (closes LT-8) — `--crawl-depth` done; opt-in headless crawl done 2026-09-09 (`--headless-crawl`, LT-99); content-discovery done 2026-09-12 (`--content-discovery`)
 - [x] Bounded name-ranked probe of unprobed `robots.txt`/`sitemap.xml` endpoints → `resolveEndpointFacts` (LT-76); redirect-flow rule for `*/bounce`/OAuth/SSO/logout paths (LT-77 partial); redirect-chain fidelity + per-host tech-fact attribution (LT-64/LT-65/LT-84b); numeric-query-param ID candidates (LT-83); per-path-timeout vs host-down breaker (LT-86); OpenAPI-JSON spec walker (LT-40); known-CDN-ASN naabu skip (LT-61) — 2026-09-07
 - [x] Opt-in first-party hidden-parameter mining (`--param-mining`, LT-100) — done 2026-09-09
 - [x] LT-40 tail (b)/(c) — widen spec-probe paths + YAML request bodies — done 2026-09-07 (`Phase 7` Step 6a batch); LT-40 (a) GraphQL SDL/introspection stays open, trigger-gated
-- [ ] Bounded content-discovery + embedded wordlist; CT-log sibling-API discovery (LT-63)
+- [x] Bounded content-discovery + embedded wordlist (`--content-discovery`, SecLists' MIT-licensed `common.txt`, 4,751 entries) — done 2026-09-12, see [17-implementation-plan-ph8.md](17-implementation-plan-ph8.md) Step 5
+- [ ] CT-log sibling-API discovery (LT-63) — still open, separate from the content-discovery item above
 
 #### Week 64: Eval + release — ⬜ not started
 - [ ] New-detector yield + any new false-positive mode measured against all lab targets, tracked against the <5% target

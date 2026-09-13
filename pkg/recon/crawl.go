@@ -187,6 +187,12 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 		r.probeSignupCandidates(ctx, agg, seed)
 	}
 
+	// Phase 8 Step 5 remainder (docs/17-implementation-plan-ph8.md): opt-in
+	// bounded content-discovery wordlist sweep — after the probeCommonPaths
+	// loop so it can see (and skip) any host already classified as a
+	// uniform wall.
+	r.discoverContentPaths(ctx, agg, seeds)
+
 	// LT-76 (docs/follow-up.md, Phase 8 Step 5): give the highest-interest
 	// paths that Wave 0 lifted from robots.txt / sitemap.xml but never
 	// probed a live status, so resolveEndpointFacts can reason over them.

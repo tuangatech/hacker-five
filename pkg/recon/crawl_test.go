@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +149,89 @@ func TestRunKatana_HeadlessCrawl(t *testing.T) {
 			}
 		}
 		assert.True(t, sawXHR, "the fetch()/XHR endpoint must reach the endpoint set")
+	})
+}
+
+// TestDiscoverContentPaths guards Phase 8 Step 5's content-discovery pass
+// (docs/17-implementation-plan-ph8.md): httpx's -path sweep only fires when
+// WithContentDiscovery(true) is set, and its hits reach the endpoint set tagged
+// "wave3-content-discovery". The handler answers a nonexistent path with a
+// real 404 (not probeCommonPaths' own trivial-200-everywhere shape other
+// tests in this file use) so recordUniformResponse never records a
+// catchall/waf-block verdict for this host — discoverContentPaths would
+// otherwise correctly, but inconveniently for this test, suppress every hit
+// on a host it believes is a uniform wall.
+func TestDiscoverContentPaths(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("homepage"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	httpxPathOut := `{"url":"` + srv.URL + `/admin","status_code":200,"content_length":512,"content_type":"text/html"}
+{"url":"` + srv.URL + `/backup.zip","status_code":403,"content_length":10,"content_type":"text/plain"}`
+
+	run := func(opts ...Option) (args []string, res *ReconResult) {
+		t.Helper()
+		fake := func(_ context.Context, _ string, name string, a ...string) ([]byte, error) {
+			if name != "httpx" {
+				return nil, nil
+			}
+			for _, arg := range a {
+				if arg == "-path" {
+					args = append([]string(nil), a...)
+					return []byte(httpxPathOut), nil
+				}
+			}
+			return nil, nil // Wave 2's own plain httpx call — no -path, nothing to return here
+		}
+		r := New(newTestClient(), append([]Option{withRun(fake)}, opts...)...)
+		out, err := r.Run(context.Background(), srv.URL, DepthFull)
+		require.NoError(t, err)
+		return args, out
+	}
+
+	t.Run("default: no sweep at all", func(t *testing.T) {
+		args, res := run()
+		assert.Nil(t, args, "httpx -path must not be invoked unless --content-discovery is set")
+		for _, ep := range res.Endpoints {
+			assert.NotEqual(t, "wave3-content-discovery", ep.Source)
+		}
+	})
+
+	t.Run("content-discovery on: -path invoked, hits recorded", func(t *testing.T) {
+		args, res := run(WithContentDiscovery(true))
+		require.NotNil(t, args, "httpx -path must be invoked when --content-discovery is set")
+		assert.Contains(t, args, "-path")
+		assert.Contains(t, args, "-mc")
+		var sawAdmin, sawBackup bool
+		for _, ep := range res.Endpoints {
+			if ep.Source != "wave3-content-discovery" {
+				continue
+			}
+			switch {
+			case strings.HasSuffix(ep.URL, "/admin"):
+				sawAdmin = true
+				assert.Equal(t, 200, ep.StatusCode)
+			case strings.HasSuffix(ep.URL, "/backup.zip"):
+				sawBackup = true
+				assert.Equal(t, 403, ep.StatusCode)
+			}
+		}
+		assert.True(t, sawAdmin, "a discovered 200 path must reach the endpoint set")
+		assert.True(t, sawBackup, "a discovered 403 (access-controlled) path must reach the endpoint set too")
+	})
+
+	t.Run("custom wordlist path is passed through", func(t *testing.T) {
+		wl := filepath.Join(t.TempDir(), "mywords.txt")
+		require.NoError(t, os.WriteFile(wl, []byte("admin\nbackup.zip\n"), 0o644))
+		args, _ := run(WithContentDiscovery(true), WithContentDiscoveryWordlist(wl))
+		require.NotNil(t, args)
+		assert.Contains(t, args, wl)
 	})
 }
 

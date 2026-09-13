@@ -34,6 +34,14 @@ archives:
       - README*
       - src: templates/**/*
         dst: templates
+      # The embedded default --content-discovery wordlist (Phase 8 Step 5,
+      # docs/17-implementation-plan-ph8.md) is SecLists' MIT-licensed
+      # common.txt, compiled straight into the binary via go:embed — its
+      # attribution notice ships alongside every release archive, not just
+      # in the repo, per the MIT license's "included in all copies"
+      # requirement.
+      - src: pkg/recon/wordlists/LICENSE-seclists.txt
+        dst: LICENSE-seclists.txt
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
