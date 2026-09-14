@@ -24,6 +24,7 @@ type Config struct {
 // Client is a scanner-configured HTTP client with a middleware-decorated transport.
 type Client struct {
 	http    *http.Client
+	noRedir *http.Client // shares http's Transport; never follows a redirect (DoNoRedirect)
 	timeout time.Duration
 }
 
@@ -62,6 +63,12 @@ func New(cfg Config, mws ...Middleware) *Client {
 				return nil
 			},
 		},
+		// rt (the shared RoundTripper) is safe for concurrent use by both
+		// http.Clients — only CheckRedirect differs.
+		noRedir: &http.Client{
+			Transport:     rt,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
 
@@ -73,6 +80,23 @@ func New(cfg Config, mws ...Middleware) *Client {
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(req.Context(), c.timeout)
 	resp, err := c.http.Do(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("performing request: %w", err)
+	}
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// DoNoRedirect is Do, except it never follows a redirect — the caller gets
+// the raw 3xx response with its Location header untouched, and this client
+// never attempts to actually reach whatever that header points at. For a
+// check whose whole point is inspecting a redirect response itself (e.g. a
+// host-header-reflection probe, where "following" a spoofed Location could
+// mean connecting to an attacker-nameable host — LT-156).
+func (c *Client) DoNoRedirect(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(req.Context(), c.timeout)
+	resp, err := c.noRedir.Do(req.WithContext(ctx))
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("performing request: %w", err)

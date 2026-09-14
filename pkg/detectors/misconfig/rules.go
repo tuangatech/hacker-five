@@ -61,6 +61,16 @@ var ExposedPaths = []PathRule{
 	{Path: "/config.json", Keywords: []string{"apiKey", "secret", "password"}, Severity: "high"},
 	{Path: "/wp-config.php.bak", Keywords: []string{"DB_PASSWORD", "define("}, Severity: "high"},
 	{Path: "/server-status", Keywords: []string{"Apache Server Status"}, Severity: "medium"},
+	// Prometheus's exposition format ("# HELP <metric> ...\n# TYPE <metric>
+	// ...") is distinctive enough that either marker alone is effectively
+	// zero-FP against real-world content (LT-156, found live against
+	// api.yosmart.com's own review of a manually-authored report,
+	// 2026-09-13). A scrape endpoint reachable from the public internet
+	// commonly discloses internal infra (instance/AZ/hostnames), runtime
+	// fingerprint (language/framework version), fleet-size business data,
+	// and — as seen live — high-cardinality labels carrying real internal
+	// identifiers.
+	{Path: "/metrics", Keywords: []string{"# HELP ", "# TYPE "}, Severity: "high"},
 	// Keywords are real htpasswd hash-format markers (Apache MD5, bcrypt,
 	// SHA1-base64 — see `man htpasswd`), not a bare ":" — a real .htpasswd
 	// line is "user:hash", but ":" alone false-positived against any target

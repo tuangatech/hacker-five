@@ -41,6 +41,42 @@ func TestClient_RetriesTransientErrors(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&attempts))
 }
 
+// TestClient_DoNoRedirect_NeverFollows locks in LT-156: unlike Do (which
+// follows up to MaxRedirects), DoNoRedirect must return the raw 3xx response
+// itself — needed by a caller that inspects the redirect's own headers
+// (e.g. checkHostHeaderRedirect) rather than wanting the final page.
+func TestClient_DoNoRedirect_NeverFollows(t *testing.T) {
+	var finalHits int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/redirect", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/final")
+		w.WriteHeader(http.StatusFound)
+	})
+	mux.HandleFunc("/final", func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&finalHits, 1)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := httpclient.New(httpclient.Config{
+		Timeout:             5 * time.Second,
+		MaxRedirects:        5,
+		MaxIdleConnsPerHost: 10,
+	})
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/redirect", nil)
+	require.NoError(t, err)
+
+	resp, err := client.DoNoRedirect(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusFound, resp.StatusCode)
+	assert.Equal(t, "/final", resp.Header.Get("Location"))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&finalHits), "DoNoRedirect must never actually follow the redirect")
+}
+
 func TestClient_DoesNotRetryClientErrors(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

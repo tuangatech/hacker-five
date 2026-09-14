@@ -317,6 +317,7 @@ func (d *Detector) Run(ctx context.Context, target, authToken string) ([]detecto
 		d.checkMissingHeaders,
 		d.checkDisallowedMethods,
 		d.checkCORS,
+		d.checkHostHeaderRedirect,
 		d.checkVerboseErrors,
 		d.checkDefaultCreds,
 	}
@@ -785,6 +786,94 @@ func (d *Detector) checkCORS(ctx context.Context, target, host, authToken string
 			"response":                         detectors.FormatResponse(resp.StatusCode, resp.Header, body),
 		},
 	}}, nil
+}
+
+// hostHeaderProbeHost is a canary Host value this check spoofs on an
+// otherwise-ordinary GET / — RFC 2606 guarantees ".invalid" never resolves,
+// so even if a target's redirect handler built the Location from it, this
+// detector's own client (DoNoRedirect, LT-156) never attempts to actually
+// reach it.
+const hostHeaderProbeHost = "hackerfive-host-header-probe.invalid"
+
+// httpDowngrade returns target with its scheme forced to plain http, or ""
+// if target isn't https to begin with. A real deployment often fronts a
+// correctly SNI/Host-matched HTTPS vhost with a separate, more permissive
+// plain-HTTP default vhost whose only job is the http->https upgrade
+// redirect — exactly the shape found live against www.yosmart.com (LT-156,
+// 2026-09-13): the HTTPS listener 404s a spoofed Host, but the plain-HTTP
+// listener blindly reflects it into the redirect Location.
+func httpDowngrade(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	u2 := *u
+	u2.Scheme = "http"
+	return u2.String()
+}
+
+// checkHostHeaderRedirect probes for CWE-601 host-header-poisoned redirects:
+// a target that builds its redirect Location from the client-supplied Host
+// header, rather than a fixed/hard-coded value, lets any caller redirect a
+// visitor anywhere. Found live against www.yosmart.com's bare nginx
+// redirector while reviewing a manually-authored VDP report (LT-156,
+// 2026-09-13) — a real, common misconfiguration class ExposedPaths/CORS/
+// missing-headers didn't cover. Tries target's own scheme first, then falls
+// back to the plain-HTTP variant if that found nothing (see httpDowngrade).
+func (d *Detector) checkHostHeaderRedirect(ctx context.Context, target, host, _ string) ([]detectors.Finding, error) {
+	if f := d.probeHostHeaderRedirect(ctx, target, host); f != nil {
+		return []detectors.Finding{*f}, nil
+	}
+	if httpTarget := httpDowngrade(target); httpTarget != "" {
+		if f := d.probeHostHeaderRedirect(ctx, httpTarget, host); f != nil {
+			return []detectors.Finding{*f}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (d *Detector) probeHostHeaderRedirect(ctx context.Context, target, host string) *detectors.Finding {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(target, "/")+"/", nil)
+	if err != nil {
+		return nil
+	}
+	req.Host = hostHeaderProbeHost
+
+	resp, err := d.client.DoNoRedirect(req)
+	if err != nil {
+		d.hostErrors.RecordError(host)
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		d.hostErrors.RecordError(host)
+		return nil
+	}
+	d.hostErrors.RecordSuccess(host)
+
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return nil
+	}
+	location := resp.Header.Get("Location")
+	if location == "" || !strings.Contains(strings.ToLower(location), strings.ToLower(hostHeaderProbeHost)) {
+		return nil // redirect target didn't echo the spoofed Host — a fixed/hard-coded Location, the safe case
+	}
+
+	return &detectors.Finding{
+		ID:          "misconfig-host-header-reflected-redirect",
+		Type:        "misconfig",
+		Severity:    "low",
+		Confidence:  "high",
+		Target:      target,
+		Description: fmt.Sprintf("a %d redirect's Location header echoes the client-supplied Host header (CWE-601) instead of a fixed target — impact depends on what else trusts this: low on a bare redirector, higher if this host caches responses or a password-reset/email-link flow consumes the resulting URL", resp.StatusCode),
+		Evidence: map[string]string{
+			"spoofed_host": hostHeaderProbeHost,
+			"status":       fmt.Sprintf("%d", resp.StatusCode),
+			"request":      detectors.FormatRequest(req.Method, req.URL.String(), req.Header, nil),
+			"response":     detectors.FormatResponse(resp.StatusCode, resp.Header, body),
+		},
+	}
 }
 
 func (d *Detector) checkVerboseErrors(ctx context.Context, target, host, authToken string) ([]detectors.Finding, error) {

@@ -69,6 +69,25 @@ func TestMisconfigExposedPath_Hit(t *testing.T) {
 	assert.Equal(t, "high", got[0].Confidence)
 }
 
+// TestMisconfigExposedPath_PrometheusMetrics_Hit locks in LT-156 (found live
+// against api.yosmart.com reviewing a manually-authored VDP report,
+// 2026-09-13): a publicly reachable Prometheus /metrics scrape endpoint is
+// a real, common misconfiguration ExposedPaths didn't cover at all.
+func TestMisconfigExposedPath_PrometheusMetrics_Hit(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/metrics" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("# HELP process_uptime_seconds Uptime\n# TYPE process_uptime_seconds gauge\nprocess_uptime_seconds 12345\n"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-exposed-path-metrics")
+	require.Len(t, got, 1)
+	assert.Equal(t, "high", got[0].Severity)
+}
+
 // TestMisconfigExposedPath_429NotFlagged locks in LT-73: a CDN 429 whose
 // body still matches an exposed-path keyword (seen live on shop.app after
 // sustained scanning tripped Cloudflare's rate limiter) is a throttle page,
@@ -479,6 +498,62 @@ func TestMisconfigCORS_AuthWallResponse_DownRanked(t *testing.T) {
 	assert.Equal(t, "medium", got[0].Severity)
 	assert.Equal(t, "medium", got[0].Confidence)
 	assert.Contains(t, got[0].Description, "auth-walled response (status 401)")
+}
+
+// TestMisconfigHostHeaderRedirect_Reflected locks in LT-156 (found live
+// against www.yosmart.com's bare nginx redirector, 2026-09-13): a redirect
+// whose Location echoes the client-supplied Host header is CWE-601, a real
+// misconfiguration no prior check covered.
+func TestMisconfigHostHeaderRedirect_Reflected(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		// Only the spoofed-Host probe gets the vulnerable redirect — every
+		// other check's own GET / (checkCORS, checkMissingHeaders, ...)
+		// must see an ordinary 200, or it'd wrongly try to follow this
+		// handler's https-self-reference and trip the host-error breaker.
+		if r.URL.Path == "/" && strings.Contains(r.Host, "hackerfive-host-header-probe.invalid") {
+			w.Header().Set("Location", "https://"+r.Host+"/")
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("normal homepage"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got := withPrefix(findings, "misconfig-host-header-reflected-redirect")
+	require.Len(t, got, 1)
+	assert.Equal(t, "low", got[0].Severity)
+	assert.Contains(t, got[0].Evidence["response"], "hackerfive-host-header-probe.invalid")
+}
+
+// TestMisconfigHostHeaderRedirect_FixedTarget_NoFinding is the negative case:
+// a redirect to a hard-coded target regardless of the request's Host is the
+// safe, common shape and must not be flagged.
+func TestMisconfigHostHeaderRedirect_FixedTarget_NoFinding(t *testing.T) {
+	findings := runMisconfig(t, func(w http.ResponseWriter, r *http.Request) {
+		// Same fixed target regardless of Host (including the spoofed
+		// probe's) — the safe case. A non-.invalid domain here would make
+		// every *other* check's own GET / (which the client follows up to
+		// MaxRedirects) attempt a real network fetch; kept .invalid so
+		// that would fail fast instead, but distinguishing on Host avoids
+		// it entirely, matching the positive-case test's fix.
+		if r.URL.Path == "/" && strings.Contains(r.Host, "hackerfive-host-header-probe.invalid") {
+			w.Header().Set("Location", "https://shop.example.invalid/")
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("normal homepage"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	assert.Empty(t, withPrefix(findings, "misconfig-host-header-reflected-redirect"))
 }
 
 func TestMisconfigVerboseError_Matched(t *testing.T) {
