@@ -148,6 +148,7 @@ Following the same design-tension discipline as doc90's own "Real design decisio
 - [docs/follow-up.md](follow-up.md) LT-157 — the evidence-gating item this same research session logged for v1's existing `llmfallback` triage/suggest layer, independent of this doc's v2 proposal
 
 ## See also
+- [93-implementation-plan-agent-orchestrator.md](93-implementation-plan-agent-orchestrator.md) — the implementation plan for this doc's §5b/§7, on branch `feat/hackerfive-agent-orchestrator`
 - [90-research-hackerbot.md](90-research-hackerbot.md) — the decisions this doc reopens, and the shipped Group H/I infrastructure §4 maps onto
 - [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — where `pkg/coveragegap`, `hackerfive suggest`, and the eval harness (G1) actually landed
 - [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — the detector/exporter contracts §4's reuse map depends on staying unchanged
