@@ -1,0 +1,128 @@
+# LLM-as-Orchestrator: Research & a v2 Design
+
+> Part of the [HackerFive documentation set](../README.md).
+
+**Status:** Research + design proposal, not scheduled into any phase. Reopens [90-research-hackerbot.md](90-research-hackerbot.md) Decision 5 explicitly — see §3 — rather than quietly superseding it.
+
+**Last Updated:** 2026-09-14 — first draft, based on same-session research into HexStrike AI, Cyber-AutoAgent, and Strix (source repos, docs, and independent coverage, not vendor claims alone).
+
+## Why this doc exists
+
+Doc90 already researched these same three tools (§2, updated 2026-08-29) and used them to justify **Decision 5**: HackerFive's coordinator stays deterministic Go code, and an LLM is invoked only as a stateless, schema-in/schema-out call at a decision point the deterministic registry (`pkg/registry`) can't resolve — never a persistent loop that decides what to run next. That decision is implemented and shipped: `pkg/registry/decisionengine.go` does the dispatch, `pkg/llmfallback` is the narrow fallback, `pkg/agenttask.PlanTree` is the task tree, `pkg/mcpserver` exposes the schema-validated tool surface.
+
+This doc asks the opposite question on purpose: what if the LLM *is* the loop — the thing deciding which tool to call next against a live target, autonomously, the way all three research subjects actually work? Not because Decision 5 was wrong, but because the request driving this doc explicitly wants that design examined, and a real "v2" proposal is more useful than an abstract yes/no. §3 states plainly what evidence would need to hold for this to be a good idea, and what evidence from this same research argues against it.
+
+---
+
+## 1. What "LLM as orchestrator" means, concretely
+
+The distinction that matters, restated from doc90's own Decision 5 language:
+
+| | HackerFive v1 (shipped) | LLM-as-orchestrator (this doc) |
+|---|---|---|
+| What decides the next action | `pkg/registry.CoverageStatus`/`decisionengine.go` — a static, versioned table matching a `TechFact` to detectors/tags | The model, reasoning fresh each turn over the current observation |
+| LLM call shape | Stateless, one input→output pair per `PlanTree` leaf, no memory across calls (Decision 5) | A running loop — the model's own prior turns are part of its context, exactly like Cyber-AutoAgent's `mem0_memory` or Strix's per-agent conversation |
+| When the LLM runs at all | Only when the registry has no entry for what recon found (Decision 6) — the rare path | Every turn — the LLM is the *only* dispatch mechanism, deterministic dispatch becomes optional/absent |
+| Failure mode if the LLM is wrong | Bounded — worst case, a leaf stays `StatusUnresolved`, visible and inert | Unbounded unless something else stops it — the loop keeps acting on its own possibly-wrong belief |
+
+Nothing about this changes what "orchestrator" means architecturally versus doc90's Decision 1 (single coordinator, no peer-agent mesh) — a v2 orchestrator is still one process, not a mesh. What changes is *what kind of process* the coordinator is: a Go state machine walking a tree (v1) versus an LLM whose own reasoning is the state machine (v2).
+
+---
+
+## 2. The three tools, examined again with this session's fresh research
+
+Doc90 §2 already tabulated these three at a design level. This pass went one layer deeper — actual source files, actual outcomes since launch, not launch-week claims — and the added detail changes the picture doc90 had:
+
+| Tool | Loop / orchestration | Guardrails: code-enforced vs. claimed | Grounding against hallucination | What actually happened |
+|---|---|---|---|---|
+| **HexStrike AI** ([0x4m4/hexstrike-ai](https://github.com/0x4m4/hexstrike-ai)) | An "Intelligent Decision Engine" (the LLM) picks freely from 150+ MCP-exposed tools across 12+ specialized agent roles; no structured/constrained tool-calling schema found in `hexstrike_mcp.py` | **None found in code.** Direct inspection: `nmap_scan()` takes an unvalidated target string, no scope allowlist; `pacu_exploitation()` (AWS exploitation) fires directly with no confirmation step; no rate limit, no spend/iteration cap enforced. The README's only stated mitigation is "run in isolated environments" — an operator responsibility, not a tool control | Not documented. README asserts "2.1% FP rate" / "98.7% detection rate" with no benchmark or methodology shown | **Weaponized in the field.** Check Point Research reported (Sept 2025) that threat actor group Storm-1575 used HexStrike-AI to exploit Citrix NetScaler CVE-2025-7775/7776/8424 within ~10 minutes of disclosure, naming the tool's guardrail-light autonomous orchestration as the enabler. Also covered by BleepingComputer and The Hacker News |
+| **Cyber-AutoAgent** ([westonbrown/Cyber-AutoAgent](https://github.com/westonbrown/Cyber-AutoAgent), archived) | Single "meta-agent" (Strands SDK): a ReAct-style ("Metacognitive Assessment Cycle") loop chooses among `shell`/`editor`/`swarm`/`http_request`/`mem0_memory`/`load_tool`/`stop`, including running arbitrary shell commands and installing missing packages itself. Confidence self-assessment gates strategy: >80% → direct exploitation via shell, 50–80% → spawn a parallel `swarm`, <50% → more recon | **The one real enforced control is `--iterations` (default 100)** — a hard tool-call cap, the actual anti-runaway mechanism. `--confirmations` (the human-approval gate) **exists but defaults to disabled.** No enforced spend cap (token usage is tracked for observability, not gated). Docker runs as non-root — the only sandboxing control found | Structured evidence template (`[VULNERABILITY]/[EVIDENCE]/[CONFIDENCE] 95% - Verified`) — but `[CONFIDENCE]` is **the model's own self-report**, no independent recomputation or re-execution check found | 84.62% on the XBOW benchmark (best open-source result at time of archiving), but the maintainer **archived the project in Nov 2025**, citing the dedicated full-time investment needed to reach production maturity — a real project reaching this design's practical ceiling, not a hypothetical concern |
+| **Strix** ([usestrix/strix](https://github.com/usestrix/strix)) | Coordinator arranges a graph of specialized agents (recon/exploitation/post-exploitation), each running its own ReAct cycle with tools: a Docker-sandboxed Python "exploit runtime" for writing/running real PoC code, Playwright browser, Caido HTTP proxy, bash terminal, bundled nuclei/ffuf | **The most enforced of the three.** `--max-budget` (hard USD spend cap, clean stop), `--max-turns` (default 500, graceful-wrapup warnings at 70/85/95%), `--scope-mode`/`--diff-base` for CI-scoped runs, Docker-level isolation. **Not found:** a per-action human-approval gate before an exploit attempt fires in the open-source CLI path (only the managed Cloud product has a pre-scan approval step) | **PoC-gated by design: "if the exploit doesn't fire, the finding doesn't ship."** Findings export as SARIF/JSON/markdown with CVSS/OWASP tags and PoC artifacts — the strongest anti-hallucination mechanism of the three, though a single successful PoC run is still not independently re-verified | XBEN benchmark: 96% (100/104), ~$3.37/challenge, ~19 min/challenge. Independent third-party eval (arXiv 2605.10834) found Strix+Claude ≈96% precision vs. ≈81% for a general coding agent doing the same task — **at the cost of measurably lower recall.** A real, published precision/recall tradeoff, not a marketing number |
+
+**What this adds to doc90's own analysis:** doc90 §2 already named "PoC required" and "hard spend ceiling" as the field's converged best practices (threads 7-8) and cited Strix/CAI as the reference. This pass confirms that conclusion with more direct evidence (source-level inspection of HexStrike, Cyber-AutoAgent's actual default-off confirmation flag) and adds two data points doc90 didn't have: a **documented weaponization incident**, and a **published precision/recall tradeoff** showing that even the best-guarded implementation trades coverage for precision, not a free win.
+
+---
+
+## 3. Reopening Decision 5 — the actual tension, stated honestly
+
+**The case for an orchestrator mode:** HackerFive v1's deterministic registry can only act on tech/endpoint signal it already knows how to interpret. An LLM-driven loop can adapt mid-scan — pivot when a response shape looks like GraphQL, retry a probe with a different auth header after seeing a 401, chain a discovered parameter into a second request — the way `pkg/registry` fundamentally cannot, because its dispatch table is fixed ahead of time. This is real, structural coverage the current design leaves on the table, and it's the reason all three research subjects converged on this shape independently.
+
+**The case against making it the default:** every mechanism doc90 already flagged as necessary (PoC-required, hard spend/iteration ceiling, human approval before consequential action, no shell/exec tool) is *harder to keep airtight* once the LLM is making turn-by-turn decisions than when it's making one bounded, schema-validated call per leaf. HexStrike is the concrete demonstration of what happens when even one of those mechanisms (scope enforcement) is missing from an orchestrator loop with real tool access. Cyber-AutoAgent shows that even a good-faith, well-documented implementation still shipped its human-approval gate **defaulted off** — the exact "insecure default" class of bug CLAUDE.md's own `--allow-writes`/`--auto-provision-account` design (explicit, independently-scoped flags, never silently folded together) already guards against elsewhere in this codebase.
+
+**This doc's position:** reopening Decision 5 is warranted enough to design (§4-6 below), but adopting it should not mean replacing v1's default deterministic path. It means a distinct, explicitly-scoped v2 mode — same discipline as every other consequential capability in this codebase (`--allow-writes`, `--auto-provision-account`): opt-in, capped, human-gated, never the default. If this is ever built, doc90 itself should be updated to cross-reference it (the same discipline doc90 §"Future reconsideration" already used for its own Decision-2 reopening candidate) — not quietly left inconsistent.
+
+---
+
+## 4. Reuse map — what of v1 survives intact
+
+The premise behind this doc's request is correct: most of HackerFive v1 is reusable as-is, because v1 already built its detection/execution layer as a set of callable capabilities, not as logic entangled with the deterministic dispatcher. An orchestrator's tool palette *is* v1's existing tool surface:
+
+| v1 package | Role today | Role under an orchestrator (v2) |
+|---|---|---|
+| `pkg/detectors/*` (idor, misconfig, authbypass, ssrf, businesslogic, mutatebfla, sqli, netservice, tls) | Deterministic matcher/extractor logic, dispatched by the registry | **Unchanged.** Still the only path to a `Finding` — a detector's own structural check (baseline two-account diff, fixed-path match, multi-step state comparison) is HackerFive's own version of Strix's "PoC required" rule. The orchestrator selects *which* detector to run against *which* target; it never gets to assert a finding the detector logic didn't independently confirm |
+| `pkg/template/nuclei` (execution engine) + the synced ~9.6k-template corpus | Dispatched by tag-match | **Unchanged as an execution engine.** The orchestrator can propose "try this template/tag against this target" the same way a human operator does today via `hackerfive scan --tags` |
+| `pkg/recon/*` (crawl, fingerprint, jsstatic, endpointprobe, contentdiscovery, active recon, headless Chrome) | Populates `ReconResult` once, up front | **Becomes a callable tool the loop can re-invoke mid-run** — e.g., a targeted `endpointprobe` re-pass after the orchestrator notices a new path a prior response revealed. `pkg/mcpserver/tools_recon.go` already exposes this as a schema-validated MCP tool; no new plumbing needed |
+| `pkg/scanner/httpclient` | The shared, middleware-decorated HTTP client (retry, rate-limit, redirect handling) | **Unchanged, and load-bearing.** Every request an orchestrator loop makes — whether via a detector, a template, or a recon re-pass — still goes through the same retry/backoff/rate-limit machinery. This is a structural safety property, not a convenience: a runaway loop still can't out-request the shared limiter |
+| `pkg/registry` (`decisionengine.go`, `coverage.go`) | Sole dispatcher (Decision 6) | **Downgraded from sole dispatcher to a queryable tool.** `pkg/mcpserver/tools_registry.go` already exposes a `tools.search`-style lookup — the orchestrator calls it the same way it'd call any other tool ("what detectors/tags exist for this tech fact?"), but isn't *required* to follow its answer the way v1's engine is. This is the actual structural change Decision 6 makes: registry answers become advisory input to the loop, not a binding dispatch |
+| `pkg/llmfallback` (`client.go`, `spend.go`, `leaf.go`, `triage.go`, `suggest.go`) | A tiered (local + frontier) client invoked narrowly per leaf, with a process-lifetime `HACKERFIVE_SPEND_CEILING_TOTAL_USD` global cap and a per-call `SpendCeilingUSD` | **Becomes the orchestrator's own model client.** Both spend ceilings already exist and are enforced in `complete()` regardless of caller — this is the single most reusable piece of infrastructure for a v2 loop, and it already does exactly what Strix's `--max-budget` does, just scoped per-process rather than per-run today (needs a per-run ceiling too, see §5) |
+| `pkg/agenttask.PlanTree` | The task tree; mutation restricted to leaves (`StatusPending`/`InProgress`/`Done`/`Unresolved`/`Vetoed`) — the PentestGPT leaf-only-mutation defense doc90 §2 cites | **Reusable as the orchestrator's own working memory**, in place of Cyber-AutoAgent's `mem0_memory` or Strix's per-agent conversation history. The leaf-only-mutation rule is exactly the defense needed against an orchestrator hallucinating a wholesale plan rewrite mid-run |
+| `pkg/mcpserver` (`tools_scan.go`, `tools_recon.go`, `tools_triage.go`, `tools_plan.go`, `tools_registry.go`, `tools_findings.go`, `scangate.go`) | The schema-validated tool surface an external MCP client (Claude, etc.) calls today | **This is already the orchestrator's tool palette, built.** No new interface layer needed — a v2 loop is a caller of this same MCP surface, the same way a human-driven Claude Code session would call it today. `scangate.go`'s per-session concurrency ceiling (D1) already caps aggregate scan pressure regardless of how many calls a loop fires |
+| `pkg/reporter/*` (Exporter interface) | JSON/CLI/markdown/HTML export | **Unchanged.** Still the same output contract regardless of what decided a finding was worth reporting |
+| `pkg/oob`, `pkg/provision`, `pkg/hackerone` | Self-hosted OOB polling, throwaway second-account provisioning (`--auto-provision-account`), report-drafting-only HackerOne client | **Unchanged, and their existing flag-gating is the template for anything new §5 needs** — each is already its own independently-scoped, explicit opt-in exactly the way CLAUDE.md requires new mutating capabilities to be |
+| `pkg/webui` (Plan Preview approve/reject, kill switch, SSE job streaming) | Human review UI for a deterministic plan | **Reusable as the orchestrator's human checkpoint UI** — the existing kill switch (`pkg/webui/handlers_plan_exec.go`) and approve/reject flow are exactly the primitive an orchestrator loop needs for a mid-run pause, not a new thing to design |
+
+The honest summary: **v2 is not a rewrite.** Every detection, execution, recon, reporting, and safety-flag mechanism in v1 survives unchanged. What's new is a loop that calls these tools in a different order, decided by the model instead of the registry — which is a comparatively small, well-isolated new component (§5) sitting on top of infrastructure that already exists.
+
+---
+
+## 5. What v2 actually needs to add
+
+1. **`pkg/orchestrator` (new).** The ReAct-style loop itself: observe (recon/tool output) → the model picks the next MCP tool call from `pkg/mcpserver`'s existing surface → act → observe again. This is the only genuinely new package; everything it calls already exists per §4.
+2. **A hard, per-run iteration ceiling, enforced in code — not a flag that can default off.** Cyber-AutoAgent's `--confirmations`-defaults-disabled is the specific mistake to not repeat: any new orchestrator flag gating a safety behavior must default to the safe state, matching CLAUDE.md's existing pattern for `--allow-writes`/`--auto-provision-account` (opt-in, explicit, warned-on-skip).
+3. **A per-run spend ceiling, distinct from `pkg/llmfallback`'s existing per-process global cap.** The global `HACKERFIVE_SPEND_CEILING_TOTAL_USD` bounds a whole server's lifetime; an orchestrator run needs its own bounded budget the way Strix's `--max-budget` is scoped per invocation, so one runaway session can't quietly consume the entire process-lifetime allowance before anything else gets a turn.
+4. **The PoC-required rule carried over unconditionally.** An orchestrator-selected action still has to terminate in a real detector match (`pkg/detectors/*`'s own structural check) to become a `Finding` — this must not get a bypass "the model is confident, ship it anyway" path. This is the one property from v1 that must survive the pivot completely intact; it's also HackerFive's existing version of the exact mechanism Strix's benchmark results depend on.
+5. **No shell/exec tool, ever — Decision 2 restated, still binding.** An orchestrator gets exactly the same MCP tool surface a human-driven session gets today. "Just let the loop run curl/nmap directly for this edge case" is the same forbidden shortcut doc90 already named; a v2 loop doesn't get a carve-out any more than a human MCP client does.
+6. **Human approval before anything consequential, unchanged.** `--allow-writes`, `--auto-provision-account`, and `report submit --yes` remain separately-scoped, explicit, human-granted gates — an orchestrator loop proposing a mutating check or a report submission still stops at the same checkpoint a human-driven session hits today, surfaced through the existing Web UI approve/reject + kill switch (§4).
+7. **Session log / plan-tree streaming, extended to name which turns were orchestrator-decided.** `pkg/agenttask/sessionlog.go` and `pkg/mcpserver/sessionlog_summary.go` already exist; a v2 loop's turns need to be distinguishable in that log from a human-driven MCP session's turns, so a reviewer can tell which actions the model chose autonomously versus which a human explicitly requested.
+
+---
+
+## 6. Risk comparison, stated plainly
+
+| | v1 (shipped) | v2 orchestrator (proposed) |
+|---|---|---|
+| Coverage ceiling | Bounded by the registry's known tech→detector table | Higher — can adapt to novel response shapes mid-run |
+| Predictability of what a run will do | Fully knowable ahead of time (the registry is static, versioned data) | Not fully knowable ahead of time — same unpredictability every research subject in §2 has |
+| Cost variance | Bounded, rare (Decision 6: LLM only on registry-miss) | Every turn costs money — needs §5's per-run ceiling to bound, and MAPTA's own finding (doc90 §2) that rising cost/turn-count correlates with *falling* success odds argues for an aggressive early-stop, not just a ceiling |
+| Blast radius if guardrails have a gap | Small — worst case is a wrong template dispatch, still gated by the same scope/rate-limit/circuit-breaker infrastructure | Larger — HexStrike is the concrete demonstration of what an ungated version of exactly this architecture enabled in the wild |
+| Auditability | Every dispatch traces to a static registry entry | Needs §5's extended session log to remain equally traceable |
+
+---
+
+## 7. Recommendation
+
+Build it as an explicitly-scoped, opt-in mode — not a replacement for v1's default path, and not enabled by proximity to any existing flag. Concretely:
+
+- A new, separately-named entry point (e.g. `hackerfive agent` or a `--orchestrator` mode flag on an existing command), never folded into `scan`'s default behavior — same discipline CLAUDE.md already requires for `--allow-writes`/`--auto-provision-account`.
+- Ships behind the same G1 eval-harness discipline doc90 already used (`tests/eval/agent_run.go`): measured lab-target FP/FN and cost-per-run *before* it's ever pointed at a real program, the same MAPTA/Cyber-AutoAgent-style fixed-challenge-set methodology doc90 §2 cites.
+- §5's items 2-6 are non-negotiable prerequisites, not follow-on hardening — this is the direct lesson from Cyber-AutoAgent's default-off confirmation flag and HexStrike's absent scope check, not a hypothetical concern.
+- If adopted, doc90 needs an explicit cross-reference update (Decision 5's text, the "Real design decisions" section, and the Definition of Done) — per doc90's own stated discipline for reopening a cross-referenced decision, not a silent edit.
+
+## Open questions, not resolved here
+
+- Does the orchestrator get its own model tier separate from `pkg/llmfallback`'s local/frontier split, or reuse it as-is? Reuse seems right by default — no evidence yet that orchestration reasoning needs a different tier than leaf-resolution reasoning.
+- Should `pkg/registry`'s advisory answers be weighted/preferred by the orchestrator's own prompt, so a v2 run doesn't discard v1's already-tuned precision for zero reason? Likely yes — the registry represents real accumulated tuning (P0-1 through P0-5 in `docs/follow-up.md`); an orchestrator ignoring it entirely would be throwing away signal, not just adding new capability.
+- What's the actual stop condition beyond the iteration/spend ceiling — a target-level "nothing new found in N turns" heuristic, mirroring MAPTA's cost-correlation finding? Needs its own design pass once §5's `pkg/orchestrator` skeleton exists to test against.
+
+## Sources
+
+- HexStrike AI — [GitHub](https://github.com/0x4m4/hexstrike-ai), [README.md](https://github.com/0x4m4/hexstrike-ai/blob/master/README.md), [hexstrike_mcp.py](https://github.com/0x4m4/hexstrike-ai/blob/master/hexstrike_mcp.py); Check Point, ["HexStrike-AI: When LLMs Meet Zero-Day Exploitation"](https://blog.checkpoint.com/executive-insights/hexstrike-ai-when-llms-meet-zero-day-exploitation/); [BleepingComputer](https://www.bleepingcomputer.com/news/security/hackers-use-new-hexstrike-ai-tool-to-rapidly-exploit-n-day-flaws/); [The Hacker News](https://thehackernews.com/2025/09/threat-actors-weaponize-hexstrike-ai-to.html)
+- Cyber-AutoAgent — [GitHub (archived)](https://github.com/westonbrown/Cyber-AutoAgent), [README.md](https://github.com/westonbrown/Cyber-AutoAgent/blob/main/README.md), [docs/architecture.md](https://github.com/westonbrown/Cyber-AutoAgent/blob/main/docs/architecture.md), [docs/memory.md](https://github.com/westonbrown/Cyber-AutoAgent/blob/main/docs/memory.md), [docs/observability-evaluation.md](https://github.com/westonbrown/Cyber-AutoAgent/blob/main/docs/observability-evaluation.md)
+- Strix — [GitHub](https://github.com/usestrix/strix), [README.md](https://github.com/usestrix/strix/blob/main/README.md), [AGENTS.md](https://github.com/usestrix/strix/blob/main/AGENTS.md), [docs.strix.ai](https://docs.strix.ai/), [CLI reference](https://docs.strix.ai/usage/cli.md), [benchmarks](https://github.com/usestrix/strix/tree/main/benchmarks); independent evaluation, [arXiv:2605.10834](https://arxiv.org/html/2605.10834v1) ("From Controlled to the Wild")
+- [90-research-hackerbot.md](90-research-hackerbot.md) — Decision 5/6 and the prior-pass research this doc reopens
+- [docs/follow-up.md](follow-up.md) LT-157 — the evidence-gating item this same research session logged for v1's existing `llmfallback` triage/suggest layer, independent of this doc's v2 proposal
+
+## See also
+- [90-research-hackerbot.md](90-research-hackerbot.md) — the decisions this doc reopens, and the shipped Group H/I infrastructure §4 maps onto
+- [16-implementation-plan-ph7.md](16-implementation-plan-ph7.md) — where `pkg/coveragegap`, `hackerfive suggest`, and the eval harness (G1) actually landed
+- [02-architecture-and-tech-stack.md](02-architecture-and-tech-stack.md) — the detector/exporter contracts §4's reuse map depends on staying unchanged
