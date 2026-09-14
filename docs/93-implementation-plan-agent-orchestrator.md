@@ -2,9 +2,9 @@
 
 > Part of the [HackerFive documentation set](../README.md).
 
-**Status:** Planned, not yet implemented. Branch: `feat/hackerfive-agent-orchestrator`.
+**Status:** M1 implemented and live-verified against a real Docker daemon (this machine, macOS + Docker Desktop). M2-M5 not started. Branch: `feat/hackerfive-agent-orchestrator`.
 
-**Last Updated:** 2026-09-14 — implementation plan for the scoped Decision-2 reopening [92-research-llm-orchestrator.md](92-research-llm-orchestrator.md) §5b/§7 authorized.
+**Last Updated:** 2026-09-14 — M1 built: `pkg/agenttask` `Actor`/`BeginActor`, `pkg/llmfallback/orchestrate.go`'s `NextAction`, and the full `pkg/scriptexec` sandboxed script tool (precheck, egress proxy, Docker sandbox orchestration). See the M1 section below for what was actually built vs. this plan's original sketch, and [follow-up.md](follow-up.md) LT-159 for one real packaging gap found along the way.
 
 ## Context
 
@@ -29,8 +29,16 @@
 
 ## Milestones
 
-### M1 — Foundations (no loop yet; the safety-critical primitives everything else depends on)
+### M1 — Foundations (no loop yet; the safety-critical primitives everything else depends on) — ✅ done 2026-09-14
 
+Built as sketched below, with three real deviations found during implementation:
+- **`mvdan.cc/sh/v3` adopted for the shell precheck**, after the CLAUDE.md-required footprint check: importing only its `syntax` subpackage (not `interp`/`expand`) compiles in just `mvdan.cc/sh/v3/{syntax,fileutil}` — confirmed via `go list -deps` in a scratch module — despite `go.sum` listing several test-only transitive modules (`creack/pty`, `golang.org/x/tools`, ...) that never actually compile into the binary. A real AST walk, not a regex fallback.
+- **The egress proxy runs as its own sidecar container**, not "on the shared bridge" as first sketched — the only design that is portable across Docker Desktop (macOS/Windows) and native Linux Docker. Per run: two `docker network create` networks (`--internal`, shared with the script container; a normal one, giving the sidecar real egress), one sidecar container (`pkg/scriptexec/egressproxy/cmd/hf-egressproxy`, a ~15-line binary wrapping `egressproxy.Proxy`) attached to both, bind-mounted in as its entrypoint plus a mounted scope file (`scope.Entries()` — a new small accessor added to `pkg/scanner/scope` for exactly this — reserialized and read back via the existing `scope.Parse`). The script container attaches ONLY to the internal network; its `HTTP_PROXY`/`HTTPS_PROXY` point at the sidecar's address on that network.
+- **The sidecar binary is cross-compiled on demand** (`sandbox.go`'s `ensureEgressProxyBinary`, cached per Docker-server-arch under `os.UserCacheDir()`), which needs a Go toolchain on the machine running `hackerfive agent` — true on every dev machine used so far, but not guaranteed for a distributed release build. Logged as [follow-up.md](follow-up.md) LT-159 (embed a prebuilt linux/amd64+arm64 binary at release-build time instead) rather than silently shipping a feature that only works for developers.
+
+Live-verified end to end against a real Docker daemon (`pkg/scriptexec/sandbox_integration_test.go`, `-run TestExecute_`): a benign Python script reaches its one in-scope target through the full two-network sidecar topology and gets the real response back; a script targeting a host outside scope is denied at the egress proxy (not just by the static precheck); a precheck-blocked script never starts a container and never calls `ApprovalGate`. Also caught live: `host.docker.internal` resolves to an IPv6 ULA address (`fc00::/7`) on this Docker install, not an IPv4 RFC1918 one — exactly the "DNS-rebinding-shaped" address class `isSpecialUseIP` is designed to catch, confirming that defense fires correctly (a real lab-target scope file needs an explicit CIDR entry for whatever private range its target resolves to, same as any other private target).
+
+Original per-file breakdown (all done):
 - `pkg/agenttask`: `Actor`/`BeginActor` per the gap above (`pkg/agenttask/sessionlog.go`).
 - `pkg/llmfallback/orchestrate.go` (new file, same placement discipline as `leaf.go`/`suggest.go`/`triage.go`): `func (c *Client) NextAction(ctx, tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord) (Action, float64, error)`. `Action{Kind string, NodeID string, Params json.RawMessage, Rationale string}` — `Kind` validated against a fixed allow-list (`recon.refresh`, `registry.lookup`, `scan.leaf`, `triage.rank`, `script.explore`, `stop`); an unrecognized `Kind` or malformed response degrades to `Action{Kind: "stop"}` with the reason logged, never fabricated or retried silently — same contract as `ResolveLeaf`/`Suggest`.
 - `pkg/scriptexec/` (new package) — the sandboxed script tool, per the design below.

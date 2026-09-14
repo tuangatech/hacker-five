@@ -35,6 +35,40 @@ func TestNew_DomainsAndCIDRs(t *testing.T) {
 	}
 }
 
+// TestEntries_RoundTripsThroughNew confirms Entries' contract: feeding its
+// output back through New reproduces an equivalent Scope, even though the
+// text itself isn't byte-identical (comments dropped, CIDR normalized).
+func TestEntries_RoundTripsThroughNew(t *testing.T) {
+	original, err := New([]string{
+		"# a comment",
+		"example.com",
+		"*.example.org",
+		"10.0.0.0/8",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	roundTripped, err := New(original.Entries())
+	if err != nil {
+		t.Fatalf("New(Entries()): %v", err)
+	}
+
+	targets := []string{
+		"https://example.com/path",
+		"https://sub.example.org/path",
+		"http://10.1.2.3/",
+		"https://not-in-scope.com/",
+	}
+	for _, target := range targets {
+		want := original.Allowed(target)
+		got := roundTripped.Allowed(target)
+		if got != want {
+			t.Errorf("Allowed(%q) after round-trip = %v, want %v (matching original)", target, got, want)
+		}
+	}
+}
+
 // TestNew_InlineCommentStripped locks in LT-80: a "host  # note" line must
 // yield the bare host, not an unmatchable literal that silently drops an
 // in-scope target.
