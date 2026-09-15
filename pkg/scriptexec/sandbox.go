@@ -156,12 +156,19 @@ func buildScriptContainerArgs(req ScriptRequest, containerName, internalNet, pro
 // attaches egressNet separately afterward, since `docker run` only accepts
 // one --network), the compiled proxyBinaryHostPath bind-mounted read-only as
 // its entrypoint, and scopeFileHostPath bind-mounted read-only as the scope
-// file it reads via scope.Parse.
+// file it reads via scope.Parse. --add-host pins host.docker.internal to the
+// special host-gateway value: Docker Desktop (Mac/Windows) resolves that name
+// on its own, but plain Docker Engine (Linux — including GitHub's ubuntu
+// runners and a native Linux/WSL2 dev box) only does so with this flag
+// (supported since Docker 20.10) — without it, a script targeting a
+// host-published lab target (docs/20-setup-testing-targets.md) can't resolve
+// the name at all on those hosts.
 func buildProxyContainerArgs(containerName, internalNet, proxyBinaryHostPath, scopeFileHostPath string) []string {
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
 		"--network", internalNet,
+		"--add-host", "host.docker.internal:host-gateway",
 		"-v", proxyBinaryHostPath + ":/hf-egressproxy:ro",
 		"-v", scopeFileHostPath + ":/scope.txt:ro",
 		"-e", "HF_SCOPE_FILE=/scope.txt",
