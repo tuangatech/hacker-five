@@ -2,6 +2,7 @@ package scriptexec
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -40,18 +41,34 @@ func alwaysApprove(context.Context, ScriptRequest, PrecheckResult) (bool, error)
 func TestExecute_BenignPythonScript_ReachesInScopeTargetThroughProxy(t *testing.T) {
 	requireDocker(t)
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// A loopback-only listener (httptest.NewServer's default) is unreachable
+	// from a container via host.docker.internal on plain Docker Engine
+	// (Linux): there, host-gateway is a real routed IP on the docker0
+	// bridge, distinct from 127.0.0.1, and Linux's kernel won't deliver
+	// packets for that IP to a socket bound specifically to loopback (Docker
+	// Desktop's host.docker.internal is a userspace relay that can reach a
+	// loopback-bound service, so this gap doesn't show up there). Binding to
+	// all interfaces instead also matches how a real lab target
+	// (docs/20-setup-testing-targets.md) is actually published — 0.0.0.0,
+	// not 127.0.0.1-only.
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("sandboxed-ok"))
 	}))
+	_ = upstream.Listener.Close()
+	upstream.Listener = ln
+	upstream.Start()
 	defer upstream.Close()
 
-	// The container reaches the test's httptest server (bound to the host's
-	// loopback) via the egress proxy's own outbound leg on the egress
-	// network — Docker Desktop/Engine both route a bridge-network
-	// container's egress through the host, so http://host.docker.internal
-	// is the portable way to name "the machine running the test" from
-	// inside a container. Scope must allow that exact hostname since that's
-	// what the script's request line will carry.
+	// The container reaches the test's httptest server via the egress
+	// proxy's own outbound leg on the egress network — Docker Desktop/Engine
+	// both route a bridge-network container's egress through the host, so
+	// http://host.docker.internal is the portable way to name "the machine
+	// running the test" from inside a container. Scope must allow that exact
+	// hostname since that's what the script's request line will carry.
 	host := "host.docker.internal"
 	port := upstream.URL[strings.LastIndex(upstream.URL, ":")+1:]
 
