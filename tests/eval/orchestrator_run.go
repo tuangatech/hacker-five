@@ -1,0 +1,61 @@
+package eval
+
+import "os"
+
+// OrchestratorScenario is docs/93-implementation-plan-agent-orchestrator.md
+// M5's third eval driver: the same lab targets and
+// tests/fixtures/expected-findings/*.json fixtures as AgentScenario
+// (agent_run.go, the existing MCP-plan mode), resolved through
+// `hackerfive agent` (pkg/orchestrator's LLM-driven loop) instead of an
+// MCP client session or a hand-built `scan` command. Unlike AgentScenario, a
+// Header is supported directly — `hackerfive agent`'s --header flag has no
+// equivalent to the MCP recon tool's documented header-less input (see
+// agent_run.go's "Known, named gap" comment on AgentScenario), so DVWA's
+// login-gated content is reachable here the same way challenges.go's
+// baseline Scenario reaches it.
+type OrchestratorScenario struct {
+	Name              string
+	ExpectedFile      string
+	RequiredEnv       []string
+	Target            func() string
+	Depth             string        // --recon-depth
+	AuthTokenEnv      string        // env var carrying --auth-token, "" if none
+	OtherAuthTokenEnv string        // env var carrying --other-auth-token, "" if none
+	Header            func() string // raw "Name: Value" for --header, nil if none
+	SkipPrefixes      []string
+}
+
+// OrchestratorScenarios mirrors AgentScenarios' four live lab targets.
+var OrchestratorScenarios = []OrchestratorScenario{
+	{
+		Name:         "DVWA (orchestrator)",
+		ExpectedFile: "tests/fixtures/expected-findings/dvwa.json",
+		RequiredEnv:  []string{"DVWA_BASE_URL", "DVWA_COOKIE"},
+		Target:       func() string { return os.Getenv("DVWA_BASE_URL") },
+		Depth:        "active",
+		Header:       func() string { return "Cookie: " + os.Getenv("DVWA_COOKIE") + "; security=low" },
+	},
+	{
+		Name:         "Juice Shop (orchestrator)",
+		ExpectedFile: "tests/fixtures/expected-findings/juiceshop.json",
+		RequiredEnv:  []string{"JUICESHOP_BASE_URL"},
+		Target:       func() string { return os.Getenv("JUICESHOP_BASE_URL") },
+		Depth:        "active",
+	},
+	{
+		Name:         "vAPI (orchestrator)",
+		ExpectedFile: "tests/fixtures/expected-findings/vapi.json",
+		RequiredEnv:  []string{"VAPI_BASE_URL"},
+		Target:       func() string { return os.Getenv("VAPI_BASE_URL") },
+		Depth:        "active",
+	},
+	{
+		Name:              "crAPI (orchestrator)",
+		ExpectedFile:      "tests/fixtures/expected-findings/crapi.json",
+		RequiredEnv:       []string{"CRAPI_BASE_URL", "CRAPI_OWNER_TOKEN", "CRAPI_OTHER_TOKEN"},
+		Target:            func() string { return os.Getenv("CRAPI_BASE_URL") },
+		Depth:             "active",
+		AuthTokenEnv:      "CRAPI_OWNER_TOKEN",
+		OtherAuthTokenEnv: "CRAPI_OTHER_TOKEN",
+	},
+}
