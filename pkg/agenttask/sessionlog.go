@@ -24,6 +24,7 @@ import (
 // package marshals whatever it is handed and does not itself strip secrets.
 type SessionLogEntry struct {
 	Seq        int64           `json:"seq"`
+	Actor      string          `json:"actor"`
 	Tool       string          `json:"tool"`
 	Reason     string          `json:"reason,omitempty"`
 	Params     json.RawMessage `json:"params,omitempty"`
@@ -67,12 +68,22 @@ func (l *SessionLog) SetOnAppend(hook func(SessionLogEntry)) {
 	l.onAppend = hook
 }
 
-// Begin records the start of a tool call and returns a finish function to
-// call (typically via defer) once the call completes. params is marshalled
+// Begin records the start of a tool call made on the human's behalf (a
+// direct MCP tool invocation or Web UI launch) and returns a finish function
+// to call (typically via defer) once the call completes. It is a thin
+// wrapper over BeginActor("human", ...); every existing call site keeps its
+// current meaning.
+func (l *SessionLog) Begin(tool, reason string, params any) func(resultSummary string, err error) {
+	return l.BeginActor("human", tool, reason, params)
+}
+
+// BeginActor is Begin with an explicit actor ("human" or "agent"), so the
+// log can distinguish a turn a human directly requested from one the
+// orchestrator (pkg/orchestrator) decided on its own. params is marshalled
 // now so a later mutation of the caller's struct can't change what was
 // logged; if it can't be marshalled the entry keeps a null params rather
 // than failing the call.
-func (l *SessionLog) Begin(tool, reason string, params any) func(resultSummary string, err error) {
+func (l *SessionLog) BeginActor(actor, tool, reason string, params any) func(resultSummary string, err error) {
 	started := time.Now().UTC()
 
 	l.mu.Lock()
@@ -91,6 +102,7 @@ func (l *SessionLog) Begin(tool, reason string, params any) func(resultSummary s
 		finished := time.Now().UTC()
 		entry := SessionLogEntry{
 			Seq:        seq,
+			Actor:      actor,
 			Tool:       tool,
 			Reason:     reason,
 			Params:     raw,

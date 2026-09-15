@@ -95,6 +95,23 @@ func (s *Scope) HasWildcard() bool {
 	return false
 }
 
+// Entries reserializes s back into the one-per-line syntax Parse/New accept
+// — domain entries as-is, CIDR entries via their canonical net.IPNet
+// string. Not necessarily byte-identical to the original file (comments and
+// formatting are gone, and a CIDR's host bits are normalized), but Parse(s
+// re-fed through New) always reproduces an equivalent Scope. Used when a
+// Scope needs to cross a process boundary that doesn't share Go memory
+// (pkg/scriptexec's egress-proxy sidecar container, which reads scope
+// entries from a mounted file via Parse).
+func (s *Scope) Entries() []string {
+	out := make([]string, 0, len(s.domains)+len(s.cidrs))
+	out = append(out, s.domains...)
+	for _, c := range s.cidrs {
+		out = append(out, c.String())
+	}
+	return out
+}
+
 // Allowed reports whether target's host matches an entry in s — a bare
 // domain must match exactly, a "*."-prefixed entry matches that domain and
 // any subdomain, and a CIDR entry matches only when the host is a literal

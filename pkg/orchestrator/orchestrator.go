@@ -1,0 +1,456 @@
+// Package orchestrator implements the hackerfive agent loop
+// (docs/93-implementation-plan-agent-orchestrator.md M2): given a target, it
+// builds an initial agenttask.PlanTree the same way `hackerfive plan` does
+// (pkg/recon + registry.Resolve), then repeatedly asks
+// llmfallback.Client.NextAction which of a fixed tool catalog to run next,
+// dispatches it, and folds the result back into the tree/history before
+// asking again — until the model says stop, the budget/iteration ceiling is
+// reached, or nothing actionable remains.
+//
+// This package never fabricates a Finding itself: scan.leaf's real detector
+// match (via pkg/planexec, unchanged from `hackerfive scan`/the webui Plan
+// Preview) is the only source of one in this milestone. script.explore
+// (pkg/scriptexec) is a distinct, separately-gated exploration tool whose
+// stdout is surfaced to the caller as evidence for a human to review, not
+// packaged into a Finding on its own — the independent re-confirmation
+// pipeline doc93 M1 describes for that case is not yet built (see
+// docs/follow-up.md LT-160).
+package orchestrator
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
+	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/llmfallback"
+	"github.com/tuangatech/hacker-five/pkg/planexec"
+	"github.com/tuangatech/hacker-five/pkg/recon"
+	"github.com/tuangatech/hacker-five/pkg/registry"
+	"github.com/tuangatech/hacker-five/pkg/scanner"
+	"github.com/tuangatech/hacker-five/pkg/scriptexec"
+	"github.com/tuangatech/hacker-five/pkg/templatesync"
+)
+
+// DefaultBudgetUSD/DefaultMaxIterations are the whole-run ceilings applied
+// when a Config leaves Budget/MaxIterations unset (<= 0) — never zero and
+// never unbounded, per doc93 M2. Scaled up from
+// llmfallback.PerCallDefaultSpendCeilingUSD's own $0.10 single-call default:
+// a run makes many NextAction/TriageFindings calls, not one.
+const (
+	DefaultBudgetUSD     = 1.00
+	DefaultMaxIterations = 20
+	// DefaultScriptTimeout is applied when a Config leaves ScriptTimeout
+	// unset (<= 0) — a script.explore call that never terminates would
+	// otherwise block the whole run indefinitely.
+	DefaultScriptTimeout = 30 * time.Second
+)
+
+// LLMClient is the subset of *llmfallback.Client this package calls —
+// narrowed to an interface so a test can supply a fake instead of exercising
+// a real model tier. *llmfallback.Client satisfies this as-is.
+type LLMClient interface {
+	NextAction(ctx context.Context, tree *agenttask.PlanTree, catalog []llmfallback.ToolSpec, history []llmfallback.TurnRecord) (llmfallback.Action, float64, error)
+	TriageFindings(ctx context.Context, findings []detectors.Finding) (llmfallback.TriageResult, float64, error)
+}
+
+// ReconRunner is the subset of *recon.Recon this package calls — narrowed to
+// an interface for the same reason as LLMClient, and because it lets a
+// caller pre-build the real *recon.Recon with whatever scope/rate-limit/
+// concurrency options `hackerfive plan`'s own construction uses, without
+// this package needing to know about any of them.
+type ReconRunner interface {
+	Run(ctx context.Context, target string, depth recon.Depth) (*recon.ReconResult, error)
+}
+
+// Config configures one orchestrator Run. Target/Recon/Client are required;
+// every other field has a safe default when left zero-valued.
+type Config struct {
+	// Target is the single seed target `hackerfive plan` would also take via
+	// --targets — the same one Recon.Run and the initial registry.Resolve
+	// call use to build the starting PlanTree.
+	Target     string
+	ReconDepth recon.Depth
+	Recon      ReconRunner
+
+	// TemplateIndex feeds both the initial registry.Resolve call and every
+	// scan.leaf dispatch's planexec.RunPlan call — the same synced-corpus
+	// index `hackerfive plan`/`scan` already load.
+	TemplateIndex []templatesync.Entry
+
+	// BaseScanConfig is the shared template planexec.RunPlan copies per leaf
+	// for scan.leaf (Scope, AuthToken, AllowWrites, TemplatePaths, rate
+	// limits, ...) — everything except Targets/Detector/TemplateID, which
+	// RunPlan fills per leaf. Its Scope field also bounds script.explore's
+	// sandbox (scriptexec.ScriptRequest.Scope) — a script can never reach
+	// further than the scan itself is allowed to.
+	BaseScanConfig scanner.Config
+
+	Client     LLMClient
+	SessionLog *agenttask.SessionLog
+
+	// Budget is a hard cap (agenttask.PlanTree.SpendCeilingUSD) on cumulative
+	// LLM cost across every NextAction/TriageFindings call this run makes.
+	// <= 0 uses DefaultBudgetUSD — this run always has a real ceiling, never
+	// an implicit unbounded one.
+	Budget float64
+	// MaxIterations caps the number of dispatched turns (a "stop" action
+	// doesn't count as one). <= 0 uses DefaultMaxIterations.
+	MaxIterations int
+
+	// AllowAgentScripts gates script.explore (docs/93 M1/M3's
+	// --allow-agent-scripts convention, independently scoped like
+	// --allow-writes/--auto-provision-account — never folded into either).
+	// false: script.explore stays in the offered catalog (so the model's
+	// view of what's possible is stable across runs), but a chosen
+	// script.explore action is never executed — the targeted leaf (if any)
+	// is marked StatusUnresolved with the reason, a warning is logged via
+	// OnLog, and the run continues.
+	AllowAgentScripts bool
+	// ScriptTimeout bounds one script.explore sandbox run. <= 0 uses
+	// DefaultScriptTimeout.
+	ScriptTimeout time.Duration
+	// ApprovalGate is required whenever AllowAgentScripts is true —
+	// scriptexec.Execute refuses to run a script unattended without one.
+	ApprovalGate scriptexec.ApprovalGate
+
+	// OnFinding/OnLog stream a scan.leaf dispatch's real detector output
+	// live, mirroring pkg/planexec.ExecOptions' own callbacks — both
+	// optional.
+	OnFinding func(detectors.Finding)
+	OnLog     func(level, msg string)
+}
+
+// Result is one completed Run's outcome.
+type Result struct {
+	Tree       *agenttask.PlanTree
+	Findings   []detectors.Finding
+	History    []llmfallback.TurnRecord
+	Iterations int
+	SpendUSD   float64
+}
+
+// ErrScriptsDisallowed is returned by the internal script.explore dispatch
+// when Config.AllowAgentScripts is false — Run itself never surfaces this as
+// a fatal error; it degrades the targeted leaf and continues (see
+// Config.AllowAgentScripts's doc comment).
+var ErrScriptsDisallowed = errors.New("orchestrator: script.explore requested but AllowAgentScripts is not set")
+
+// Run builds an initial PlanTree from Config.Target (the same recon +
+// registry.Resolve pipeline `hackerfive plan` uses) and then loops, calling
+// Config.Client.NextAction each turn and dispatching its chosen tool, until
+// the model chooses "stop", the budget/iteration ceiling is reached, or no
+// actionable (pending/unresolved) leaf remains. Every Finding in the
+// returned Result comes from a real scan.leaf dispatch's detector match
+// (pkg/planexec, unchanged from `hackerfive scan`) — never from the model's
+// own assertion.
+func Run(ctx context.Context, cfg Config) (Result, error) {
+	if cfg.Target == "" {
+		return Result{}, errors.New("orchestrator: Config.Target is required")
+	}
+	if cfg.Recon == nil {
+		return Result{}, errors.New("orchestrator: Config.Recon is required")
+	}
+	if cfg.Client == nil {
+		return Result{}, errors.New("orchestrator: Config.Client is required")
+	}
+	if cfg.Budget <= 0 {
+		cfg.Budget = DefaultBudgetUSD
+	}
+	if cfg.MaxIterations <= 0 {
+		cfg.MaxIterations = DefaultMaxIterations
+	}
+	if cfg.ScriptTimeout <= 0 {
+		cfg.ScriptTimeout = DefaultScriptTimeout
+	}
+	if cfg.SessionLog == nil {
+		cfg.SessionLog = agenttask.NewSessionLog(nil)
+	}
+
+	result, err := cfg.Recon.Run(ctx, cfg.Target, cfg.ReconDepth)
+	if err != nil {
+		return Result{}, fmt.Errorf("orchestrator: initial recon: %w", err)
+	}
+	tree, _ := registry.Resolve(result, cfg.TemplateIndex)
+	tree.SpendCeilingUSD = cfg.Budget
+
+	catalog := buildCatalog(cfg)
+	var (
+		history  []llmfallback.TurnRecord
+		findings []detectors.Finding
+	)
+
+	iteration := 0
+	for iteration < cfg.MaxIterations {
+		if tree.SpendCeilingUSD > 0 && tree.SpendSoFar() >= tree.SpendCeilingUSD {
+			cfg.logf("info", "budget exhausted ($%.4f of $%.2f) — stopping", tree.SpendSoFar(), tree.SpendCeilingUSD)
+			break
+		}
+		if !hasActionableLeaves(tree) {
+			cfg.logf("info", "no pending/unresolved leaves remain — stopping")
+			break
+		}
+
+		action, cost, err := cfg.Client.NextAction(ctx, tree, catalog, history)
+		tree.AddSpend(cost)
+		if err != nil {
+			return Result{Tree: tree, Findings: findings, History: history, Iterations: iteration, SpendUSD: tree.SpendSoFar()},
+				fmt.Errorf("orchestrator: NextAction: %w", err)
+		}
+
+		finish := cfg.SessionLog.BeginActor("agent", action.Kind, action.Rationale, action.Params)
+		if action.Kind == "stop" {
+			finish("stopped: "+action.Rationale, nil)
+			break
+		}
+		iteration++
+
+		resultSummary, dispatchErr := dispatch(ctx, cfg, tree, &findings, action)
+		finish(resultSummary, dispatchErr)
+
+		rec := llmfallback.TurnRecord{Action: action, ResultSummary: resultSummary}
+		if dispatchErr != nil {
+			rec.Error = dispatchErr.Error()
+		}
+		history = append(history, rec)
+	}
+
+	return Result{
+		Tree:       tree,
+		Findings:   findings,
+		History:    history,
+		Iterations: iteration,
+		SpendUSD:   tree.SpendSoFar(),
+	}, nil
+}
+
+func (cfg Config) logf(level, format string, args ...any) {
+	if cfg.OnLog != nil {
+		cfg.OnLog(level, fmt.Sprintf(format, args...))
+	}
+}
+
+// hasActionableLeaves reports whether tree has any leaf a future turn could
+// still make progress on — a StatusDone/StatusVetoed/StatusEscalated leaf
+// never becomes actionable again, so once every leaf is one of those, the
+// loop has nothing left to do regardless of what NextAction might say.
+func hasActionableLeaves(tree *agenttask.PlanTree) bool {
+	if tree == nil || tree.Root == nil {
+		return false
+	}
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if leaf.Status == agenttask.StatusPending || leaf.Status == agenttask.StatusUnresolved {
+			return true
+		}
+	}
+	return false
+}
+
+// buildCatalog returns the fixed tool catalog offered to NextAction.
+// script.explore is always offered (see Config.AllowAgentScripts) so the
+// model's view of what's possible doesn't change run to run based on a flag
+// it can't see.
+func buildCatalog(cfg Config) []llmfallback.ToolSpec {
+	return []llmfallback.ToolSpec{
+		{Kind: "recon.refresh", Description: "Re-probe a specific target (defaults to the action's node_id target, or the run's own seed target) for fresh recon facts. Does not change the plan tree's shape; use it to gather more signal before deciding what else to try."},
+		{Kind: "registry.lookup", Description: `Search the static capability registry for a detector/recon-tool/template-category matching a described gap. params: {"query": "<search text>"}.`},
+		{Kind: "scan.leaf", Description: "Execute one existing plan-tree leaf (its own target+detector) via the real scanner. Requires node_id naming a pending or unresolved leaf that already has a detector assigned. The only way to produce a confirmed Finding."},
+		{Kind: "triage.rank", Description: "Rank the findings collected so far by how worth investigating they are."},
+		{Kind: "script.explore", Description: `Run a short, sandboxed Python or shell script for exploration a fixed detector/template genuinely cannot do. params: {"language": "python"|"shell", "source": "<script text>"}. Requires human approval every time; may be unavailable this run.`},
+		{Kind: "stop", Description: "Stop the run — nothing left worth another turn, or no listed tool can make further progress."},
+	}
+}
+
+// dispatch runs action's tool and returns a short human-readable summary of
+// what happened (fed back into the next NextAction call's history) and any
+// error encountered. A non-nil error here is a tool-level failure (e.g. an
+// invalid node_id, a script that failed precheck) — it does not stop Run's
+// loop; it's recorded in history so the model can see the failure and choose
+// differently next turn.
+func dispatch(ctx context.Context, cfg Config, tree *agenttask.PlanTree, findings *[]detectors.Finding, action llmfallback.Action) (string, error) {
+	switch action.Kind {
+	case "recon.refresh":
+		return dispatchReconRefresh(ctx, cfg, tree, action)
+	case "registry.lookup":
+		return dispatchRegistryLookup(action)
+	case "scan.leaf":
+		return dispatchScanLeaf(ctx, cfg, tree, findings, action)
+	case "triage.rank":
+		return dispatchTriageRank(ctx, cfg, tree, *findings)
+	case "script.explore":
+		if !cfg.AllowAgentScripts {
+			if action.NodeID != "" {
+				status := agenttask.StatusUnresolved
+				reason := "script.explore requested but --allow-agent-scripts is not set"
+				_ = tree.ApplyLeafUpdate(action.NodeID, agenttask.PlanNodePatch{Status: &status, Rationale: &reason})
+			}
+			cfg.logf("warn", "script.explore requested but --allow-agent-scripts is not set — skipping")
+			return "skipped: --allow-agent-scripts not set", ErrScriptsDisallowed
+		}
+		return dispatchScriptExplore(ctx, cfg, action)
+	default:
+		// NextAction's own contract already rejects any Kind not in the
+		// offered catalog by degrading to "stop" before this is ever
+		// reached — this default only guards against a future catalog
+		// entry added here without a matching case.
+		return "", fmt.Errorf("orchestrator: no dispatcher for action kind %q", action.Kind)
+	}
+}
+
+func dispatchReconRefresh(ctx context.Context, cfg Config, tree *agenttask.PlanTree, action llmfallback.Action) (string, error) {
+	var p struct {
+		Target string `json:"target"`
+	}
+	if len(action.Params) > 0 {
+		_ = json.Unmarshal(action.Params, &p)
+	}
+	target := p.Target
+	if target == "" && action.NodeID != "" {
+		if leaf := tree.Find(action.NodeID); leaf != nil {
+			target = leaf.Target
+		}
+	}
+	if target == "" {
+		target = cfg.Target
+	}
+
+	result, err := cfg.Recon.Run(ctx, target, recon.DepthActive)
+	if err != nil {
+		return "", fmt.Errorf("recon.refresh: %w", err)
+	}
+	return fmt.Sprintf("recon.refresh %s: %d endpoint(s), %d tech fact(s) (not merged into the plan tree)", target, len(result.Endpoints), len(result.TechStack)), nil
+}
+
+func dispatchRegistryLookup(action llmfallback.Action) (string, error) {
+	var p struct {
+		Query string `json:"query"`
+	}
+	if len(action.Params) > 0 {
+		_ = json.Unmarshal(action.Params, &p)
+	}
+	if p.Query == "" {
+		return "", errors.New(`registry.lookup requires params: {"query": "..."}`)
+	}
+	matches := registry.Search(p.Query)
+	if len(matches) == 0 {
+		return fmt.Sprintf("no capability matched %q", p.Query), nil
+	}
+	names := make([]string, 0, len(matches))
+	for _, c := range matches {
+		names = append(names, c.Name)
+	}
+	return fmt.Sprintf("matched: %s", strings.Join(names, ", ")), nil
+}
+
+func dispatchScanLeaf(ctx context.Context, cfg Config, tree *agenttask.PlanTree, findings *[]detectors.Finding, action llmfallback.Action) (string, error) {
+	if action.NodeID == "" {
+		return "", errors.New("scan.leaf requires node_id")
+	}
+	leaf := tree.Find(action.NodeID)
+	if leaf == nil {
+		return "", fmt.Errorf("scan.leaf: node %q not found", action.NodeID)
+	}
+	if leaf.Status != agenttask.StatusPending && leaf.Status != agenttask.StatusUnresolved {
+		return "", fmt.Errorf("scan.leaf: node %q is not runnable (status %s)", action.NodeID, leaf.Status)
+	}
+	if leaf.Detector == "" {
+		return "", fmt.Errorf("scan.leaf: node %q has no detector assigned yet", action.NodeID)
+	}
+
+	excluded := make(map[string]bool)
+	for _, l := range agenttask.Leaves(tree.Root) {
+		if l.ID != leaf.ID {
+			excluded[l.ID] = true
+		}
+	}
+
+	var leafFindings []detectors.Finding
+	_, logs, skipped, err := planexec.RunPlan(ctx, tree, cfg.BaseScanConfig, cfg.TemplateIndex, planexec.ExecOptions{
+		Excluded:       excluded,
+		DetConcurrency: 1,
+		LLMConcurrency: 1,
+		OnFinding: func(_ *agenttask.PlanNode, f detectors.Finding) {
+			leafFindings = append(leafFindings, f)
+			if cfg.OnFinding != nil {
+				cfg.OnFinding(f)
+			}
+		},
+		OnLog: func(_ *agenttask.PlanNode, level, msg string) {
+			if cfg.OnLog != nil {
+				cfg.OnLog(level, msg)
+			}
+		},
+	})
+	*findings = append(*findings, leafFindings...)
+	if len(skipped) > 0 {
+		return fmt.Sprintf("skipped: %s", strings.Join(skipped, "; ")), err
+	}
+	return fmt.Sprintf("%d finding(s), %d log line(s)", len(leafFindings), len(logs)), err
+}
+
+func dispatchTriageRank(ctx context.Context, cfg Config, tree *agenttask.PlanTree, findings []detectors.Finding) (string, error) {
+	if len(findings) == 0 {
+		return "no findings yet to triage", nil
+	}
+	result, cost, err := cfg.Client.TriageFindings(ctx, findings)
+	tree.AddSpend(cost)
+	if err != nil {
+		return "", fmt.Errorf("triage.rank: %w", err)
+	}
+	if result.EscalateToHuman != "" {
+		return "triage escalated: " + result.EscalateToHuman, nil
+	}
+	return fmt.Sprintf("ranked %d finding(s)", len(result.Ranked)), nil
+}
+
+func dispatchScriptExplore(ctx context.Context, cfg Config, action llmfallback.Action) (string, error) {
+	var p struct {
+		Language string `json:"language"`
+		Source   string `json:"source"`
+	}
+	if err := json.Unmarshal(action.Params, &p); err != nil {
+		return "", fmt.Errorf(`script.explore: invalid params (want {"language": "python"|"shell", "source": "..."}): %w`, err)
+	}
+	var lang scriptexec.Language
+	switch p.Language {
+	case string(scriptexec.LangPython):
+		lang = scriptexec.LangPython
+	case string(scriptexec.LangShell):
+		lang = scriptexec.LangShell
+	default:
+		return "", fmt.Errorf("script.explore: unsupported language %q", p.Language)
+	}
+	if strings.TrimSpace(p.Source) == "" {
+		return "", errors.New("script.explore: empty source")
+	}
+
+	req := scriptexec.ScriptRequest{
+		Language:     lang,
+		Source:       p.Source,
+		Scope:        cfg.BaseScanConfig.Scope,
+		Timeout:      cfg.ScriptTimeout,
+		ApprovalGate: cfg.ApprovalGate,
+	}
+	res, err := scriptexec.Execute(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("script.explore: %w", err)
+	}
+	return fmt.Sprintf("exit=%d stdout=%s stderr=%s", res.ExitCode, truncateForHistory(res.Stdout), truncateForHistory(res.Stderr)), nil
+}
+
+// maxHistorySnippet bounds how much of a script's stdout/stderr is folded
+// back into TurnRecord.ResultSummary — the full output already reached the
+// human via ApprovalGate/the CLI's own printing; history only needs enough
+// for the next NextAction call to see what happened.
+const maxHistorySnippet = 500
+
+func truncateForHistory(s string) string {
+	if len(s) <= maxHistorySnippet {
+		return s
+	}
+	return s[:maxHistorySnippet] + "...(truncated)"
+}
