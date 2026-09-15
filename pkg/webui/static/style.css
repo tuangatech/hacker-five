@@ -277,6 +277,31 @@ tr.sev-info { background: var(--info-bg); }
   margin: 0.75rem 0;
 }
 
+/* docs/93 M4: the agent's pending script.explore approval card — a blocking
+   safety gate, so it gets more visual weight than a plain log/agent-entry
+   line. */
+.script-approval-card {
+  background: var(--medium-bg);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0;
+}
+
+.script-approval-card .script-source {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.script-approval-card .precheck-note {
+  color: var(--danger);
+}
+
 .section-header {
   display: flex;
   align-items: center;

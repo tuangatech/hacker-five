@@ -79,6 +79,14 @@
 </fieldset>
 
 <fieldset>
+<legend>LLM Agent (experimental)</legend>
+<label class="inline"><input type="checkbox" id="use_llm_agent" name="use_llm_agent" {{if .UseLLMAgent}}checked{{end}}> Use LLM agent instead of the Detectors above &mdash; the model chooses its own recon/scan/triage actions, budget- and iteration-capped</label>
+<p class="hint">docs/93: an opt-in LLM-orchestrated loop for gaps a fixed template/detector genuinely can't reach on its own (JWT algorithm confusion, non-numeric ID decoding, GraphQL introspection, business-logic sequencing). Ignores the Detectors tabs above when checked. Requires a configured LLM tier (OPENROUTER_API_KEY or a reachable local runtime) &mdash; the job fails immediately if none is available.</p>
+<label class="inline"><input type="checkbox" id="allow_llm_agent_scripts" name="allow_llm_agent_scripts" {{if .AllowLLMAgentScripts}}checked{{end}}> Allow the agent to propose sandboxed scripts (script.explore) &mdash; every proposed script blocks for your approval, never run automatically</label>
+<p class="hint">Meaningless unless "Use LLM agent" is also checked. A proposed script runs in a locked-down Docker sandbox (no capabilities, egress limited to this scan's own scope) only after a static safety pre-check and your explicit approval of that exact script &mdash; one at a time, never batched.</p>
+</fieldset>
+
+<fieldset>
 <legend>Headers</legend>
 <label for="headers">Extra headers (--header, one &quot;Name: Value&quot; per line, optional)</label>
 <textarea id="headers" name="headers" placeholder="Cookie: PHPSESSID=...">{{.Headers}}</textarea>
@@ -127,7 +135,9 @@
   // Non-secret, safe-to-remember fields. Excludes auth_token,
   // other_auth_token, headers (session Cookie), authorized (fresh
   // per-launch acknowledgement), allow_writes (deliberate mutating-checks
-  // opt-in per CLAUDE.md), and the mechanical csrf_token / _activetab.
+  // opt-in per CLAUDE.md), use_llm_agent / allow_llm_agent_scripts (same
+  // deliberate-opt-in reasoning as allow_writes — docs/93 M4), and the
+  // mechanical csrf_token / _activetab.
   var FIELDS = [
     "target", "extra_targets",
     "run_misconfig", "run_idor", "run_authbypass", "run_ssrf", "run_businesslogic",

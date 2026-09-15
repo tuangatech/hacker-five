@@ -41,7 +41,7 @@ type LaunchFormData struct {
 	OOBServers string
 
 	RunBusinesslogic bool
-	AllowWrites      bool   // businesslogic's own fields, rendered via detector_fields_businesslogic — AllowWrites defaults false and is never recon-derived (CLAUDE.md's mutating-checks gate)
+	AllowWrites      bool // businesslogic's own fields, rendered via detector_fields_businesslogic — AllowWrites defaults false and is never recon-derived (CLAUDE.md's mutating-checks gate)
 	CouponMintPath   string
 	CouponApplyPath  string
 	RaceConcurrency  int
@@ -70,7 +70,41 @@ type LaunchFormData struct {
 	ScopeFile   string
 	Authorized  bool
 
+	// UseLLMAgent opts into docs/93-implementation-plan-agent-orchestrator.md's
+	// LLM-orchestrated scan loop (pkg/orchestrator) instead of the plain
+	// checked-detector-tab flow: the model itself chooses recon/scan/triage
+	// actions turn by turn, budget/iteration-capped, and — with
+	// AllowLLMAgentScripts — may propose a sandboxed script.explore action
+	// that blocks on a human's approval every time (never batched). Off by
+	// default, same independently-scoped-opt-in posture as AllowWrites;
+	// excluded from LT-122's FIELDS localStorage prefill (launch.html) for
+	// the same reason.
+	UseLLMAgent bool
+	// AllowLLMAgentScripts mirrors --allow-agent-scripts (cmd/hackerfive/
+	// agent.go): independently scoped from UseLLMAgent itself, same
+	// never-folded-together convention as --allow-writes/
+	// --auto-provision-account. Meaningless unless UseLLMAgent is also
+	// checked; runLaunchAgentJob ignores it otherwise.
+	AllowLLMAgentScripts bool
+
 	Tools ToolSetupData
+}
+
+// ScriptApprovalView is fragment_script_approval.html's input, and the
+// EventScriptApproval SSE payload — the Web UI analog of cmd/hackerfive/
+// agent.go's stdinScriptApprovalGate prompt: docs/93 M4's orchestrator
+// script.explore action blocks on Job.RequestScriptApproval until an
+// operator approves or rejects it, one script at a time, never batched.
+// Pending is false for the "cleared" view published once a decision is made
+// or no agent run has ever proposed a script — the zero value is exactly
+// that empty state.
+type ScriptApprovalView struct {
+	JobID     string
+	CSRFToken string
+	Pending   bool
+	Language  string
+	Source    string
+	Reasons   []string
 }
 
 // ProgressData is fragment_progress.html's input — the status badge shown
@@ -113,6 +147,11 @@ type CatchupData struct {
 	LogsHTML     template.HTML
 	FindingsHTML template.HTML
 	AgentHTML    template.HTML
+	// ScriptApprovalHTML re-syncs the #script-approval card (docs/93 M4):
+	// idempotent last-value-wins, like ProgressHTML/ReconHTML — always
+	// resent regardless of whether the client missed anything, never
+	// sequence-gated.
+	ScriptApprovalHTML template.HTML
 	// PlanPreviewLink re-syncs the header's Plan Preview link (LT-116): it's
 	// part of scan_status.html's static header, not an sse-swap region, so a
 	// client that connected before recon finished would otherwise never see
@@ -147,10 +186,11 @@ type ScanStatusData struct {
 	Snapshot  Snapshot
 	CSRFToken string // scan_status.html's own hidden forms (e.g. a Plan Preview link needs none, but ProgressHTML's embedded Cancel form does — kept here too for any future direct use)
 
-	FindingRowsHTML template.HTML
-	LogLinesHTML    template.HTML
-	AgentRowsHTML   template.HTML // this job's agent-activity log so far (C1), oldest-first
-	ProgressHTML    template.HTML
+	FindingRowsHTML    template.HTML
+	LogLinesHTML       template.HTML
+	AgentRowsHTML      template.HTML // this job's agent-activity log so far (C1), oldest-first
+	ScriptApprovalHTML template.HTML // this job's pending script.explore approval card, if any (docs/93 M4)
+	ProgressHTML       template.HTML
 }
 
 // ScanHistoryData is scan_history.html's input.

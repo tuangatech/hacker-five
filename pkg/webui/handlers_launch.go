@@ -199,6 +199,11 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 		func(e agenttask.SessionLogEntry) template.HTML {
 			return renderFragment(h.tmpl, "fragment_agent_entry", e)
 		},
+		func(v ScriptApprovalView) template.HTML {
+			v.JobID = id
+			v.CSRFToken = csrfTok
+			return renderFragment(h.tmpl, "fragment_script_approval", v)
+		},
 	)
 	job.bindParentContext(h.baseCtx)
 	job.SetExecConfig(execCfg)
@@ -327,8 +332,10 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 		RateLimit:        rateLimit,
 		Concurrency:      concurrency,
 		Insecure:         r.PostFormValue("insecure") == "on",
-		ScopeFile:        r.PostFormValue("scope_file"),
-		Authorized:       r.PostFormValue("authorized") == "on",
+		ScopeFile:            r.PostFormValue("scope_file"),
+		Authorized:           r.PostFormValue("authorized") == "on",
+		UseLLMAgent:          r.PostFormValue("use_llm_agent") == "on",
+		AllowLLMAgentScripts: r.PostFormValue("allow_llm_agent_scripts") == "on",
 	}
 
 	// templatesAssigned ensures the nuclei/native template corpus is
@@ -516,6 +523,21 @@ func expandOOBServers(raw []string) []string {
 // replaces.
 func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Config) {
 	job.SetRunning()
+
+	// docs/93-implementation-plan-agent-orchestrator.md M4: "Use LLM agent"
+	// routes to pkg/orchestrator.Run instead of the checked-detector-tab flow
+	// below — the model chooses its own recon/scan/triage/script actions
+	// turn by turn, so none of cfgs (built from RunMisconfig/RunIdor/... tab
+	// checkboxes) applies here. A separate function, not a branch further
+	// down, since the two flows share nothing past job.SetRunning() — the
+	// agent loop does its own initial recon internally (see
+	// runLaunchAgentJob's jobReconRunner) rather than reusing
+	// runLaunchRecon/fillReconFields/applyTechStackNarrowing, none of which
+	// pkg/orchestrator's own recon+registry.Resolve pipeline needs.
+	if form.UseLLMAgent {
+		runLaunchAgentJob(job, form)
+		return
+	}
 
 	// Pre-seed the full recon-wave chain as "pending" before recon actually
 	// starts, so the Recon: line shows the whole pipeline immediately rather

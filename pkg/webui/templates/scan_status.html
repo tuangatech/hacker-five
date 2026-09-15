@@ -32,6 +32,8 @@ function hfMaxSeq(id) {
      hx-vals='js:{since_log: hfMaxSeq("logs"), since_finding: hfMaxSeq("findings"), since_agent: hfMaxSeq("agent")}'></div>
 <h2>Status: <span id="progress" sse-swap="progress,done">{{.ProgressHTML}}</span></h2>
 
+<div id="script-approval" sse-swap="script-approval">{{.ScriptApprovalHTML}}</div>
+
 <div id="recon-results" sse-swap="recon">{{template "fragment_recon_results" (reconView .Snapshot.ReconResult)}}</div>
 
 <h2>Findings</h2>

@@ -48,6 +48,17 @@ const (
 	// unset (<= 0) — a script.explore call that never terminates would
 	// otherwise block the whole run indefinitely.
 	DefaultScriptTimeout = 30 * time.Second
+	// DefaultReconTimeout is applied when a Config leaves ReconTimeout unset
+	// (<= 0) — bounds every individual Config.Recon.Run call (the initial
+	// tree-seeding recon and any later recon.refresh dispatch), the same
+	// guard cmd/hackerfive/recon.go's/pkg/webui's own recon callers already
+	// apply around a plain recon.Recon.Run. Without it, a hung external
+	// recon tool (naabu/httpx/katana) would stall the whole run indefinitely
+	// — job.Ctx()/cmd.Context() alone only ever expire on an operator's own
+	// cancel or server shutdown. Found live running a Web UI agent-mode
+	// smoke test: a wave2 naabu port scan against a real target sat
+	// "running" for minutes with the run otherwise healthy.
+	DefaultReconTimeout = 10 * time.Minute
 )
 
 // LLMClient is the subset of *llmfallback.Client this package calls —
@@ -101,6 +112,11 @@ type Config struct {
 	// MaxIterations caps the number of dispatched turns (a "stop" action
 	// doesn't count as one). <= 0 uses DefaultMaxIterations.
 	MaxIterations int
+
+	// ReconTimeout bounds one Config.Recon.Run call (the initial
+	// tree-seeding recon and any later recon.refresh dispatch). <= 0 uses
+	// DefaultReconTimeout.
+	ReconTimeout time.Duration
 
 	// AllowAgentScripts gates script.explore (docs/93 M1/M3's
 	// --allow-agent-scripts convention, independently scoped like
@@ -167,11 +183,14 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if cfg.ScriptTimeout <= 0 {
 		cfg.ScriptTimeout = DefaultScriptTimeout
 	}
+	if cfg.ReconTimeout <= 0 {
+		cfg.ReconTimeout = DefaultReconTimeout
+	}
 	if cfg.SessionLog == nil {
 		cfg.SessionLog = agenttask.NewSessionLog(nil)
 	}
 
-	result, err := cfg.Recon.Run(ctx, cfg.Target, cfg.ReconDepth)
+	result, err := runRecon(ctx, cfg, cfg.Target, cfg.ReconDepth)
 	if err != nil {
 		return Result{}, fmt.Errorf("orchestrator: initial recon: %w", err)
 	}
@@ -318,11 +337,20 @@ func dispatchReconRefresh(ctx context.Context, cfg Config, tree *agenttask.PlanT
 		target = cfg.Target
 	}
 
-	result, err := cfg.Recon.Run(ctx, target, recon.DepthActive)
+	result, err := runRecon(ctx, cfg, target, recon.DepthActive)
 	if err != nil {
 		return "", fmt.Errorf("recon.refresh: %w", err)
 	}
 	return fmt.Sprintf("recon.refresh %s: %d endpoint(s), %d tech fact(s) (not merged into the plan tree)", target, len(result.Endpoints), len(result.TechStack)), nil
+}
+
+// runRecon calls cfg.Recon.Run bounded by cfg.ReconTimeout — see
+// DefaultReconTimeout's doc comment for why every call site goes through
+// this rather than cfg.Recon.Run directly.
+func runRecon(ctx context.Context, cfg Config, target string, depth recon.Depth) (*recon.ReconResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, cfg.ReconTimeout)
+	defer cancel()
+	return cfg.Recon.Run(ctx, target, depth)
 }
 
 func dispatchRegistryLookup(action llmfallback.Action) (string, error) {

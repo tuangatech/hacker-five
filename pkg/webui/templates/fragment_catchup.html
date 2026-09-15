@@ -12,6 +12,7 @@
      is rendered newest-first so a single afterbegin insertion lands the
      block in the same order snapshotData paints it. */}}
 {{define "fragment_catchup"}}<div hx-swap-oob="innerHTML:#progress">{{.ProgressHTML}}</div>
+<div hx-swap-oob="innerHTML:#script-approval">{{.ScriptApprovalHTML}}</div>
 <div hx-swap-oob="innerHTML:#recon-results">{{.ReconHTML}}</div>
 {{template "fragment_plan_preview_link" .PlanPreviewLink}}
 {{if .LogsHTML}}<div hx-swap-oob="beforeend:#logs">{{.LogsHTML}}</div>{{end}}

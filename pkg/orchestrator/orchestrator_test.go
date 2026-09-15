@@ -154,6 +154,78 @@ func TestRun_Budget_StopsWhenExceeded(t *testing.T) {
 	}
 }
 
+// blockingRecon is a ReconRunner that hangs until its ctx is done, then
+// reports ctx.Err() — a stand-in for a hung external recon tool
+// (naabu/httpx/katana), found live during the Web UI's own M4 smoke test.
+type blockingRecon struct{}
+
+func (blockingRecon) Run(ctx context.Context, _ string, _ recon.Depth) (*recon.ReconResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// blockingAfterFirstRecon succeeds on its first call (the initial
+// tree-seeding recon) and hangs on every later call (a recon.refresh
+// dispatch) — isolates the recon.refresh call site's own ReconTimeout bound
+// from the initial call's.
+type blockingAfterFirstRecon struct {
+	result *recon.ReconResult
+	calls  int
+}
+
+func (r *blockingAfterFirstRecon) Run(ctx context.Context, target string, depth recon.Depth) (*recon.ReconResult, error) {
+	r.calls++
+	if r.calls == 1 {
+		return r.result, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestRun_ReconTimeout_BoundsAHungInitialRecon confirms Config.ReconTimeout
+// (not just the caller's own ctx) bounds the initial recon call — without
+// it, a hung external recon tool would stall the whole run indefinitely
+// short of the caller cancelling ctx itself.
+func TestRun_ReconTimeout_BoundsAHungInitialRecon(t *testing.T) {
+	start := time.Now()
+	_, err := Run(context.Background(), Config{
+		Target:       "example.test",
+		Recon:        blockingRecon{},
+		Client:       &fakeLLMClient{},
+		ReconTimeout: 50 * time.Millisecond,
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Run: want an error from a recon call that never returns, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Run took %s to fail — ReconTimeout did not bound the hung recon call", elapsed)
+	}
+}
+
+// TestRun_ReconTimeout_BoundsReconRefresh confirms the same bound applies to
+// a later recon.refresh dispatch, not just the initial recon call.
+func TestRun_ReconTimeout_BoundsReconRefresh(t *testing.T) {
+	refresh := llmfallback.Action{Kind: "recon.refresh", Params: json.RawMessage(`{"target":"example.test"}`)}
+	start := time.Now()
+	result, err := Run(context.Background(), Config{
+		Target:        "example.test",
+		Recon:         &blockingAfterFirstRecon{result: reconResultOneLiveHost()},
+		Client:        &fakeLLMClient{actions: []llmfallback.Action{refresh}},
+		MaxIterations: 1,
+		ReconTimeout:  50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v (a dispatch error is reported per-turn, not as Run's own error)", err)
+	}
+	if result.Iterations != 1 || result.History[0].Error == "" {
+		t.Fatalf("got Iterations=%d History=%+v, want one turn recording a recon.refresh error", result.Iterations, result.History)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Run took %s to finish its one turn — ReconTimeout did not bound the hung recon.refresh call", elapsed)
+	}
+}
+
 func TestRun_ScriptExploreDisallowedByDefault_MarksLeafUnresolvedAndContinues(t *testing.T) {
 	leafID := oneActionableLeafID(t)
 	scriptAction := llmfallback.Action{

@@ -140,14 +140,21 @@ func (h *handlers) scanCatchup(w http.ResponseWriter, r *http.Request) {
 			agentHTML.WriteString(string(renderFragment(h.tmpl, "fragment_agent_entry", entry)))
 		}
 	}
+	csrfTok := readCSRFCookie(r)
+	scriptApproval := ScriptApprovalView{JobID: job.ID, CSRFToken: csrfTok}
+	if snap.PendingScriptApproval != nil {
+		scriptApproval = *snap.PendingScriptApproval
+		scriptApproval.CSRFToken = csrfTok
+	}
 
 	executeTemplate(w, h.tmpl, "fragment_catchup", CatchupData{
-		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: readCSRFCookie(r)}),
-		ReconHTML:       renderFragment(h.tmpl, "fragment_recon_results", newReconView(snap.ReconResult)),
-		LogsHTML:        template.HTML(logsHTML.String()),     //nolint:gosec // our own already-escaped fragment renders, not raw input
-		FindingsHTML:    template.HTML(findingsHTML.String()), //nolint:gosec // same
-		AgentHTML:       template.HTML(agentHTML.String()),    //nolint:gosec // same
-		PlanPreviewLink: PlanPreviewLinkData{JobID: job.ID, ReconDone: snap.ReconResult != nil, OOB: true},
+		ProgressHTML:       renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: csrfTok}),
+		ReconHTML:          renderFragment(h.tmpl, "fragment_recon_results", newReconView(snap.ReconResult)),
+		LogsHTML:           template.HTML(logsHTML.String()),     //nolint:gosec // our own already-escaped fragment renders, not raw input
+		FindingsHTML:       template.HTML(findingsHTML.String()), //nolint:gosec // same
+		AgentHTML:          template.HTML(agentHTML.String()),    //nolint:gosec // same
+		ScriptApprovalHTML: renderFragment(h.tmpl, "fragment_script_approval", scriptApproval),
+		PlanPreviewLink:    PlanPreviewLinkData{JobID: job.ID, ReconDone: snap.ReconResult != nil, OOB: true},
 	})
 }
 
@@ -287,16 +294,22 @@ func (h *handlers) snapshotData(job *Job, csrfTok string) ScanStatusData {
 	for _, entry := range snap.AgentEntries {
 		agentHTML.WriteString(string(renderFragment(h.tmpl, "fragment_agent_entry", entry)))
 	}
+	scriptApproval := ScriptApprovalView{JobID: job.ID, CSRFToken: csrfTok}
+	if snap.PendingScriptApproval != nil {
+		scriptApproval = *snap.PendingScriptApproval
+		scriptApproval.CSRFToken = csrfTok
+	}
 
 	return ScanStatusData{
-		JobID:           job.ID,
-		Target:          job.Target,
-		Snapshot:        snap,
-		CSRFToken:       csrfTok,
-		FindingRowsHTML: template.HTML(findingsHTML.String()), //nolint:gosec // built only from our own already-escaped fragment renders, not raw input
-		LogLinesHTML:    template.HTML(logsHTML.String()),     //nolint:gosec // same
-		AgentRowsHTML:   template.HTML(agentHTML.String()),    //nolint:gosec // same
-		ProgressHTML:    renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: csrfTok}),
+		JobID:              job.ID,
+		Target:             job.Target,
+		Snapshot:           snap,
+		CSRFToken:          csrfTok,
+		FindingRowsHTML:    template.HTML(findingsHTML.String()), //nolint:gosec // built only from our own already-escaped fragment renders, not raw input
+		LogLinesHTML:       template.HTML(logsHTML.String()),     //nolint:gosec // same
+		AgentRowsHTML:      template.HTML(agentHTML.String()),    //nolint:gosec // same
+		ScriptApprovalHTML: renderFragment(h.tmpl, "fragment_script_approval", scriptApproval),
+		ProgressHTML:       renderFragment(h.tmpl, "fragment_progress", ProgressData{Status: snap.Status, Phase: snap.Phase, Err: snap.Err, Waves: snap.Waves, DetectorSteps: snap.DetectorSteps, Target: job.Target, JobID: job.ID, CSRFToken: csrfTok}),
 	}
 }
 
