@@ -112,6 +112,17 @@ func (c *Client) NextAction(ctx context.Context, tree *agenttask.PlanTree, catal
 	return action, cost, nil
 }
 
+// maxHistoryTurnsInPrompt bounds how many of the most recent TurnRecords
+// buildOrchestratePrompt includes. Found live (docs/follow-up.md LT-162's
+// re-verification, 2026-09-19): pkg/orchestrator.Config.MinIterations forces
+// a run to keep dispatching turns instead of stopping after 1-2, and this
+// function used to render the ENTIRE history unbounded every call — a
+// Juice Shop run's prompt grew turn over turn until a NextAction call
+// exceeded the 240s request timeout entirely (a hard failure, no result at
+// all). Older turns are summarized by count instead of dropped silently, so
+// the model still knows the run has a longer past than it can see verbatim.
+const maxHistoryTurnsInPrompt = 10
+
 func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord) string {
 	var b strings.Builder
 
@@ -133,10 +144,15 @@ func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, histor
 	}
 
 	b.WriteString("\nturn history this run (most recent last):\n")
-	if len(history) == 0 {
+	shown := history
+	if len(shown) == 0 {
 		b.WriteString("(none yet)\n")
+	} else if len(shown) > maxHistoryTurnsInPrompt {
+		omitted := len(shown) - maxHistoryTurnsInPrompt
+		fmt.Fprintf(&b, "(%d earlier turn(s) omitted — showing the most recent %d)\n", omitted, maxHistoryTurnsInPrompt)
+		shown = shown[omitted:]
 	}
-	for _, h := range history {
+	for _, h := range shown {
 		fmt.Fprintf(&b, "- kind=%s node_id=%s rationale=%q result=%q error=%q\n",
 			h.Action.Kind, h.Action.NodeID, h.Action.Rationale, h.ResultSummary, h.Error)
 	}

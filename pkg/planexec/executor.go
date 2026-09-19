@@ -566,7 +566,18 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 		// directory. Since F4 (LT-71) the engine's loadTemplates takes an
 		// id:-peek fast path for a TemplateID-only narrow, so this no longer
 		// pays a full ~9,500-file parse to run one named template.
+		//
+		// Found live re-verifying LT-137's orchestrator parity fix: baseCfg's
+		// tech-derived DerivedTags (or an explicit Tags) is a *scope*, applied
+		// before Config.TemplateID's exact-match filter in the engine's
+		// loadTemplates — so a named template whose own tags don't intersect
+		// that scope was silently dropped before TemplateID ever got a
+		// chance to select it (0 templates loaded, 0 findings, no error).
+		// Clearing both here is what the comment above already assumed was
+		// true: an exact-id leaf is scoped by that id alone.
 		cfg.Detector = ""
+		cfg.Tags = nil
+		cfg.DerivedTags = nil
 		cfg.TemplateID = leaf.Detector
 		validateOpts.SkipDetectorRequired = true
 	}

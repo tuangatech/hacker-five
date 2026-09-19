@@ -131,6 +131,7 @@ func runLaunchAgentJob(job *Job, form LaunchFormData) {
 		SessionLog:        job.AgentLog(),
 		Budget:            orchestrator.DefaultBudgetUSD,
 		MaxIterations:     orchestrator.DefaultMaxIterations,
+		MinIterations:     orchestrator.DefaultMinIterations,
 		AllowAgentScripts: form.AllowLLMAgentScripts,
 		ApprovalGate:      approvalGate,
 		OnFinding:         job.AppendFinding,

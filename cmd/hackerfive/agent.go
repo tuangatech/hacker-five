@@ -51,6 +51,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 		allowWrites         bool
 		budget              float64
 		maxIterations       int
+		minIterations       int
 		allowAgentScripts   bool
 		scriptTimeout       time.Duration
 		verbose             bool
@@ -182,6 +183,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				SessionLog:        agenttask.NewSessionLog(nil),
 				Budget:            budget,
 				MaxIterations:     maxIterations,
+				MinIterations:     minIterations,
 				AllowAgentScripts: allowAgentScripts,
 				ScriptTimeout:     scriptTimeout,
 				ApprovalGate:      approvalGate,
@@ -231,6 +233,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks to run during a scan.leaf dispatch — the same independently-scoped exception as scan's --allow-writes; omitted, those checks are skipped with a warning")
 	cmd.Flags().Float64Var(&budget, "budget", orchestrator.DefaultBudgetUSD, "hard cap, in USD, on cumulative LLM cost across the whole run")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", orchestrator.DefaultMaxIterations, "hard cap on the number of dispatched tool turns")
+	cmd.Flags().IntVar(&minIterations, "min-iterations", orchestrator.DefaultMinIterations, "floor on dispatched tool turns — a \"stop\" action is rejected and NextAction asked again while fewer than this many turns have run and actionable leaves remain (LT-162: the model was found stopping after 1-3 turns with 10+ pending leaves still untried)")
 	cmd.Flags().BoolVar(&allowAgentScripts, "allow-agent-scripts", false, "allow the model to propose script.explore actions — a sandboxed Python/shell script, run only after a static precheck and a fresh interactive y/N approval every time (never batch-approved). The same independently-scoped exception convention as --allow-writes/--auto-provision-account; omitted, a proposed script is skipped with a warning, never run")
 	cmd.Flags().DurationVar(&scriptTimeout, "script-timeout", orchestrator.DefaultScriptTimeout, "wall-clock cap on one script.explore sandbox run")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave recon progress to stderr")

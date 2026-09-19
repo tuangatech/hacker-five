@@ -22,6 +22,7 @@ type OrchestratorScenario struct {
 	AuthTokenEnv      string        // env var carrying --auth-token, "" if none
 	OtherAuthTokenEnv string        // env var carrying --other-auth-token, "" if none
 	Header            func() string // raw "Name: Value" for --header, nil if none
+	Templates         string        // --templates override, "" leaves the CLI default (full bundled+synced corpus)
 	SkipPrefixes      []string
 }
 
@@ -43,13 +44,30 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		Depth:        "active",
 	},
 	{
+		// Templates: "./templates/", mirroring challenges.go's deterministic
+		// "vAPI" Scenario — live-verified 2026-08-30
+		// (docs/20-setup-testing-targets-macos.md's vAPI section) that the
+		// CLI default (full bundled+synced corpus, ~2,500+ tag-scoped
+		// templates) makes every scan.leaf against vAPI's slow dev server
+		// take 4+ minutes, so a MinIterations-forced multi-turn run blows
+		// past this harness's 10m timeout before NextAction ever gets to
+		// decide anything (0 tool_calls, 0 findings — an infra artifact, not
+		// a reasoning miss). Without this override the two modes' vAPI
+		// numbers aren't comparable at all.
 		Name:         "vAPI (orchestrator)",
 		ExpectedFile: "tests/fixtures/expected-findings/vapi.json",
 		RequiredEnv:  []string{"VAPI_BASE_URL"},
 		Target:       func() string { return os.Getenv("VAPI_BASE_URL") },
 		Depth:        "active",
+		Templates:    "./templates/",
 	},
 	{
+		// Templates: templatesDir() — same corpus-hang rationale as vAPI's
+		// override above, live-verified 2026-09-19: without it, the run hit
+		// this harness's 10m timeout mid-scan.leaf (signal: killed, 0 tool
+		// calls surfaced), same shape as vAPI's pre-fix failure. crAPI's own
+		// deterministic Scenario (challenges.go) already uses templatesDir()
+		// for the same reason.
 		Name:              "crAPI (orchestrator)",
 		ExpectedFile:      "tests/fixtures/expected-findings/crapi.json",
 		RequiredEnv:       []string{"CRAPI_BASE_URL", "CRAPI_OWNER_TOKEN", "CRAPI_OTHER_TOKEN"},
@@ -57,5 +75,6 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		Depth:             "active",
 		AuthTokenEnv:      "CRAPI_OWNER_TOKEN",
 		OtherAuthTokenEnv: "CRAPI_OTHER_TOKEN",
+		Templates:         templatesDir(),
 	},
 }

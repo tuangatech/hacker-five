@@ -88,12 +88,26 @@ func TestOrchestratorEvalHarness(t *testing.T) {
 			if sc.Header != nil {
 				args = append(args, "--header", sc.Header())
 			}
+			if sc.Templates != "" {
+				args = append(args, "--templates", sc.Templates)
+			}
 
-			// Same 10m rationale as TestAgentEvalHarness (LT-137): active-depth
-			// recon plus one or more scan.leaf template-corpus passes
-			// legitimately takes several minutes against a real target, on
-			// top of however many LLM round trips NextAction makes.
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			// 20m, not TestAgentEvalHarness's 10m (LT-137): active-depth recon
+			// plus one or more scan.leaf template-corpus passes legitimately
+			// takes several minutes against a real target, on top of however
+			// many LLM round trips NextAction makes — and unlike the MCP-plan
+			// mode that 10m was calibrated for, pkg/orchestrator.Config.
+			// MinIterations (LT-162's fix) forces a floor of dispatched turns
+			// even when the model wants to stop early, each with its own
+			// NextAction round trip. Live-verified 2026-09-19 against crAPI:
+			// individual NextAction calls took 60-150s+ against
+			// deepseek-v4.1-flash, and a 10m ceiling killed the run
+			// (signal: killed, 0 tool_calls) mid-way through only its 4th or
+			// 5th turn, discarding real findings already surfaced via OnLog
+			// (e.g. a genuine misconfig-exposed-path-.env hit) because
+			// `hackerfive agent` only emits its final JSON after the loop
+			// exits cleanly — see docs/follow-up.md's new entry on that gap.
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binPath, args...)
 			cmd.Dir = repoRoot()

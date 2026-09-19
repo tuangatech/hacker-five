@@ -2,6 +2,8 @@ package llmfallback
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
@@ -109,5 +111,49 @@ func TestNextAction_StopKindNeedsNoOffer(t *testing.T) {
 	}
 	if got.Kind != "stop" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// TestBuildOrchestratePrompt_CapsHistoryLength is LT-162's fix
+// (docs/follow-up.md): a Config.MinIterations floor in pkg/orchestrator
+// forces more dispatched turns than before, and this function used to render
+// the full, unbounded history every call — found live growing a prompt large
+// enough that a NextAction call blew past its 240s request timeout entirely.
+// Only the most recent maxHistoryTurnsInPrompt entries should ever be
+// rendered verbatim; older ones are summarized by count, not silently
+// dropped.
+func TestBuildOrchestratePrompt_CapsHistoryLength(t *testing.T) {
+	history := make([]TurnRecord, maxHistoryTurnsInPrompt+3)
+	for i := range history {
+		history[i] = TurnRecord{
+			Action:        Action{Kind: "scan.leaf", NodeID: "leaf-1"},
+			ResultSummary: fmt.Sprintf("turn-%d", i),
+		}
+	}
+
+	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, history)
+
+	if !strings.Contains(prompt, "3 earlier turn(s) omitted") {
+		t.Fatalf("prompt does not note the omitted turn count:\n%s", prompt)
+	}
+	if strings.Contains(prompt, `result="turn-0"`) {
+		t.Fatalf("prompt still contains an omitted early turn verbatim:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, fmt.Sprintf(`result="turn-%d"`, len(history)-1)) {
+		t.Fatalf("prompt is missing the most recent turn:\n%s", prompt)
+	}
+	got := strings.Count(prompt, "kind=scan.leaf node_id=leaf-1")
+	if got != maxHistoryTurnsInPrompt {
+		t.Fatalf("got %d rendered history line(s), want exactly %d", got, maxHistoryTurnsInPrompt)
+	}
+}
+
+func TestBuildOrchestratePrompt_ShortHistoryNotTruncated(t *testing.T) {
+	history := []TurnRecord{
+		{Action: Action{Kind: "scan.leaf", NodeID: "leaf-1"}, ResultSummary: "1 finding(s)"},
+	}
+	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, history)
+	if strings.Contains(prompt, "omitted") {
+		t.Fatalf("short history should never be reported as truncated:\n%s", prompt)
 	}
 }

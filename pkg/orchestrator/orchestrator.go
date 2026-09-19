@@ -44,6 +44,17 @@ import (
 const (
 	DefaultBudgetUSD     = 1.00
 	DefaultMaxIterations = 20
+	// DefaultMinIterations is applied when a Config leaves MinIterations
+	// unset (<= 0). Found live (docs/follow-up.md LT-162's re-verification,
+	// 2026-09-18): the model routinely chose "stop" after 1-3 dispatched
+	// turns while 10-15+ pending leaves remained in the tree — well short of
+	// DefaultMaxIterations, and short enough that a real, higher-priority
+	// leaf (e.g. a "misconfig" class leaf ranked above the one leaf actually
+	// tried) was never attempted. 5 is not tuned against a broader sweep;
+	// it's a deliberately modest floor that forces meaningfully more
+	// exploration without materially changing budget/wall-clock, chosen
+	// pending a fuller re-run of doc93 M5's eval table.
+	DefaultMinIterations = 5
 	// DefaultScriptTimeout is applied when a Config leaves ScriptTimeout
 	// unset (<= 0) — a script.explore call that never terminates would
 	// otherwise block the whole run indefinitely.
@@ -112,6 +123,12 @@ type Config struct {
 	// MaxIterations caps the number of dispatched turns (a "stop" action
 	// doesn't count as one). <= 0 uses DefaultMaxIterations.
 	MaxIterations int
+	// MinIterations is a floor on dispatched turns: a "stop" action is
+	// rejected (fed back into history, NextAction asked again) while fewer
+	// than MinIterations turns have been dispatched and actionable leaves
+	// remain — see DefaultMinIterations. <= 0 uses DefaultMinIterations; a
+	// value above MaxIterations is clamped down to it.
+	MinIterations int
 
 	// ReconTimeout bounds one Config.Recon.Run call (the initial
 	// tree-seeding recon and any later recon.refresh dispatch). <= 0 uses
@@ -180,6 +197,12 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = DefaultMaxIterations
 	}
+	if cfg.MinIterations <= 0 {
+		cfg.MinIterations = DefaultMinIterations
+	}
+	if cfg.MinIterations > cfg.MaxIterations {
+		cfg.MinIterations = cfg.MaxIterations
+	}
 	if cfg.ScriptTimeout <= 0 {
 		cfg.ScriptTimeout = DefaultScriptTimeout
 	}
@@ -197,6 +220,17 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	tree, _ := registry.Resolve(result, cfg.TemplateIndex)
 	tree.SpendCeilingUSD = cfg.Budget
 
+	// LT-137 parity (docs/follow-up.md): tools_plan.go and webui's plan-exec
+	// path already carry a plan's own recon result into DerivedTags so
+	// planexec.runLeaf's per-leaf tag floor gets tech-matched "extras" union
+	// in on top (doc15 Step 6a) — this package's dispatchScanLeaf reuses the
+	// same planexec.RunPlan but, until now, never set this, so every
+	// scan.leaf dispatch got floor-only scoping despite this loop already
+	// holding a fresh, live recon.ReconResult in hand. UniformWallHosts is
+	// the same established D6 pass-through (mirrors tools_plan.go/scan.go).
+	cfg.BaseScanConfig.DerivedTags = registry.TechStackTags(result.TechStack, cfg.TemplateIndex)
+	cfg.BaseScanConfig.UniformWallHosts = result.UniformWallHosts()
+
 	catalog := buildCatalog(cfg)
 	var (
 		history  []llmfallback.TurnRecord
@@ -204,6 +238,12 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	)
 
 	iteration := 0
+	// rejectedStops counts "stop" actions turned away by the MinIterations
+	// floor below. Capped at cfg.MinIterations retries (not tied to
+	// iteration, which only counts real dispatches) so a model that keeps
+	// choosing "stop" regardless of the nudge still terminates instead of
+	// looping until MaxIterations purely on rejected-stop calls.
+	rejectedStops := 0
 	for iteration < cfg.MaxIterations {
 		if tree.SpendCeilingUSD > 0 && tree.SpendSoFar() >= tree.SpendCeilingUSD {
 			cfg.logf("info", "budget exhausted ($%.4f of $%.2f) — stopping", tree.SpendSoFar(), tree.SpendCeilingUSD)
@@ -223,8 +263,22 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 
 		finish := cfg.SessionLog.BeginActor("agent", action.Kind, action.Rationale, action.Params)
 		if action.Kind == "stop" {
-			finish("stopped: "+action.Rationale, nil)
-			break
+			if iteration >= cfg.MinIterations || rejectedStops >= cfg.MinIterations {
+				finish("stopped: "+action.Rationale, nil)
+				break
+			}
+			// LT-162 (docs/follow-up.md): previously honored immediately,
+			// even with plenty of pending leaves and iteration budget left —
+			// the model's own stop rationale was never recorded anywhere
+			// either. Now: rejected and fed back as a real history entry
+			// (the rationale IS finally surfaced, via SessionLog too), so
+			// the next NextAction call sees its own premature call-off and
+			// has to either justify it again or pick something else.
+			rejectedStops++
+			msg := fmt.Sprintf("stop rejected: only %d of a minimum %d turn(s) dispatched and actionable leaves remain — model's stated rationale: %s", iteration, cfg.MinIterations, action.Rationale)
+			finish(msg, nil)
+			history = append(history, llmfallback.TurnRecord{Action: action, ResultSummary: msg})
+			continue
 		}
 		iteration++
 
@@ -414,8 +468,25 @@ func dispatchScanLeaf(ctx context.Context, cfg Config, tree *agenttask.PlanTree,
 		},
 	})
 	*findings = append(*findings, leafFindings...)
-	if len(skipped) > 0 {
-		return fmt.Sprintf("skipped: %s", strings.Join(skipped, "; ")), err
+	// LT-162 (docs/follow-up.md): every other leaf in the tree is
+	// deliberately marked Excluded above so RunPlan touches only the one
+	// leaf this action named — which means `skipped` always contains one
+	// "excluded by operator before approval" entry per other leaf, on every
+	// single scan.leaf dispatch, success or not. Reporting that wholesale
+	// meant the model never once saw "N finding(s)" as this turn's
+	// ResultSummary — only a wall of noise about leaves it never asked to
+	// run — leaving it with no real signal about whether a dispatch worked.
+	// Only a skip belonging to the actually-targeted leaf (never in
+	// `excluded`) is a real one worth reporting.
+	var realSkipped []string
+	for _, s := range skipped {
+		if id, _, ok := strings.Cut(s, ":"); ok && excluded[id] {
+			continue
+		}
+		realSkipped = append(realSkipped, s)
+	}
+	if len(realSkipped) > 0 {
+		return fmt.Sprintf("skipped: %s", strings.Join(realSkipped, "; ")), err
 	}
 	return fmt.Sprintf("%d finding(s), %d log line(s)", len(leafFindings), len(logs)), err
 }

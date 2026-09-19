@@ -87,24 +87,59 @@ func oneActionableLeafID(t *testing.T) string {
 	return leaves[0].ID
 }
 
-func TestRun_StopAction_EndsLoopImmediately(t *testing.T) {
+func TestRun_StopAction_HonoredOnceMinIterationsMet(t *testing.T) {
+	lookup := llmfallback.Action{Kind: "registry.lookup", Params: json.RawMessage(`{"query":"idor"}`)}
+	client := &fakeLLMClient{actions: []llmfallback.Action{lookup, {Kind: "stop", Rationale: "nothing more to do"}}}
+	result, err := Run(context.Background(), Config{
+		Target:        "example.test",
+		Recon:         &fakeRecon{result: reconResultOneLiveHost()},
+		Client:        client,
+		MinIterations: 1,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Iterations != 1 {
+		t.Fatalf("got Iterations=%d, want 1 (the one dispatched turn before stop)", result.Iterations)
+	}
+	if len(result.History) != 1 {
+		t.Fatalf("got %d history entries, want 1 (a stop, once honored, adds no entry)", len(result.History))
+	}
+	if client.calls != 2 {
+		t.Fatalf("got %d NextAction call(s), want exactly 2 (one dispatch, one honored stop)", client.calls)
+	}
+}
+
+// TestRun_StopAction_RejectedBelowMinIterations is LT-162's fix
+// (docs/follow-up.md): a bare "stop" with actionable leaves still pending and
+// fewer than Config.MinIterations turns dispatched is rejected — fed back
+// into history rather than ending the run — for up to MinIterations retries,
+// after which it's honored regardless (never an infinite loop against a
+// model that keeps calling it off).
+func TestRun_StopAction_RejectedBelowMinIterations(t *testing.T) {
 	client := &fakeLLMClient{actions: []llmfallback.Action{{Kind: "stop", Rationale: "nothing to do"}}}
 	result, err := Run(context.Background(), Config{
-		Target: "example.test",
-		Recon:  &fakeRecon{result: reconResultOneLiveHost()},
-		Client: client,
+		Target:        "example.test",
+		Recon:         &fakeRecon{result: reconResultOneLiveHost()},
+		Client:        client,
+		MinIterations: 3,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if result.Iterations != 0 {
-		t.Fatalf("got Iterations=%d, want 0 (a stop action is not a dispatched turn)", result.Iterations)
+		t.Fatalf("got Iterations=%d, want 0 (never a real dispatch — every call was 'stop')", result.Iterations)
 	}
-	if len(result.History) != 0 {
-		t.Fatalf("got %d history entries, want 0", len(result.History))
+	if len(result.History) != 3 {
+		t.Fatalf("got %d history entries, want 3 (one per rejected stop, capped at MinIterations)", len(result.History))
 	}
-	if client.calls != 1 {
-		t.Fatalf("got %d NextAction call(s), want exactly 1", client.calls)
+	if client.calls != 4 {
+		t.Fatalf("got %d NextAction call(s), want 4 (3 rejected + 1 finally honored)", client.calls)
+	}
+	for _, rec := range result.History {
+		if !strings.Contains(rec.ResultSummary, "stop rejected") {
+			t.Fatalf("history entry ResultSummary %q missing rejection note", rec.ResultSummary)
+		}
 	}
 }
 
@@ -236,9 +271,10 @@ func TestRun_ScriptExploreDisallowedByDefault_MarksLeafUnresolvedAndContinues(t 
 	client := &fakeLLMClient{actions: []llmfallback.Action{scriptAction, {Kind: "stop"}}}
 
 	result, err := Run(context.Background(), Config{
-		Target: "example.test",
-		Recon:  &fakeRecon{result: reconResultOneLiveHost()},
-		Client: client,
+		Target:        "example.test",
+		Recon:         &fakeRecon{result: reconResultOneLiveHost()},
+		Client:        client,
+		MinIterations: 1,
 		// AllowAgentScripts left false (default) — the point of this test.
 	})
 	if err != nil {
@@ -355,6 +391,43 @@ func TestDispatch_ScanLeaf_RunsThroughPlanexecAgainstRealHTTPServer(t *testing.T
 	}
 	if len(logged) == 0 {
 		t.Fatal("want at least one log line streamed through Config.OnLog")
+	}
+}
+
+// TestDispatch_ScanLeaf_OtherPendingLeavesDoNotPolluteSummary is LT-162's fix
+// (docs/follow-up.md): dispatchScanLeaf must mark every leaf besides the one
+// named by node_id as Excluded (planexec.RunPlan otherwise runs the whole
+// tree) — but that mechanic used to leak straight into the reported
+// ResultSummary as a wall of "excluded by operator before approval" noise
+// for leaves the caller never asked about, drowning out whether the
+// requested leaf itself actually found anything. A single-leaf tree (as in
+// TestDispatch_ScanLeaf_RunsThroughPlanexecAgainstRealHTTPServer) can't
+// exercise this — Excluded is empty when there's nothing else to exclude.
+func TestDispatch_ScanLeaf_OtherPendingLeavesDoNotPolluteSummary(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html>hi</html>"))
+	}))
+	defer srv.Close()
+
+	target := &agenttask.PlanNode{ID: "leaf-target", Target: srv.URL, Detector: "misconfig", Status: agenttask.StatusPending}
+	other := &agenttask.PlanNode{ID: "leaf-other", Target: srv.URL, Detector: "misconfig", Status: agenttask.StatusPending}
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{target, other}}}
+	var findings []detectors.Finding
+
+	cfg := Config{BaseScanConfig: scanner.Config{Concurrency: 1, RateLimit: 10, Timeout: 5 * time.Second}}
+	summary, err := dispatch(context.Background(), cfg, tree, &findings, llmfallback.Action{Kind: "scan.leaf", NodeID: "leaf-target"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !strings.Contains(summary, "finding") {
+		t.Fatalf("got summary %q, want it to report a finding count, not the other leaf's forced exclusion", summary)
+	}
+	if strings.Contains(summary, "excluded by operator") {
+		t.Fatalf("got summary %q, want the other leaf's forced exclusion filtered out entirely", summary)
+	}
+	if other.Status != agenttask.StatusPending {
+		t.Fatalf("got leaf-other status %q, want it left untouched (StatusPending) — dispatch must only ever run the named leaf", other.Status)
 	}
 }
 
