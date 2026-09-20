@@ -1549,7 +1549,7 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, coupon *r
 		}
 		if looksLikeCouponOrCartFlow(p) {
 			leaves = append(leaves, newEndpointLeaf(host, "businesslogic", agenttask.ConfidenceLow,
-				fmt.Sprintf("recon observed a cart/checkout/coupon-shaped endpoint on this host (%s) — still requires --allow-writes and real coupon paths for a non-crAPI target", p), leafIdx))
+				fmt.Sprintf("recon observed a cart/checkout/coupon-shaped endpoint on this host (%s) — still requires --allow-writes and real coupon paths to be confirmed for this target", p), leafIdx))
 			break // one is enough to justify the leaf; not every matching endpoint
 		}
 	}

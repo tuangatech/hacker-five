@@ -3,6 +3,8 @@ package recon
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -49,6 +51,59 @@ func TestExtractJSEndpoints_DedupedWithinOneAsset(t *testing.T) {
 	body := `a("/api/foo"); b("/api/foo");`
 	got := extractJSEndpoints("https://target.example/app.js", body)
 	assert.Len(t, got, 1)
+}
+
+// --- extractJSPathJoinParts / buildJSJoinPairs (LT-164) -----------------
+
+func TestExtractJSPathJoinParts_PlantedCrAPIShape(t *testing.T) {
+	// The real live-observed crAPI bundle shape (2026-09-19): a service
+	// prefix, a bare API-path constant, and a keyless query literal, each
+	// declared separately.
+	body := `og="identity/",ig="workshop/",ag="chatbot/",lg="community/",` +
+		`sg={LOGIN:"api/auth/login",GET_SERVICE_REPORT:"api/mechanic/mechanic_report"};` +
+		`const e=ig+sg.GET_SERVICE_REPORT+"?report_id="+n;`
+	prefixes, bases, suffixes := extractJSPathJoinParts(body)
+	assert.Contains(t, prefixes, "identity/")
+	assert.Contains(t, prefixes, "workshop/")
+	assert.Contains(t, prefixes, "chatbot/")
+	assert.Contains(t, prefixes, "community/")
+	assert.Contains(t, bases, "api/mechanic/mechanic_report")
+	assert.Contains(t, bases, "api/auth/login")
+	assert.Contains(t, suffixes, "?report_id=")
+}
+
+func TestExtractJSPathJoinParts_DecoysRejected(t *testing.T) {
+	body := `"MM/DD/YYYY"; "application/json"; "//"; "/api/foo"; "?"; "id=5"; "foo/bar/'+x"`
+	prefixes, bases, suffixes := extractJSPathJoinParts(body)
+	assert.Empty(t, prefixes, "MM/DD/YYYY-shaped decoys must not become prefix candidates")
+	assert.Empty(t, bases, "a bare relative string without a leading api/ segment must not become a base candidate")
+	assert.Empty(t, suffixes, "a bare '?' or a key=value string must not become a query-suffix candidate")
+}
+
+func TestBuildJSJoinPairs_Combines(t *testing.T) {
+	pairs := buildJSJoinPairs([]string{"workshop/", "identity/"}, []string{"api/mechanic/mechanic_report"})
+	assert.Contains(t, pairs, jsJoinPair{Prefix: "workshop/", Base: "api/mechanic/mechanic_report"})
+	assert.Contains(t, pairs, jsJoinPair{Prefix: "identity/", Base: "api/mechanic/mechanic_report"})
+	assert.Len(t, pairs, 2)
+}
+
+// TestBuildJSJoinPairs_UncappedCrossProduct guards the move of
+// maxJSJoinProbes from buildJSJoinPairs to its caller (LT-164): an earlier
+// per-call cap here truncated in prefix-major order, silently starving
+// whichever prefix sorted last (crAPI's real "workshop/" among 4 prefixes)
+// once a single asset's cross product exceeded the cap. buildJSJoinPairs
+// itself must now return the full cross product, already implicitly bounded
+// by its own inputs' maxJSPathPrefixes/maxJSPathBases caps — the run-wide
+// request budget is runJSStaticAnalysis's job, not this pure function's.
+func TestBuildJSJoinPairs_UncappedCrossProduct(t *testing.T) {
+	prefixes := []string{"a/", "b/", "c/", "d/"}
+	var bases []string
+	for i := 0; i < 15; i++ {
+		bases = append(bases, "api/path"+string(rune('a'+i)))
+	}
+	pairs := buildJSJoinPairs(prefixes, bases)
+	assert.Len(t, pairs, len(prefixes)*len(bases), "buildJSJoinPairs must return the full cross product, uncapped")
+	assert.Contains(t, pairs, jsJoinPair{Prefix: "d/", Base: bases[len(bases)-1]}, "the last-sorted prefix must still be represented in the output")
 }
 
 // --- extractJSSecrets ---------------------------------------------------
@@ -296,4 +351,192 @@ func TestRunWave3_JSStaticAnalysis_OutOfScopeAbsoluteEndpoint_NotDispatched(t *t
 		assert.NotContains(t, ep.URL, "evil.example", "an out-of-scope absolute endpoint must never become a dispatchable EndpointFact")
 	}
 	assert.Contains(t, result.OutOfScope, "evil.example")
+}
+
+// TestRunWave3_JSStaticAnalysis_JoinedPathCandidate_LiveVerified is LT-164's
+// regression guard (docs/follow-up.md): a service-route prefix and a bare
+// API-path constant declared separately in a bundle — crAPI's own real
+// shape, live-verified 2026-09-19 — must join into a real EndpointFact only
+// once the specific combination is live-verified, with every wrong
+// prefix+base combination dropped rather than emitted at the same
+// confidence.
+func TestRunWave3_JSStaticAnalysis_JoinedPathCandidate_LiveVerified(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/workshop/api/mechanic/mechanic_report", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // the one real, correct join
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound) // every other path, including the wrong-prefix joins
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	jsBody := `og="identity/",ig="workshop/",ag="chatbot/",lg="community/",` +
+		`sg={GET_SERVICE_REPORT:"api/mechanic/mechanic_report"};` +
+		`const e=ig+sg.GET_SERVICE_REPORT+"?report_id="+n;`
+	jsBodyJSON, err := json.Marshal(jsBody)
+	require.NoError(t, err)
+
+	target := srv.URL
+	responses := map[string]string{
+		"katana": `{"request":{"endpoint":"` + target + `/static/app.js","method":"GET"},` +
+			`"response":{"status_code":200,"headers":{"content-type":"application/javascript"},"body":` + string(jsBodyJSON) + `}}`,
+	}
+	_, fake := recordingRun(t, responses)
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), target, DepthFull)
+	require.NoError(t, err)
+
+	foundReal := false
+	for _, ep := range result.Endpoints {
+		if ep.Source != "js-static-joined" {
+			continue
+		}
+		assert.Contains(t, ep.URL, "/workshop/api/mechanic/mechanic_report", "the only live-verified prefix+base combination is the workshop one, got: %s", ep.URL)
+		if ep.URL == target+"/workshop/api/mechanic/mechanic_report?report_id=" {
+			foundReal = true
+		}
+	}
+	assert.True(t, foundReal, "expected the verified workshop join + keyless query suffix, got: %+v", result.Endpoints)
+
+	candidates := SuggestIDOREndpointCandidates(result)
+	assert.Contains(t, candidates, "/workshop/api/mechanic/mechanic_report?report_id={{id}}", "the joined+verified endpoint must flow into the existing idor candidate pipeline unchanged")
+}
+
+// TestRunWave3_JSStaticAnalysis_JoinedPathCandidate_NoneVerified_EmitsNothing
+// guards the other side: when no prefix+base combination verifies (every
+// probe 404s), no js-static-joined EndpointFact is emitted at all — the
+// live-verification step must prune to nothing rather than falling back to
+// emitting every unverified guess.
+func TestRunWave3_JSStaticAnalysis_JoinedPathCandidate_NoneVerified_EmitsNothing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	jsBody := `ig="workshop/";sg={GET_SERVICE_REPORT:"api/mechanic/mechanic_report"};`
+	jsBodyJSON, err := json.Marshal(jsBody)
+	require.NoError(t, err)
+
+	target := srv.URL
+	responses := map[string]string{
+		"katana": `{"request":{"endpoint":"` + target + `/static/app.js","method":"GET"},` +
+			`"response":{"status_code":200,"headers":{"content-type":"application/javascript"},"body":` + string(jsBodyJSON) + `}}`,
+	}
+	_, fake := recordingRun(t, responses)
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), target, DepthFull)
+	require.NoError(t, err)
+
+	for _, ep := range result.Endpoints {
+		assert.NotEqual(t, "js-static-joined", ep.Source, "no combination verified — no js-static-joined endpoint should be emitted, got: %+v", ep)
+	}
+}
+
+// TestRunWave3_JSStaticAnalysis_JoinedPathCandidate_BlanketAuthPrefixRejected
+// is LT-164's canary-diff regression guard, live-verified against crAPI
+// itself 2026-09-19: its identity/ service answers 401 for *every* path
+// under that prefix — real or not, a Spring Security gateway rejecting
+// before route resolution — so a bare jsJoinVerifyStatuses membership check
+// alone would accept every identity/+base combination as "verified"
+// alongside the one real workshop/ endpoint, reintroducing the exact
+// "multiple distinct candidates" ambiguity this whole step exists to
+// resolve. fetchJSPrefixCanary's per-prefix diff must reject identity/'s
+// look-alikes while still accepting workshop/'s real one.
+func TestRunWave3_JSStaticAnalysis_JoinedPathCandidate_BlanketAuthPrefixRejected(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/workshop/api/mechanic/mechanic_report", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // the real route: needs auth, but exists
+	})
+	mux.HandleFunc("/workshop/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound) // workshop/'s canary and every other workshop/ path: a real 404
+	})
+	mux.HandleFunc("/identity/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // identity/'s blanket gate: 401 for literally everything
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	jsBody := `og="identity/",ig="workshop/",` +
+		`sg={GET_SERVICE_REPORT:"api/mechanic/mechanic_report"};` +
+		`const e=ig+sg.GET_SERVICE_REPORT+"?report_id="+n;`
+	jsBodyJSON, err := json.Marshal(jsBody)
+	require.NoError(t, err)
+
+	target := srv.URL
+	responses := map[string]string{
+		"katana": `{"request":{"endpoint":"` + target + `/static/app.js","method":"GET"},` +
+			`"response":{"status_code":200,"headers":{"content-type":"application/javascript"},"body":` + string(jsBodyJSON) + `}}`,
+	}
+	_, fake := recordingRun(t, responses)
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), target, DepthFull)
+	require.NoError(t, err)
+
+	foundWorkshop := false
+	for _, ep := range result.Endpoints {
+		if ep.Source != "js-static-joined" {
+			continue
+		}
+		assert.NotContains(t, ep.URL, "/identity/", "identity/'s blanket-401 look-alike must be rejected by the canary diff, got: %+v", result.Endpoints)
+		if strings.Contains(ep.URL, "/workshop/api/mechanic/mechanic_report") {
+			foundWorkshop = true
+		}
+	}
+	assert.True(t, foundWorkshop, "the real workshop/ endpoint must still be verified despite identity/'s look-alike being rejected, got: %+v", result.Endpoints)
+}
+
+// TestRunWave3_JSStaticAnalysis_DuplicateAssetObservation_ProcessedOnce is
+// LT-164's asset-dedup regression guard: katana's crawl can (and does,
+// live-verified against crAPI) observe the same bundle URL more than once —
+// the same asset linked from several pages at different crawl depths. Before
+// the dedup fix, each duplicate observation independently re-verified and
+// re-emitted the same join candidate as a second, byte-identical
+// EndpointFact, which registry.Resolve then turned into a genuine second
+// idor leaf for the same URL — the orchestrator re-dispatched (and
+// re-scanned) an already-resolved real endpoint multiple times in one run,
+// each dispatch burning real wall-clock/LLM-turn budget on a leaf that had
+// already produced findings. One asset URL must contribute its join
+// candidate exactly once regardless of how many times it was observed.
+func TestRunWave3_JSStaticAnalysis_DuplicateAssetObservation_ProcessedOnce(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/workshop/api/mechanic/mechanic_report", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	jsBody := `ig="workshop/";sg={GET_SERVICE_REPORT:"api/mechanic/mechanic_report"};` +
+		`const e=ig+sg.GET_SERVICE_REPORT+"?report_id="+n;`
+	jsBodyJSON, err := json.Marshal(jsBody)
+	require.NoError(t, err)
+
+	target := srv.URL
+	// The same asset URL observed twice — e.g. linked from two different
+	// crawled pages — exactly the shape live-verified against crAPI.
+	line := `{"request":{"endpoint":"` + target + `/static/app.js","method":"GET"},` +
+		`"response":{"status_code":200,"headers":{"content-type":"application/javascript"},"body":` + string(jsBodyJSON) + `}}`
+	responses := map[string]string{"katana": line + "\n" + line}
+	_, fake := recordingRun(t, responses)
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), target, DepthFull)
+	require.NoError(t, err)
+
+	count := 0
+	for _, ep := range result.Endpoints {
+		if ep.Source == "js-static-joined" && ep.URL == target+"/workshop/api/mechanic/mechanic_report?report_id=" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "a join candidate from a duplicate-observed asset must be emitted exactly once, got %d, endpoints: %+v", count, result.Endpoints)
 }

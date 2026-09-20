@@ -112,12 +112,71 @@ func (c *Client) NextAction(ctx context.Context, tree *agenttask.PlanTree, catal
 	return action, cost, nil
 }
 
+// maxHistoryTurnsInPrompt bounds how many of the most recent TurnRecords
+// buildOrchestratePrompt includes. Found live (docs/follow-up.md LT-162's
+// re-verification, 2026-09-19): pkg/orchestrator.Config.MinIterations forces
+// a run to keep dispatching turns instead of stopping after 1-2, and this
+// function used to render the ENTIRE history unbounded every call — a
+// Juice Shop run's prompt grew turn over turn until a NextAction call
+// exceeded the 240s request timeout entirely (a hard failure, no result at
+// all). Older turns are summarized by count instead of dropped silently, so
+// the model still knows the run has a longer past than it can see verbatim.
+const maxHistoryTurnsInPrompt = 10
+
+// maxLeafNodesInPrompt bounds how many plan-tree leaves buildOrchestratePrompt
+// renders (docs/follow-up.md LT-165): unlike turn history (already capped by
+// maxHistoryTurnsInPrompt), the leaf list used to be rendered in full on
+// every call — on a target with a larger tree (crAPI's, live-observed larger
+// than vAPI/DVWA/Juice Shop's), this plausibly compounded NextAction's
+// already-slow real-world latency (60-150s+ per call against
+// deepseek/deepseek-v4.1-flash). boundedLeavesForPrompt keeps every
+// actionable (pending/unresolved) leaf visible first — those are the only
+// ones a node_id could usefully target this turn — and drops an
+// already-settled one (done/vetoed/escalated) first when the cap is hit.
+const maxLeafNodesInPrompt = 80
+
+// boundedLeavesForPrompt returns at most maxLeafNodesInPrompt of leaves,
+// preferring every actionable (StatusPending/StatusUnresolved) one over an
+// already-settled one — a settled leaf carries no decision NextAction needs
+// to make, while an actionable leaf's id must stay visible for it to have
+// anything real left to reference. If even the actionable set alone exceeds
+// the cap, it's truncated too rather than ballooning the prompt further; an
+// omitted actionable leaf becomes visible on a later call once earlier ones
+// resolve and free up room (a leaf's Status changes as the run progresses).
+func boundedLeavesForPrompt(leaves []*agenttask.PlanNode) (shown []*agenttask.PlanNode, omitted int) {
+	if len(leaves) <= maxLeafNodesInPrompt {
+		return leaves, 0
+	}
+	var actionable, settled []*agenttask.PlanNode
+	for _, leaf := range leaves {
+		if leaf.Status == agenttask.StatusPending || leaf.Status == agenttask.StatusUnresolved {
+			actionable = append(actionable, leaf)
+		} else {
+			settled = append(settled, leaf)
+		}
+	}
+	if len(actionable) >= maxLeafNodesInPrompt {
+		return actionable[:maxLeafNodesInPrompt], len(leaves) - maxLeafNodesInPrompt
+	}
+	room := maxLeafNodesInPrompt - len(actionable)
+	if room > len(settled) {
+		room = len(settled)
+	}
+	shown = append(shown, actionable...)
+	shown = append(shown, settled[:room]...)
+	return shown, len(leaves) - len(shown)
+}
+
 func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord) string {
 	var b strings.Builder
 
 	b.WriteString("plan tree nodes (leaves only — only these ids are valid node_id values):\n")
 	if tree != nil && tree.Root != nil {
-		for _, leaf := range agenttask.Leaves(tree.Root) {
+		leaves, omitted := boundedLeavesForPrompt(agenttask.Leaves(tree.Root))
+		if omitted > 0 {
+			fmt.Fprintf(&b, "(%d leaf/leaves omitted for space, already-settled ones dropped first — showing %d)\n", omitted, len(leaves))
+		}
+		for _, leaf := range leaves {
 			det := leaf.Detector
 			if det == "" {
 				det = "(unresolved)"
@@ -133,10 +192,15 @@ func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, histor
 	}
 
 	b.WriteString("\nturn history this run (most recent last):\n")
-	if len(history) == 0 {
+	shown := history
+	if len(shown) == 0 {
 		b.WriteString("(none yet)\n")
+	} else if len(shown) > maxHistoryTurnsInPrompt {
+		omitted := len(shown) - maxHistoryTurnsInPrompt
+		fmt.Fprintf(&b, "(%d earlier turn(s) omitted — showing the most recent %d)\n", omitted, maxHistoryTurnsInPrompt)
+		shown = shown[omitted:]
 	}
-	for _, h := range history {
+	for _, h := range shown {
 		fmt.Fprintf(&b, "- kind=%s node_id=%s rationale=%q result=%q error=%q\n",
 			h.Action.Kind, h.Action.NodeID, h.Action.Rationale, h.ResultSummary, h.Error)
 	}

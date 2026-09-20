@@ -217,7 +217,7 @@ func TestScanCatchup_UnknownJobID_404(t *testing.T) {
 func TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender, noopScriptApprovalRender)
 	job.SetRunning()
 	job.SetPhase("misconfig")
 	job.SetReconResult(&recon.ReconResult{
@@ -254,7 +254,7 @@ func TestScanCatchup_RendersCurrentPhaseAndReconResult_AsOOBSwaps(t *testing.T) 
 func TestScanCatchup_PlanPreviewLink_AbsentUntilReconResult(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender, noopScriptApprovalRender)
 	job.SetRunning()
 	job.SetPhase("recon")
 	h.store.Add(job)
@@ -279,7 +279,7 @@ func TestScanCatchup_PlanPreviewLink_AbsentUntilReconResult(t *testing.T) {
 func TestScanCatchup_ReplaysOnlyRowsPastTheClientSequence(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender, noopScriptApprovalRender)
 	job.AppendLog("info", "log-one")   // seq 1
 	job.AppendLog("info", "log-two")   // seq 2
 	job.AppendLog("info", "log-three") // seq 3
@@ -312,7 +312,7 @@ func TestScanCatchup_ReplaysOnlyRowsPastTheClientSequence(t *testing.T) {
 func TestScanCatchup_ClientFullyCaughtUp_EmitsNoAppendBlocks(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender, noopScriptApprovalRender)
 	job.AppendLog("info", "log-one")                      // seq 1
 	job.AppendFinding(detectors.Finding{ID: "finding-a"}) // seq 2
 	h.store.Add(job)
@@ -336,7 +336,7 @@ func TestScanCatchup_ClientFullyCaughtUp_EmitsNoAppendBlocks(t *testing.T) {
 func TestScanCatchup_NoSequenceParams_ReplaysEverything(t *testing.T) {
 	ts, h := newTestServerHandlers(t)
 
-	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	job := newJob("job1", "https://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender, noopScriptApprovalRender)
 	job.AppendLog("info", "log-one")
 	job.AppendFinding(detectors.Finding{ID: "finding-a"})
 	h.store.Add(job)

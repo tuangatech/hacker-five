@@ -199,6 +199,11 @@ func (h *handlers) startLaunch(w http.ResponseWriter, r *http.Request) {
 		func(e agenttask.SessionLogEntry) template.HTML {
 			return renderFragment(h.tmpl, "fragment_agent_entry", e)
 		},
+		func(v ScriptApprovalView) template.HTML {
+			v.JobID = id
+			v.CSRFToken = csrfTok
+			return renderFragment(h.tmpl, "fragment_script_approval", v)
+		},
 	)
 	job.bindParentContext(h.baseCtx)
 	job.SetExecConfig(execCfg)
@@ -300,35 +305,37 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 	}
 
 	form := LaunchFormData{
-		Target:           rawTarget,
-		ExtraTargets:     rawExtraTargets,
-		RunMisconfig:     r.PostFormValue("run_misconfig") == "on",
-		RunIdor:          r.PostFormValue("run_idor") == "on",
-		Endpoint:         r.PostFormValue("endpoint"),
-		RunAuthbypass:    r.PostFormValue("run_authbypass") == "on",
-		ProtectedPaths:   r.PostFormValue("protected_paths"),
-		LoginPaths:       r.PostFormValue("login_paths"),
-		LogoutPaths:      r.PostFormValue("logout_paths"),
-		RunSsrf:          r.PostFormValue("run_ssrf") == "on",
-		SSRFParams:       r.PostFormValue("ssrf_params"),
-		OOBServers:       r.PostFormValue("oob_servers"),
-		RunBusinesslogic: r.PostFormValue("run_businesslogic") == "on",
-		AllowWrites:      r.PostFormValue("allow_writes") == "on",
-		CouponMintPath:   r.PostFormValue("coupon_mint_path"),
-		CouponApplyPath:  r.PostFormValue("coupon_apply_path"),
-		RaceConcurrency:  raceConcurrency,
-		Tags:             r.PostFormValue("tags"),
-		NarrowByTech:     r.PostFormValue("narrow_by_tech") == "on",
-		AuthToken:        r.PostFormValue("auth_token"),
-		OtherAuthToken:   r.PostFormValue("other_auth_token"),
-		AuthHeaderName:   r.PostFormValue("auth_header_name"),
-		AuthHeaderFormat: r.PostFormValue("auth_header_format"),
-		Headers:          r.PostFormValue("headers"),
-		RateLimit:        rateLimit,
-		Concurrency:      concurrency,
-		Insecure:         r.PostFormValue("insecure") == "on",
-		ScopeFile:        r.PostFormValue("scope_file"),
-		Authorized:       r.PostFormValue("authorized") == "on",
+		Target:               rawTarget,
+		ExtraTargets:         rawExtraTargets,
+		RunMisconfig:         r.PostFormValue("run_misconfig") == "on",
+		RunIdor:              r.PostFormValue("run_idor") == "on",
+		Endpoint:             r.PostFormValue("endpoint"),
+		RunAuthbypass:        r.PostFormValue("run_authbypass") == "on",
+		ProtectedPaths:       r.PostFormValue("protected_paths"),
+		LoginPaths:           r.PostFormValue("login_paths"),
+		LogoutPaths:          r.PostFormValue("logout_paths"),
+		RunSsrf:              r.PostFormValue("run_ssrf") == "on",
+		SSRFParams:           r.PostFormValue("ssrf_params"),
+		OOBServers:           r.PostFormValue("oob_servers"),
+		RunBusinesslogic:     r.PostFormValue("run_businesslogic") == "on",
+		AllowWrites:          r.PostFormValue("allow_writes") == "on",
+		CouponMintPath:       r.PostFormValue("coupon_mint_path"),
+		CouponApplyPath:      r.PostFormValue("coupon_apply_path"),
+		RaceConcurrency:      raceConcurrency,
+		Tags:                 r.PostFormValue("tags"),
+		NarrowByTech:         r.PostFormValue("narrow_by_tech") == "on",
+		AuthToken:            r.PostFormValue("auth_token"),
+		OtherAuthToken:       r.PostFormValue("other_auth_token"),
+		AuthHeaderName:       r.PostFormValue("auth_header_name"),
+		AuthHeaderFormat:     r.PostFormValue("auth_header_format"),
+		Headers:              r.PostFormValue("headers"),
+		RateLimit:            rateLimit,
+		Concurrency:          concurrency,
+		Insecure:             r.PostFormValue("insecure") == "on",
+		ScopeFile:            r.PostFormValue("scope_file"),
+		Authorized:           r.PostFormValue("authorized") == "on",
+		UseLLMAgent:          r.PostFormValue("use_llm_agent") == "on",
+		AllowLLMAgentScripts: r.PostFormValue("allow_llm_agent_scripts") == "on",
 	}
 
 	// templatesAssigned ensures the nuclei/native template corpus is
@@ -483,6 +490,24 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 		// never a separate/looser one.
 		AllowWrites: form.AllowWrites,
 	}
+	// LT-161 (docs/follow-up.md): planexec.RunPlan's B4 scope-creep gate
+	// (executor.go) reads baseCfg.Scope directly, with no ScopeFile fallback
+	// of its own — only scanner.Engine.loadScope has that fallback, and
+	// RunPlan (the Plan Preview execute path) never goes through Engine. Only
+	// setting ScopeFile above (as cfgs' own per-detector configs do, relying
+	// on Engine's fallback) left the gate silently inert for every plan
+	// executed from the Web UI, regardless of what --scope the operator
+	// entered. Parsed once here, the same as runLaunchRecon's own
+	// scope.Parse(form.ScopeFile) call, so a bad scope file is caught as a
+	// form-submission error rather than only failing recon silently later.
+	if form.ScopeFile != "" {
+		parsed, err := scope.Parse(form.ScopeFile)
+		if err != nil {
+			errs = append(errs, "scope file: "+err.Error())
+		} else {
+			execCfg.Scope = parsed
+		}
+	}
 
 	return form, cfgs, execCfg, errs
 }
@@ -516,6 +541,21 @@ func expandOOBServers(raw []string) []string {
 // replaces.
 func (h *handlers) runLaunchJob(job *Job, form LaunchFormData, cfgs []scanner.Config) {
 	job.SetRunning()
+
+	// docs/93-implementation-plan-agent-orchestrator.md M4: "Use LLM agent"
+	// routes to pkg/orchestrator.Run instead of the checked-detector-tab flow
+	// below — the model chooses its own recon/scan/triage/script actions
+	// turn by turn, so none of cfgs (built from RunMisconfig/RunIdor/... tab
+	// checkboxes) applies here. A separate function, not a branch further
+	// down, since the two flows share nothing past job.SetRunning() — the
+	// agent loop does its own initial recon internally (see
+	// runLaunchAgentJob's jobReconRunner) rather than reusing
+	// runLaunchRecon/fillReconFields/applyTechStackNarrowing, none of which
+	// pkg/orchestrator's own recon+registry.Resolve pipeline needs.
+	if form.UseLLMAgent {
+		runLaunchAgentJob(job, form)
+		return
+	}
 
 	// Pre-seed the full recon-wave chain as "pending" before recon actually
 	// starts, so the Recon: line shows the whole pipeline immediately rather

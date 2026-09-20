@@ -1,0 +1,18 @@
+{{/* The agent's pending script.explore approval card (docs/93-implementation-
+     plan-agent-orchestrator.md M4) — Job.RequestScriptApproval blocks the
+     agent run until this form's POST /scans/{JobID}/agent-script resolves
+     it. Input is a ScriptApprovalView; Pending false renders nothing, the
+     "cleared" state pushed once a decision is made (or the default state for
+     a job that never proposed a script). No batch/blanket approval — every
+     proposed script gets its own card and its own decision. */}}
+{{define "fragment_script_approval"}}{{if .Pending}}<div class="script-approval-card">
+<h3>⚠ Agent proposes running a script</h3>
+<p>Language: <code>{{.Language}}</code> — sandboxed (Docker, no capabilities, egress limited to this scan's own scope); review before approving.</p>
+<pre class="script-source">{{.Source}}</pre>
+{{if .Reasons}}<p>Precheck notes: {{range .Reasons}}<span class="precheck-note">{{.}}</span> {{end}}</p>{{end}}
+<form method="post" action="/scans/{{.JobID}}/agent-script">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<button type="submit" name="action" value="approve">Approve &amp; run</button>
+<button type="submit" name="action" value="reject">Reject</button>
+</form>
+</div>{{end}}{{end}}

@@ -55,7 +55,7 @@ func (c *Client) Suggest(ctx context.Context, ledger []coveragegap.GapRow, findi
 	if err := decodeJSONResponse(text, &resp); err != nil {
 		return SuggestResult{}, cost, err
 	}
-	return SuggestResult{Actions: validSuggestedActions(resp.Actions)}, cost, nil
+	return SuggestResult{Actions: validSuggestedActions(resp.Actions, findings)}, cost, nil
 }
 
 func buildSuggestPrompt(ledger []coveragegap.GapRow, findings []detectors.Finding) string {
@@ -74,13 +74,24 @@ func buildSuggestPrompt(ledger []coveragegap.GapRow, findings []detectors.Findin
 
 // validSuggestedActions drops (never trusts through) any action whose kind
 // falls outside suggestActionKinds — same "degrade, never fabricate"
-// contract validateRanking enforces for TriageFindings.
-func validSuggestedActions(actions []SuggestedAction) []SuggestedAction {
+// contract validateRanking enforces for TriageFindings. For an action whose
+// Detail names a real finding_id/finding_ids (run_leaf, triage_group),
+// Description also runs through LT-157's evidenceGateText, gated against
+// the referenced finding least able to support unhedged certainty language.
+func validSuggestedActions(actions []SuggestedAction, findings []detectors.Finding) []SuggestedAction {
+	byID := make(map[string]detectors.Finding, len(findings))
+	for _, f := range findings {
+		byID[f.ID] = f
+	}
 	var valid []SuggestedAction
 	for _, a := range actions {
-		if suggestActionKinds[a.Kind] {
-			valid = append(valid, a)
+		if !suggestActionKinds[a.Kind] {
+			continue
 		}
+		if refs := findingsFromDetail(a.Detail, byID); len(refs) > 0 {
+			a.Description = evidenceGateText(weakestFinding(refs), a.Description)
+		}
+		valid = append(valid, a)
 	}
 	return valid
 }

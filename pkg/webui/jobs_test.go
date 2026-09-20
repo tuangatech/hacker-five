@@ -29,9 +29,12 @@ func noopReconRender(result *recon.ReconResult) template.HTML {
 	return template.HTML(result.Target)
 }
 func noopAgentRender(e agenttask.SessionLogEntry) template.HTML { return template.HTML(e.Tool) }
+func noopScriptApprovalRender(v ScriptApprovalView) template.HTML {
+	return template.HTML(v.Language)
+}
 
 func newTestJob(id string) *Job {
-	return newJob(id, "http://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender)
+	return newJob(id, "http://example.com", noopFindingRender, noopLogRender, noopProgressRender, noopReconRender, noopAgentRender, noopScriptApprovalRender)
 }
 
 // TestJob_SubscribeThenUnsubscribe_RemovesChannel is the fix for the "Job.subs

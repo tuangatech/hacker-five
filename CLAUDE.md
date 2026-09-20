@@ -13,23 +13,20 @@ HackerFive — an open-source vulnerability scanner in Go, template-driven (YAML
 - **Testing:** Go `testing` + testify; integration tests run against local vulnerable targets (crAPI, DVWA, Juice Shop, vAPI) via Docker Compose.
 - **Lint:** `golangci-lint run ./...` before considering work done.
 
-## Verification (this environment)
+## Verification (macOS or Windows/WSL2 — both are in active use)
 
-This checkout is `c:\ML-Projects\Weekend-Projects\hacker-five` (Windows-side). No Go toolchain on Windows PATH — instead, shell out to WSL2's toolchain via `wsl.exe`, against this checkout through its `/mnt/c` mount (no separate clone needed):
-```bash
-wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go build ./... && go vet ./... && go test ./... -race && PATH=\$PATH:\$HOME/go/bin golangci-lint run ./..."
-```
-(`golangci-lint` needs the explicit `PATH` prepend — it's not on a non-interactive shell's PATH; see [docs/04-environment-and-testing.md](docs/04-environment-and-testing.md).)
+Check `pwd`/OS first; don't assume which applies.
 
-### Live testing is available in WSL2 (updated 2026-09-05)
-
-The `/mnt/c` checkout, via `wsl.exe`, can now do the full live-testing loop itself — the earlier split ("use `~/projects/hacker-five` for anything live") no longer applies:
-
-- **Recon toolchain:** `subfinder`/`httpx`/`katana`/`naabu`/`dnsx`/`tlsx` are installed in `~/go/bin`. That dir isn't on a non-interactive shell's PATH, so prepend it the same way as `golangci-lint`: `PATH=$PATH:$HOME/go/bin`. If any are missing, install them — either `go build -o ~/hackerfive ./cmd/hackerfive && ~/hackerfive recon setup` (the `pkg/toolsync` installer — downloads + checksum-verifies real releases, no Go toolchain needed) or `GOBIN=$HOME/go/bin go install github.com/projectdiscovery/<tool>/v2/cmd/<tool>@latest`.
-- **Docker Desktop** with WSL2 integration exposes `docker` / `docker compose` (no hyphen) inside `wsl.exe -e bash`. Lab-target images for crAPI/DVWA/Juice Shop/vAPI are already pulled; WebGoat/bWAPP images pull on demand. Bring targets up per [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md) and scan them from this checkout — build a Linux binary in WSL (`go build -o hackerfive ./cmd/hackerfive`) and run it against `http://localhost:<published-port>`.
-- **Playwright + Chromium** are installed (`~/.cache/ms-playwright`, `npx` available) for browser-driven Web UI tests (`hackerfive serve` — Plan Preview approve/reject, kill switch).
-
-`~/projects/hacker-five` is the user's separate, native-Linux clone with its own git history; it exists but isn't required for live testing from here, and edits in `/mnt/c` don't reach it automatically.
+- **macOS**: Go/`golangci-lint`/`docker`/the recon toolchain (`subfinder`/`httpx`/`katana`/`naabu`/`dnsx`/`tlsx`) are all on PATH natively (Homebrew + `~/go/bin`):
+  ```bash
+  go build ./... && go vet ./... && go test ./... -race && golangci-lint run ./...
+  ```
+- **Windows, via WSL2**: no Go toolchain on Windows PATH — shell out to WSL2 against the checkout's `/mnt/c` mount, prepending `~/go/bin` (not on a non-interactive shell's PATH):
+  ```bash
+  wsl.exe -e bash -lc "cd /mnt/c/path/to/hacker-five && go build ./... && go vet ./... && go test ./... -race && PATH=\$PATH:\$HOME/go/bin golangci-lint run ./..."
+  ```
+- **Both**: Docker (Desktop, WSL2-integrated on Windows) runs the crAPI/DVWA/Juice Shop/vAPI lab containers — check `docker ps`/`docker compose ps` for actual ports rather than assuming; see [docs/20-setup-testing-targets.md](docs/20-setup-testing-targets.md) (Windows/WSL2) or [docs/20-setup-testing-targets-macos.md](docs/20-setup-testing-targets-macos.md).
+- **LLM tier for `hackerfive agent`/`pkg/llmfallback`: OpenRouter only**, via a repo-root `.env` (`OPENROUTER_API_KEY` + `HACKERFIVE_OPENROUTER_MODEL`) — no local runtime. `.env` auto-loads for the `hackerfive` binary itself, but a bare `go test` that calls `llmfallback.New()` in-process (e.g. `tests/eval`'s `TestOrchestratorEvalHarness`) needs it exported into the shell first.
 
 ## Detection philosophy
 
@@ -39,6 +36,7 @@ The `/mnt/c` checkout, via `wsl.exe`, can now do the full live-testing loop itse
 - Treat everything recon collects as reusable downstream: a detector, template-selection, or reporting step should draw on the full available data set, not just the slice it gathers itself.
 - Actively look for connections across steps/tasks — e.g. correlating a fingerprinted technology with an endpoint discovered separately — since combined signal from multiple sources is usually worth more than any one source alone.
 - When reviewing scan/recon results, actively weigh whether an LLM step would add real value at a point deterministic logic genuinely can't cover — novel template authoring, ambiguous triage, correlating findings across hosts — and propose it when it would. But every such call must carry a spend/attempt cap and a human-approval gate before anything consequential runs ([docs/90-research-hackerbot.md](docs/90-research-hackerbot.md) Decisions 5–6). More LLM at the few genuine gaps, not everywhere.
+- Lab targets (crAPI/DVWA/Juice Shop/vAPI) are for validating a mechanism, not for shaping it. When writing anything an LLM actually reads at inference time — a system/user prompt, a few-shot example, an `Action.Rationale`/leaf-rationale string, a NextAction/ResolveLeaf/Suggest/TriageFindings prompt fragment — keep the wording generic to "this host/target/endpoint," never a specific lab's name, path, or param (e.g. "crAPI," "workshop/api/mechanic," "report_id"). Naming a lab target in that text either biases the model toward a pattern that only exists in the lab or reads as a confusing aside on a real program. Go doc comments and test fixtures that cite a lab target as historical/verification evidence are fine — the constraint is on strings that flow into the model's actual input.
 
 ## Rules
 

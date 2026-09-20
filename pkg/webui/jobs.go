@@ -11,6 +11,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/recon"
 	"github.com/tuangatech/hacker-five/pkg/scanner"
+	"github.com/tuangatech/hacker-five/pkg/scriptexec"
 )
 
 // Job statuses.
@@ -36,6 +37,14 @@ const (
 	// carries a monotonic Event.Seq so a late/reconnecting client's catchup
 	// replay can be sequence-gated (C5).
 	EventAgent = "agent-event"
+	// EventScriptApproval streams the Scan Activity page's #script-approval
+	// card (docs/93-implementation-plan-agent-orchestrator.md M4): a single,
+	// last-value-wins card — like progress/recon, not an append list — shown
+	// while a `hackerfive agent` run's proposed script.explore action is
+	// blocked on Job.RequestScriptApproval, and cleared once
+	// ResolveScriptApproval unblocks it. No Seq gating needed (scanCatchup
+	// always re-syncs it unconditionally, the same as Progress/Recon).
+	EventScriptApproval = "script-approval"
 )
 
 // subscriberBuffer is each SSE subscriber's channel depth — a small buffer
@@ -133,6 +142,12 @@ type Job struct {
 	// BeginAgentActivity is then a no-op.
 	agentLog *agenttask.SessionLog
 
+	// pendingScript is the one in-flight script.explore approval request this
+	// job's agent run (docs/93 M4) is currently blocked on, nil otherwise —
+	// see RequestScriptApproval/ResolveScriptApproval. pkg/orchestrator's
+	// loop dispatches one action at a time, so there is never more than one.
+	pendingScript *pendingScriptApproval
+
 	// planTree/planEscalations cache a plan-preview "Resolve via LLM
 	// fallback" pass's result (doc15 Step 2's 2026-09-03 addendum item 2) —
 	// nil/empty until POST /plan-preview/resolve runs once for this job.
@@ -160,14 +175,15 @@ type Job struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	renderFinding  func(detectors.Finding, int64) template.HTML
-	renderLog      func(LogEntry) template.HTML
-	renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML
-	renderRecon    func(*recon.ReconResult) template.HTML
-	renderAgent    func(agenttask.SessionLogEntry) template.HTML
+	renderFinding        func(detectors.Finding, int64) template.HTML
+	renderLog            func(LogEntry) template.HTML
+	renderProgress       func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML
+	renderRecon          func(*recon.ReconResult) template.HTML
+	renderAgent          func(agenttask.SessionLogEntry) template.HTML
+	renderScriptApproval func(ScriptApprovalView) template.HTML
 }
 
-func newJob(id, target string, renderFinding func(detectors.Finding, int64) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML, renderAgent func(agenttask.SessionLogEntry) template.HTML) *Job {
+func newJob(id, target string, renderFinding func(detectors.Finding, int64) template.HTML, renderLog func(LogEntry) template.HTML, renderProgress func(status string, err error, waves []WaveStatus, detectorSteps []WaveStatus, phase string) template.HTML, renderRecon func(*recon.ReconResult) template.HTML, renderAgent func(agenttask.SessionLogEntry) template.HTML, renderScriptApproval func(ScriptApprovalView) template.HTML) *Job {
 	// A placeholder context.Background()-rooted context, immediately
 	// replaced by bindParentContext once a real caller (startLaunch) has
 	// h.baseCtx to derive from — kept here rather than making ctx/cancel
@@ -177,17 +193,18 @@ func newJob(id, target string, renderFinding func(detectors.Finding, int64) temp
 	// they don't exercise.
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &Job{
-		ID:             id,
-		Target:         target,
-		CreatedAt:      time.Now(),
-		status:         StatusQueued,
-		ctx:            ctx,
-		cancel:         cancel,
-		renderFinding:  renderFinding,
-		renderLog:      renderLog,
-		renderProgress: renderProgress,
-		renderRecon:    renderRecon,
-		renderAgent:    renderAgent,
+		ID:                   id,
+		Target:               target,
+		CreatedAt:            time.Now(),
+		status:               StatusQueued,
+		ctx:                  ctx,
+		cancel:               cancel,
+		renderFinding:        renderFinding,
+		renderLog:            renderLog,
+		renderProgress:       renderProgress,
+		renderRecon:          renderRecon,
+		renderAgent:          renderAgent,
+		renderScriptApproval: renderScriptApproval,
 	}
 	// The agent log's OnAppend hook is this job's live Agent-section feed:
 	// every recorded activity is rendered and published as an EventAgent,
@@ -273,6 +290,11 @@ type Snapshot struct {
 	DetectorSteps []WaveStatus
 	ReconResult   *recon.ReconResult          // nil unless this Job ran a recon phase that completed
 	AgentEntries  []agenttask.SessionLogEntry // this job's agent-activity log so far (C1) — empty for a job that ran no agent-like action
+
+	// PendingScriptApproval is non-nil while this job's agent run (docs/93
+	// M4) is blocked on RequestScriptApproval, so a page load/reload during
+	// that window shows the pending card too, not only a live SSE client.
+	PendingScriptApproval *ScriptApprovalView
 }
 
 func (j *Job) Snapshot() Snapshot {
@@ -282,17 +304,23 @@ func (j *Job) Snapshot() Snapshot {
 	if j.agentLog != nil {
 		agentEntries = j.agentLog.Entries()
 	}
+	var pendingScript *ScriptApprovalView
+	if j.pendingScript != nil {
+		v := j.pendingScript.view
+		pendingScript = &v
+	}
 	return Snapshot{
-		Status:        j.status,
-		Phase:         j.phase,
-		Err:           j.err,
-		Findings:      append([]detectors.Finding(nil), j.findings...),
-		FindingSeqs:   append([]int64(nil), j.findingSeqs...),
-		Logs:          append([]LogEntry(nil), j.logs...),
-		Waves:         append([]WaveStatus(nil), j.waves...),
-		DetectorSteps: append([]WaveStatus(nil), j.detectorSteps...),
-		ReconResult:   j.reconResult,
-		AgentEntries:  agentEntries,
+		Status:                j.status,
+		Phase:                 j.phase,
+		Err:                   j.err,
+		Findings:              append([]detectors.Finding(nil), j.findings...),
+		FindingSeqs:           append([]int64(nil), j.findingSeqs...),
+		Logs:                  append([]LogEntry(nil), j.logs...),
+		Waves:                 append([]WaveStatus(nil), j.waves...),
+		DetectorSteps:         append([]WaveStatus(nil), j.detectorSteps...),
+		ReconResult:           j.reconResult,
+		AgentEntries:          agentEntries,
+		PendingScriptApproval: pendingScript,
 	}
 }
 
@@ -309,6 +337,109 @@ func (j *Job) BeginAgentActivity(tool, reason string, params any) func(resultSum
 		return func(string, error) {}
 	}
 	return j.agentLog.Begin(tool, reason, params)
+}
+
+// AgentLog returns this job's underlying session log, nil for a job
+// constructed outside newJob. Unlike BeginAgentActivity — which always tags
+// an entry "human" via SessionLog.Begin — a caller with this handle can call
+// BeginActor directly, e.g. handing it to orchestrator.Config.SessionLog
+// (docs/93 M4), which tags every turn it records "agent" itself. Both write
+// to the same log, so either path streams to the same Scan Activity page
+// Agent section via the OnAppend hook wired in newJob.
+func (j *Job) AgentLog() *agenttask.SessionLog {
+	return j.agentLog
+}
+
+// pendingScriptApproval is one in-flight script.explore approval request —
+// see Job.RequestScriptApproval/ResolveScriptApproval.
+type pendingScriptApproval struct {
+	view     ScriptApprovalView // Pending is always true while stored here
+	decision chan bool
+}
+
+// RequestScriptApproval implements scriptexec.ApprovalGate for a Web
+// UI-launched agent run (docs/93 M4): it blocks the calling goroutine — the
+// orchestrator's own dispatch, running on this job's background goroutine,
+// never an HTTP request goroutine — until a human resolves it via
+// ResolveScriptApproval (POST /scans/{id}/agent-script), or ctx is done (job
+// cancellation/server shutdown). The proposed script is published live as an
+// EventScriptApproval card and, either way, recorded as a "human"-actor
+// session-log entry — the same audit trail every other operator action in
+// this job gets. pkg/orchestrator's loop dispatches one action at a time, so
+// there is never more than one pendingScript for a job.
+func (j *Job) RequestScriptApproval(ctx context.Context, req scriptexec.ScriptRequest, pre scriptexec.PrecheckResult) (bool, error) {
+	pending := &pendingScriptApproval{
+		view: ScriptApprovalView{
+			JobID:    j.ID,
+			Pending:  true,
+			Language: string(req.Language),
+			Source:   req.Source,
+			Reasons:  pre.Reasons,
+		},
+		decision: make(chan bool, 1),
+	}
+
+	j.mu.Lock()
+	j.pendingScript = pending
+	j.mu.Unlock()
+
+	j.AppendLog("warn", "agent: proposes running a "+string(req.Language)+" script — awaiting operator approval")
+	j.publishScriptApproval(pending.view)
+
+	finish := j.BeginAgentActivity("script.explore.approval", "operator approve/reject of a proposed script.explore action", map[string]any{"language": string(req.Language)})
+
+	select {
+	case approved := <-pending.decision:
+		j.clearPendingScript(pending)
+		if approved {
+			finish("operator approved — running the script", nil)
+			j.AppendLog("info", "agent: script approved by operator")
+		} else {
+			finish("operator rejected — script not run", nil)
+			j.AppendLog("info", "agent: script rejected by operator")
+		}
+		return approved, nil
+	case <-ctx.Done():
+		j.clearPendingScript(pending)
+		finish("context canceled before an operator responded", ctx.Err())
+		return false, ctx.Err()
+	}
+}
+
+// ResolveScriptApproval resolves this job's one pending script.explore
+// approval, unblocking RequestScriptApproval. Returns false when there is
+// nothing pending to resolve (a duplicate submit, or the request already
+// timed out/was canceled) — the caller treats that as nothing-to-do, not an
+// error.
+func (j *Job) ResolveScriptApproval(approved bool) bool {
+	j.mu.Lock()
+	pending := j.pendingScript
+	j.mu.Unlock()
+	if pending == nil {
+		return false
+	}
+	select {
+	case pending.decision <- approved:
+		return true
+	default:
+		return false // already resolved or timed out
+	}
+}
+
+func (j *Job) clearPendingScript(pending *pendingScriptApproval) {
+	j.mu.Lock()
+	if j.pendingScript == pending {
+		j.pendingScript = nil
+	}
+	j.mu.Unlock()
+	j.publishScriptApproval(ScriptApprovalView{JobID: j.ID})
+}
+
+func (j *Job) publishScriptApproval(view ScriptApprovalView) {
+	if j.renderScriptApproval == nil {
+		return
+	}
+	j.publish(Event{Type: EventScriptApproval, HTML: j.renderScriptApproval(view)})
 }
 
 // Subscribe registers a new live SSE subscriber and returns the channel to
