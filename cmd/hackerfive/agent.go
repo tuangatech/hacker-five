@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,6 +24,54 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/scriptexec"
 	"github.com/tuangatech/hacker-five/pkg/templatesync"
 )
+
+// agentStreamEvent is one line of `hackerfive agent`'s stdout/--output
+// stream. A run that dies before Run returns (a real Ctrl-C, OOM, host
+// reboot, or a harness/supervisor's own timeout kill — none of which any
+// code here gets a chance to react to) still leaves every "finding" event
+// already written on disk or in the consuming process's captured pipe,
+// since each Encode call below is an immediate, unbuffered write — unlike
+// the previous behavior of only ever emitting one full Result document
+// after a clean return, which a killed run produced zero bytes of
+// (docs/follow-up.md LT-163 item 3). A clean run's final "result" event
+// still carries the complete Findings/Iterations/SpendUSD for a consumer
+// that only wants to look at one line.
+type agentStreamEvent struct {
+	Type    string               `json:"type"`
+	Finding *detectors.Finding   `json:"finding,omitempty"`
+	Result  *orchestrator.Result `json:"result,omitempty"`
+	Err     string               `json:"error,omitempty"`
+}
+
+// agentEventWriter serializes agentStreamEvent writes to w — concurrency-safe
+// since planexec's OnFinding (docs comment on pkg/planexec.ExecOptions.
+// OnFinding) is called "synchronously" per leaf but a leaf's own scanner
+// engine may run several template matches on its own worker goroutines, so
+// more than one finding can arrive at once.
+type agentEventWriter struct {
+	mu  sync.Mutex
+	enc *json.Encoder
+}
+
+func newAgentEventWriter(w io.Writer) *agentEventWriter {
+	return &agentEventWriter{enc: json.NewEncoder(w)}
+}
+
+func (w *agentEventWriter) writeFinding(f detectors.Finding) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.enc.Encode(agentStreamEvent{Type: "finding", Finding: &f})
+}
+
+func (w *agentEventWriter) writeResult(res orchestrator.Result, runErr error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ev := agentStreamEvent{Type: "result", Result: &res}
+	if runErr != nil {
+		ev.Err = runErr.Error()
+	}
+	_ = w.enc.Encode(ev)
+}
 
 // newAgentCmd is docs/93-implementation-plan-agent-orchestrator.md's M3: the
 // CLI entrypoint for pkg/orchestrator's LLM-driven loop. Unlike `plan`/`scan`,
@@ -187,20 +236,17 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				AllowAgentScripts: allowAgentScripts,
 				ScriptTimeout:     scriptTimeout,
 				ApprovalGate:      approvalGate,
-				OnFinding: func(f detectors.Finding) {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: finding: [%s/%s] %s (%s)\n", f.Type, f.Severity, f.Description, f.Target)
-				},
-				OnLog: func(level, msg string) {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: [%s] %s\n", level, msg)
-				},
 			}
 
-			res, err := orchestrator.Run(cmd.Context(), orchCfg)
-			if err != nil {
-				return fmt.Errorf("running agent: %w", err)
-			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: spent $%.4f of $%.2f budget, %d iteration(s)\n", res.SpendUSD, orchCfg.Budget, res.Iterations)
-
+			// LT-163 item 3 (docs/follow-up.md): out is opened and streamed to
+			// up front, one compact JSON line per event, instead of building a
+			// single pretty-printed Result document only written after Run
+			// returns cleanly — a killed run (this process's own context
+			// deadline, a supervising harness's timeout, Ctrl-C, OOM) previously
+			// discarded every finding it had already made. os.Create/os.Stdout
+			// are both unbuffered at the Go level, so a completed Write() call
+			// is durable in the OS pipe/file before this process could be
+			// killed for anything happening after it.
 			out := cmd.OutOrStdout()
 			if root.output != "" {
 				f, err := os.Create(root.output)
@@ -210,9 +256,23 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				defer func() { _ = f.Close() }()
 				out = f
 			}
-			enc := json.NewEncoder(out)
-			enc.SetIndent("", "  ")
-			return enc.Encode(res)
+			events := newAgentEventWriter(out)
+
+			orchCfg.OnFinding = func(f detectors.Finding) {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: finding: [%s/%s] %s (%s)\n", f.Type, f.Severity, f.Description, f.Target)
+				events.writeFinding(f)
+			}
+			orchCfg.OnLog = func(level, msg string) {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: [%s] %s\n", level, msg)
+			}
+
+			res, runErr := orchestrator.Run(cmd.Context(), orchCfg)
+			events.writeResult(res, runErr)
+			if runErr != nil {
+				return fmt.Errorf("running agent: %w", runErr)
+			}
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: spent $%.4f of $%.2f budget, %d iteration(s)\n", res.SpendUSD, orchCfg.Budget, res.Iterations)
+			return nil
 		},
 	}
 

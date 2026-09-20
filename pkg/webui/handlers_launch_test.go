@@ -7,6 +7,8 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -207,6 +209,52 @@ func TestParseLaunchSubmission_SSRFOOBServers_DefaultAndClearable(t *testing.T) 
 	require.Empty(t, errs)
 	require.Len(t, cfgs, 1)
 	assert.Empty(t, cfgs[0].OOBServers, "a blank oob_servers submission must clear OOB, never fall back to a default")
+}
+
+// TestParseLaunchSubmission_ScopeFile_PopulatesExecCfgScope is LT-161's
+// regression test (docs/follow-up.md): execCfg used to carry only
+// ScopeFile, never a parsed Scope — planexec.RunPlan's B4 scope-creep gate
+// (executor.go) reads baseCfg.Scope directly with no ScopeFile fallback of
+// its own (unlike scanner.Engine.loadScope, which cfgs' per-detector configs
+// rely on), so a plan dispatched from Plan Preview ran with that gate
+// silently inert regardless of what --scope the operator entered.
+func TestParseLaunchSubmission_ScopeFile_PopulatesExecCfgScope(t *testing.T) {
+	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
+	require.NoError(t, os.WriteFile(scopeFile, []byte("example.com\n"), 0o644))
+
+	form := url.Values{
+		"target":     {"https://example.com"},
+		"authorized": {"on"},
+		"scope_file": {scopeFile},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	require.NoError(t, req.ParseForm())
+
+	_, _, execCfg, errs := parseLaunchSubmission(req)
+	require.Empty(t, errs)
+	require.NotNil(t, execCfg.Scope, "execCfg.Scope must be populated from scope_file so planexec.RunPlan's B4 gate is actually enforced")
+	assert.True(t, execCfg.Scope.Allowed("https://example.com/anything"))
+	assert.False(t, execCfg.Scope.Allowed("https://not-in-scope.test/anything"))
+}
+
+// TestParseLaunchSubmission_InvalidScopeFile_FailsAsFormError ensures a bad
+// --scope path surfaces as a form-submission error up front, rather than
+// only failing silently later inside runLaunchRecon while execCfg.Scope
+// stays nil and the B4 gate stays inert.
+func TestParseLaunchSubmission_InvalidScopeFile_FailsAsFormError(t *testing.T) {
+	form := url.Values{
+		"target":     {"https://example.com"},
+		"authorized": {"on"},
+		"scope_file": {filepath.Join(t.TempDir(), "does-not-exist.txt")},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/scans", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	require.NoError(t, req.ParseForm())
+
+	_, _, execCfg, errs := parseLaunchSubmission(req)
+	require.NotEmpty(t, errs)
+	assert.Nil(t, execCfg.Scope)
 }
 
 // TestStartLaunch_ReconOnly_PopulatesReconResultAndRendersTables runs the

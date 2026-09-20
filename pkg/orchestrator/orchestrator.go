@@ -219,6 +219,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 	tree, _ := registry.Resolve(result, cfg.TemplateIndex)
 	tree.SpendCeilingUSD = cfg.Budget
+	warnDuplicateLeafTargets(cfg, tree)
 
 	// LT-137 parity (docs/follow-up.md): tools_plan.go and webui's plan-exec
 	// path already carry a plan's own recon result into DerivedTags so
@@ -304,6 +305,37 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 func (cfg Config) logf(level, format string, args ...any) {
 	if cfg.OnLog != nil {
 		cfg.OnLog(level, fmt.Sprintf(format, args...))
+	}
+}
+
+// warnDuplicateLeafTargets logs (via OnLog, so it survives a killed run —
+// docs/follow-up.md LT-163 item 3) when two or more leaves in the freshly
+// built tree share the same Detector+Target+EndpointTemplate — i.e. they'd
+// dispatch the identical scan. This should never happen (registry.Resolve's
+// own candidate generation already dedups by templated-string identity
+// before a leaf is ever created), so a hit here is a real bug worth
+// surfacing rather than a leaf-count vanity metric. Added investigating
+// LT-166 (an eval run redispatching what looked like the same scan.leaf
+// three times): reading the dedup path found it airtight for the one code
+// path checked (recon.SuggestIDOREndpointCandidates), so this diagnostic
+// exists to catch a duplicate that check can't see — a different leaf ID
+// resolving to an identical dispatch, from a code path not yet found.
+func warnDuplicateLeafTargets(cfg Config, tree *agenttask.PlanTree) {
+	if tree == nil || tree.Root == nil {
+		return
+	}
+	type key struct{ detector, target, endpointTemplate string }
+	byKey := map[key][]string{}
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		k := key{leaf.Detector, leaf.Target, leaf.EndpointTemplate}
+		byKey[k] = append(byKey[k], leaf.ID)
+	}
+	for k, ids := range byKey {
+		if len(ids) < 2 {
+			continue
+		}
+		cfg.logf("warn", "plan tree has %d leaves that would dispatch an identical scan (detector=%q target=%q endpoint_template=%q): %s — each will independently run and report, wasting budget/iterations on duplicate work",
+			len(ids), k.detector, k.target, k.endpointTemplate, strings.Join(ids, ", "))
 	}
 }
 

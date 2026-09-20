@@ -3,6 +3,7 @@
 package eval
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -27,6 +28,20 @@ type orchestratorResult struct {
 	Findings   []detectors.Finding
 	Iterations int
 	SpendUSD   float64
+}
+
+// agentStreamEvent mirrors cmd/hackerfive/agent.go's agentStreamEvent — one
+// JSON-per-line event on `hackerfive agent`'s stdout/--output stream
+// (docs/follow-up.md LT-163 item 3): a "finding" event the instant a
+// scan.leaf dispatch produces one, and a final "result" event with the full
+// Result once Run returns. Parsing line-by-line rather than requiring a
+// single trailing JSON document is what lets this harness still see real
+// findings from a run this test's own 20-minute context timeout killed
+// before it ever produced a "result" event.
+type agentStreamEvent struct {
+	Type    string              `json:"type"`
+	Finding *detectors.Finding  `json:"finding,omitempty"`
+	Result  *orchestratorResult `json:"result,omitempty"`
 }
 
 // TestOrchestratorEvalHarness is M5 (docs/93-implementation-plan-agent-orchestrator.md):
@@ -103,10 +118,15 @@ func TestOrchestratorEvalHarness(t *testing.T) {
 			// individual NextAction calls took 60-150s+ against
 			// deepseek-v4.1-flash, and a 10m ceiling killed the run
 			// (signal: killed, 0 tool_calls) mid-way through only its 4th or
-			// 5th turn, discarding real findings already surfaced via OnLog
-			// (e.g. a genuine misconfig-exposed-path-.env hit) because
-			// `hackerfive agent` only emits its final JSON after the loop
-			// exits cleanly — see docs/follow-up.md's new entry on that gap.
+			// 5th turn — at the time, that discarded real findings already
+			// surfaced via OnLog (e.g. a genuine misconfig-exposed-path-.env
+			// hit), since `hackerfive agent` only emitted its final JSON
+			// after the loop exited cleanly (docs/follow-up.md LT-163 item 3,
+			// since fixed: findings now stream as individual JSONL events —
+			// see agentStreamEvent below and the parsing loop that reads
+			// them even from a killed run's partial output). 20m stays the
+			// budget regardless, since the underlying NextAction latency is
+			// unchanged.
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binPath, args...)
@@ -123,21 +143,52 @@ func TestOrchestratorEvalHarness(t *testing.T) {
 					sc.Name, runErr, stderr.String())
 			}
 
+			// Parse every event line rather than requiring a final "result"
+			// line: a run this harness's own context timeout killed produces
+			// no "result" event at all, but every "finding" event already
+			// written before the kill is still real signal (LT-163 item 3) —
+			// falling back to a single json.Unmarshal on the whole buffer
+			// would report 0 findings for a run that actually found some.
+			var findings []detectors.Finding
 			var result orchestratorResult
-			trimmed := bytes.TrimSpace(stdout.Bytes())
-			if len(trimmed) > 0 {
-				require.NoError(t, json.Unmarshal(trimmed, &result), "agent output: %s", trimmed)
+			sawResult := false
+			lineScanner := bufio.NewScanner(bytes.NewReader(stdout.Bytes()))
+			lineScanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
+			for lineScanner.Scan() {
+				line := bytes.TrimSpace(lineScanner.Bytes())
+				if len(line) == 0 {
+					continue
+				}
+				var ev agentStreamEvent
+				require.NoError(t, json.Unmarshal(line, &ev), "agent output line: %s", line)
+				switch ev.Type {
+				case "finding":
+					if ev.Finding != nil {
+						findings = append(findings, *ev.Finding)
+					}
+				case "result":
+					if ev.Result != nil {
+						result = *ev.Result
+						sawResult = true
+					}
+				}
+			}
+			require.NoError(t, lineScanner.Err(), "scanning agent output")
+			if sawResult {
+				// The final event's own Findings is the authoritative,
+				// complete list (a superset of what streamed in via
+				// "finding" events) — prefer it on a clean run.
+				findings = result.Findings
 			}
 
-			findings := result.Findings
 			unexpected := 0
 			for _, f := range findings {
 				if !matchesAnyPrefix(f.ID, expected.ExpectedIDPrefixes) {
 					unexpected++
 				}
 			}
-			t.Logf("%s: %d finding(s), %d unexpected (candidate FPs), cost=$%.4f, tool_calls=%d, wall_clock=%s",
-				sc.Name, len(findings), unexpected, result.SpendUSD, result.Iterations, elapsed.Round(time.Millisecond))
+			t.Logf("%s: %d finding(s), %d unexpected (candidate FPs), cost=$%.4f, tool_calls=%d, wall_clock=%s, result_event=%v",
+				sc.Name, len(findings), unexpected, result.SpendUSD, result.Iterations, elapsed.Round(time.Millisecond), sawResult)
 
 			for _, prefix := range expected.ExpectedIDPrefixes {
 				prefix := prefix

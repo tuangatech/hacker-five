@@ -317,6 +317,42 @@ func TestHasActionableLeaves(t *testing.T) {
 	}
 }
 
+func TestWarnDuplicateLeafTargets_LogsWhenTwoLeavesWouldDispatchIdentically(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-a", Detector: "idor", Target: "https://example.test", EndpointTemplate: "/api/report?report_id={{id}}", Status: agenttask.StatusPending},
+		{ID: "leaf-b", Detector: "idor", Target: "https://example.test", EndpointTemplate: "/api/report?report_id={{id}}", Status: agenttask.StatusPending},
+	}}}
+
+	var logs []string
+	cfg := Config{OnLog: func(level, msg string) { logs = append(logs, level+": "+msg) }}
+	warnDuplicateLeafTargets(cfg, tree)
+
+	if len(logs) != 1 {
+		t.Fatalf("got %d log line(s), want 1: %v", len(logs), logs)
+	}
+	for _, want := range []string{"warn:", "leaf-a", "leaf-b", "2 leaves"} {
+		if !strings.Contains(logs[0], want) {
+			t.Errorf("log line %q missing %q", logs[0], want)
+		}
+	}
+}
+
+func TestWarnDuplicateLeafTargets_NoLogWhenLeavesDiffer(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-a", Detector: "idor", Target: "https://example.test", EndpointTemplate: "/api/report?report_id={{id}}", Status: agenttask.StatusPending},
+		{ID: "leaf-b", Detector: "idor", Target: "https://example.test", EndpointTemplate: "/api/other?id={{id}}", Status: agenttask.StatusPending},
+		{ID: "leaf-c", Detector: "misconfig", Target: "https://example.test", Status: agenttask.StatusPending},
+	}}}
+
+	var logs []string
+	cfg := Config{OnLog: func(level, msg string) { logs = append(logs, level+": "+msg) }}
+	warnDuplicateLeafTargets(cfg, tree)
+
+	if len(logs) != 0 {
+		t.Fatalf("got %d log line(s), want 0: %v", len(logs), logs)
+	}
+}
+
 func TestDispatch_RegistryLookup(t *testing.T) {
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}
 	var findings []detectors.Finding
