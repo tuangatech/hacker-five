@@ -91,6 +91,23 @@ func TestSuggestIDOREndpointCandidates(t *testing.T) {
 			want: nil,
 		},
 		{
+			// LT-166 (docs/follow-up.md): idShapedQueryCandidate's per-endpoint
+			// pass and numericQueryIDCandidates' LT-83 pass used to format the
+			// SAME (path, key) two different ways — one preserving the sibling
+			// "foo" param, one dropping it — defeating seen[tmpl]'s exact-string
+			// dedup and fanning out two idor leaves that dispatch an
+			// effectively identical check. Both endpoints below share "id"
+			// (already query-string preserving) AND satisfy LT-83's own
+			// ">= 2 distinct values" gate for the same key — must still
+			// collapse to the one sibling-preserving candidate.
+			name: "an id-named query key varying across >= 2 observations must not also fan out via the LT-83 numeric path",
+			urls: []string{
+				"https://example.com/report?report_id=482&foo=bar",
+				"https://example.com/report?report_id=483&foo=bar",
+			},
+			want: []string{"/report?report_id={{id}}&foo=bar"},
+		},
+		{
 			name: "pagination/cosmetic numeric query keys are excluded from LT-83 even when they vary",
 			urls: []string{
 				"https://example.com/list?page=2",

@@ -59,19 +59,26 @@ var nonIDNumericQueryKeys = map[string]bool{
 	"t": true, "ts": true, "timestamp": true, "_": true,
 }
 
+// queryIDKey identifies an ID-shaped query parameter by (path, key) alone —
+// shared by numericQueryIDCandidates and idorCandidatesAndSeeds' per-endpoint
+// idShapedQueryCandidate pass so the two can dedup against each other by the
+// parameter they actually mean, not by their independently-formatted
+// template *strings* (see idorCandidatesAndSeeds' seenQueryKey comment for
+// why the two must never format the same (path, key) two different ways).
+type queryIDKey struct{ path, key string }
+
 // numericQueryIDCandidates finds query keys whose observed value is a small
 // integer that varies across at least two crawled URLs sharing the same
-// path, and returns each as a "/path?key={{id}}" candidate. This is the
-// IDOR/SQLi surface of a query-routed CMS (?article=3..13, ?topic=1..2 —
+// path, and returns each as a (path, key) pair. This is the IDOR/SQLi
+// surface of a query-routed CMS (?article=3..13, ?topic=1..2 —
 // sandbox-royal.securegateway.com, docs/follow-up.md LT-83) that
 // idShapedQueryCandidate misses because it gates on the key *name*
 // (looksLikeIDKey) and "article" doesn't look like an identifier. The
 // ">= 2 distinct values" requirement is what separates a route parameter
 // enumerated by the crawl from a lone constant that could be anything.
-func numericQueryIDCandidates(endpoints []EndpointFact) []string {
-	type pathKey struct{ path, key string }
-	values := map[pathKey]map[string]bool{}
-	var order []pathKey
+func numericQueryIDCandidates(endpoints []EndpointFact) []queryIDKey {
+	values := map[queryIDKey]map[string]bool{}
+	var order []queryIDKey
 	for _, ep := range endpoints {
 		u, err := url.Parse(ep.URL)
 		if err != nil || u.RawQuery == "" {
@@ -93,7 +100,7 @@ func numericQueryIDCandidates(endpoints []EndpointFact) []string {
 			if err != nil || !smallIntPattern.MatchString(val) {
 				continue
 			}
-			k := pathKey{u.Path, key}
+			k := queryIDKey{u.Path, key}
 			if values[k] == nil {
 				values[k] = map[string]bool{}
 				order = append(order, k)
@@ -101,12 +108,12 @@ func numericQueryIDCandidates(endpoints []EndpointFact) []string {
 			values[k][val] = true
 		}
 	}
-	var out []string
+	var out []queryIDKey
 	for _, k := range order {
 		if len(values[k]) < 2 {
 			continue
 		}
-		out = append(out, k.path+"?"+k.key+"={{id}}")
+		out = append(out, k)
 	}
 	return out
 }
@@ -192,6 +199,9 @@ func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTem
 	}
 
 	seen := map[string]bool{}
+	// seenQueryKey is populated lazily (see below) since most callers never
+	// hit a query-shaped candidate at all.
+	var seenQueryKey map[queryIDKey]bool
 	for _, ep := range result.Endpoints {
 		// A static build/CDN asset's ID-shaped path segment is a cache-slot
 		// or version number, not a per-record identifier — swapping it just
@@ -224,11 +234,28 @@ func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTem
 		if !IsPlausibleURLPath(p) {
 			continue
 		}
-		tmpl, concreteVal, isUUID, ok := idShapedCandidate(ep.URL)
+		tmpl, concreteVal, matchedKey, isUUID, ok := idShapedCandidate(ep.URL)
 		if !ok || seen[tmpl] {
 			continue
 		}
 		seen[tmpl] = true
+		if matchedKey != "" {
+			// This path+key is already covered by a query-string-preserving
+			// template (idShapedQueryCandidate keeps every sibling query
+			// param, "?report_id={{id}}&foo=bar"); numericQueryIDCandidates
+			// would otherwise format the *same* (path, key) as a
+			// sibling-param-dropping "?report_id={{id}}" — a different
+			// string, defeating seen[tmpl]'s exact-match dedup and fanning
+			// out two idor leaves (LT-91) that dispatch an effectively
+			// identical check. Recording it here by (path, key) instead of
+			// by formatted string is what LT-166's investigation (docs/
+			// follow-up.md) found as a real, previously-unclosed gap in this
+			// dedup.
+			if seenQueryKey == nil {
+				seenQueryKey = map[queryIDKey]bool{}
+			}
+			seenQueryKey[queryIDKey{path: p, key: matchedKey}] = true
+		}
 		candidates = append(candidates, tmpl)
 		if isUUID && concreteVal != "" {
 			if seedByTemplate == nil {
@@ -240,7 +267,11 @@ func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTem
 	// LT-83: a query-routed CMS enumerates its content through a numeric
 	// param whose name (e.g. "article") doesn't look ID-shaped — pick those
 	// up from the cross-endpoint value spread, after the per-URL pass above.
-	for _, tmpl := range numericQueryIDCandidates(result.Endpoints) {
+	for _, k := range numericQueryIDCandidates(result.Endpoints) {
+		if seenQueryKey[k] {
+			continue
+		}
+		tmpl := k.path + "?" + k.key + "={{id}}"
 		if seen[tmpl] {
 			continue
 		}
@@ -258,15 +289,19 @@ func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTem
 // RandomUUIDStrategy seed — a plain int-shaped or spec-templated "{id}"
 // match leaves isUUID false, since idor.SequentialIntStrategy already
 // brute-forces the int case and a bare "{id}"/"{userId}" spec placeholder
-// carries no real value at all.
-func idShapedCandidate(rawURL string) (tmpl, concreteVal string, isUUID, ok bool) {
+// carries no real value at all. key is the matched query-parameter name when
+// the match came from idShapedQueryCandidate, empty for a path-based match —
+// LT-166 (docs/follow-up.md): idorCandidatesAndSeeds needs this to cross-dedup
+// against numericQueryIDCandidates by (path, key), since the two format the
+// same underlying parameter into different template strings.
+func idShapedCandidate(rawURL string) (tmpl, concreteVal, key string, isUUID, ok bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", "", false, false
+		return "", "", "", false, false
 	}
 
 	if tmpl, concreteVal, isUUID, ok := idShapedPathCandidate(u); ok {
-		return tmpl, concreteVal, isUUID, true
+		return tmpl, concreteVal, "", isUUID, true
 	}
 	return idShapedQueryCandidate(u)
 }
@@ -299,17 +334,17 @@ func idShapedPathCandidate(u *url.URL) (tmpl, concreteVal string, isUUID, ok boo
 // idShapedPathCandidate's fix above; those keys don't look like an
 // identifier by name, so they're excluded before the value pattern is even
 // checked.
-func idShapedQueryCandidate(u *url.URL) (tmpl, concreteVal string, isUUID, ok bool) {
+func idShapedQueryCandidate(u *url.URL) (tmpl, concreteVal, key string, isUUID, ok bool) {
 	if u.RawQuery == "" {
-		return "", "", false, false
+		return "", "", "", false, false
 	}
 	for _, pair := range strings.Split(u.RawQuery, "&") {
 		kv := strings.SplitN(pair, "=", 2)
 		if len(kv) != 2 {
 			continue
 		}
-		key, rawVal := kv[0], kv[1]
-		if !looksLikeIDKey(key) {
+		matchedKey, rawVal := kv[0], kv[1]
+		if !looksLikeIDKey(matchedKey) {
 			continue
 		}
 		// LT-95 (docs/follow-up.md): a spec-documented but valueless query
@@ -318,15 +353,15 @@ func idShapedQueryCandidate(u *url.URL) (tmpl, concreteVal string, isUUID, ok bo
 		// same tolerance isSpecPathParam already gives a valueless *path*
 		// "{id}" template, just for a query key instead.
 		if rawVal == "" {
-			return u.Path + "?" + strings.Replace(u.RawQuery, pair, key+"={{id}}", 1), "", false, true
+			return u.Path + "?" + strings.Replace(u.RawQuery, pair, matchedKey+"={{id}}", 1), "", matchedKey, false, true
 		}
 		val, err := url.QueryUnescape(rawVal)
 		if err != nil || !isIDShaped(val) {
 			continue
 		}
-		return u.Path + "?" + strings.Replace(u.RawQuery, pair, key+"={{id}}", 1), val, uuidPattern.MatchString(val), true
+		return u.Path + "?" + strings.Replace(u.RawQuery, pair, matchedKey+"={{id}}", 1), val, matchedKey, uuidPattern.MatchString(val), true
 	}
-	return "", "", false, false
+	return "", "", "", false, false
 }
 
 // looksLikeIDKey reports whether key's own name suggests an object
@@ -708,12 +743,8 @@ func SuggestSQLiTargets(result *ReconResult) []SQLiTarget {
 			get(p, p+"?"+u.RawQuery).params[kv[0]] = true
 		}
 	}
-	for _, tmpl := range numericQueryIDCandidates(result.Endpoints) {
-		parts := strings.SplitN(tmpl, "?", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		p, key := parts[0], strings.TrimSuffix(parts[1], "={{id}}")
+	for _, k := range numericQueryIDCandidates(result.Endpoints) {
+		p, key := k.path, k.key
 		repPathQuery := firstQueryPathForPath(result.Endpoints, p)
 		if repPathQuery == "" {
 			continue

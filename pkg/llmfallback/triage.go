@@ -48,6 +48,14 @@ func (c *Client) TriageFindings(ctx context.Context, findings []detectors.Findin
 	if err := validateRanking(findings, resp.Ranked); err != nil {
 		return TriageResult{EscalateToHuman: "model returned an invalid ranking: " + err.Error()}, cost, nil
 	}
+
+	byID := make(map[string]detectors.Finding, len(findings))
+	for _, f := range findings {
+		byID[f.ID] = f
+	}
+	for i := range resp.Ranked {
+		resp.Ranked[i].Rationale = evidenceGateText(byID[resp.Ranked[i].FindingID], resp.Ranked[i].Rationale)
+	}
 	return TriageResult{Ranked: resp.Ranked}, cost, nil
 }
 

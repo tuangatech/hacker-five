@@ -157,3 +157,81 @@ func TestBuildOrchestratePrompt_ShortHistoryNotTruncated(t *testing.T) {
 		t.Fatalf("short history should never be reported as truncated:\n%s", prompt)
 	}
 }
+
+func leavesWithStatus(n int, status agenttask.PlanNodeStatus, prefix string) []*agenttask.PlanNode {
+	out := make([]*agenttask.PlanNode, n)
+	for i := range out {
+		out[i] = &agenttask.PlanNode{ID: fmt.Sprintf("%s-%d", prefix, i), Status: status}
+	}
+	return out
+}
+
+func TestBoundedLeavesForPrompt_UnderCap_ReturnsAllUnomitted(t *testing.T) {
+	leaves := leavesWithStatus(5, agenttask.StatusPending, "leaf")
+	shown, omitted := boundedLeavesForPrompt(leaves)
+	if omitted != 0 || len(shown) != 5 {
+		t.Fatalf("got shown=%d omitted=%d, want 5/0 (under the cap)", len(shown), omitted)
+	}
+}
+
+// TestBoundedLeavesForPrompt_OverCap_KeepsActionableDropsSettledFirst is
+// LT-165's fix (docs/follow-up.md): every actionable (pending/unresolved)
+// leaf must survive the cap since those are the only ones a node_id could
+// usefully target this turn; an already-settled leaf (done here) is dropped
+// first.
+func TestBoundedLeavesForPrompt_OverCap_KeepsActionableDropsSettledFirst(t *testing.T) {
+	actionable := leavesWithStatus(10, agenttask.StatusPending, "pending")
+	settled := leavesWithStatus(maxLeafNodesInPrompt, agenttask.StatusDone, "done")
+	leaves := append(append([]*agenttask.PlanNode{}, actionable...), settled...)
+
+	shown, omitted := boundedLeavesForPrompt(leaves)
+	if len(shown) != maxLeafNodesInPrompt {
+		t.Fatalf("got %d shown, want exactly the cap (%d)", len(shown), maxLeafNodesInPrompt)
+	}
+	if omitted != len(leaves)-maxLeafNodesInPrompt {
+		t.Fatalf("got omitted=%d, want %d", omitted, len(leaves)-maxLeafNodesInPrompt)
+	}
+	shownIDs := make(map[string]bool, len(shown))
+	for _, l := range shown {
+		shownIDs[l.ID] = true
+	}
+	for _, l := range actionable {
+		if !shownIDs[l.ID] {
+			t.Fatalf("actionable leaf %q was dropped — every actionable leaf must survive the cap", l.ID)
+		}
+	}
+}
+
+// TestBoundedLeavesForPrompt_ActionableAloneExceedsCap covers the edge case
+// where even the actionable set is larger than the cap — it gets truncated
+// too rather than growing the prompt further, since NextAction only ever
+// needs one node_id per turn and an omitted actionable leaf stays visible on
+// a later call.
+func TestBoundedLeavesForPrompt_ActionableAloneExceedsCap(t *testing.T) {
+	leaves := leavesWithStatus(maxLeafNodesInPrompt+20, agenttask.StatusPending, "pending")
+	shown, omitted := boundedLeavesForPrompt(leaves)
+	if len(shown) != maxLeafNodesInPrompt {
+		t.Fatalf("got %d shown, want exactly the cap (%d)", len(shown), maxLeafNodesInPrompt)
+	}
+	if omitted != 20 {
+		t.Fatalf("got omitted=%d, want 20", omitted)
+	}
+}
+
+// TestBuildOrchestratePrompt_CapsLeafListAndNotesOmission is the end-to-end
+// version of the boundedLeavesForPrompt unit tests above, through the real
+// prompt builder.
+func TestBuildOrchestratePrompt_CapsLeafListAndNotesOmission(t *testing.T) {
+	leaves := leavesWithStatus(maxLeafNodesInPrompt+15, agenttask.StatusDone, "done")
+	leaves = append(leaves, &agenttask.PlanNode{ID: "the-one-pending-leaf", Target: "https://example.test", Detector: "idor", Status: agenttask.StatusPending})
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: leaves}}
+
+	prompt := buildOrchestratePrompt(tree, sampleOrchestrateCatalog, nil)
+
+	if !strings.Contains(prompt, "leaf/leaves omitted for space") {
+		t.Fatalf("prompt does not note the omitted leaf count:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "id=the-one-pending-leaf") {
+		t.Fatalf("prompt is missing the one actionable leaf — it must never be dropped by the cap:\n%s", prompt)
+	}
+}

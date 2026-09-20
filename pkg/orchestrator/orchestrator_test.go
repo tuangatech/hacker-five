@@ -47,6 +47,11 @@ type fakeLLMClient struct {
 	triageResult llmfallback.TriageResult
 	triageCost   float64
 	triageErr    error
+
+	resolveFieldDecision llmfallback.FieldDecision
+	resolveFieldCost     float64
+	resolveFieldErr      error
+	resolveFieldCalls    int
 }
 
 func (f *fakeLLMClient) NextAction(_ context.Context, _ *agenttask.PlanTree, _ []llmfallback.ToolSpec, _ []llmfallback.TurnRecord) (llmfallback.Action, float64, error) {
@@ -64,6 +69,11 @@ func (f *fakeLLMClient) NextAction(_ context.Context, _ *agenttask.PlanTree, _ [
 
 func (f *fakeLLMClient) TriageFindings(_ context.Context, _ []detectors.Finding) (llmfallback.TriageResult, float64, error) {
 	return f.triageResult, f.triageCost, f.triageErr
+}
+
+func (f *fakeLLMClient) ResolveField(_ context.Context, _, _ string, _ []string) (llmfallback.FieldDecision, float64, error) {
+	f.resolveFieldCalls++
+	return f.resolveFieldDecision, f.resolveFieldCost, f.resolveFieldErr
 }
 
 // reconResultOneLiveHost is the minimal ReconResult that resolves (via
