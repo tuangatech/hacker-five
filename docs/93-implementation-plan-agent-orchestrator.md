@@ -109,6 +109,10 @@ Built close to the sketch, with two real corrections found during implementation
 - **Driver first validated with no LLM tier configured** (earlier the same day): `go build`/`go vet`/`go test -race ./...` clean; `go vet`/`golangci-lint run --build-tags eval ./tests/eval/...` clean; the intended skip path (`no LLM tier configured ... skipping`) fired correctly against a live vAPI target with only `VAPI_BASE_URL` set; a manual smoke test with a syntactically-valid but fake `OPENROUTER_API_KEY` confirmed the CLI invocation shape end to end (real recon completed, `registry.Resolve` built the tree, the run reached its first real `NextAction` call before failing on OpenRouter's `401`).
 - **With a real `OPENROUTER_API_KEY` configured (model: `deepseek/deepseek-v4.1-flash`) and all four lab targets re-authenticated live**, the table was first run 2026-09-15 (deterministic 10/22, MCP-plan 7/22, orchestrator 6/22 — gate not met), then re-run twice more after fixes: 2026-09-19 (partial re-verification, DVWA/Juice Shop improved, vAPI/crAPI pending), and finally **2026-09-20**, after landing LT-157, both LT-160 items, LT-165 item 1, LT-166's related dedup fix, and LT-138 item 1 — the current, gate-clearing result:
 
+  #### Baseline (2026-09-20) — compare all future orchestrator re-runs against this table
+
+  Model: `deepseek/deepseek-v4.1-flash` via OpenRouter. Any later re-run (post-LT-167 fix, post-LT-166 fix, a model swap, a new detector) should be logged as a new dated entry below this one, not by overwriting these numbers — regression or improvement is only visible against a fixed reference point.
+
   | Target | Mode | Expected prefixes found | Unexpected (FP) | Cost | Wall-clock |
   |---|---|---|---|---|---|
   | crAPI | deterministic (idor) | 1/2 | 0 | $0 | 1m19s |
