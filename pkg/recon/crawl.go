@@ -75,6 +75,21 @@ var commonPaths = []string{
 // punctuation but leaves alphanumeric runs literal.
 const reconCanaryPath = "/hackerfivereconcanary8b2e14d0"
 
+// maxKatanaJSONLLineBytes is runKatana's bufio.Scanner max-token-size —
+// raised from 1 MiB to 8 MiB (LT-164, docs/follow-up.md). Live-verified
+// against crAPI: katana's own -jc crawl fetches its 1.65 MB main.js bundle
+// fine and includes it in its JSONL stdout, but bufio.Scanner.Scan() returns
+// false (silently, ErrTooLong) the moment one JSONL line — here, a single
+// record embedding that body's JSON-escaped text — exceeds the buffer,
+// which stops the *entire* scan right there, discarding that line AND every
+// line emitted after it in the same crawl. This wasn't a hypothetical risk:
+// it consistently discarded main.js (and everything katana emitted after
+// it) well before LT-164's own join logic ever got a chance to run,
+// independent of and prior to that feature's own maxJSStaticBodyBytes cap.
+// 8 MiB gives comfortable headroom over maxJSStaticBodyBytes (4 MiB) plus
+// JSON-string-escaping overhead and the record's other small fields.
+const maxKatanaJSONLLineBytes = 8 << 20
+
 // maxCanaryBodyRead bounds how much of a common-path / canary response body
 // probeCommonPaths measures for the length comparison — a real SPA shell is
 // a couple of KiB, and both sides are capped identically so an equal pair
@@ -204,9 +219,13 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 
 	// Phase 8 Step 3 (docs/17-implementation-plan-ph8.md): endpoint/secret/
 	// cloud-provider extraction over the JS bodies runKatana already fetched
-	// above — no new request, always on (unlike the two opt-in passes above,
-	// this adds zero traffic so there is no cost to gate behind a flag).
-	r.runJSStaticAnalysis(agg, jsAssets)
+	// above — always on (unlike the two opt-in passes above, the bulk of this
+	// pass adds zero traffic so there is no cost to gate behind a flag).
+	// LT-164 (docs/follow-up.md) adds one bounded exception: a small, capped
+	// number of live GETs to verify service-prefix+API-path join candidates
+	// reconstructed from the same JS bodies — see runJSStaticAnalysis's own
+	// doc comment.
+	r.runJSStaticAnalysis(ctx, agg, jsAssets)
 }
 
 // runKatana crawls seeds. katana's own default scope ("-fs rdn", confirmed
@@ -283,7 +302,7 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	var authCandidates []EndpointFact
 	var jsAssets []jsAsset
 	scanner := bufio.NewScanner(bytes.NewReader(out))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxKatanaJSONLLineBytes)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -355,6 +374,15 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 			continue
 		}
 		agg.addEndpoint(ef)
+	}
+	if err := scanner.Err(); err != nil {
+		// LT-164 (docs/follow-up.md): bufio.Scanner silently stops at the
+		// first line exceeding its max token size, discarding that line AND
+		// every line after it in the same output — a real, live-verified
+		// failure mode (see maxKatanaJSONLLineBytes' own doc comment), not
+		// hypothetical. Loud rather than silent, matching this package's
+		// "a surprising extraction/skip is loud" convention elsewhere.
+		agg.addWarning("wave3: katana: a JSONL line exceeded the %d-byte parse buffer and the rest of this crawl's output was skipped (%v) — some endpoints/JS assets may be missing", maxKatanaJSONLLineBytes, err)
 	}
 
 	r.verifyAuthCandidates(waveCtx, agg, authCandidates)

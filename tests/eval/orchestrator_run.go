@@ -68,11 +68,20 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		// calls surfaced), same shape as vAPI's pre-fix failure. crAPI's own
 		// deterministic Scenario (challenges.go) already uses templatesDir()
 		// for the same reason.
+		//
+		// Depth: "full", not "active" (LT-164, docs/follow-up.md): the idor-
+		// prefix this fixture expects only exists on a leaf built from a
+		// recon-discovered endpoint (unlike challenges.go's deterministic
+		// Scenario, which is handed it directly via --endpoint) — and
+		// recon's Wave 3 (crawl + JS-static analysis, where LT-164's
+		// service-prefix+API-path join lives) never runs below "full". Every
+		// other OrchestratorScenario stays at "active" since none of their
+		// expected findings need Wave 3.
 		Name:              "crAPI (orchestrator)",
 		ExpectedFile:      "tests/fixtures/expected-findings/crapi.json",
 		RequiredEnv:       []string{"CRAPI_BASE_URL", "CRAPI_OWNER_TOKEN", "CRAPI_OTHER_TOKEN"},
 		Target:            func() string { return os.Getenv("CRAPI_BASE_URL") },
-		Depth:             "active",
+		Depth:             "full",
 		AuthTokenEnv:      "CRAPI_OWNER_TOKEN",
 		OtherAuthTokenEnv: "CRAPI_OTHER_TOKEN",
 		Templates:         templatesDir(),
