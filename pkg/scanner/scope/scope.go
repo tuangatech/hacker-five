@@ -19,8 +19,21 @@ import (
 // Scope is a parsed --scope file: a set of domain (exact or "*."-prefixed
 // suffix) and CIDR entries a target's host must match against.
 type Scope struct {
-	domains []string // exact or "*."-prefixed suffix entries, already lowercased
+	domains []domainEntry
 	cidrs   []*net.IPNet
+}
+
+// domainEntry is one parsed domain-line: pattern is the exact or
+// "*."-prefixed suffix (already lowercased), port is an optional exact port
+// this entry is pinned to. An empty port means "any port on this host" — the
+// original, and still default, behavior; a non-empty port narrows the entry
+// to that one port only (docs/follow-up.md LT-167: `Allowed` used to have no
+// port dimension at all, so a scope entry meant to authorize one service on
+// one port silently also authorized every other service colocated on the
+// same hostname's other ports).
+type domainEntry struct {
+	pattern string
+	port    string
 }
 
 // Parse reads path — one entry per line, blank lines and "#"-prefixed
@@ -71,9 +84,22 @@ func New(entries []string) (*Scope, error) {
 			s.cidrs = append(s.cidrs, ipNet)
 			continue
 		}
-		s.domains = append(s.domains, strings.ToLower(line))
+		s.domains = append(s.domains, parseDomainEntry(line))
 	}
 	return s, nil
+}
+
+// parseDomainEntry splits an optional trailing ":port" off a domain line —
+// e.g. "localhost:8888" or "*.example.com:8443" — via net.SplitHostPort,
+// which already correctly rejects a bare (unbracketed) IPv6-shaped entry as
+// ambiguous rather than misparsing it, leaving it as a whole, port-less
+// pattern exactly as before. A line with no colon at all (the overwhelming
+// common case) is unaffected: port stays "", meaning "any port".
+func parseDomainEntry(line string) domainEntry {
+	if host, port, err := net.SplitHostPort(line); err == nil {
+		return domainEntry{pattern: strings.ToLower(host), port: port}
+	}
+	return domainEntry{pattern: strings.ToLower(line)}
 }
 
 // HasWildcard reports whether the scope contains any entry broader than a
@@ -88,7 +114,7 @@ func (s *Scope) HasWildcard() bool {
 		return true
 	}
 	for _, d := range s.domains {
-		if strings.HasPrefix(d, "*.") {
+		if strings.HasPrefix(d.pattern, "*.") {
 			return true
 		}
 	}
@@ -105,7 +131,13 @@ func (s *Scope) HasWildcard() bool {
 // entries from a mounted file via Parse).
 func (s *Scope) Entries() []string {
 	out := make([]string, 0, len(s.domains)+len(s.cidrs))
-	out = append(out, s.domains...)
+	for _, d := range s.domains {
+		if d.port == "" {
+			out = append(out, d.pattern)
+			continue
+		}
+		out = append(out, net.JoinHostPort(d.pattern, d.port))
+	}
 	for _, c := range s.cidrs {
 		out = append(out, c.String())
 	}
@@ -117,6 +149,14 @@ func (s *Scope) Entries() []string {
 // any subdomain, and a CIDR entry matches only when the host is a literal
 // IP address. Default-deny: an unparseable target or a host matching
 // nothing is not allowed.
+//
+// A domain entry pinned to a port (LT-167, docs/follow-up.md — "host:port"
+// in the scope file) only matches a target on that exact port; target's own
+// port defaults per its scheme (443 for https, 80 otherwise) when omitted,
+// so "https://example.com" is correctly compared against an "example.com:443"
+// entry. A domain entry with no port (the default, and the only form that
+// existed before LT-167) still matches that host on any port at all —
+// existing scope files keep working unmodified.
 func (s *Scope) Allowed(target string) bool {
 	u, err := url.Parse(target)
 	if err != nil {
@@ -125,6 +165,14 @@ func (s *Scope) Allowed(target string) bool {
 	host := strings.ToLower(u.Hostname())
 	if host == "" {
 		return false
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
@@ -136,14 +184,17 @@ func (s *Scope) Allowed(target string) bool {
 	}
 
 	for _, d := range s.domains {
-		if strings.HasPrefix(d, "*.") {
-			suffix := d[1:] // ".example.com"
-			if host == d[2:] || strings.HasSuffix(host, suffix) {
+		if d.port != "" && d.port != port {
+			continue
+		}
+		if strings.HasPrefix(d.pattern, "*.") {
+			suffix := d.pattern[1:] // ".example.com"
+			if host == d.pattern[2:] || strings.HasSuffix(host, suffix) {
 				return true
 			}
 			continue
 		}
-		if host == d {
+		if host == d.pattern {
 			return true
 		}
 	}

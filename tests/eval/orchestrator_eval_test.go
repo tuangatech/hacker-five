@@ -87,7 +87,7 @@ func TestOrchestratorEvalHarness(t *testing.T) {
 
 			target := sc.Target()
 			scopeFile := filepath.Join(t.TempDir(), "scope.txt")
-			require.NoError(t, os.WriteFile(scopeFile, []byte(hostOnly(target)+"\n"), 0o644))
+			require.NoError(t, os.WriteFile(scopeFile, []byte(hostScopeEntry(target)+"\n"), 0o644))
 
 			args := []string{
 				"agent", "-t", target,

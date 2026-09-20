@@ -129,6 +129,90 @@ func TestNew_EmptyEntries_DeniesEverything(t *testing.T) {
 	}
 }
 
+// TestAllowed_PortPinnedEntry_RejectsOtherPortsOnSameHost is LT-167's
+// (docs/follow-up.md) regression proof: a scope entry naming an explicit
+// port must reject a same-hostname target on any other port, closing the
+// exact live-observed contamination (an LLM-chosen recon.refresh target
+// landing on a colocated service on a different port of the same hostname).
+func TestAllowed_PortPinnedEntry_RejectsOtherPortsOnSameHost(t *testing.T) {
+	s, err := New([]string{"localhost:8888"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cases := []struct {
+		target string
+		want   bool
+	}{
+		{"http://localhost:8888/orders", true},
+		{"http://localhost/orders", false},   // default HTTP port 80 != 8888
+		{"http://localhost:80/orders", false},
+		{"https://localhost:8888/orders", true},
+	}
+	for _, c := range cases {
+		if got := s.Allowed(c.target); got != c.want {
+			t.Errorf("Allowed(%q) = %v, want %v", c.target, got, c.want)
+		}
+	}
+}
+
+// TestAllowed_PortlessEntry_StillMatchesAnyPort locks in backward
+// compatibility: every scope file written before LT-167 has no ":port"
+// suffix at all, and must keep matching a host regardless of port exactly
+// as it always has.
+func TestAllowed_PortlessEntry_StillMatchesAnyPort(t *testing.T) {
+	s, err := New([]string{"localhost"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, target := range []string{
+		"http://localhost/",
+		"http://localhost:8888/",
+		"https://localhost:8443/",
+	} {
+		if !s.Allowed(target) {
+			t.Errorf("Allowed(%q) = false, want true — a portless entry must match any port", target)
+		}
+	}
+}
+
+// TestAllowed_PortPinnedWildcardEntry proves a "*.host:port" entry pins the
+// port the same way an exact-host entry does.
+func TestAllowed_PortPinnedWildcardEntry(t *testing.T) {
+	s, err := New([]string{"*.example.com:8443"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !s.Allowed("https://api.example.com:8443/") {
+		t.Error("Allowed(matching subdomain+port) = false, want true")
+	}
+	if s.Allowed("https://api.example.com/") {
+		t.Error("Allowed(matching subdomain, default 443 port) = true, want false (entry pinned to 8443)")
+	}
+}
+
+// TestEntries_PortPinnedEntry_RoundTrips confirms Entries() reserializes a
+// port-pinned entry as "host:port", not silently dropping the port.
+func TestEntries_PortPinnedEntry_RoundTrips(t *testing.T) {
+	original, err := New([]string{"localhost:8888"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	entries := original.Entries()
+	if len(entries) != 1 || entries[0] != "localhost:8888" {
+		t.Fatalf("Entries() = %v, want [\"localhost:8888\"]", entries)
+	}
+	roundTripped, err := New(entries)
+	if err != nil {
+		t.Fatalf("New(Entries()): %v", err)
+	}
+	if roundTripped.Allowed("http://localhost/") {
+		t.Error("round-tripped scope allowed a mismatched port — port pinning was lost")
+	}
+	if !roundTripped.Allowed("http://localhost:8888/") {
+		t.Error("round-tripped scope denied the pinned port")
+	}
+}
+
 func TestParse_MatchesNewOnTheSameEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "scope.txt")

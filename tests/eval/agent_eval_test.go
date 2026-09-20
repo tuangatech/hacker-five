@@ -5,6 +5,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,14 +19,28 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/mcpserver"
 )
 
-// hostOnly is agent_run.go's AgentScenarios' small helper — kept here
-// (eval-tagged) since it's only ever called from this file.
-func hostOnly(rawURL string) string {
+// hostScopeEntry builds a "host:port" scope entry for rawURL — used by both
+// this file and orchestrator_eval_test.go to build a single-line --scope
+// file for a scenario's own target. A bare hostname entry (this helper's
+// pre-LT-167 shape, docs/follow-up.md) allowed a request to any port on that
+// host, not just the one the scenario actually targets — live-demonstrated
+// as real cross-target contamination when multiple lab targets share
+// "localhost" on different ports. scope.Scope now supports an optional
+// ":port" suffix (LT-167's fix) precisely so this harness can pin it.
+func hostScopeEntry(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return rawURL
 	}
-	return u.Hostname()
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 // connectAgentClient/callTool/firstText are a small, deliberate duplicate of
@@ -115,7 +130,7 @@ func TestAgentEvalHarness(t *testing.T) {
 
 			start := time.Now()
 			target := sc.Target()
-			scope := []string{hostOnly(target)}
+			scope := []string{hostScopeEntry(target)}
 
 			reconRes := callTool(ctx, t, session, "recon", map[string]any{
 				"target": target, "scope": scope, "depth": sc.Depth,
