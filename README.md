@@ -26,7 +26,7 @@ Planned ([Phase 8](docs/17-implementation-plan-ph8.md) / [9](docs/18-implementat
 
 - **Read and enumerate only** — HackerFive never writes or destroys target state, never exfiltrates data, and never touches a host outside an explicit scope. Three independently-scoped opt-in exceptions exist — `--allow-writes` (businesslogic's coupon/race checks), `--allow-mutating-bfla` (mutatebfla's DELETE probe), `--auto-provision-account` (a throwaway second account for idor/authbypass) — each skipped with a warning, never silently run, when absent.
 - **HackerOne reports are draft-only** — `hackerfive report` builds a private, unsubmitted draft; only an explicit `report submit --yes` ever makes one visible to a program.
-- **Scope** — `--scope <file>` (domain / wildcard / CIDR) switches to strict default-deny; the MCP server refuses to run recon/plan/scan without one.
+- **Scope** — `--scope <file>` (domain / wildcard / CIDR, each optionally pinned to a port with `host:port`) switches to strict default-deny; the MCP server refuses to run recon/plan/scan without one.
 - Credentials and tokens are read from environment variables only.
 
 ## Install
