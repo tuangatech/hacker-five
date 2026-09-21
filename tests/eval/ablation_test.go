@@ -44,6 +44,9 @@ import (
 //	                             makes one misconfig sweep take 16+ minutes at the default rate, LT-179)
 //	HACKERFIVE_ABLATION_EXTRA_ARGS  extra `hackerfive agent` flags, space-separated, added to every run
 //	                             of every arm (e.g. "--rate-limit 60")
+//	HACKERFIVE_ABLATION_RECON_AUTH  when set, also send the scenario's owner token as an Authorization header so
+//	                             recon itself is authenticated (`agent --auth-token` alone reaches only the leaf
+//	                             dispatches, not recon; LT-187). Recorded in Settings as recon-auth=true, never the token
 //
 // Both overrides are recorded on every result (RunRecord.Settings). They apply equally to all
 // arms of an invocation, so a comparison inside one results file is like-for-like; do not compare
@@ -64,7 +67,11 @@ func TestAblation(t *testing.T) {
 
 	templatesOverride := os.Getenv("HACKERFIVE_ABLATION_TEMPLATES")
 	extraArgs := strings.Fields(os.Getenv("HACKERFIVE_ABLATION_EXTRA_ARGS"))
+	reconAuth := os.Getenv("HACKERFIVE_ABLATION_RECON_AUTH") != ""
 	settings := strings.TrimSpace("templates=" + templatesOverride + " extra=" + strings.Join(extraArgs, " "))
+	if reconAuth {
+		settings += " recon-auth=true"
+	}
 
 	outDir := os.Getenv("HACKERFIVE_ABLATION_OUT")
 	if outDir == "" {
@@ -118,7 +125,7 @@ func TestAblation(t *testing.T) {
 				continue
 			}
 			for run := 1; run <= runs; run++ {
-				rec := runAblationOnce(t, sc, arm, run, prefixes, known, timeout, extraArgs)
+				rec := runAblationOnce(t, sc, arm, run, prefixes, known, timeout, extraArgs, reconAuth)
 				rec.Settings = settings
 				records = append(records, rec)
 				require.NoError(t, enc.Encode(rec)) // written per run, so a killed harness keeps what finished
@@ -135,7 +142,7 @@ func TestAblation(t *testing.T) {
 	t.Logf("results written to %s\n\n%s\nWhere each known vulnerability was lost (LT-185):%s", outPath, FormatSummary(Summarize(records)), FormatMissAttribution(records))
 }
 
-func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, prefixes []string, known []KnownVuln, timeout time.Duration, extraArgs []string) RunRecord {
+func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, prefixes []string, known []KnownVuln, timeout time.Duration, extraArgs []string, reconAuth bool) RunRecord {
 	t.Helper()
 	target := sc.Target()
 	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
@@ -143,7 +150,11 @@ func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, pr
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binPath, sc.AgentArgs(target, scopeFile, append(append([]string{}, arm.ExtraArgs...), extraArgs...)...)...)
+	armArgs := append(append([]string{}, arm.ExtraArgs...), extraArgs...)
+	if reconAuth && sc.AuthTokenEnv != "" {
+		armArgs = append(armArgs, "--header", "Authorization: Bearer "+os.Getenv(sc.AuthTokenEnv))
+	}
+	cmd := exec.CommandContext(ctx, binPath, sc.AgentArgs(target, scopeFile, armArgs...)...)
 	cmd.Dir = repoRoot()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

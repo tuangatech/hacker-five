@@ -57,27 +57,22 @@ const (
 
 	// maxJSPathPrefixes / maxJSPathBases / maxJSQuerySuffixes bound how many
 	// of each join-part class (LT-164, docs/follow-up.md) one asset
-	// contributes — a real SPA bundle declares a handful of service-route
-	// prefixes and API-path constants, not dozens; capping keeps the
-	// combinatorial join below bounded.
+	// contributes. maxJSPathBases was 15 until LT-186: the candidates are
+	// sorted, so on a real bundle (crAPI: 41 route literals) everything past the
+	// 15th name alphabetically was never considered, including every route
+	// under "api/v2/". Candidates beyond a cap are counted and reported in a
+	// warning, never dropped silently.
 	maxJSPathPrefixes  = 8
-	maxJSPathBases     = 15
+	maxJSPathBases     = 80
 	maxJSQuerySuffixes = 10
-	// maxJSJoinProbes caps how many prefix+base pair candidates
-	// runJSStaticAnalysis actually GETs in total, across every asset in one
-	// recon run — the one place this pass stops being "pure, no new
-	// requests" (runJSStaticAnalysis's own doc comment), so the cost is
-	// bounded the same way verifyAuthCandidates/probeSignupCandidates bound
-	// theirs. Sized to maxJSPathPrefixes*maxJSPathBases (120) deliberately:
-	// live-verified against crAPI, an earlier per-call cap of 40 (rather
-	// than this total budget) silently starved the one real prefix
-	// ("workshop/", last alphabetically among 4 prefixes) because the first
-	// 40 of a single asset's 60 sorted pairs were all spent on the three
-	// prefixes that sort before it — a real bug, not just a tight bound. A
-	// budget sized to one asset's full realistic cross product removes that
-	// ordering hazard for the common case of one dominant bundle, while
-	// still capping a pathological multi-asset run.
-	maxJSJoinProbes = maxJSPathPrefixes * maxJSPathBases
+	// maxJSJoinProbes caps how many prefix+base GETs runJSStaticAnalysis issues
+	// in total, across every asset in one recon run — the one place this pass
+	// stops being "pure, no new requests" (runJSStaticAnalysis's own doc
+	// comment). It counts requests, not pairs: verifyJSJoinBases stops at the
+	// first prefix that verifies a base and tries the prefix that verified its
+	// nearest sibling first, so a bundle usually costs one to two probes per
+	// route rather than one per prefix (LT-186). Templated routes cost none.
+	maxJSJoinProbes = 300
 )
 
 // looksLikeJSAsset reports whether a katana-observed record is a JavaScript
@@ -215,11 +210,34 @@ func isJSQuerySuffixCandidate(s string) bool {
 	return jsQuerySuffixPattern.MatchString(s)
 }
 
-// extractJSPathJoinParts classifies every quoted string literal in body into
-// (at most) one of three join-part buckets — LT-164, docs/follow-up.md.
-// Sorted and capped per bucket so the combinatorial join this feeds stays
-// bounded and its output order is deterministic.
-func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []string) {
+// jsPlaceholderSegment matches one whole path segment written as a client-side
+// route placeholder, "<orderId>". A bundle declares a parameterised route as a
+// template ("api/shop/orders/<orderId>") and fills the segment at call time.
+var jsPlaceholderSegment = regexp.MustCompile(`^<([A-Za-z_][A-Za-z0-9_]{0,30})>$`)
+
+// normalizeJSPathPlaceholders rewrites "<name>" path segments to the OpenAPI
+// spelling "{name}", the form recon already treats as an identifier position
+// (isSpecPathParam) and that no JS-syntax filter rejects. Only a whole segment
+// counts: "a<b>c" is left alone and so still fails the plausibility check.
+func normalizeJSPathPlaceholders(s string) string {
+	if !strings.Contains(s, "<") {
+		return s
+	}
+	segs := strings.Split(s, "/")
+	for i, seg := range segs {
+		if m := jsPlaceholderSegment.FindStringSubmatch(seg); m != nil {
+			segs[i] = "{" + m[1] + "}"
+		}
+	}
+	return strings.Join(segs, "/")
+}
+
+// collectJSPathJoinParts classifies every quoted string literal in body into
+// (at most) one of three join-part buckets — LT-164, docs/follow-up.md. Sorted
+// and de-duplicated but not capped, so a caller that caps can say how many it
+// cut; extractJSPathJoinParts is the capped form. A base written with "<name>"
+// placeholders comes back in "{name}" form (LT-186).
+func collectJSPathJoinParts(body string) (prefixes, bases, querySuffixes []string) {
 	matches := jsQuotedStringRe.FindAllStringSubmatch(body, maxJSQuotedStringsPerAsset)
 	seenPrefix, seenBase, seenSuffix := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, m := range matches {
@@ -233,7 +251,8 @@ func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []strin
 				seenPrefix[s] = true
 				prefixes = append(prefixes, s)
 			}
-		case isJSAPIPathBaseCandidate(s):
+		case isJSAPIPathBaseCandidate(normalizeJSPathPlaceholders(s)):
+			s = normalizeJSPathPlaceholders(s)
 			if !seenBase[s] {
 				seenBase[s] = true
 				bases = append(bases, s)
@@ -248,16 +267,25 @@ func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []strin
 	sort.Strings(prefixes)
 	sort.Strings(bases)
 	sort.Strings(querySuffixes)
-	if len(prefixes) > maxJSPathPrefixes {
-		prefixes = prefixes[:maxJSPathPrefixes]
-	}
-	if len(bases) > maxJSPathBases {
-		bases = bases[:maxJSPathBases]
-	}
-	if len(querySuffixes) > maxJSQuerySuffixes {
-		querySuffixes = querySuffixes[:maxJSQuerySuffixes]
-	}
 	return prefixes, bases, querySuffixes
+}
+
+// extractJSPathJoinParts is collectJSPathJoinParts with each bucket capped at
+// its maxJS* limit, silently. runJSStaticAnalysis caps for itself so it can warn.
+func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []string) {
+	prefixes, bases, querySuffixes = collectJSPathJoinParts(body)
+	prefixes, _ = capStrings(prefixes, maxJSPathPrefixes)
+	bases, _ = capStrings(bases, maxJSPathBases)
+	querySuffixes, _ = capStrings(querySuffixes, maxJSQuerySuffixes)
+	return prefixes, bases, querySuffixes
+}
+
+// capStrings truncates xs to n and reports how many it cut.
+func capStrings(xs []string, n int) (kept []string, cut int) {
+	if len(xs) <= n {
+		return xs, 0
+	}
+	return xs[:n], len(xs) - n
 }
 
 // minJSTieNameLen is the shortest identifier assignQuerySuffixes trusts as a
@@ -338,7 +366,7 @@ func appendUnique(xs []string, s string) []string {
 }
 
 // jsJoinPair is one candidate prefix+base combination, kept structured
-// (rather than pre-concatenated) so verifyJSJoinCandidates can group
+// (rather than pre-concatenated) so verifyJSJoinBases can group
 // candidates by their originating prefix for the per-prefix canary check
 // below — string-splitting a joined "prefix+base" back apart would be
 // ambiguous whenever one prefix is itself a suffix of another.
@@ -347,22 +375,6 @@ type jsJoinPair struct {
 }
 
 func (p jsJoinPair) joined() string { return p.Prefix + p.Base }
-
-// buildJSJoinPairs forms every prefix+base combination. Already implicitly
-// bounded to maxJSPathPrefixes*maxJSPathBases by its inputs; the caller
-// enforces the separate, run-wide maxJSJoinProbes request budget (not done
-// here — an earlier per-call cap here silently starved whichever prefix
-// sorted last, a real bug fixed by moving the budget to the caller, see
-// maxJSJoinProbes' own doc comment).
-func buildJSJoinPairs(prefixes, bases []string) []jsJoinPair {
-	var pairs []jsJoinPair
-	for _, p := range prefixes {
-		for _, b := range bases {
-			pairs = append(pairs, jsJoinPair{Prefix: p, Base: b})
-		}
-	}
-	return pairs
-}
 
 // jsJoinVerifyStatuses are the response statuses that count as "this route
 // really exists" for a bare prefix+base join candidate — deliberately not a
@@ -377,6 +389,12 @@ var jsJoinVerifyStatuses = map[int]bool{
 	http.StatusOK: true, http.StatusCreated: true,
 	http.StatusBadRequest: true, http.StatusUnauthorized: true, http.StatusForbidden: true,
 	http.StatusMethodNotAllowed: true, http.StatusUnprocessableEntity: true,
+	// A route that throws on a request missing its parameter still exists: crAPI's
+	// mechanic_report answers 500 to an authenticated GET with no report_id, where an
+	// unknown path answers 404. Without this the one known-vulnerable route dropped out
+	// of recon whenever recon carried a token (LT-186). 502/503/504 are infrastructure
+	// answers, not route evidence, and stay out; the prefix canary still has to differ.
+	http.StatusInternalServerError: true,
 }
 
 // fetchJSPrefixCanary GETs a guaranteed-nonexistent path under prefix once,
@@ -389,7 +407,7 @@ var jsJoinVerifyStatuses = map[int]bool{
 // them, turning one real endpoint into several same-confidence look-alikes
 // and reintroducing exactly the "multiple distinct candidates" ambiguity
 // this whole verification step exists to resolve (see
-// verifyJSJoinCandidates' own doc comment). ok is false on a request error;
+// verifyJSJoinBases' own doc comment). ok is false on a request error;
 // the caller then skips the canary-diff check for that prefix rather than
 // blocking every candidate under it.
 func (r *Recon) fetchJSPrefixCanary(ctx context.Context, assetHost, prefix string) (status int, ok bool) {
@@ -408,60 +426,158 @@ func (r *Recon) fetchJSPrefixCanary(ctx context.Context, assetHost, prefix strin
 	return resp.StatusCode, true
 }
 
-// verifyJSJoinCandidates GETs each of pairs (already capped at
-// maxJSJoinProbes) against assetHost and returns the subset that both (a)
-// answered with a jsJoinVerifyStatuses status and (b) differs from that
-// candidate's own prefix's canary status (fetchJSPrefixCanary, probed once
-// per distinct prefix among pairs and cached) — LT-164's live-verification
-// step, without which a wrong prefix+base combination would sit at the same
-// confidence as the right one and multiply idor's candidate-ambiguity
-// problem (idorCandidatesAndSeeds' own doc comment: "multiple distinct
-// candidates" makes a caller skip rather than dispatch) instead of resolving
-// it. Same per-host circuit breaker (hostErrors) and scope gate every other
-// live probe in this package uses.
-func (r *Recon) verifyJSJoinCandidates(ctx context.Context, agg *aggregator, assetHost string, pairs []jsJoinPair) []jsJoinPair {
-	host := hostOnly(assetHost)
-	if r.hostErrors.ShouldSkip(host) {
-		return nil
+// jsJoinResult is what verifyJSJoinBases found and what it could not settle.
+type jsJoinResult struct {
+	Verified []jsJoinPair
+	// Unsettled counts plain bases left unverified because the probe budget ran
+	// out; Uninferred counts templated bases with no verified sibling to borrow
+	// a prefix from. Both are reported, never silent.
+	Unsettled, Uninferred int
+}
+
+func jsSegments(base string) []string { return strings.Split(strings.Trim(base, "/"), "/") }
+
+// sharedLeadingSegments is how many leading path segments a and b have in common.
+func sharedLeadingSegments(a, b string) int {
+	as, bs := jsSegments(a), jsSegments(b)
+	n := 0
+	for n < len(as) && n < len(bs) && as[n] == bs[n] {
+		n++
 	}
+	return n
+}
+
+// preferSiblingPrefix orders prefixes for base: the prefix that verified the
+// base sharing the most leading segments with it (two at least) comes first,
+// the rest keep their order. A service owns a resource family, so this turns
+// "try all four prefixes" into "try the likely one first".
+func preferSiblingPrefix(prefixes []string, verified []jsJoinPair, base string) []string {
+	best, bestPrefix := 1, ""
+	for _, v := range verified {
+		if n := sharedLeadingSegments(v.Base, base); n > best {
+			best, bestPrefix = n, v.Prefix
+		}
+	}
+	if bestPrefix == "" {
+		return prefixes
+	}
+	out := make([]string, 0, len(prefixes))
+	out = append(out, bestPrefix)
+	for _, p := range prefixes {
+		if p != bestPrefix {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// verifyJSJoinBases finds, for each base, the service prefix under which the
+// route is real — LT-164's live-verification step, reworked in LT-186.
+//
+// A plain base is GETed under each prefix (sibling-preferred order) until one
+// answers as a route (jsJoinVerifyStatuses) and differently from that prefix's
+// canary (fetchJSPrefixCanary); the first such prefix wins, since a route lives
+// in one service. Every probe spends one unit of *budget, shared across the run.
+//
+// A templated base ("api/shop/orders/{orderId}") is never requested: the literal
+// placeholder answers 404 like any unknown path (measured on crAPI), and recon
+// does not invent an id to put there. It borrows the prefix of a verified plain
+// base that shares all of its leading static segments ("api/shop/orders" for
+// "api/shop/orders/{orderId}"), on the same reasoning that a service owns a
+// resource family. With fewer than two leading static segments, or no such
+// sibling, it is left unverified and counted. Same per-host circuit breaker
+// (hostErrors) and scope gate as every other live probe in this package.
+func (r *Recon) verifyJSJoinBases(ctx context.Context, agg *aggregator, assetHost string, prefixes, bases []string, budget *int) jsJoinResult {
+	var res jsJoinResult
+	host := hostOnly(assetHost)
+	var plain, templated []string
+	for _, b := range bases {
+		if strings.Contains(b, "{") {
+			templated = append(templated, b)
+		} else {
+			plain = append(plain, b)
+		}
+	}
+	if r.hostErrors.ShouldSkip(host) {
+		res.Unsettled = len(plain)
+		res.Uninferred = len(templated)
+		return res
+	}
+
 	canaryByPrefix := map[string]int{}
 	canaryFetched := map[string]bool{}
-	var verified []jsJoinPair
-	for _, pair := range pairs {
-		reqURL := strings.TrimRight(assetHost, "/") + "/" + pair.joined()
-		if r.scope != nil && !r.scope.Allowed(reqURL) {
-			agg.addOutOfScope(hostOnly(reqURL))
-			continue
-		}
-		if !canaryFetched[pair.Prefix] {
-			if status, ok := r.fetchJSPrefixCanary(ctx, assetHost, pair.Prefix); ok {
-				canaryByPrefix[pair.Prefix] = status
+	for i, base := range plain {
+		found := false
+		for _, prefix := range preferSiblingPrefix(prefixes, res.Verified, base) {
+			if *budget <= 0 {
+				break
 			}
-			canaryFetched[pair.Prefix] = true
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-		if err != nil {
-			continue
-		}
-		r.applyHeaders(req)
-		resp, err := r.client.Do(req)
-		if err != nil {
-			if !isRequestTimeout(err) {
-				r.hostErrors.RecordError(host)
+			reqURL := strings.TrimRight(assetHost, "/") + "/" + prefix + base
+			if r.scope != nil && !r.scope.Allowed(reqURL) {
+				agg.addOutOfScope(hostOnly(reqURL))
+				continue
 			}
-			continue
+			if !canaryFetched[prefix] {
+				if status, ok := r.fetchJSPrefixCanary(ctx, assetHost, prefix); ok {
+					canaryByPrefix[prefix] = status
+				}
+				canaryFetched[prefix] = true
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+			if err != nil {
+				continue
+			}
+			r.applyHeaders(req)
+			*budget--
+			resp, err := r.client.Do(req)
+			if err != nil {
+				if !isRequestTimeout(err) {
+					r.hostErrors.RecordError(host)
+				}
+				continue
+			}
+			r.hostErrors.RecordSuccess(host)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+			_ = resp.Body.Close()
+			if canaryStatus, ok := canaryByPrefix[prefix]; ok && resp.StatusCode == canaryStatus {
+				continue // this prefix answers every path alike — not a real signal
+			}
+			if jsJoinVerifyStatuses[resp.StatusCode] {
+				res.Verified = append(res.Verified, jsJoinPair{Prefix: prefix, Base: base})
+				found = true
+				break
+			}
 		}
-		r.hostErrors.RecordSuccess(host)
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
-		_ = resp.Body.Close()
-		if canaryStatus, ok := canaryByPrefix[pair.Prefix]; ok && resp.StatusCode == canaryStatus {
-			continue // this prefix answers every path alike — not a real signal
-		}
-		if jsJoinVerifyStatuses[resp.StatusCode] {
-			verified = append(verified, pair)
+		if !found && *budget <= 0 {
+			// Out of probes: this base and every later plain one is unsettled.
+			res.Unsettled += len(plain) - i
+			break
 		}
 	}
-	return verified
+
+	plainVerified := append([]jsJoinPair(nil), res.Verified...)
+	for _, t := range templated {
+		static := 0
+		for _, seg := range jsSegments(t) {
+			if strings.Contains(seg, "{") {
+				break
+			}
+			static++
+		}
+		seen := map[string]bool{}
+		if static >= 2 {
+			for _, v := range plainVerified {
+				if sharedLeadingSegments(v.Base, t) >= static && !seen[v.Prefix] {
+					seen[v.Prefix] = true
+					res.Verified = append(res.Verified, jsJoinPair{Prefix: v.Prefix, Base: t})
+				}
+			}
+		}
+		if len(seen) == 0 {
+			res.Uninferred++
+		}
+	}
+	return res
 }
 
 // jsSecretPattern is one curated, high-signal secret pattern — deliberately
@@ -658,8 +774,8 @@ func (r *Recon) recordCloudBucketRef(agg *aggregator, ref cloudBucketRef) {
 // runtime from two or three separately-declared string constants (a
 // service-route prefix, a bare API-path constant, a keyless query-string
 // literal) that individually never pass extractJSEndpoints' "starts with /
-// or http" gate. extractJSPathJoinParts/buildJSJoinPairs reconstruct the
-// candidate joins; verifyJSJoinCandidates GETs each one (capped at
+// or http" gate. collectJSPathJoinParts reconstructs the
+// candidate joins; verifyJSJoinBases GETs each one (capped at
 // maxJSJoinProbes) so a wrong prefix+base combination — indistinguishable
 // from the right one by shape alone — is pruned before it can multiply
 // idor's own "multiple distinct candidates" ambiguity problem
@@ -684,7 +800,7 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 	endpointsTruncated, secretsTruncated := false, false
 	joinCandidatesVerified := 0
 	joinProbeBudget := maxJSJoinProbes
-	joinProbesTruncated := false
+	joinBasesCut, joinUnsettled, joinUninferred := 0, 0, 0
 
 	// LT-164 (docs/follow-up.md): runKatana's crawl commonly observes the
 	// same asset URL more than once (the same bundle linked from several
@@ -727,14 +843,15 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 			assetHost = u.Scheme + "://" + u.Host
 		}
 		if assetHost != "" && endpointsAdded < maxJSStaticEndpoints && joinProbeBudget > 0 {
-			prefixes, bases, querySuffixes := extractJSPathJoinParts(asset.Body)
-			pairs := buildJSJoinPairs(prefixes, bases)
-			if len(pairs) > joinProbeBudget {
-				pairs = pairs[:joinProbeBudget]
-				joinProbesTruncated = true
-			}
-			joinProbeBudget -= len(pairs)
-			verified := r.verifyJSJoinCandidates(ctx, agg, assetHost, pairs)
+			prefixes, bases, querySuffixes := collectJSPathJoinParts(asset.Body)
+			prefixes, _ = capStrings(prefixes, maxJSPathPrefixes)
+			bases, cutBases := capStrings(bases, maxJSPathBases)
+			querySuffixes, _ = capStrings(querySuffixes, maxJSQuerySuffixes)
+			joinBasesCut += cutBases
+			join := r.verifyJSJoinBases(ctx, agg, assetHost, prefixes, bases, &joinProbeBudget)
+			joinUnsettled += join.Unsettled
+			joinUninferred += join.Uninferred
+			verified := join.Verified
 			verifiedBases := make([]string, 0, len(verified))
 			for _, pair := range verified {
 				verifiedBases = append(verifiedBases, pair.Base)
@@ -800,8 +917,14 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 	if secretsTruncated {
 		agg.addWarning("wave3: js-static: secret detection hit its %d-hit cap — more may be present in the crawled JS (Phase 8 Step 3)", maxJSStaticSecrets)
 	}
-	if joinProbesTruncated {
-		agg.addWarning("wave3: js-static: joined path-candidate verification hit its %d-probe run-wide budget — more service-prefix+API-path combinations may be present in the crawled JS (LT-164)", maxJSJoinProbes)
+	if joinBasesCut > 0 {
+		agg.addWarning("wave3: js-static: %d API-route candidate(s) beyond the %d-per-bundle cap were not considered (LT-186)", joinBasesCut, maxJSPathBases)
+	}
+	if joinUnsettled > 0 {
+		agg.addWarning("wave3: js-static: joined path-candidate verification hit its %d-probe run-wide budget — %d API-route candidate(s) were left unverified (LT-186)", maxJSJoinProbes, joinUnsettled)
+	}
+	if joinUninferred > 0 {
+		agg.addWarning("wave3: js-static: %d parameterised API route(s) (\"<name>\" segments) had no live-verified sibling route to borrow a service prefix from and were not emitted (LT-186)", joinUninferred)
 	}
 	if secretsAdded > 0 {
 		agg.addWarning("wave3: js-static: found %d hardcoded secret(s) in served JavaScript (Phase 8 Step 3) — see the ReconResult's \"secrets\" field", secretsAdded)

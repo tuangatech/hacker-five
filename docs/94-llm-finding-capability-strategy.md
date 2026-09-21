@@ -79,6 +79,7 @@ The labs cannot currently tell us whether an LLM step helps: three never invoke 
 | Response-shape capture | **Done and live-verified**, but **nothing reads it yet** (J1's input). One real bug found by running it: crawl facts have no content type, so the first version captured nothing on a real crawl. |
 | Miss attribution (LT-185) | **Built and run once on crAPI (1 run per arm).** `pkg/coverage` classifies each known vulnerability by the pipeline stage where it was lost; the agent's result event now carries recon's endpoint list (values stripped); the harness prints a per-arm table. First result below: none of the five misses is a selection problem. |
 | LT-184 spurious idor leaves | **Fixed** (recon's JS-join step crossed every `?key=` literal with every route). 12 `idor` leaves became 1; the run-every-leaf arm went from 194 s to 44 s with the same findings. |
+| LT-186 recon route extraction | **Fixed for placeholder routes and the route cap; measured.** Shop-orders BOLA moved from stage 0 to found (known vulnerabilities 2 of 7 to 3 of 7). Vehicle-location is now dispatched but still not found (no UUID seed); the SSRF body field is untouched. See "After the LT-186 fixes". |
 | Ablation harness | **Built and run once (crAPI, 3 runs per arm, 12 of 12 completed).** `--no-model` control arm, four arms (the fourth, `no-model+all-leaves`, added and run 2026-09-21), two ground-truth lists, JSONL per run, min-max ranges, never merged across models, harness overrides recorded per result. Ground truth exists for crAPI only (7 entries). See the baseline below and LT-183. |
 
 ### First baseline: crAPI, 2026-09-21
@@ -133,6 +134,35 @@ Reading it:
 
 Caveats: 1 run per arm; one lab; the stage of a known vulnerability depends on the fixture's `endpoint_contains` and finding-ID prefixes, so a wrong fixture entry reads as a pipeline loss (stage 5, "mismatch", is the hint for that); the leaf-to-endpoint match is by path shape and parameter name, so it cannot tell two leaves on the same host apart when neither names a path.
 
+### After the LT-186 fixes: crAPI, 2026-09-21, 1 run per arm, recon authenticated
+
+Two changes to the JS join step (`<name>` route placeholders are accepted as `{name}`; the 15-route cap became an 80-route cap with a probe budget and a warning), plus one found while testing them (a route that answers 500 to a parameterless request now counts as existing). The harness ran with `HACKERFIVE_ABLATION_RECON_AUTH=1`, which also sends the owner token to recon: `agent --auth-token` alone does not reach recon (LT-187), and without it identity's `api/v2/*` routes cannot be told from that service's blanket 401. **This run is therefore not like-for-like with the tables above**; two things changed at once.
+
+| Arm | Findings | Known vulns | Model turns | Cost | Wall |
+|---|---|---|---|---|---|
+| no model, every runnable leaf | 20 (was 15) | 3 of 7 (was 2) | 0 | $0 | 410 s (was 44 s) |
+| fast-lane + model | 20 | 3 of 7 | 10 | $0.0101 | 447 s |
+
+| Known vulnerability | Before | After | Why |
+|---|---|---|---|
+| shop-orders BOLA | 0 not observed | **7 found** | the `<orderId>` route is emitted under `workshop/` (borrowed from its verified sibling `api/shop/orders`) and `idor` finds the 5 known cases |
+| vehicle-location BOLA | 0 not observed | 5 mismatch | the route is observed and dispatched, but the leaf has no UUID seed, so the integer strategy cannot reach a UUID-keyed route. The stage-5 label is the classifier's hint; the precise stage is 4 (see below) |
+| `contact_mechanic` SSRF | 1 no leaf | 1 no leaf | body-field derivation (LT-186 item d) is not done |
+| `authbypass-jwt` | 2 blocked | 2 blocked | no `--protected-paths` (LT-180) |
+| `mechanic_report` BOLA, `.env` | found | found | unchanged |
+| DELETE-video BFLA | 6 gated | 6 gated | unchanged |
+
+Reading it:
+
+1. **The extractor fix converts one stage-0 loss into a finding with no model involved**, and the model arm again reproduces the run-everything arm exactly (20 findings, 3 of 7) at a cost of 10 turns and $0.0101. With six `idor` leaves in the tree rather than one, the model still adds nothing the deterministic policy does not.
+2. **What it cost.** Wall time went from 44 s to 410 s because the tree now holds six `idor` leaves, each enumerating an id range, instead of one; finding more is not free. This is the case the selection question was always about: run-everything is fine at 6 leaves and would not be at 60.
+3. **The recon call count is modest.** Authenticated recon recorded 38 joined routes (23 without a token) from 41 bundle literals, with about one probe per route once a service prefix is known; before, it verified 14. Two of the 41 stay uninferred by design (no verified sibling to borrow a prefix from), and each such route is reported in a recon warning.
+4. **A route that returns 500 on a parameterless request was silently lost.** `mechanic_report` (the known BOLA) answers 500 to an authenticated GET with no `report_id`. The first version of the fix lost it as soon as recon carried a token; that regression is why 500 is now a verifying status, with 502/503/504 deliberately excluded.
+5. **Vehicle-location is now a two-part problem with a known second half.** The route and its `idor` leaf exist; what is missing is a real vehicle UUID as a seed. The only place one appears is the authenticated `GET /identity/api/v2/vehicle/vehicles` response, and recon keeps shapes, not values (LT-186 item c, gated by the privacy question in section 7).
+6. **The stage-5 label is only a hint.** Same-class findings exist elsewhere (14 `idor` findings on other routes), so the classifier cannot separate "detector limit" from "ground-truth mismatch". Here the cause is the missing seed.
+
+Caveats: 1 run per arm; recon authentication and the code change are confounded in the totals (the direct recon dumps separate them: without a token the orders leaf and the community-posts leaves appear after the fix, and only with a token do the identity `api/v2/*` routes and `vehicle/{carId}/location`); one lab.
+
 Two things this turned up that change how to read everything above (the fourth arm's flag, `--run-every-leaf`, is a deterministic policy, not a recommended default: it runs endpoint-specific leaves blind and does not resolve unresolved ones):
 
 1. **The control arm is nearly free to run and answers the first question.** `--no-model` needs no API key, so "what does the deterministic path alone reach on crAPI" can be measured before spending on any model arm.
@@ -151,7 +181,7 @@ Two things this turned up that change how to read everything above (the fourth a
 |---|---|---|
 | 0 | Ablation harness, LT-173 envelope, response-shape recon | Nothing after this is measurable without it |
 | 0b | **Miss attribution** (LT-185, **built; first result above**): for each known vulnerability, the pipeline stage where it was lost | Turns "5 of 7 missed" into a per-stage number, so step 1 is aimed at a measured gap and scored by it; the same classifier becomes step 3's coverage ledger |
-| 0c | **Recon route extraction** (LT-186): placeholder routes and the 15-base cap in the JS join | Measured cause of two of the five crAPI misses, fixable without a model; doing it first means J1 is scored on what deterministic recon genuinely cannot reach |
+| 0c | **Recon route extraction** (LT-186, **placeholders and the cap done; measured above**): placeholder routes and the 15-base cap in the JS join | Measured cause of two of the five crAPI misses, fixable without a model; doing it first means J1 is scored on what deterministic recon genuinely cannot reach |
 | 1 | **J1 + J2 + first skill packs** (IDOR/BOLA, auth/JWT, mass assignment) | Largest expected gain: turns a closed-set orderer into a hypothesis generator, and fills the leaf fields that LT-180/LT-164 show are the actual misses |
 | 2 | **J4 skeptic + negative-control re-issue** | Largest precision gain; serves the <5% FP target and "reports that survive triage" |
 | 3 | **J5 ledger + state-based stop** | Replaces the iteration-floor workaround; makes clean areas distinguishable from unvisited ones |
