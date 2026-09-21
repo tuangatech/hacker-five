@@ -84,8 +84,12 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		ExpectedFile: "tests/fixtures/expected-findings/vapi.json",
 		RequiredEnv:  []string{"VAPI_BASE_URL"},
 		Target:       func() string { return os.Getenv("VAPI_BASE_URL") },
-		Depth:        "active",
-		Templates:    "./templates/",
+		// "full": the application-layer wave (crawl, JS analysis, documentation-page
+		// routes, LT-189) only runs at full depth; at "active" recon saw one endpoint on
+		// vAPI and every known vulnerability was lost at stage 0. The slow-server timeout
+		// that first pinned this to "active" is handled by Templates below.
+		Depth:     "full",
+		Templates: "./templates/",
 		// Optional: VAPI_OWNER_TOKEN/VAPI_OTHER_TOKEN (base64 of username:password, see
 		// docs/20-setup-testing-targets.md) give the idor leaves an identity. vAPI reads
 		// the token from an Authorization-Token header, so a run using them also needs

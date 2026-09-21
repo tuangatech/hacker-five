@@ -208,6 +208,10 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	// uniform wall.
 	r.discoverContentPaths(ctx, agg, seeds)
 
+	// LT-189: read API routes from a served documentation page (Redoc-style route
+	// anchors), which nothing links to and a crawl therefore never reaches.
+	r.discoverDocRoutes(ctx, agg, seeds)
+
 	// LT-76 (docs/follow-up.md, Phase 8 Step 5): give the highest-interest
 	// paths that Wave 0 lifted from robots.txt / sitemap.xml but never
 	// probed a live status, so resolveEndpointFacts can reason over them.

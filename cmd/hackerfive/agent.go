@@ -309,7 +309,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&target, "targets", "t", "", "target URL to run the agent loop against (required)")
-	cmd.Flags().StringVar(&depth, "recon-depth", "active", `how far the initial recon escalates before building the plan tree: "passive", "active" (default), "full"`)
+	cmd.Flags().StringVar(&depth, "recon-depth", "active", `how far the initial recon escalates before building the plan tree: "passive", "active" (default), "full". "active" skips the application-layer wave (crawl, JS analysis, documentation routes, response shapes), so on an API most routes are never seen; use "full" to give the agent anything to work with beyond the host-level checks`)
 	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to a target allow-list file (same format as scan's --scope) — required unless --allow-no-scope is set; also bounds a script.explore sandbox's network access")
 	cmd.Flags().BoolVar(&allowNoScope, "allow-no-scope", false, "proceed with no --scope boundary — every host recon discovers is treated as in-scope; lab/local use only, never a real engagement")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 10, "requests/sec used by both the initial recon and every scan.leaf dispatch")

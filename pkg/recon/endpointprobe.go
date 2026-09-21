@@ -30,6 +30,7 @@ const maxUnprobedEndpointProbes = 20
 var unprobedEndpointSources = map[string]bool{
 	"robots-txt":  true,
 	"sitemap-xml": true,
+	"docs-anchor": true, // LT-189: a documented route's live status says whether it needs auth
 }
 
 // interestingPathHints ranks an unprobed path by how likely a live status
@@ -77,7 +78,7 @@ func (r *Recon) probeUnprobedEndpoints(ctx context.Context, agg *aggregator, see
 	var candidates []candidate
 	for i := range agg.endpoints {
 		ep := &agg.endpoints[i]
-		if ep.StatusCode != 0 || !unprobedEndpointSources[ep.Source] {
+		if ep.StatusCode != 0 || !unprobedEndpointSources[ep.Source] || strings.Contains(ep.URL, "{") {
 			continue
 		}
 		host := hostOnly(ep.URL)
@@ -137,7 +138,12 @@ func (r *Recon) probeUnprobedEndpoints(ctx context.Context, agg *aggregator, see
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
 		_ = resp.Body.Close()
 		answered++
-		ep.Method = http.MethodGet
+		// A documented route keeps its documented method (LT-189); only a fact with none
+		// is taken to be a GET. The status is the status of this GET either way, which is
+		// what says whether an anonymous request is turned away.
+		if ep.Method == "" {
+			ep.Method = http.MethodGet
+		}
 		ep.StatusCode = resp.StatusCode
 		ep.Confidence = ConfidenceMedium
 		if loc := resp.Header.Get("Location"); loc != "" && resp.StatusCode >= 300 && resp.StatusCode < 400 {
