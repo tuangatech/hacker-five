@@ -3,6 +3,8 @@ package unit
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -346,6 +348,25 @@ func TestClient_WithHostHeaders_DefaultPortsAndCase(t *testing.T) {
 		require.NoError(t, err)
 		_ = resp.Body.Close()
 		assert.Equal(t, want, got.Load(), url)
+	}
+}
+
+// A URL the caller marks as state-changing is still requested, just without the credential.
+func TestClient_WithHostHeadersUnless_WithholdsOnMatch(t *testing.T) {
+	var got atomic.Value
+	rt := httpclient.WithHostHeadersUnless("https://example.com", map[string]string{"X-Session": "secret"},
+		func(u *url.URL) bool { return strings.Contains(u.Path, "logout") })(roundTripFn(func(r *http.Request) (*http.Response, error) {
+		got.Store(r.Header.Get("X-Session"))
+		return &http.Response{StatusCode: 200, Body: http.NoBody, Request: r}, nil
+	}))
+	for u, want := range map[string]string{"https://example.com/profile": "secret", "https://example.com/logout": ""} {
+		got.Store("")
+		req, err := http.NewRequest(http.MethodGet, u, nil)
+		require.NoError(t, err)
+		resp, err := rt.RoundTrip(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.Equal(t, want, got.Load(), u)
 	}
 }
 

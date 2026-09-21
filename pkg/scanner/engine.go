@@ -1107,7 +1107,11 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.ProtectedPaths)
 	case "ssrf":
 		detector := ssrf.New(e.client, e.ssrfOptions()...)
-		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.SSRFBodyParams, e.cfg.OOBServers)
+		ssrfTarget := target
+		if e.cfg.SSRFPath != "" {
+			ssrfTarget = strings.TrimRight(target, "/") + e.cfg.SSRFPath
+		}
+		return detector.Run(ctx, ssrfTarget, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.SSRFBodyParams, e.cfg.OOBServers)
 	case "sqli":
 		sqliURL := strings.TrimRight(target, "/") + e.cfg.SQLiPath
 		detector := sqli.New(e.client, sqli.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat), sqli.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }))

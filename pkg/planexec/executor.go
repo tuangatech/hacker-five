@@ -407,6 +407,9 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 		// only means anything paired with the template it was derived from.
 		if leaf.EndpointIDIsUUID {
 			cfg.IDORSeedID = leaf.EndpointSeedID
+			if leaf.HarvestedSeedID != "" {
+				cfg.IDORSeedID = leaf.HarvestedSeedID
+			}
 			cfg.IDOREndpointIsUUID = true
 			if notify != nil {
 				notify("idor: UUID-shaped endpoint — enumerating with a random-UUID baseline seeded from a real observed ID (LT-95)")
@@ -429,6 +432,12 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 		cfg.SSRFBodyParams = append([]string(nil), leaf.SSRFBodyParams...)
 		if notify != nil {
 			notify(fmt.Sprintf("ssrf: probing recon-derived body param(s) %s (LT-96)", strings.Join(leaf.SSRFBodyParams, ", ")))
+		}
+	}
+	if leaf.SSRFPath != "" && cfg.SSRFPath == "" {
+		cfg.SSRFPath = leaf.SSRFPath
+		if notify != nil {
+			notify(fmt.Sprintf("ssrf: testing recon-derived endpoint %s", leaf.SSRFPath))
 		}
 	}
 	if leaf.SQLiPath != "" && cfg.SQLiPath == "" {

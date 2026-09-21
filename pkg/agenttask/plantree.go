@@ -163,6 +163,12 @@ type PlanNode struct {
 	// seed instead. Empty/false on every int-keyed or seedless leaf.
 	EndpointSeedID   string `json:"endpoint_seed_id,omitempty"`
 	EndpointIDIsUUID bool   `json:"endpoint_id_is_uuid,omitempty"`
+	// HarvestedSeedID is EndpointSeedID's counterpart for an id recon read out of a
+	// list response rather than saw in a URL (LT-186 item c). It is response data,
+	// so json:"-" keeps it out of the tree's JSON, the session log and every prompt
+	// (none reads this field); it lives only in the process, and the one thing that
+	// uses it is planexec's idor dispatch. When set, EndpointIDIsUUID is true.
+	HarvestedSeedID string `json:"-"`
 	// ProtectedPaths / SSRFParams are the recon-derived required-field values
 	// for an endpoint-driven authbypass / ssrf leaf (LT-94, docs/follow-up.md),
 	// set by registry.resolveEndpointFacts from the same Suggest*FromRecon
@@ -178,6 +184,11 @@ type PlanNode struct {
 	// alongside SSRFParams on the same endpoint-driven ssrf leaf — additive,
 	// not a replacement; a leaf may carry either, both, or neither.
 	SSRFBodyParams []string `json:"ssrf_body_params,omitempty"`
+	// SSRFPath is the endpoint (path, scheme and host stripped) the SSRFParams /
+	// SSRFBodyParams belong to: one ssrf leaf per candidate endpoint, the SQLiPath
+	// treatment. Without it the probes are sent to the host root and the field they
+	// name does not exist there. Empty on a leaf that is not endpoint-driven.
+	SSRFPath string `json:"ssrf_path,omitempty"`
 	// SQLiPath / SQLiParams are the recon-derived required-field values for
 	// an endpoint-driven sqli leaf (docs/18-implementation-plan-ph9.md Step
 	// 4, LT-87): one leaf per recon.SuggestSQLiTargets candidate path, same

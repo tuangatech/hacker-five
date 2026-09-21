@@ -227,6 +227,37 @@ func TestApplyLeafReconFields_UUIDSeedCopiedAlongsideTemplate(t *testing.T) {
 	}
 }
 
+// LT-186: an ssrf leaf's endpoint path is copied into a blank config, and never over an explicit one.
+func TestApplyLeafReconFields_SSRFPathCopied(t *testing.T) {
+	leaf := &agenttask.PlanNode{Detector: "ssrf", SSRFPath: "/api/fetch", SSRFParams: []string{"url"}}
+	var cfg scanner.Config
+	applyLeafReconFields(&cfg, leaf, nil)
+	if cfg.SSRFPath != "/api/fetch" {
+		t.Fatalf("got SSRFPath %q, want /api/fetch", cfg.SSRFPath)
+	}
+	explicit := scanner.Config{SSRFPath: "/operator/chosen"}
+	applyLeafReconFields(&explicit, leaf, nil)
+	if explicit.SSRFPath != "/operator/chosen" {
+		t.Fatalf("got SSRFPath %q, want the operator's to win", explicit.SSRFPath)
+	}
+}
+
+// LT-186 (c): the harvested id is what the idor dispatch is seeded with.
+func TestApplyLeafReconFields_HarvestedSeedIsUsed(t *testing.T) {
+	leaf := &agenttask.PlanNode{
+		Detector:         "idor",
+		EndpointTemplate: "/vehicle/{{id}}/location",
+		EndpointIDIsUUID: true,
+		HarvestedSeedID:  "3f2b8c1e-5d4a-4e7b-9a10-2c6d8e0f1a23",
+	}
+	var cfg scanner.Config
+	applyLeafReconFields(&cfg, leaf, nil)
+
+	if cfg.IDORSeedID != leaf.HarvestedSeedID || !cfg.IDOREndpointIsUUID {
+		t.Fatalf("got seed %q / uuid %v, want the harvested id and true", cfg.IDORSeedID, cfg.IDOREndpointIsUUID)
+	}
+}
+
 func TestApplyLeafReconFields_IntShapedLeaf_NoUUIDFieldsCopied(t *testing.T) {
 	leaf := &agenttask.PlanNode{Detector: "idor", EndpointTemplate: "/orders/{{id}}"}
 	var cfg scanner.Config

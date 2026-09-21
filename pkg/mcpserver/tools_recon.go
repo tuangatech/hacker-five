@@ -62,14 +62,15 @@ func addReconTool(s *mcp.Server) {
 		// docs/follow-up.md) — matches katana/httpx's own hardcoded TLS
 		// posture; this client is never shared with scan's own detector
 		// requests.
+		authMWs, authOpts, authNote := reconAuthParts(in.Target, "")
 		client := httpclient.New(recon.ClientConfig(httpclient.Config{
 			Timeout:             defaultTimeout,
 			MaxRedirects:        5,
 			MaxIdleConnsPerHost: defaultConcurrency,
-		}), httpclient.WithRateLimit(ratelimit.New(defaultRateLimit)))
+		}), append([]httpclient.Middleware{httpclient.WithRateLimit(ratelimit.New(defaultRateLimit))}, authMWs...)...)
 
 		token := req.Params.GetProgressToken()
-		r := recon.New(client,
+		r := recon.New(client, append(authOpts,
 			recon.WithScope(sc),
 			recon.WithRateLimit(defaultRateLimit),
 			recon.WithConcurrency(defaultConcurrency),
@@ -83,7 +84,7 @@ func addReconTool(s *mcp.Server) {
 				})
 			}),
 			recon.WithHeaders(reqHeaders),
-		)
+		)...)
 
 		result, err := r.Run(ctx, in.Target, depth)
 		if err != nil {
@@ -91,6 +92,9 @@ func addReconTool(s *mcp.Server) {
 		}
 		for _, w := range append(preWarns, reconSignalWarnings(result)...) {
 			result.Warnings = append(result.Warnings, "preflight: "+w)
+		}
+		if authNote != "" {
+			result.Warnings = append(result.Warnings, authNote)
 		}
 		return nil, reconOutput{Result: result}, nil
 	})

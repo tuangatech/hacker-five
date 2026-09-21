@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -134,6 +135,7 @@ func TestWithCrawlHeaders_KatanaOnlyOnTheCredentialsOrigin(t *testing.T) {
 	args, res := run(srv.URL)
 	assert.Contains(t, args["katana"], "Authorization: Bearer s3cret")
 	assert.Contains(t, args["katana"], "fqdn", "an authenticated crawl is pinned to the exact hostname")
+	assert.Contains(t, args["katana"], StateChangingCrawlExclusion(), "an authenticated crawl skips state-changing URLs")
 	assert.NotContains(t, args["httpx"], "Authorization: Bearer s3cret", "httpx probes many hosts and must never carry the credential")
 	assert.NotContains(t, strings.Join(res.Warnings, "\n"), "crawl ran unauthenticated")
 
@@ -149,4 +151,28 @@ func TestSameOrigin(t *testing.T) {
 	assert.False(t, sameOrigin("https://example.com:8443", "https://example.com"))
 	assert.False(t, sameOrigin("https://sub.example.com", "https://example.com"))
 	assert.False(t, sameOrigin("", ""), "an unparseable origin matches nothing")
+}
+
+func TestStateChangingURL(t *testing.T) {
+	match := []string{
+		"https://x.test/logout", "https://x.test/api/auth/sign-out", "https://x.test/api/v2/user/signout",
+		"https://x.test/api/videos/delete_video", "https://x.test/api/item/12/delete", "https://x.test/account/revoke",
+		"https://x.test/api/order/cancel?id=1", "https://x.test/app?action=logout", "https://x.test/password/reset",
+		"https://x.test/API/LogOut",
+	}
+	for _, raw := range match {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		assert.Truef(t, StateChangingURL(u), "%s should be treated as state-changing", raw)
+	}
+	keep := []string{
+		"https://x.test/api/deleted-items", "https://x.test/api/removal-policy", "https://x.test/api/v2/user/videos",
+		"https://x.test/api/resetting", "https://x.test/api/cancellations", "https://x.test/workshop/api/shop/orders/1",
+	}
+	for _, raw := range keep {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		assert.Falsef(t, StateChangingURL(u), "%s is not a state-changing action", raw)
+	}
+	assert.False(t, StateChangingURL(nil))
 }

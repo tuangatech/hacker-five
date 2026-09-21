@@ -1380,3 +1380,30 @@ func TestEngineRun_NoCallback_BehaviorUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, findings)
 }
+
+// LT-186: an ssrf leaf's target is only the host; SSRFPath is what sends the probes
+// to the endpoint that owns the parameter. Without it they hit the host root.
+func TestEngineRun_SSRFPath_SendsProbesToTheEndpoint(t *testing.T) {
+	var mu sync.Mutex
+	paths := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths[r.URL.Path]++
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := scanner.Config{
+		Targets: []string{server.URL}, Concurrency: 2, RateLimit: 50, Timeout: 5 * time.Second,
+		Detector: "ssrf", SSRFParams: []string{"url"}, SSRFPath: "/api/fetch",
+	}
+	require.NoError(t, cfg.Validate())
+	_, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Positive(t, paths["/api/fetch"], "the probes must reach the endpoint the leaf names")
+	assert.Zero(t, paths["/"], "and not the host root")
+}

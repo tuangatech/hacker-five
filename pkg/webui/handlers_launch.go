@@ -303,6 +303,13 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 	if r.PostFormValue("authorized") != "on" {
 		errs = append(errs, "you must confirm you are authorized to scan this target")
 	}
+	if r.PostFormValue("recon_auth") == "on" {
+		// Fail here, where the operator can fix the form, rather than running an
+		// unauthenticated recon they believe is authenticated.
+		if _, err := recon.NewCredential(launchTargetScheme(rawTarget), r.PostFormValue("auth_token"), r.PostFormValue("auth_header_name"), r.PostFormValue("auth_header_format")); err != nil {
+			errs = append(errs, "recon auth: "+err.Error()+" (fill in the auth token above, or untick the option)")
+		}
+	}
 
 	form := LaunchFormData{
 		Target:               rawTarget,
@@ -328,6 +335,7 @@ func parseLaunchSubmission(r *http.Request) (LaunchFormData, []scanner.Config, s
 		OtherAuthToken:       r.PostFormValue("other_auth_token"),
 		AuthHeaderName:       r.PostFormValue("auth_header_name"),
 		AuthHeaderFormat:     r.PostFormValue("auth_header_format"),
+		ReconAuth:            r.PostFormValue("recon_auth") == "on",
 		Headers:              r.PostFormValue("headers"),
 		RateLimit:            rateLimit,
 		Concurrency:          concurrency,
@@ -803,6 +811,24 @@ func noTokenNote(cfg scanner.Config) string {
 // against external passive sources can take tens of seconds) doesn't look
 // stalled just because WaveStatus itself only has "running"/"done", no
 // sub-progress. Mirrors doc91 §3's own wave descriptions.
+// reconCredentialParts is the HTTP-client middleware and recon options that let
+// recon carry the operator's auth token (LT-187), or nothing when the "use the
+// token for recon" box is unchecked. The form was validated at submit time, so a
+// failure here is unexpected; it degrades to an unauthenticated recon with a
+// logged warning rather than failing the job.
+func reconCredentialParts(job *Job, form LaunchFormData, target string) ([]httpclient.Middleware, []recon.Option) {
+	if !form.ReconAuth {
+		return nil, nil
+	}
+	cred, err := recon.NewCredential(target, form.AuthToken, form.AuthHeaderName, form.AuthHeaderFormat)
+	if err != nil {
+		job.AppendLog("warn", "recon-auth: "+err.Error()+" — recon runs unauthenticated")
+		return nil, nil
+	}
+	job.AppendLog("info", cred.Note())
+	return []httpclient.Middleware{cred.Middleware()}, []recon.Option{cred.Option()}
+}
+
 func waveDescription(wave string) string {
 	switch wave {
 	case "wave0":
@@ -840,13 +866,14 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 	// real job is scan-detector evidence-quality safety and still gates each
 	// detector's own scanner.Config below; recon's own client is a separate
 	// instance, never shared with a detector's.
+	clientMWs, credOpts := reconCredentialParts(job, form, launchTargetScheme(form.Target))
 	client := httpclient.New(recon.ClientConfig(httpclient.Config{
 		Timeout:             defaultTimeout,
 		MaxRedirects:        5,
 		MaxIdleConnsPerHost: form.Concurrency,
-	}), httpclient.WithRateLimit(ratelimit.New(form.RateLimit)))
+	}), append([]httpclient.Middleware{httpclient.WithRateLimit(ratelimit.New(form.RateLimit))}, clientMWs...)...)
 
-	opts := []recon.Option{
+	opts := append([]recon.Option{
 		recon.WithRateLimit(form.RateLimit),
 		recon.WithConcurrency(form.Concurrency),
 		recon.WithProgressCallback(func(wave, status string) {
@@ -855,7 +882,7 @@ func (h *handlers) runLaunchRecon(job *Job, form LaunchFormData, cfgs []scanner.
 				job.AppendLog("info", waveDescription(wave))
 			}
 		}),
-	}
+	}, credOpts...)
 	if s != nil {
 		opts = append(opts, recon.WithScope(s))
 	}

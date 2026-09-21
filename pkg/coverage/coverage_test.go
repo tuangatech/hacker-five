@@ -1,6 +1,7 @@
 package coverage
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,6 +29,22 @@ func TestRedactURL_KeepsNamesAndDropsValues(t *testing.T) {
 		assert.Equal(t, c.want, got, c.in)
 		assert.Equal(t, c.keys, keys, c.in)
 	}
+}
+
+// LT-186 (c): the ledger says a templated route was seeded, never with what.
+func TestFromRecon_SeededIsAFlagNeverTheValue(t *testing.T) {
+	const id = "3f2b8c1e-5d4a-4e7b-9a10-2c6d8e0f1a23"
+	eps := FromRecon(&recon.ReconResult{Endpoints: []recon.EndpointFact{
+		{URL: "https://t.example/identity/api/v2/vehicle/{carId}/location", SeedID: id},
+		{URL: "https://t.example/api/orders/123"},
+	}})
+	require.Len(t, eps, 2)
+	assert.True(t, eps[0].Templated)
+	assert.True(t, eps[0].Seeded)
+	assert.False(t, eps[1].Templated, "an observed numeric id is not a placeholder route, though it is redacted to {id}")
+	raw, err := json.Marshal(eps)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), id)
 }
 
 func TestFromRecon_IncludesBodyKeysAndNoValues(t *testing.T) {
@@ -103,6 +120,12 @@ func TestAttribute_EachStage(t *testing.T) {
 		{"runnable, never dispatched", Run{Endpoints: []Endpoint{orders}, Tree: treeOf(ordersLeaf(nil))}, idorTarget, StageNotDispatched},
 		{"dispatched, nothing found", Run{Endpoints: []Endpoint{orders}, Tree: treeOf(ordersLeaf(nil)),
 			History: []llmfallback.TurnRecord{turn("l1", "0 new finding(s), 3 log line(s)", "")}}, idorTarget, StageNoFinding},
+		{"dispatched, templated route with no seed", Run{Endpoints: []Endpoint{{Method: "GET", URL: "https://t.example/shop/orders/{id}", Templated: true}}, Tree: treeOf(ordersLeaf(nil)),
+			History:  []llmfallback.TurnRecord{turn("l1", "0 new finding(s)", "")},
+			Findings: []detectors.Finding{{ID: "idor-1", Target: "https://t.example/report?id=1"}}}, idorTarget, StageNoFinding},
+		{"dispatched, templated route that was seeded, same-class findings elsewhere", Run{Endpoints: []Endpoint{{Method: "GET", URL: "https://t.example/shop/orders/{id}", Templated: true, Seeded: true}}, Tree: treeOf(ordersLeaf(nil)),
+			History:  []llmfallback.TurnRecord{turn("l1", "0 new finding(s)", "")},
+			Findings: []detectors.Finding{{ID: "idor-1", Target: "https://t.example/report?id=1"}}}, idorTarget, StageMismatch},
 		{"dispatched, same-class findings elsewhere", Run{Endpoints: []Endpoint{orders}, Tree: treeOf(ordersLeaf(nil)),
 			History:  []llmfallback.TurnRecord{turn("l1", "0 new finding(s)", "")},
 			Findings: []detectors.Finding{{ID: "idor-1", Target: "https://t.example/report?id=1"}}}, idorTarget, StageMismatch},

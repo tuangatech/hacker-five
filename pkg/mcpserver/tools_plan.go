@@ -229,13 +229,14 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	// recon.ClientConfig forces InsecureSkipVerify true (LT-4, docs/follow-up.md)
 	// — matches katana/httpx's own hardcoded TLS posture; this client is
 	// never shared with scan's own detector requests.
+	authMWs, authOpts, authNote := reconAuthParts(in.Target, in.AuthToken)
 	client := httpclient.New(recon.ClientConfig(httpclient.Config{
 		Timeout:             defaultTimeout,
 		MaxRedirects:        5,
 		MaxIdleConnsPerHost: defaultConcurrency,
-	}), httpclient.WithRateLimit(ratelimit.New(defaultRateLimit)))
+	}), append([]httpclient.Middleware{httpclient.WithRateLimit(ratelimit.New(defaultRateLimit))}, authMWs...)...)
 
-	r := recon.New(client, recon.WithScope(sc), recon.WithRateLimit(defaultRateLimit), recon.WithConcurrency(defaultConcurrency), recon.WithHeaders(reqHeaders))
+	r := recon.New(client, append(authOpts, recon.WithScope(sc), recon.WithRateLimit(defaultRateLimit), recon.WithConcurrency(defaultConcurrency), recon.WithHeaders(reqHeaders))...)
 	result, err := r.Run(ctx, in.Target, depth)
 	if err != nil {
 		return nil, planOutput{}, err
@@ -243,6 +244,9 @@ func handlePlan(ctx context.Context, req *mcp.CallToolRequest, in planInput) (*m
 	preflightWarnings := append(preWarns, reconSignalWarnings(result)...)
 	for _, w := range preflightWarnings {
 		result.Warnings = append(result.Warnings, "preflight: "+w)
+	}
+	if authNote != "" {
+		result.Warnings = append(result.Warnings, authNote)
 	}
 
 	tree, leafContexts := registry.Resolve(result, index)

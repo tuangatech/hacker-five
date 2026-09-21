@@ -86,6 +86,14 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		Target:       func() string { return os.Getenv("VAPI_BASE_URL") },
 		Depth:        "active",
 		Templates:    "./templates/",
+		// Optional: VAPI_OWNER_TOKEN/VAPI_OTHER_TOKEN (base64 of username:password, see
+		// docs/20-setup-testing-targets.md) give the idor leaves an identity. vAPI reads
+		// the token from an Authorization-Token header, so a run using them also needs
+		// "--auth-header-name Authorization-Token --auth-header-format {token}" (the
+		// ablation harness takes it through HACKERFIVE_ABLATION_EXTRA_ARGS).
+		AuthTokenEnv:      "VAPI_OWNER_TOKEN",
+		OtherAuthTokenEnv: "VAPI_OTHER_TOKEN",
+		KnownVulnsFile:    "tests/fixtures/known-vulns/vapi.json",
 	},
 	{
 		// Templates: templatesDir() — same corpus-hang rationale as vAPI's

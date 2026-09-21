@@ -1,0 +1,35 @@
+{
+  "description": "Vulnerabilities vAPI (roottusk/vapi, http://localhost:8000/vapi) is documented to contain and that HackerFive has already reproduced live, each with its evidence and date. Ground truth for measuring what an agent arm adds (docs/94-llm-finding-capability-strategy.md), written so a second lab can say where the deterministic pipeline stops: vAPI is a JSON API with no served spec, a custom Authorization-Token header scheme and separate auth modules per exercise, all of which make it a poor fit for crawl-driven recon. Only vulnerabilities already verified by hand or by a recorded scan are listed; the rest of vAPI's exercises (mass assignment, rate limiting, improper inventory, ...) are left out until a finding class and ID exist to grade them, and phpMyAdmin on :8001 is a different origin.",
+  "vulns": [
+    {
+      "id": "vapi-bola-api1-user",
+      "class": "bola",
+      "description": "GET /vapi/api1/user/{id} returns any user's record: API1UsersController::show does not check that the id belongs to the caller (its fixed counterpart, API5UsersController, does).",
+      "endpoint_contains": "/api1/user/",
+      "id_prefixes": ["idor-"],
+      "baseline": "found",
+      "source": "docs/20-setup-testing-targets.md, vAPI section: --detector idor with a base64(username:password) Authorization-Token, live 2026-08-28; the same bug also surfaces as authbypass-token-reuse-api1-user-N",
+      "note": "Needs --auth-header-name Authorization-Token --auth-header-format {token} on the run; without them the token is sent as a Bearer header vAPI does not recognise."
+    },
+    {
+      "id": "vapi-ssrf-serversurfer",
+      "class": "ssrf",
+      "description": "GET /vapi/serversurfer?url=<url> fetches the URL server-side and returns it base64-encoded; file:// is not blocked.",
+      "endpoint_contains": "/serversurfer",
+      "id_prefixes": ["ssrf-"],
+      "baseline": "found",
+      "source": "docs/20-setup-testing-targets.md, vAPI SSRF section: ssrf-scheme-based-url-file and ssrf-oob-callback-url, live 2026-08-29/30, no login required",
+      "note": "Found when the scan is pointed at /vapi/serversurfer with --ssrf-param url; whether recon discovers the route on its own is what this entry measures."
+    },
+    {
+      "id": "vapi-jwt-alg-none",
+      "class": "broken-authentication",
+      "description": "The weak-JWT module (/vapi/jwt/user) decodes with HS256 and none, so an alg:none forged token is accepted (hand-forging a role:admin token retrieves the flag).",
+      "endpoint_contains": "/jwt/user",
+      "id_prefixes": ["authbypass-jwt-"],
+      "baseline": "found",
+      "source": "docs/20-setup-testing-targets.md, vAPI JWT section: authbypass-jwt-alg-none-vapi-jwt-user and -signature-stripped-, critical, live 2026-08-28",
+      "note": "Found with a JWT minted by POST /vapi/jwt/user and --protected-paths /vapi/jwt/user; that is a different account and token scheme from the api1 module's, so an agent run holding only the api1 token has no way to present a valid one here."
+    }
+  ]
+}

@@ -137,11 +137,26 @@ func Attribute(run Run, t Target) Attribution {
 			best, why = st, w
 		}
 	}
+	if best == StageNoFinding && hasUnseededTemplate(matched) && len(t.FindingPrefixes) > 0 && hasPrefixIn("idor-", t.FindingPrefixes) {
+		return Attribution{Stage: StageNoFinding, LeafIDs: ids,
+			Why: "dispatched, but the route is keyed by an id placeholder and recon read no id for it from any list response, so a UUID-keyed route had no seed to test with"}
+	}
 	if best == StageNoFinding && classFindings > 0 && want != "" {
 		return Attribution{Stage: StageMismatch, LeafIDs: ids,
 			Why: fmt.Sprintf("dispatched, and %d same-class finding(s) exist on other endpoints: check the ground truth before blaming the detector", classFindings)}
 	}
 	return Attribution{Stage: best, Why: why, LeafIDs: ids}
+}
+
+// hasUnseededTemplate reports whether any endpoint is a templated route (a spec
+// or bundle placeholder, no concrete id seen) that recon did not seed.
+func hasUnseededTemplate(eps []Endpoint) bool {
+	for _, ep := range eps {
+		if ep.Templated && !ep.Seeded {
+			return true
+		}
+	}
+	return false
 }
 
 // EndpointRow is one recon endpoint and how far the endpoint-specific leaves
@@ -232,6 +247,7 @@ func leafCoverage(l *agenttask.PlanNode) leafCover {
 	}
 	add(l.EndpointTemplate)
 	add(l.SQLiPath)
+	add(l.SSRFPath)
 	add(l.CouponMintPath)
 	add(l.CouponApplyPath)
 	for _, p := range l.ProtectedPaths {

@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"context"
 	"log"
 	"math/rand"
 	"net/http"
@@ -92,6 +93,24 @@ func WithHeaders(headers map[string]string) Middleware {
 // header name). Every hop, including retries, passes through here again and
 // gets the header only if its own host matches.
 func WithHostHeaders(origin string, headers map[string]string) Middleware {
+	return WithHostHeadersUnless(origin, headers, nil)
+}
+
+type skipHostHeadersKey struct{}
+
+// WithoutHostHeaders marks ctx so that WithHostHeaders/WithHostHeadersUnless send
+// requests made with it without their headers. A caller uses it to ask what an
+// endpoint answers to an anonymous request (does it reject me?) while the client
+// is otherwise authenticated.
+func WithoutHostHeaders(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipHostHeadersKey{}, true)
+}
+
+// WithHostHeadersUnless is WithHostHeaders, except that a request for which
+// withhold returns true is sent without the headers (still to the same host, so
+// discovery goes on; it just is not made as the signed-in user). The caller uses
+// it to keep a credential off a URL that looks state-changing.
+func WithHostHeadersUnless(origin string, headers map[string]string, withhold func(*url.URL) bool) Middleware {
 	want := ""
 	if u, err := url.Parse(origin); err == nil && u.Host != "" {
 		want = hostKeyOf(u.Host, u.Scheme)
@@ -99,6 +118,12 @@ func WithHostHeaders(origin string, headers map[string]string) Middleware {
 	return func(next http.RoundTripper) http.RoundTripper {
 		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			if want == "" || len(headers) == 0 || req.URL == nil || hostKeyOf(req.URL.Host, req.URL.Scheme) != want {
+				return next.RoundTrip(req)
+			}
+			if withhold != nil && withhold(req.URL) {
+				return next.RoundTrip(req)
+			}
+			if req.Context().Value(skipHostHeadersKey{}) != nil {
 				return next.RoundTrip(req)
 			}
 			req = req.Clone(req.Context())

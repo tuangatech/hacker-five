@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -411,6 +412,87 @@ func TestResolve_IdorEndpointCandidates_UUIDCandidateCarriesSeed(t *testing.T) {
 	require.NotNil(t, intLeaf)
 	assert.False(t, intLeaf.EndpointIDIsUUID)
 	assert.Empty(t, intLeaf.EndpointSeedID)
+}
+
+// LT-186 (c): a templated route seeded from a list response carries the id on the
+// leaf's in-memory field only. The tree's JSON must never contain it, and it must
+// not be offered through the URL-observed EndpointSeedID.
+func TestResolve_IdorEndpointCandidates_HarvestedSeedStaysOutOfTheTreeJSON(t *testing.T) {
+	const id = "3f2b8c1e-5d4a-4e7b-9a10-2c6d8e0f1a23"
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/identity/api/v2/vehicle/{carId}/location", Method: "GET", Source: "js-static-joined", Confidence: "low", SeedID: id},
+			{URL: "http://api.example.test/orders/{orderId}", Method: "GET", Source: "js-static-joined", Confidence: "low"},
+		},
+	}
+	tree, _ := Resolve(result, nil)
+
+	var uuidLeaf, plainLeaf *agenttask.PlanNode
+	for _, leaf := range hostLeaves(t, tree, "api.example.test") {
+		switch leaf.EndpointTemplate {
+		case "/identity/api/v2/vehicle/{{id}}/location":
+			uuidLeaf = leaf
+		case "/orders/{{id}}":
+			plainLeaf = leaf
+		}
+	}
+	require.NotNil(t, uuidLeaf)
+	assert.True(t, uuidLeaf.EndpointIDIsUUID)
+	assert.Equal(t, id, uuidLeaf.HarvestedSeedID)
+	assert.Empty(t, uuidLeaf.EndpointSeedID, "a harvested id is not the URL-observed seed")
+	require.NotNil(t, plainLeaf)
+	assert.Empty(t, plainLeaf.HarvestedSeedID)
+
+	raw, err := json.Marshal(tree)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), id, "the plan tree's JSON is what streams, logs and prompts are built from")
+}
+
+// doc18 Step 4 promised one sqli leaf per candidate path; the tree's dedup key used
+// to collapse them all into one, so only the first candidate was ever tested.
+func TestResolve_SQLiLeavesFanOutPerCandidatePath(t *testing.T) {
+	result := &recon.ReconResult{Target: "http://api.example.test", Endpoints: []recon.EndpointFact{
+		{URL: "http://api.example.test/a/items?item_id=5", Method: "GET", Source: "wave3-crawl", Confidence: "medium"},
+		{URL: "http://api.example.test/b/things?thing_id=7", Method: "GET", Source: "wave3-crawl", Confidence: "medium"},
+	}}
+	tree, _ := Resolve(result, nil)
+	var paths []string
+	for _, leaf := range hostLeaves(t, tree, "api.example.test") {
+		if leaf.Detector == "sqli" {
+			paths = append(paths, leaf.SQLiPath)
+		}
+	}
+	assert.ElementsMatch(t, []string{"/a/items?item_id=5", "/b/things?thing_id=7"}, paths)
+}
+
+// LT-186: an ssrf leaf must say which endpoint its parameters belong to, one leaf
+// per endpoint, or its probes go to the host root and can never reach the field.
+func TestResolve_SSRFLeavesCarryTheirEndpointPath(t *testing.T) {
+	result := &recon.ReconResult{
+		Target: "http://api.example.test",
+		Endpoints: []recon.EndpointFact{
+			{URL: "http://api.example.test/workshop/api/merchant/contact_mechanic", Method: "GET", Source: "js-static-joined", Confidence: "low",
+				BodyParamKeys: []string{"mechanic_code", "mechanic_api"}, URLBodyParamKeys: []string{"mechanic_api"}},
+			{URL: "http://api.example.test/api/fetch?url=http://x", Method: "GET", Source: "wave3-crawl", Confidence: "medium"},
+		},
+	}
+	tree, _ := Resolve(result, nil)
+
+	byPath := map[string]*agenttask.PlanNode{}
+	for _, leaf := range hostLeaves(t, tree, "api.example.test") {
+		if leaf.Detector == "ssrf" {
+			byPath[leaf.SSRFPath] = leaf
+		}
+	}
+	require.Len(t, byPath, 2, "one ssrf leaf per endpoint, none without a path")
+	body := byPath["/workshop/api/merchant/contact_mechanic"]
+	require.NotNil(t, body)
+	assert.Equal(t, []string{"mechanic_api"}, body.SSRFBodyParams)
+	assert.Empty(t, body.SSRFParams)
+	query := byPath["/api/fetch"]
+	require.NotNil(t, query)
+	assert.Equal(t, []string{"url"}, query.SSRFParams)
 }
 
 // TestResolve_IdorCapabilityOnly_KeepsBareLeaf: a host with a tech-matched

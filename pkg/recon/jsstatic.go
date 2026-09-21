@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 )
 
 // jsAsset is one served JavaScript body Wave 3 already fetched (via katana's
@@ -372,6 +374,13 @@ func appendUnique(xs []string, s string) []string {
 // ambiguous whenever one prefix is itself a suffix of another.
 type jsJoinPair struct {
 	Prefix, Base string
+	// Status is what the verifying GET answered (as the signed-in user when recon
+	// carries a credential). AuthRequired is whether an anonymous request is turned
+	// away (401/403): the verifying GET when recon is anonymous, one extra
+	// credential-free GET when it is not. Zero/false for a templated route, which
+	// is never requested.
+	Status       int
+	AuthRequired bool
 }
 
 func (p jsJoinPair) joined() string { return p.Prefix + p.Base }
@@ -424,6 +433,38 @@ func (r *Recon) fetchJSPrefixCanary(ctx context.Context, assetHost, prefix strin
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
 	_ = resp.Body.Close()
 	return resp.StatusCode, true
+}
+
+func isAuthRejection(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+// turnsAwayAnonymous reports whether a verified route rejects an anonymous request
+// (LT-186): it is what makes a path a "protected path" for authbypass, which the
+// verification used to throw away. status is what the verifying GET answered. When
+// recon is anonymous that already is the answer; when it carries a credential, the
+// verifying GET was signed in, so one extra GET is sent without the credential.
+// The extra request spends one unit of budget and is skipped when none is left.
+func (r *Recon) turnsAwayAnonymous(ctx context.Context, reqURL string, status int, budget *int) bool {
+	if isAuthRejection(status) {
+		return true
+	}
+	if r.credential == nil || *budget <= 0 {
+		return false
+	}
+	req, err := http.NewRequestWithContext(httpclient.WithoutHostHeaders(ctx), http.MethodGet, reqURL, nil)
+	if err != nil {
+		return false
+	}
+	r.applyHeaders(req)
+	*budget--
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+	_ = resp.Body.Close()
+	return isAuthRejection(resp.StatusCode)
 }
 
 // jsJoinResult is what verifyJSJoinBases found and what it could not settle.
@@ -543,7 +584,10 @@ func (r *Recon) verifyJSJoinBases(ctx context.Context, agg *aggregator, assetHos
 				continue // this prefix answers every path alike — not a real signal
 			}
 			if jsJoinVerifyStatuses[resp.StatusCode] {
-				res.Verified = append(res.Verified, jsJoinPair{Prefix: prefix, Base: base})
+				res.Verified = append(res.Verified, jsJoinPair{
+					Prefix: prefix, Base: base, Status: resp.StatusCode,
+					AuthRequired: r.turnsAwayAnonymous(ctx, reqURL, resp.StatusCode, budget),
+				})
 				found = true
 				break
 			}
@@ -857,6 +901,10 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 				verifiedBases = append(verifiedBases, pair.Base)
 			}
 			suffixesByBase := assignQuerySuffixes(asset.Body, verifiedBases, querySuffixes)
+			bodyByRoute := map[string]jsBodyFields{}
+			for _, bf := range extractJSBodyFields(asset.Body) {
+				bodyByRoute[bf.Route] = bf
+			}
 			for _, pair := range verified {
 				joinCandidatesVerified++
 				pairURL := strings.TrimRight(assetHost, "/") + "/" + pair.joined()
@@ -874,7 +922,11 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 						agg.addOutOfScope(hostOnly(epURL))
 						continue
 					}
-					agg.addEndpoint(EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static-joined", Confidence: ConfidenceLow})
+					fact := EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static-joined", Confidence: ConfidenceLow, StatusCode: pair.Status, AuthRequired: pair.AuthRequired}
+					if bf, ok := bodyByRoute[pair.Base]; ok {
+						fact.BodyParamKeys, fact.URLBodyParamKeys = bf.Keys, bf.URLKeys
+					}
+					agg.addEndpoint(fact)
 					endpointsAdded++
 				}
 			}

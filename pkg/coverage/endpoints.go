@@ -33,6 +33,17 @@ type Endpoint struct {
 	Status       int      `json:"status,omitempty"`
 	AuthRequired bool     `json:"auth_required,omitempty"`
 	Params       []string `json:"params,omitempty"` // query-string keys and JSON body keys, names only
+	// Templated says the route came from a spec or a JS bundle with an id
+	// placeholder ("/vehicle/{carId}/location") rather than from a URL that was
+	// seen with a concrete id; only such a route needs a seed to be tested. (The
+	// redacted URL cannot say: an observed "/orders/123" is redacted to
+	// "/orders/{id}" too.)
+	Templated bool `json:"templated,omitempty"`
+	// Seeded says recon read an object id for this templated route out of a list
+	// response (LT-186 item c), so an idor leaf had something to test with. It is
+	// the fact only: the id itself is never here (recon.EndpointFact.SeedID is
+	// json:"-" and this package does not read it).
+	Seeded bool `json:"seeded,omitempty"`
 }
 
 var (
@@ -103,6 +114,7 @@ func FromRecon(r *recon.ReconResult) []Endpoint {
 		out = append(out, Endpoint{
 			Method: strings.ToUpper(method), URL: redacted, Source: ep.Source,
 			Status: ep.StatusCode, AuthRequired: ep.AuthRequired, Params: dedupe(params),
+			Templated: strings.Contains(ep.URL, "{"), Seeded: ep.SeedID != "",
 		})
 	}
 	return out

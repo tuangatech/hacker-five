@@ -177,15 +177,13 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 			clientMWs := []httpclient.Middleware{httpclient.WithRateLimit(ratelimit.New(rateLimit))}
 			reconOpts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
 			if reconAuth {
-				origin, credHeader, err := reconAuthHeader(target, authToken, authHeaderName, authHeaderFormat)
+				cred, err := recon.NewCredential(target, authToken, authHeaderName, authHeaderFormat)
 				if err != nil {
-					return err
+					return fmt.Errorf("--recon-auth: %w (pass --auth-token or set HACKERFIVE_AUTH_TOKEN)", err)
 				}
-				clientMWs = append(clientMWs, httpclient.WithHostHeaders(origin, credHeader))
-				reconOpts = append(reconOpts, recon.WithCrawlHeaders(origin, credHeader))
-				for name := range credHeader {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: --recon-auth: recon requests to %s carry the %s header (read-only GETs); no other host receives it\n", origin, name)
-				}
+				clientMWs = append(clientMWs, cred.Middleware())
+				reconOpts = append(reconOpts, cred.Option())
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: %s\n", cred.Note())
 			}
 			client := httpclient.New(recon.ClientConfig(httpclient.Config{
 				Timeout:             root.timeout,
@@ -361,29 +359,4 @@ func stdinScriptApprovalGate(stdin io.Reader, stderr io.Writer) scriptexec.Appro
 		}
 		return approved, nil
 	}
-}
-
-// reconAuthHeader builds the credential header --recon-auth sends on recon's own
-// requests, and the origin it is restricted to (the target, given a scheme when
-// the operator left it off, as recon itself does). Name and format default to the
-// same "Authorization: Bearer {token}" the detectors use, so recon and the leaf
-// dispatches present the same identity.
-func reconAuthHeader(target, token, name, format string) (origin string, header map[string]string, err error) {
-	if token == "" {
-		return "", nil, fmt.Errorf("--recon-auth needs an owner token: pass --auth-token or set HACKERFIVE_AUTH_TOKEN")
-	}
-	if name == "" {
-		name = "Authorization"
-	}
-	if format == "" {
-		format = "Bearer {token}"
-	}
-	if !strings.Contains(format, "{token}") {
-		return "", nil, fmt.Errorf("--auth-header-format must contain a {token} placeholder, got %q", format)
-	}
-	origin = target
-	if !strings.Contains(origin, "://") {
-		origin = "https://" + origin
-	}
-	return origin, map[string]string{name: strings.Replace(format, "{token}", token, 1)}, nil
 }

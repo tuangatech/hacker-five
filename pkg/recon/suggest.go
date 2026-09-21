@@ -165,7 +165,7 @@ func IsPlausibleURLPath(p string) bool {
 // situations a caller must handle explicitly (skip-and-explain, in the
 // Launch page's case) — this function only ever reports what recon found.
 func SuggestIDOREndpointCandidates(result *ReconResult) []string {
-	candidates, _ := idorCandidatesAndSeeds(result)
+	candidates, _, _ := idorCandidatesAndSeeds(result)
 	return candidates
 }
 
@@ -184,8 +184,18 @@ func SuggestIDOREndpointCandidates(result *ReconResult) []string {
 // surfaces an ID recon actually observed. A template with no UUID-shaped
 // observation (e.g. a plain int-keyed route) has no entry.
 func SuggestIDORSeedIDs(result *ReconResult) map[string]string {
-	_, seeds := idorCandidatesAndSeeds(result)
+	_, seeds, _ := idorCandidatesAndSeeds(result)
 	return seeds
+}
+
+// SuggestIDORHarvestedSeeds is SuggestIDORSeedIDs' counterpart for ids recon read
+// out of a list response (EndpointFact.SeedID, LT-186 item c), keyed by the same
+// {{id}}-templated string. Kept separate because these are response data: the
+// caller must hold them in memory only and never put them in anything that is
+// serialised or shown to a model (see EndpointFact.SeedID).
+func SuggestIDORHarvestedSeeds(result *ReconResult) map[string]string {
+	_, _, harvested := idorCandidatesAndSeeds(result)
+	return harvested
 }
 
 // idorCandidatesAndSeeds is SuggestIDOREndpointCandidates/
@@ -193,9 +203,9 @@ func SuggestIDORSeedIDs(result *ReconResult) map[string]string {
 // EndpointFacts feeding both public views, so their filtering (static-asset
 // skip, LT-117's asset-wrapper skip, LT-85's plausible-path check) can never
 // drift apart.
-func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTemplate map[string]string) {
+func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTemplate, harvestedByTemplate map[string]string) {
 	if result == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	seen := map[string]bool{}
@@ -263,6 +273,12 @@ func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTem
 			}
 			seedByTemplate[tmpl] = concreteVal
 		}
+		if ep.SeedID != "" && !isUUID {
+			if harvestedByTemplate == nil {
+				harvestedByTemplate = map[string]string{}
+			}
+			harvestedByTemplate[tmpl] = ep.SeedID
+		}
 	}
 	// LT-83: a query-routed CMS enumerates its content through a numeric
 	// param whose name (e.g. "article") doesn't look ID-shaped — pick those
@@ -278,7 +294,7 @@ func idorCandidatesAndSeeds(result *ReconResult) (candidates []string, seedByTem
 		seen[tmpl] = true
 		candidates = append(candidates, tmpl)
 	}
-	return candidates, seedByTemplate
+	return candidates, seedByTemplate, harvestedByTemplate
 }
 
 // idShapedCandidate returns the {{id}}-templated path(+query) for rawURL, if
@@ -467,8 +483,10 @@ func SuggestAuthBypassPathsFromRecon(result *ReconResult) (protected, login, log
 				seenProtected[path] = true
 				protected = append(protected, path)
 			}
-		case ep.Source == "api-spec" && ep.AuthRequired && !strings.Contains(path, "{"):
-			// LT-90: the OpenAPI doc says this route needs auth. A
+		case (ep.Source == "api-spec" || ep.Source == "js-static-joined") && ep.AuthRequired && !strings.Contains(path, "{"):
+			// LT-90: the OpenAPI doc says this route needs auth (LT-186: or a
+			// route the JS bundle names answered an anonymous request 401/403
+			// while recon itself was signed in). A
 			// parameterless route is a direct "should reject me" probe for
 			// checkMissingAuth; a {param} route has no id to invent, so it's
 			// left to the idor path.
@@ -672,6 +690,93 @@ func SuggestSSRFParamsFromRecon(result *ReconResult) []string {
 	return params
 }
 
+// SSRFTarget is one endpoint and the parameters worth SSRF-testing on it: the
+// query keys that name a URL, and the request-body fields that take one.
+type SSRFTarget struct {
+	Path       string
+	Params     []string
+	BodyParams []string
+}
+
+// SuggestSSRFTargets groups the SSRF candidates SuggestSSRFParamsFromRecon and
+// SuggestSSRFBodyParamsFromRecon report by the endpoint they belong to, in first-
+// seen order (LT-186). Those two return one flat list each, which is enough for
+// a scan whose target is the endpoint; an agent leaf's target is only the host, so
+// it has to know which path to send the probes to. A templated route
+// ("/vehicle/{carId}") has no concrete path to request and is skipped.
+func SuggestSSRFTargets(result *ReconResult) []SSRFTarget {
+	if result == nil {
+		return nil
+	}
+	byPath := map[string]*SSRFTarget{}
+	var order []string
+	add := func(path string) *SSRFTarget {
+		t, ok := byPath[path]
+		if !ok {
+			t = &SSRFTarget{Path: path}
+			byPath[path] = t
+			order = append(order, path)
+		}
+		return t
+	}
+	has := func(xs []string, x string) bool {
+		for _, v := range xs {
+			if v == x {
+				return true
+			}
+		}
+		return false
+	}
+	for _, ep := range result.Endpoints {
+		path := endpointPath(ep.URL)
+		if path == "" || strings.Contains(path, "{") || IsStaticAssetPath(path) || !IsPlausibleURLPath(path) {
+			continue
+		}
+		var params, body []string
+		if u, err := url.Parse(ep.URL); err == nil {
+			for _, pair := range strings.Split(u.RawQuery, "&") {
+				key := strings.SplitN(pair, "=", 2)[0]
+				if key != "" && ssrfParamKeywords[strings.ToLower(key)] && !has(params, key) {
+					params = append(params, key)
+				}
+			}
+		}
+		for _, key := range ep.URLBodyParamKeys {
+			if !has(body, key) {
+				body = append(body, key)
+			}
+		}
+		for _, key := range ep.BodyParamKeys {
+			lower := strings.ToLower(key)
+			for keyword := range ssrfParamKeywords {
+				if strings.Contains(lower, keyword) && !has(body, key) {
+					body = append(body, key)
+					break
+				}
+			}
+		}
+		if len(params) == 0 && len(body) == 0 {
+			continue
+		}
+		t := add(path)
+		for _, p := range params {
+			if !has(t.Params, p) {
+				t.Params = append(t.Params, p)
+			}
+		}
+		for _, b := range body {
+			if !has(t.BodyParams, b) {
+				t.BodyParams = append(t.BodyParams, b)
+			}
+		}
+	}
+	out := make([]SSRFTarget, 0, len(order))
+	for _, p := range order {
+		out = append(out, *byPath[p])
+	}
+	return out
+}
+
 // SQLiTarget pairs one concrete, already-observed path+query (scheme+host
 // stripped — same contract as scanner.Config.EndpointTemplate/
 // SuggestIDOREndpointCandidates, joined onto a target later by
@@ -785,7 +890,9 @@ func firstQueryPathForPath(endpoints []EndpointFact, p string) string {
 // attacker URL in a JSON body field, not a query param). Unlike
 // SuggestSSRFParamsFromRecon's exact-key lookup, this matches by substring:
 // a real body field name is typically compound ("mechanic_api",
-// "repair_url", "webhook_endpoint") rather than a bare "url"/"redirect".
+// "repair_url", "webhook_endpoint") rather than a bare "url"/"redirect". A field
+// the JS bundle itself fills with a URL (EndpointFact.URLBodyParamKeys, LT-186
+// item d) is included whatever its name.
 func SuggestSSRFBodyParamsFromRecon(result *ReconResult) []string {
 	if result == nil {
 		return nil
@@ -794,6 +901,12 @@ func SuggestSSRFBodyParamsFromRecon(result *ReconResult) []string {
 	seen := map[string]bool{}
 	var params []string
 	for _, ep := range result.Endpoints {
+		for _, key := range ep.URLBodyParamKeys {
+			if !seen[key] {
+				seen[key] = true
+				params = append(params, key)
+			}
+		}
 		for _, key := range ep.BodyParamKeys {
 			if seen[key] {
 				continue

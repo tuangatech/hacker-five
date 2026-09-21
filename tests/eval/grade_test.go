@@ -190,3 +190,23 @@ func TestAgentArgs_BuildsTheSameCommandForEveryCaller(t *testing.T) {
 	assert.Contains(t, joined, "--other-auth-token oth")
 	assert.Equal(t, "--no-model", args[len(args)-1], "an arm's flags come last")
 }
+
+// Every shipped known-vulns fixture must load and validate, so a typo cannot make a
+// lab's ground truth silently empty (or match every finding).
+func TestLoadKnownVulns_ShippedFixtures(t *testing.T) {
+	for name, wantIDs := range map[string][]string{
+		"crapi.json": {"crapi-bola-shop-orders", "crapi-ssrf-contact-mechanic"},
+		"vapi.json":  {"vapi-bola-api1-user", "vapi-ssrf-serversurfer", "vapi-jwt-alg-none"},
+	} {
+		f, err := LoadKnownVulns(filepath.Join("..", "fixtures", "known-vulns", name))
+		require.NoError(t, err, name)
+		var ids []string
+		for _, v := range f.Vulns {
+			ids = append(ids, v.ID)
+			assert.NotEmpty(t, v.Source, "%s/%s: ground truth needs a source", name, v.ID)
+		}
+		for _, want := range wantIDs {
+			assert.Contains(t, ids, want, name)
+		}
+	}
+}

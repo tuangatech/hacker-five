@@ -167,6 +167,10 @@ type Recon struct {
 	// it is the katana crawl, and only when every seed is on crawlOrigin (crawlAuthArgs).
 	crawlHeaders map[string]string
 	crawlOrigin  string
+	// credential is set when the operator let recon carry a token (WithCredential).
+	// Recon's shared client applies it through middleware; the direct probes that
+	// build their own no-redirect client wrap their transport with it (credentialed).
+	credential *Credential
 
 	openAPISpecRefs []string // operator-supplied OpenAPI docs to walk into api-spec EndpointFacts (LT-89)
 }
@@ -330,11 +334,35 @@ func WithHeaders(h map[string]string) Option {
 	}
 }
 
+// WithCredential is the recon half of an authenticated recon (LT-187): it lets
+// the katana crawl carry the credential (WithCrawlHeaders) and records it so the
+// probes that build their own HTTP client can carry it too. The shared client
+// gets it separately, through Credential.Middleware, because it is built before
+// Recon is.
+func WithCredential(c *Credential) Option {
+	return func(r *Recon) {
+		if c == nil {
+			return
+		}
+		r.credential = c
+		WithCrawlHeaders(c.Origin, c.Header)(r)
+	}
+}
+
+// credentialed wraps a probe's own transport with the credential, when there is
+// one; the same origin/state-changing rules as the shared client apply.
+func (r *Recon) credentialed(rt http.RoundTripper) http.RoundTripper {
+	if r.credential == nil {
+		return rt
+	}
+	return r.credential.Middleware()(rt)
+}
+
 // WithCrawlHeaders lets the katana crawl carry credential headers (LT-187), on
 // the terms that they are sent to origin's host and port only: the crawl is
 // authenticated only when every seed is on that origin, and is then pinned to
 // its exact hostname (-fs fqdn) so a link cannot carry the credential to a
-// sibling subdomain. Recon's own client is not affected; give it the same
+// sibling subdomain, and it skips URLs that look state-changing (StateChangingURL). Recon's own client is not affected; give it the same
 // headers through httpclient.WithHostHeaders. httpx, which probes many hosts,
 // never receives them.
 func WithCrawlHeaders(origin string, h map[string]string) Option {
@@ -597,7 +625,7 @@ func (r *Recon) crawlAuthArgs(seeds []string) (args []string, skipped bool) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	args = []string{"-fs", "fqdn"}
+	args = []string{"-fs", "fqdn", "-cos", StateChangingCrawlExclusion()}
 	for _, k := range names {
 		args = append(args, "-H", k+": "+r.crawlHeaders[k])
 	}

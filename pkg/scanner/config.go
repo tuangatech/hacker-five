@@ -127,6 +127,13 @@ type Config struct {
 	// configuration.
 	SSRFBodyParams []string
 
+	// SSRFPath is the endpoint the ssrf probes are sent to, joined onto the target
+	// (the sqli detector's SQLiPath convention). Blank means the target itself,
+	// which is how the CLI is used (-t already names the endpoint). A recon-derived
+	// leaf carries it because its target is only the host: without a path the
+	// probes go to the host root, where the parameter or body field does not exist.
+	SSRFPath string
+
 	// SQLiPath/SQLiParams are the sqli detector's required fields
 	// (docs/18-implementation-plan-ph9.md Step 4, LT-87) — required for
 	// --detector sqli. SQLiPath is an observed path+query (e.g.
