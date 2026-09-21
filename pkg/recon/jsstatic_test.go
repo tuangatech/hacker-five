@@ -492,6 +492,77 @@ func TestRunWave3_JSStaticAnalysis_JoinedPathCandidate_BlanketAuthPrefixRejected
 	assert.True(t, foundWorkshop, "the real workshop/ endpoint must still be verified despite identity/'s look-alike being rejected, got: %+v", result.Endpoints)
 }
 
+// --- assignQuerySuffixes (LT-184) ---------------------------------------
+
+const crapiShapedBody = `og="identity/",ig="workshop/",` +
+	`sg={LOGIN:"api/auth/login",SIGNUP:"api/auth/signup",GET_SERVICE_REPORT:"api/mechanic/mechanic_report"};` +
+	`const e=ig+sg.GET_SERVICE_REPORT+"?report_id="+n;`
+
+func TestAssignQuerySuffixes_TiesSuffixToTheBaseItIsUsedWith(t *testing.T) {
+	bases := []string{"api/auth/login", "api/auth/signup", "api/mechanic/mechanic_report"}
+	got := assignQuerySuffixes(crapiShapedBody, bases, []string{"?report_id="})
+	assert.Equal(t, map[string][]string{"api/mechanic/mechanic_report": {"?report_id="}}, got,
+		"the suffix must attach to the one route the bundle joins it to, not be crossed with every base")
+}
+
+func TestAssignQuerySuffixes_UntiedSuffixAttachesOnlyWhenOneBaseVerified(t *testing.T) {
+	body := `sg={GET_SERVICE_REPORT:"api/mechanic/mechanic_report"};x=fetch(q+"?report_id="+n)`
+	one := assignQuerySuffixes(body, []string{"api/mechanic/mechanic_report"}, []string{"?report_id="})
+	assert.Equal(t, []string{"?report_id="}, one["api/mechanic/mechanic_report"], "a single verified base leaves nothing to be ambiguous about")
+
+	two := assignQuerySuffixes(body+`,sg2={LOGIN:"api/auth/login"}`, []string{"api/mechanic/mechanic_report", "api/auth/login"}, []string{"?report_id="})
+	assert.Empty(t, two, "with several verified bases an untied suffix is dropped, not guessed")
+}
+
+func TestAssignQuerySuffixes_MangledShortNamesDoNotTie(t *testing.T) {
+	body := `o={a:"api/x/one",b:"api/x/two"};const e=a+"?report_id="+n;`
+	got := assignQuerySuffixes(body, []string{"api/x/one", "api/x/two"}, []string{"?report_id="})
+	assert.Empty(t, got, "one- and two-letter identifiers recur across a minified bundle and prove nothing")
+}
+
+// TestRunWave3_JSStaticAnalysis_QuerySuffixOnlyOnItsOwnRoute is LT-184's
+// regression guard, live-observed against crAPI 2026-09-21: several routes
+// verified from one bundle, one `?report_id=` literal in it, and the literal
+// used to be crossed with every verified route — 12 idor leaves, 11 of them on
+// unrelated paths. The suffix must land only on the route the bundle uses it
+// with; the other verified routes are still recon facts, emitted bare.
+func TestRunWave3_JSStaticAnalysis_QuerySuffixOnlyOnItsOwnRoute(t *testing.T) {
+	mux := http.NewServeMux()
+	for _, p := range []string{"/workshop/api/mechanic/mechanic_report", "/workshop/api/auth/login", "/workshop/api/auth/signup"} {
+		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	jsBodyJSON, err := json.Marshal(crapiShapedBody)
+	require.NoError(t, err)
+	target := srv.URL
+	responses := map[string]string{
+		"katana": `{"request":{"endpoint":"` + target + `/static/app.js","method":"GET"},` +
+			`"response":{"status_code":200,"headers":{"content-type":"application/javascript"},"body":` + string(jsBodyJSON) + `}}`,
+	}
+	_, fake := recordingRun(t, responses)
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), target, DepthFull)
+	require.NoError(t, err)
+
+	var joined []string
+	for _, ep := range result.Endpoints {
+		if ep.Source == "js-static-joined" {
+			joined = append(joined, ep.URL)
+		}
+	}
+	assert.ElementsMatch(t, []string{
+		target + "/workshop/api/mechanic/mechanic_report?report_id=",
+		target + "/workshop/api/auth/login",
+		target + "/workshop/api/auth/signup",
+	}, joined)
+	assert.Equal(t, []string{"/workshop/api/mechanic/mechanic_report?report_id={{id}}"}, SuggestIDOREndpointCandidates(result),
+		"one query key on one route must yield one idor candidate")
+}
+
 // TestRunWave3_JSStaticAnalysis_DuplicateAssetObservation_ProcessedOnce is
 // LT-164's asset-dedup regression guard: katana's crawl can (and does,
 // live-verified against crAPI) observe the same bundle URL more than once —

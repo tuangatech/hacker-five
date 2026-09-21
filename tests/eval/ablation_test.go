@@ -132,7 +132,7 @@ func TestAblation(t *testing.T) {
 	if len(records) == 0 {
 		t.Skip("no (lab, arm) ran: set the lab env vars (docs/20-setup-testing-targets.md) and check the arm/lab filters")
 	}
-	t.Logf("results written to %s\n\n%s", outPath, FormatSummary(Summarize(records)))
+	t.Logf("results written to %s\n\n%s\nWhere each known vulnerability was lost (LT-185):%s", outPath, FormatSummary(Summarize(records)), FormatMissAttribution(records))
 }
 
 func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, prefixes []string, known []KnownVuln, timeout time.Duration, extraArgs []string) RunRecord {
@@ -163,6 +163,7 @@ func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, pr
 	}
 	rec := NewRunRecord(sc.Name, arm.Name, run, parsed, GradeRun(parsed.Findings, prefixes, known), wall, errText)
 	rec.Model = ModelFromStderr(stderr.String())
+	rec.AddAttribution(parsed, known)
 	return rec
 }
 

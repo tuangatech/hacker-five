@@ -55,7 +55,8 @@
       "id_prefixes": ["mutatebfla-"],
       "baseline": "missed",
       "source": "docs/follow-up.md, Step E, 2026-09-08: missed, LT-132",
-      "note": "LT-132 added pkg/detectors/mutatebfla, but it needs --allow-mutating-bfla and an operator-supplied, ownership-confirmed path; the agent has no route to it, so expect a miss in every agent arm."
+      "note": "LT-132 added pkg/detectors/mutatebfla, but it needs --allow-mutating-bfla and an operator-supplied, ownership-confirmed path; the agent has no route to it, so expect a miss in every agent arm.",
+      "gated": "mutatebfla needs --allow-mutating-bfla and an operator-supplied, ownership-confirmed path; the agent has no route to it"
     },
     {
       "id": "crapi-ssrf-contact-mechanic",

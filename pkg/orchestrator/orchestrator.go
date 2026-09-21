@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
+	"github.com/tuangatech/hacker-five/pkg/coverage"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
 	"github.com/tuangatech/hacker-five/pkg/fieldsuggest"
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
@@ -210,6 +211,13 @@ type Result struct {
 	FastLaneTurns int
 	SpendUSD      float64
 
+	// Recon is every endpoint recon observed (the initial pass and any
+	// recon.refresh), values stripped — the input pkg/coverage needs to say where
+	// a missed vulnerability was lost (LT-185). ReconDropped counts endpoints
+	// beyond coverage.MaxLedgerEndpoints that were not kept.
+	Recon        []coverage.Endpoint
+	ReconDropped int
+
 	// Degraded is empty on a healthy run. When the model stopped answering
 	// (MaxConsecutiveLLMFailures decision calls in a row failed) it says so and
 	// how much was left undone (LT-173): the run finished what needed no
@@ -290,7 +298,12 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 
 	rd := &reconDigest{}
 	rd.observe(result)
-	cfg.observeRecon = rd.observe
+	var reconLedger coverage.EndpointSet
+	reconLedger.AddRecon(result)
+	cfg.observeRecon = func(r *recon.ReconResult) {
+		rd.observe(r)
+		reconLedger.AddRecon(r)
+	}
 
 	catalog := buildCatalog(cfg)
 	var (
@@ -304,7 +317,8 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	fastTried := map[string]bool{}
 	fastTurns := 0
 	snapshot := func() Result {
-		return Result{Tree: tree, Findings: findings, History: history, FastLaneTurns: fastTurns, SpendUSD: tree.SpendSoFar()}
+		return Result{Tree: tree, Findings: findings, History: history, FastLaneTurns: fastTurns, SpendUSD: tree.SpendSoFar(),
+			Recon: reconLedger.List(), ReconDropped: reconLedger.Dropped()}
 	}
 
 	iteration := 0

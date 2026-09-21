@@ -77,6 +77,8 @@ The labs cannot currently tell us whether an LLM step helps: three never invoke 
 |---|---|
 | LT-173 reliability envelope | **Done.** Decision calls run under `max_tokens` 2048 + reasoning effort `low` + a 120s deadline; a truncated-empty response is an error; after two consecutive failed calls the run degrades to the fast lane and ends cleanly with `Result.Degraded`. Live probe on two models: valid decisions in every trial, deepseek about 40% faster and cheaper. The 4-minute stall itself was **not reproduced**, so prevention is unproven; the degrade path is the guarantee. |
 | Response-shape capture | **Done and live-verified**, but **nothing reads it yet** (J1's input). One real bug found by running it: crawl facts have no content type, so the first version captured nothing on a real crawl. |
+| Miss attribution (LT-185) | **Built and run once on crAPI (1 run per arm).** `pkg/coverage` classifies each known vulnerability by the pipeline stage where it was lost; the agent's result event now carries recon's endpoint list (values stripped); the harness prints a per-arm table. First result below: none of the five misses is a selection problem. |
+| LT-184 spurious idor leaves | **Fixed** (recon's JS-join step crossed every `?key=` literal with every route). 12 `idor` leaves became 1; the run-every-leaf arm went from 194 s to 44 s with the same findings. |
 | Ablation harness | **Built and run once (crAPI, 3 runs per arm, 12 of 12 completed).** `--no-model` control arm, four arms (the fourth, `no-model+all-leaves`, added and run 2026-09-21), two ground-truth lists, JSONL per run, min-max ranges, never merged across models, harness overrides recorded per result. Ground truth exists for crAPI only (7 entries). See the baseline below and LT-183. |
 
 ### First baseline: crAPI, 2026-09-21
@@ -98,6 +100,39 @@ Results were identical across the three runs of each arm (same findings, same re
 4. **Fast lane vs model-every-turn: same findings, about 15% cheaper, about 6% faster, 5 fewer model turns.** A real but small gain on this lab.
 5. **Caveats.** Bundled templates and a raised rate limit, so wall-clock is not comparable with the LT-172 tables; n = 3 and one lab; `unlabeled` (4 in every arm) is the four `misconfig-missing-header-*` findings, which are true but absent from this fixture, so it overstates candidate false positives; the known-vulnerability baselines are dated 2026-09-08.
 
+### Miss attribution and the LT-184 fix: crAPI, 2026-09-21, 1 run per arm
+
+Same settings as the baseline (bundled templates, `--rate-limit 60`, `--recon-depth full`, `openai/gpt-5.6-luna`), one run per arm, run after the LT-184 fix. Findings and recall did not move; time and cost did:
+
+| Arm | Findings | Expected prefixes | Known vulns | Model turns | Cost / run | Wall / run |
+|---|---|---|---|---|---|---|
+| no-model (control) | 6 | 1 of 2 | 1 of 7 | 0 | $0 | 24 s |
+| no model, every runnable leaf | 15 | 2 of 2 | 2 of 7 | 0 | $0 | 44 s (was 194 s) |
+| fast-lane + model | 15 | 2 of 2 | 2 of 7 | 6 (was 15) | $0.0057 (was $0.017) | 67 s (was 240 s) |
+
+Where each known vulnerability was lost (`pkg/coverage` stages; the two arms that dispatched everything agree):
+
+| Known vulnerability | no-model | every-leaf / model | Why |
+|---|---|---|---|
+| `mechanic_report` BOLA | 3 not dispatched | **7 found** | the control never dispatches a leaf that needs a decision |
+| `.env` exposed | 7 found | 7 found | a host-wide misconfig sweep |
+| shop-orders BOLA | **0 not observed** | **0 not observed** | no recon endpoint contains `/workshop/api/shop/orders/` |
+| vehicle-location BOLA | **0 not observed** | **0 not observed** | no recon endpoint contains `/location` |
+| `contact_mechanic` SSRF | **1 no leaf** | **1 no leaf** | the endpoint was observed, but no `ssrf` leaf covers it |
+| `authbypass-jwt` | 3 not dispatched | **2 blocked** | `skipped — no --protected-paths given and recon/I4 found no usable candidate` |
+| DELETE-video BFLA | 6 gated | 6 gated | `mutatebfla` has no agent route by design |
+
+Reading it:
+
+1. **The LT-184 fix is confirmed on the live lab.** The tree now has one `idor` leaf, on `mechanic_report`, where it had twelve; `download_report` correctly keeps its own `?filename=` instead of borrowing `?report_id=`. That is a 4x speed-up for run-everything and a 3x cost cut for the model arm, from one recon bug. It is a before/after on the same harness (3 runs before, 1 after), not a controlled experiment, but the gap is far outside the run-to-run spread.
+2. **None of the five misses is a selection problem.** Two are lost at stage 0 (recon never saw the route), one at stage 1 (route seen, no leaf built), one at stage 2 (leaf built, blocked on a field), one is gated. A better chooser among existing leaves cannot recover any of them. This is the evidence the strategy needed for putting J1/J2 ahead of any work on leaf ordering.
+3. **Stage 0 is the largest loss, and it is a recon-coverage problem before it is a reasoning one.** Recon on this lab has no API spec (a separate direct run recorded 45 endpoints from `httpx` 1, `katana-crawl` 4, `js-static` 26, `js-static-joined` 14); the shop and vehicle routes are not in the crawl or in what the JS extractor can read. Whether they are present in the bundle in a form the extractor cannot parse, or only reached by authenticated calls the crawl never makes, is **not yet checked**, and it decides what J1 has to do: a hypothesis such as "this app has an orders resource" only helps if it can be turned into a route probe (a GET whose 401/403/200 confirms the route exists) and the model is allowed to propose one. Logged as LT-186.
+4. **Stage 1 names J2's job.** `/workshop/api/merchant/contact_mechanic` was observed (via the JS join), but body-field names only come from an API spec (`BodyParamKeys`), so no `ssrf` leaf was built. Proposing the body field is exactly the "fill a leaf parameter the registry cannot derive" job, validated by the detector's own check.
+5. **Stage 2 settles LT-180.** The `authbypass` leaf exists and was dispatched by the every-leaf and model arms; it skipped for want of `--protected-paths`, so the JWT check never ran. That was "likely, not verified" in the baseline; it is now measured.
+6. **Endpoint mode sizes the population.** Of 46 recon endpoints, 2 are static assets and are excluded; of the other 44, 42 have no endpoint-specific leaf and 2 have a finding. That is an upper bound on what leaf-building could reach: many are UI routes (`/orders`, `/past-orders`) that no vulnerability class applies to, which is why J1's applicability judgement matters.
+
+Caveats: 1 run per arm; one lab; the stage of a known vulnerability depends on the fixture's `endpoint_contains` and finding-ID prefixes, so a wrong fixture entry reads as a pipeline loss (stage 5, "mismatch", is the hint for that); the leaf-to-endpoint match is by path shape and parameter name, so it cannot tell two leaves on the same host apart when neither names a path.
+
 Two things this turned up that change how to read everything above (the fourth arm's flag, `--run-every-leaf`, is a deterministic policy, not a recommended default: it runs endpoint-specific leaves blind and does not resolve unresolved ones):
 
 1. **The control arm is nearly free to run and answers the first question.** `--no-model` needs no API key, so "what does the deterministic path alone reach on crAPI" can be measured before spending on any model arm.
@@ -115,7 +150,7 @@ Two things this turned up that change how to read everything above (the fourth a
 | Step | What | Why here |
 |---|---|---|
 | 0 | Ablation harness, LT-173 envelope, response-shape recon | Nothing after this is measurable without it |
-| 0b | **Miss attribution** (LT-185): for each known vulnerability, the pipeline stage where it was lost | Turns "5 of 7 missed" into a per-stage number, so step 1 is aimed at a measured gap and scored by it; the same classifier becomes step 3's coverage ledger |
+| 0b | **Miss attribution** (LT-185, **built; first result above**): for each known vulnerability, the pipeline stage where it was lost | Turns "5 of 7 missed" into a per-stage number, so step 1 is aimed at a measured gap and scored by it; the same classifier becomes step 3's coverage ledger |
 | 1 | **J1 + J2 + first skill packs** (IDOR/BOLA, auth/JWT, mass assignment) | Largest expected gain: turns a closed-set orderer into a hypothesis generator, and fills the leaf fields that LT-180/LT-164 show are the actual misses |
 | 2 | **J4 skeptic + negative-control re-issue** | Largest precision gain; serves the <5% FP target and "reports that survive triage" |
 | 3 | **J5 ledger + state-based stop** | Replaces the iteration-floor workaround; makes clean areas distinguishable from unvisited ones |

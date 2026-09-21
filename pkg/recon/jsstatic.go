@@ -260,6 +260,83 @@ func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []strin
 	return prefixes, bases, querySuffixes
 }
 
+// minJSTieNameLen is the shortest identifier assignQuerySuffixes trusts as a
+// tie. A minifier mangles local variables to one or two letters that recur all
+// over a bundle, so two unrelated statements sharing "t" prove nothing; an
+// object property such as GET_SERVICE_REPORT survives minification and does.
+const minJSTieNameLen = 3
+
+// assignQuerySuffixes decides which keyless query suffix belongs to which
+// verified base route (LT-184, docs/follow-up.md). A bundle declares a route
+// constant in one place (`GET_SERVICE_REPORT:"api/mechanic/mechanic_report"`)
+// and completes it where it is used (`ig+sg.GET_SERVICE_REPORT+"?report_id="+n`),
+// so a suffix is tied to a base when the identifier the base is declared under
+// is the one immediately followed by the suffix literal. Before this the
+// suffixes were crossed with every verified base: one real `?report_id=` route
+// became a dozen look-alikes across unrelated paths, and each became an idor
+// leaf.
+//
+// A suffix that ties to no verified base is attached only when exactly one base
+// verified, where there is nothing to be ambiguous about; with several it is
+// dropped rather than guessed. The result maps a base to its suffixes; a base
+// with none is emitted bare by the caller.
+func assignQuerySuffixes(body string, verifiedBases, suffixes []string) map[string][]string {
+	out := map[string][]string{}
+	if len(verifiedBases) == 0 || len(suffixes) == 0 {
+		return out
+	}
+	declaredAs := map[string]map[string]bool{} // base -> identifiers it is declared under
+	for _, b := range verifiedBases {
+		re := regexp.MustCompile("([A-Za-z_$][\\w$]*)\\s*[:=]\\s*[\"'`]" + regexp.QuoteMeta(b) + "[\"'`]")
+		names := map[string]bool{}
+		for _, m := range re.FindAllStringSubmatch(body, -1) {
+			if len(m[1]) >= minJSTieNameLen {
+				names[m[1]] = true
+			}
+		}
+		declaredAs[b] = names
+	}
+
+	distinctBases := map[string]bool{}
+	for _, b := range verifiedBases {
+		distinctBases[b] = true
+	}
+	for _, s := range suffixes {
+		re := regexp.MustCompile("([A-Za-z_$][\\w$]*)\\s*\\+\\s*[\"'`]" + regexp.QuoteMeta(s) + "[\"'`]")
+		usedAfter := map[string]bool{}
+		for _, m := range re.FindAllStringSubmatch(body, -1) {
+			usedAfter[m[1]] = true
+		}
+		tied := false
+		for b := range distinctBases {
+			for name := range declaredAs[b] {
+				if usedAfter[name] {
+					out[b] = appendUnique(out[b], s)
+					tied = true
+				}
+			}
+		}
+		if !tied && len(distinctBases) == 1 {
+			for b := range distinctBases {
+				out[b] = appendUnique(out[b], s)
+			}
+		}
+	}
+	for b := range out {
+		sort.Strings(out[b])
+	}
+	return out
+}
+
+func appendUnique(xs []string, s string) []string {
+	for _, x := range xs {
+		if x == s {
+			return xs
+		}
+	}
+	return append(xs, s)
+}
+
 // jsJoinPair is one candidate prefix+base combination, kept structured
 // (rather than pre-concatenated) so verifyJSJoinCandidates can group
 // candidates by their originating prefix for the per-prefix canary check
@@ -657,10 +734,16 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 				joinProbesTruncated = true
 			}
 			joinProbeBudget -= len(pairs)
-			for _, pair := range r.verifyJSJoinCandidates(ctx, agg, assetHost, pairs) {
+			verified := r.verifyJSJoinCandidates(ctx, agg, assetHost, pairs)
+			verifiedBases := make([]string, 0, len(verified))
+			for _, pair := range verified {
+				verifiedBases = append(verifiedBases, pair.Base)
+			}
+			suffixesByBase := assignQuerySuffixes(asset.Body, verifiedBases, querySuffixes)
+			for _, pair := range verified {
 				joinCandidatesVerified++
 				pairURL := strings.TrimRight(assetHost, "/") + "/" + pair.joined()
-				variants := querySuffixes
+				variants := suffixesByBase[pair.Base]
 				if len(variants) == 0 {
 					variants = []string{""}
 				}
