@@ -40,6 +40,14 @@ import (
 //	HACKERFIVE_ABLATION_LABS     comma-separated substrings of a scenario name, default all
 //	HACKERFIVE_ABLATION_TIMEOUT  per-run limit, default 45m
 //	HACKERFIVE_ABLATION_OUT      results directory, default tests/eval/results
+//	HACKERFIVE_ABLATION_TEMPLATES  replace the scenario's --templates directory (the full synced corpus
+//	                             makes one misconfig sweep take 16+ minutes at the default rate, LT-179)
+//	HACKERFIVE_ABLATION_EXTRA_ARGS  extra `hackerfive agent` flags, space-separated, added to every run
+//	                             of every arm (e.g. "--rate-limit 60")
+//
+// Both overrides are recorded on every result (RunRecord.Settings). They apply equally to all
+// arms of an invocation, so a comparison inside one results file is like-for-like; do not compare
+// numbers across files with different settings.
 func TestAblation(t *testing.T) {
 	runs := envInt("HACKERFIVE_ABLATION_RUNS", 1)
 	timeout := 45 * time.Minute
@@ -53,6 +61,10 @@ func TestAblation(t *testing.T) {
 			t.Fatalf("HACKERFIVE_ABLATION_ARMS names an unknown arm %q", name)
 		}
 	}
+
+	templatesOverride := os.Getenv("HACKERFIVE_ABLATION_TEMPLATES")
+	extraArgs := strings.Fields(os.Getenv("HACKERFIVE_ABLATION_EXTRA_ARGS"))
+	settings := strings.TrimSpace("templates=" + templatesOverride + " extra=" + strings.Join(extraArgs, " "))
 
 	outDir := os.Getenv("HACKERFIVE_ABLATION_OUT")
 	if outDir == "" {
@@ -77,6 +89,9 @@ func TestAblation(t *testing.T) {
 			continue
 		}
 
+		if templatesOverride != "" {
+			sc.Templates = templatesOverride
+		}
 		var expected expectedFindings
 		raw, err := os.ReadFile(filepath.Join(repoRoot(), sc.ExpectedFile))
 		require.NoError(t, err)
@@ -103,7 +118,8 @@ func TestAblation(t *testing.T) {
 				continue
 			}
 			for run := 1; run <= runs; run++ {
-				rec := runAblationOnce(t, sc, arm, run, prefixes, known, timeout)
+				rec := runAblationOnce(t, sc, arm, run, prefixes, known, timeout, extraArgs)
+				rec.Settings = settings
 				records = append(records, rec)
 				require.NoError(t, enc.Encode(rec)) // written per run, so a killed harness keeps what finished
 				t.Logf("%s / %s [%s] run %d: %d finding(s), expected %d/%d, known %d/%d, unlabeled %d, $%.4f, %.0fs, result=%v",
@@ -119,7 +135,7 @@ func TestAblation(t *testing.T) {
 	t.Logf("results written to %s\n\n%s", outPath, FormatSummary(Summarize(records)))
 }
 
-func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, prefixes []string, known []KnownVuln, timeout time.Duration) RunRecord {
+func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, prefixes []string, known []KnownVuln, timeout time.Duration, extraArgs []string) RunRecord {
 	t.Helper()
 	target := sc.Target()
 	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
@@ -127,7 +143,7 @@ func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, pr
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binPath, sc.AgentArgs(target, scopeFile, arm.ExtraArgs...)...)
+	cmd := exec.CommandContext(ctx, binPath, sc.AgentArgs(target, scopeFile, append(append([]string{}, arm.ExtraArgs...), extraArgs...)...)...)
 	cmd.Dir = repoRoot()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

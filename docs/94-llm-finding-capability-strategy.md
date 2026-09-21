@@ -29,6 +29,22 @@ So the leverage is not a smarter `NextAction`. It is putting the model at the po
 
 Net: the field's finding yield, where it is real, comes from **structured artifacts around the model** (threat model, coverage ledger, closure discipline, skills, PoC gate), not from the loop itself. That fits HackerFive's constraint better than any of the three's loops.
 
+### 2a. Which of them let the model write and run Python or shell
+
+All three do, and none of them puts a scope check or a human approval between the model's code and the network the way HackerFive does. Verified from source (2026-09-21):
+
+| Tool | Model-written code | How | What contains it |
+|---|---|---|---|
+| **Strix** | **Yes, general.** | One `exec_command` tool (plus `write_stdin` for TTY sessions) runs any CLI in a per-run Docker sandbox. There is no separate Python executor: the model writes a `.py` file and runs `python3` through `exec_command` (`skills/tooling/python.md`). Shell traffic is routed through the Caido proxy via `http_proxy`. | Docker isolation. The sandbox is started with `NET_ADMIN`/`NET_RAW` capabilities added. **I found no egress allowlist** in the files read, and doc92 found no per-action human approval in the OSS CLI. |
+| **Cyber-AutoAgent** | **Yes, general, including tools it writes itself.** | `shell`, `python_repl` and `editor` tools, plus `load_tool`, which loads model-authored Python tools at runtime ("meta-tooling"). It installs missing packages with `apt`/`pip` through the shell. A `BeforeToolCall` hook in `cyber_autoagent.py` **routes any unknown tool name to the shell tool**, so an invented tool name becomes a shell command. | Docker is recommended, not enforced: the README says to use it "only in authorized, safe, sandboxed environments", and its compose file documents a `--user root` option. `--confirmations` defaults off (doc92). |
+| **HexStrike AI** | **Yes, unconfined, on the host running the server.** | `POST /api/command` ("Execute any command provided in the request"), `POST /api/python/execute` (writes the supplied script to a file and runs it with a virtualenv's interpreter), `POST /api/python/install`. | A virtualenv isolates packages, not behaviour. No scope allowlist, no approval, no spend cap (doc92; the Check Point report of Storm-1575 is the field evidence). |
+| **HackerFive** | **Yes, narrowly**: `script.explore`, Python or shell. | Only inside `hackerfive agent`, only with `--allow-agent-scripts`, and only after a human approves the exact script text, every time. `scan`, `plan` and the MCP surface have no such tool (doc90 Decision 2 stands there). | Three independent layers ([pkg/scriptexec](../pkg/scriptexec/scriptexec.go)): (1) an AST precheck, run before a human sees the script, rejects further subprocess/interpreter spawning, raw sockets, filesystem access outside scratch and out-of-scope host literals; (2) per-script human approval; (3) a Docker sandbox with a read-only root filesystem, all capabilities dropped, a non-root user, 256 MB and a PID limit, whose only network route is an egress proxy that allows in-scope hosts. A script's output is never a finding by itself: the orchestrator re-issues any request it names through the normal client (LT-157). |
+
+Two consequences for this strategy:
+
+1. **HackerFive is the only one of the four that enforces scope on the code's network access.** That is a real cost as well as a safeguard: `script.explore` is heavy and rarely chosen, which is part of why the model's reach is narrow today (§1).
+2. **The Phase 0 harness never measures it.** Runs are unattended and never pass `--allow-agent-scripts`, so an approval prompt would auto-deny. The J1-J6 jobs below mostly avoid the question by binding proposals to existing detectors with parameters; the `script.explore` route in J2 would need its own approved-script arm before its value can be claimed.
+
 ## 3. The approach: six LLM jobs, each behind a deterministic validator
 
 Design rule for every job below: the model **proposes, structured and schema-validated; deterministic code disposes.** A proposal can only bind to something HackerFive already executes (a detector with parameters, a template ID, or a `script.explore` spec that already goes through the sandbox + human gate). A model output can never create a `Finding` and can never raise severity or confidence (LT-157). Every job carries a per-call deadline, a spend cap and an attempt cap, degrades to the deterministic result on failure, and uses lab-neutral prompt wording (CLAUDE.md).
@@ -61,7 +77,25 @@ The labs cannot currently tell us whether an LLM step helps: three never invoke 
 |---|---|
 | LT-173 reliability envelope | **Done.** Decision calls run under `max_tokens` 2048 + reasoning effort `low` + a 120s deadline; a truncated-empty response is an error; after two consecutive failed calls the run degrades to the fast lane and ends cleanly with `Result.Degraded`. Live probe on two models: valid decisions in every trial, deepseek about 40% faster and cheaper. The 4-minute stall itself was **not reproduced**, so prevention is unproven; the degrade path is the guarantee. |
 | Response-shape capture | **Done and live-verified**, but **nothing reads it yet** (J1's input). One real bug found by running it: crawl facts have no content type, so the first version captured nothing on a real crawl. |
-| Ablation harness | **Built, not yet run live.** `--no-model` control arm, three arms today, two ground-truth lists, N runs per arm, JSONL results, min-max ranges, never merged across models. Ground truth exists for crAPI only (7 entries, sourced from the Step E table). See LT-183. |
+| Ablation harness | **Built and run once (crAPI, 3 runs per arm, 9 of 9 completed).** `--no-model` control arm, three arms, two ground-truth lists, JSONL per run, min-max ranges, never merged across models, harness overrides recorded per result. Ground truth exists for crAPI only (7 entries). See the baseline below and LT-183. |
+
+### First baseline: crAPI, 2026-09-21
+
+Bundled templates (`./templates/`), `--rate-limit 60`, `--recon-depth full`, two accounts, model `openai/gpt-5.6-luna`, 3 runs per arm, identical settings for every arm. About 25 minutes and about $0.10 in all.
+
+| Arm | Findings | Expected prefixes | Known vulns | Model turns | Cost / run | Wall / run |
+|---|---|---|---|---|---|---|
+| no-model (control) | 6 | 1 of 2 | 1 of 7 | 0 | $0 | 22 s |
+| model-every-turn | 15 | 2 of 2 | 2 of 7 | 20 | $0.020 | 255 s |
+| fast-lane + model | 15 | 2 of 2 | 2 of 7 | 15 (13-17) | $0.017 | 240 s |
+
+Results were identical across the three runs of each arm (same findings, same recall); only cost and time varied. Reading it:
+
+1. **The model adds one thing: the `mechanic_report` BOLA (9 `idor-*` findings).** The control leaves 15 leaves undispatched because they "need a decision": 12 `idor` leaves, an `authbypass` leaf, a `businesslogic` leaf and one unresolved leaf. The model picked the real one of twelve near-identical `?report_id={{id}}` leaves.
+2. **That is selection, not discovery, and it is not yet shown to need reasoning.** Every leaf the model ran already existed; the fast lane just declines to run it without a decision. Whether the model's *choice* matters, versus a deterministic policy that runs every runnable leaf (12 scans instead of 1), is unanswered. **A fourth arm, "no model, run every runnable leaf", is the control that answers it**; until it exists, do not credit the model with reasoning.
+3. **Five of seven known vulnerabilities were missed by every arm, and the reasons are all upstream of choice:** no leaf exists for the shop-orders BOLA, the vehicle-location BOLA or the `contact_mechanic` SSRF (recon never produced them); no arm produced an `authbypass-jwt` finding although an `authbypass` leaf exists (LT-180's missing `protected_paths` is the likely cause, not verified here); the DELETE-video BFLA is unreachable by design. This is the population the J1/J2 jobs target, and it is what the strategy predicted.
+4. **Fast lane vs model-every-turn: same findings, about 15% cheaper, about 6% faster, 5 fewer model turns.** A real but small gain on this lab.
+5. **Caveats.** Bundled templates and a raised rate limit, so wall-clock is not comparable with the LT-172 tables; n = 3 and one lab; `unlabeled` (4 in every arm) is the four `misconfig-missing-header-*` findings, which are true but absent from this fixture, so it overstates candidate false positives; the known-vulnerability baselines are dated 2026-09-08.
 
 Two things this turned up that change how to read everything above:
 

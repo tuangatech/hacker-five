@@ -236,6 +236,8 @@ type RunRecord struct {
 	Arm   string `json:"arm"`
 	Run   int    `json:"run"`
 	Model string `json:"model,omitempty"` // what answered the model calls; "none" for --no-model
+	// Settings records the harness overrides (templates dir, extra flags) the run used.
+	Settings string `json:"settings,omitempty"`
 
 	Findings       int      `json:"findings"`
 	ExpectedHit    int      `json:"expected_hit"`
