@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -76,21 +77,37 @@ func (r *Recon) dropCDNTechWithoutHeader(agg *aggregator, tech, host string, hea
 // domain-only enumeration. Returns the live base URLs httpx actually
 // confirmed, for Wave 3's crawl to use.
 func (r *Recon) runWave2(ctx context.Context, agg *aggregator, targetHost string, inScopeHosts []string) []string {
-	if len(inScopeHosts) == 0 {
+	// LT-168 (docs/follow-up.md): filterScope leaves the seed out of
+	// inScopeHosts when --scope pins it to its (non-default) port. That used to
+	// leave this list empty and Wave 2 returned here with no warning, so recon
+	// went silently blind on every port-pinned scope (including the one
+	// tests/eval writes). Run already authorized targetHost's exact host:port,
+	// so probe just that origin — DNS resolution and the naabu top-100 sweep
+	// are skipped, since they would touch ports the pin does not authorize.
+	seedPinned := targetHost != "" && !contains(inScopeHosts, hostnameOf(targetHost))
+	if len(inScopeHosts) == 0 && targetHost == "" {
 		return nil
 	}
 
-	resolved := r.runDNSX(ctx, agg, inScopeHosts)
-	if len(resolved) == 0 {
-		resolved = inScopeHosts // dnsx unavailable/found nothing new to filter on — fall back to Wave 1's own list
+	var portsByIP map[string][]PortFact
+	var httpxTargets []string
+	if len(inScopeHosts) == 0 {
+		httpxTargets = []string{targetHost}
+	} else {
+		resolved := r.runDNSX(ctx, agg, inScopeHosts)
+		if len(resolved) == 0 {
+			resolved = inScopeHosts // dnsx unavailable/found nothing new to filter on — fall back to Wave 1's own list
+		}
+		// naabu reports results keyed by IP, not hostname — joined against
+		// httpx's own resolved "host_ip" field below, not the input hostname.
+		portsByIP = r.runNaabu(ctx, agg, resolved)
+		httpxTargets = resolved
+		if targetHost != "" && !contains(httpxTargets, targetHost) {
+			httpxTargets = append([]string{targetHost}, httpxTargets...)
+		}
 	}
-
-	// naabu reports results keyed by IP, not hostname — joined against
-	// httpx's own resolved "host_ip" field below, not the input hostname.
-	portsByIP := r.runNaabu(ctx, agg, resolved)
-	httpxTargets := resolved
-	if targetHost != "" && !contains(httpxTargets, targetHost) {
-		httpxTargets = append([]string{targetHost}, httpxTargets...)
+	if seedPinned {
+		agg.addWarning("wave2: --scope pins %s to its port — probing only that origin, no DNS/port-scan of the bare host (LT-168)", targetHost)
 	}
 	liveURLs, hostFacts := r.runHTTPX(ctx, agg, httpxTargets)
 
@@ -417,6 +434,16 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// hostnameOf strips an optional ":port" from a "host[:port]" string (the shape
+// of url.URL.Host); a bare host, or anything SplitHostPort rejects, is
+// returned unchanged.
+func hostnameOf(hostPort string) string {
+	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+		return h
+	}
+	return hostPort
 }
 
 func hostOnly(rawURL string) string {
