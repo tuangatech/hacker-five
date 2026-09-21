@@ -226,6 +226,10 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	// reconstructed from the same JS bodies — see runJSStaticAnalysis's own
 	// doc comment.
 	r.runJSStaticAnalysis(ctx, agg, jsAssets)
+
+	// docs/94 Phase 0: last, so it sees every endpoint the passes above found
+	// (spec routes, crawl hits, JS-derived ones) and gives each a response shape.
+	r.probeResponseShapes(ctx, agg, seeds)
 }
 
 // runKatana crawls seeds. katana's own default scope ("-fs rdn", confirmed
