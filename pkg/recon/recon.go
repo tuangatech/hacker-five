@@ -458,7 +458,7 @@ func (r *Recon) Run(ctx context.Context, target string, depth Depth) (*ReconResu
 	// corrected ordering).
 	r.progress("wave1", "running")
 	passiveHosts := r.runWave1(ctx, agg, domain)
-	inScope := r.filterScope(agg, passiveHosts)
+	inScope := r.filterScope(agg, passiveHosts, domain)
 	r.progress("wave1", "done")
 
 	// LT-89 (docs/follow-up.md): fold any operator-supplied OpenAPI document

@@ -330,7 +330,15 @@ func (r *Recon) runWave1(ctx context.Context, agg *aggregator, domain string) []
 // go to ReconResult.OutOfScope and are excluded from the returned slice; a
 // nil r.scope (no --scope given) allows everything, same posture as scan's
 // own optional --scope.
-func (r *Recon) filterScope(agg *aggregator, hosts []string) []string {
+//
+// seed is the target's own hostname. Run has already checked the target's
+// full URL against r.scope, so when the seed fails the bare-host check below
+// it is because the scope pins it to a non-default port (LT-167/LT-168) — the
+// seed is authorized at its own port, just not at 443. It is left out of the
+// returned list (a bare-host probe of it would touch ports the pin excludes;
+// runWave2 probes its exact host:port instead) but is not reported as out of
+// scope.
+func (r *Recon) filterScope(agg *aggregator, hosts []string, seed string) []string {
 	if r.scope == nil {
 		return hosts
 	}
@@ -338,6 +346,9 @@ func (r *Recon) filterScope(agg *aggregator, hosts []string) []string {
 	for _, h := range hosts {
 		if r.scope.Allowed("https://" + h) {
 			inScope = append(inScope, h)
+			continue
+		}
+		if h == seed {
 			continue
 		}
 		agg.addOutOfScope(h)

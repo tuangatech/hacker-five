@@ -101,6 +101,9 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 		budget              float64
 		maxIterations       int
 		minIterations       int
+		fastLane            bool
+		noModel             bool
+		runEveryLeaf        bool
 		allowAgentScripts   bool
 		scriptTimeout       time.Duration
 		verbose             bool
@@ -194,11 +197,27 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 			// loop has no non-LLM fallback path at all — pkg/orchestrator.Run
 			// hard-requires a Client, so a missing tier is a hard failure
 			// here, surfaced before any recon spend rather than after.
-			fb, fbErr := llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: llm: %s\n", msg)
-			}))
-			if fbErr != nil {
-				return fmt.Errorf("agent requires a configured LLM tier (OPENROUTER_API_KEY and/or a reachable local runtime): %w", fbErr)
+			//
+			// --no-model is the deliberate exception: the run is the
+			// deterministic fast lane only, needs no tier, and is the control
+			// arm the ablation harness compares a model-driven run against.
+			var llmClient orchestrator.LLMClient
+			if noModel {
+				llmClient = orchestrator.NoModelClient{}
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "agent: model: none")
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "agent: --no-model set — no LLM calls will be made; leaves that need a model decision are left undispatched")
+			} else {
+				fb, fbErr := llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: llm: %s\n", msg)
+				}))
+				if fbErr != nil {
+					return fmt.Errorf("agent requires a configured LLM tier (OPENROUTER_API_KEY and/or a reachable local runtime), or pass --no-model: %w", fbErr)
+				}
+				llmClient = fb
+				// One stable line the ablation harness reads: results from
+				// different models are not comparable, and the configured model
+				// changes without any code change.
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: model: %s\n", fb.ModelLabel())
 			}
 
 			var approvalGate scriptexec.ApprovalGate
@@ -228,11 +247,13 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 					ExtraHeaders:     extraHeaders,
 					AllowWrites:      allowWrites,
 				},
-				Client:            fb,
+				Client:            llmClient,
 				SessionLog:        agenttask.NewSessionLog(nil),
 				Budget:            budget,
 				MaxIterations:     maxIterations,
 				MinIterations:     minIterations,
+				FastLane:          fastLane,
+				RunEveryLeaf:      runEveryLeaf,
 				AllowAgentScripts: allowAgentScripts,
 				ScriptTimeout:     scriptTimeout,
 				ApprovalGate:      approvalGate,
@@ -271,7 +292,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 			if runErr != nil {
 				return fmt.Errorf("running agent: %w", runErr)
 			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: spent $%.4f of $%.2f budget, %d iteration(s)\n", res.SpendUSD, orchCfg.Budget, res.Iterations)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: spent $%.4f of $%.2f budget, %d model turn(s), %d fast-lane turn(s)\n", res.SpendUSD, orchCfg.Budget, res.Iterations, res.FastLaneTurns)
 			return nil
 		},
 	}
@@ -294,6 +315,9 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().Float64Var(&budget, "budget", orchestrator.DefaultBudgetUSD, "hard cap, in USD, on cumulative LLM cost across the whole run")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", orchestrator.DefaultMaxIterations, "hard cap on the number of dispatched tool turns")
 	cmd.Flags().IntVar(&minIterations, "min-iterations", orchestrator.DefaultMinIterations, "floor on dispatched tool turns — a \"stop\" action is rejected and NextAction asked again while fewer than this many turns have run and actionable leaves remain (LT-162: the model was found stopping after 1-3 turns with 10+ pending leaves still untried)")
+	cmd.Flags().BoolVar(&noModel, "no-model", false, "make no LLM calls at all: run only the deterministic fast lane and leave leaves that need a model decision undispatched (Result.Degraded says how many). Needs no API key; the control arm for measuring what the model adds (docs/94-llm-finding-capability-strategy.md)")
+	cmd.Flags().BoolVar(&runEveryLeaf, "run-every-leaf", false, "dispatch every runnable leaf in priority order without a model decision about which (implies the fast lane). The deterministic baseline a model's leaf choice has to beat, meant for --no-model comparisons (docs/94-llm-finding-capability-strategy.md); endpoint-specific leaves run blind, so it can cost far more scan requests than the default. The same gates apply (--allow-writes etc.); unresolved leaves are still left for a model")
+	cmd.Flags().BoolVar(&fastLane, "fast-lane", true, "dispatch parameter-free leaves (single-template scans and the broad misconfig/netservice/tls sweeps) directly in priority order, calling the model only when what remains needs a decision — no LLM spend or latency for the rest (LT-172); --fast-lane=false asks the model before every leaf, as before")
 	cmd.Flags().BoolVar(&allowAgentScripts, "allow-agent-scripts", false, "allow the model to propose script.explore actions — a sandboxed Python/shell script, run only after a static precheck and a fresh interactive y/N approval every time (never batch-approved). The same independently-scoped exception convention as --allow-writes/--auto-provision-account; omitted, a proposed script is skipped with a warning, never run")
 	cmd.Flags().DurationVar(&scriptTimeout, "script-timeout", orchestrator.DefaultScriptTimeout, "wall-clock cap on one script.explore sandbox run")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave recon progress to stderr")

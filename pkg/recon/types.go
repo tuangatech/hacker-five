@@ -111,6 +111,16 @@ type EndpointFact struct {
 	// URL is taken in a JSON body field (e.g. crAPI's contact_mechanic)
 	// rather than a query string.
 	BodyParamKeys []string `json:"body_param_keys,omitempty"`
+
+	// ResponseShape is the JSON structure of this endpoint's 2xx answer with
+	// every value replaced by its type name — e.g.
+	// {"items":[{"id":"int","owner_id":"int"}]} — set by probeResponseShapes
+	// (docs/94-llm-finding-capability-strategy.md, Phase 0) on a parameter-free
+	// GET endpoint at DepthFull. Structure only, by construction no response
+	// data: object keys that look like data (emails, UUIDs, numeric ids) are
+	// collapsed to "<key>". Empty when the endpoint wasn't probed, didn't answer
+	// 2xx, or wasn't JSON.
+	ResponseShape string `json:"response_shape,omitempty"`
 }
 
 // TechFact is one technology/framework signal observed on the target.

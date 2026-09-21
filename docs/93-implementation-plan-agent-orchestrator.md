@@ -133,6 +133,32 @@ Built close to the sketch, with two real corrections found during implementation
   **Verdict: the gate is met.** Orchestrator mode finds 13/22 expected fixture prefixes against the deterministic baseline's 10/22 — DVWA and vAPI both improve on it, Juice Shop ties, and crAPI's orchestrator run finds `nuclei-http-missing-security-headers`, a check *neither* deterministic crAPI scenario (idor-only or authbypass-only) found. This is the first time since M5 was built that an LLM-driven mode has found something the deterministic layer's own measured gap didn't already cover.
   - **Per doc93's own standing rule, `hackerfive agent` may now be considered for a real, appropriately-scoped, human-supervised program** — the condition that was gating it ("do not point this mode at a real program until [this table] exists and shows a genuine improvement") is met. LT-167's scope-port gap above is fixed as of the same day ([follow-up.md](follow-up.md) LT-167 — `Scope` now accepts an optional `host:port` entry, and `tests/eval`'s own scope-file helper pins one). One caveat remains, now precisely diagnosed rather than just observed: LT-166 — `pkg/planexec.RunPlan`'s "only the first leaf per host loads the additive template corpus" optimization is scoped to one `RunPlan` call, but `dispatchScanLeaf` calls `RunPlan` once per leaf, so every crAPI `scan.leaf` dispatch redundantly reloads and refires the full corpus (including a real crAPI-specific template) rather than testing just that leaf's own endpoint — inflating crAPI's raw finding volume and turn count without invalidating the fixture-prefix win itself (both `idor-` and `nuclei-http-missing-security-headers` are genuinely present). Not fixed this round — needs a design decision on where cross-call "already loaded for this host" state should live. Tracked as [follow-up.md](follow-up.md) LT-162 (closed with this result), LT-167 (fixed), and LT-166 (open, root cause found).
 
+  #### After LT-168 / LT-171 / LT-172 (2026-09-21) — same model, isolated targets, port-pinned scope
+
+  Branch `fix/agent-orchestrator-lt168-171-172`. Same protocol as the re-verification below, except the scope is the port-pinned `host:port` form (`tests/eval`'s `hostScopeEntry`; only usable now that LT-168 is fixed) and crAPI ran at `--rate-limit 60` (the others at the default 10).
+
+  | Target | Fixture | Model turns | Fast-lane turns | Spend | Ended |
+  |---|---|---|---|---|---|
+  | DVWA | 4 prefixes (same as before) | 0 | 11 | $0 | exit 0, 1001s (was: 9 turns, hit the 20-min cap) |
+  | vAPI | 5/5 (same) | 0 | 16 | $0 | exit 0, 133s (was: 8 turns, exit 1 after two LLM stalls) |
+  | Juice Shop | 2/5 (same) | 0 | 1 | $0 | exit 0, 1003s (one full-corpus `misconfig` scan; LT-179) |
+  | crAPI | `idor-` + `nuclei-http-missing-security-headers` | 5 | 11 | $0.015 | exit 1 at turn 6 (LT-173: `NextAction` 4-min deadline), 19 findings kept |
+
+  How to read it: findings match the baseline on every target, so the fast lane and dedup lost nothing. The point is what changed in *who decides*: three of four labs now never call the model (every leaf is a parameter-free sweep), so they no longer test agent reasoning at all. crAPI does — the model chose the real `mechanic_report` idor leaf first (9 `idor-*` findings), and after LT-171 its later rationales cite the actual findings list instead of the bare count that produced the earlier false "already confirmed" claim. One run is anecdote, not an eval; the M5 harness comparison against the deterministic baseline has not been re-run. Remaining blockers seen: LT-173 (still kills a run on a model stall), LT-179 (scan wall-clock now dominates), LT-180 (model picks a leaf that cannot run).
+
+  #### Re-verification (2026-09-20, later that day) — reasoning read-through, same model, isolated targets
+
+  Re-ran `hackerfive agent` on all four lab targets one at a time (`--budget 0.30`, 20-min cap per target) and read each run's full turn history, not only the fixture score. Full write-up and the ten new items (LT-168…LT-178): [follow-up.md](follow-up.md) "Live Testing — `hackerfive agent` reasoning verification".
+
+  | Target | Found | Iterations | Cost | Ended |
+  |---|---|---|---|---|
+  | Juice Shop | 2/5 (= baseline) | 1 | $0.0003 | clean |
+  | vAPI | 5/5 (= baseline) | 8 | $0.0096 | exit=1 — two 4-min `NextAction` timeouts (LT-173) |
+  | DVWA | 4 (= baseline) | 9 | $0.0053 | 20-min cap |
+  | crAPI | 1/2 (baseline 2/2) | 4 | $0.0065 | 20-min cap, `misconfig` leaf still pending |
+
+  **How to read this against the baseline.** The counts reproduce, so the 2026-09-20 result was not a fluke — but the turn histories show the *deterministic* layer producing them: on vAPI and DVWA the model dispatched leaves in tree order (DVWA turns 1-8 literally leaf-1…leaf-8), 14 of 17 turns were single-template scans that finished in ≤1.6s behind a 1-4 min model call, and the generic `misconfig` leaf that yielded every finding was picked 7th-9th. The one place the model's choice beat tree order was crAPI turn 1 (it picked the real `mechanic_report` IDOR from world knowledge of the fingerprinted app). **Standing-rule caveat:** the "may be pointed at a real program" verdict above holds for scope/safety (no contamination, gates intact) but the run-killers found here — LT-168 (port-pinned scope silently blinds recon), LT-173 (one LLM stall exits the run), LT-174 (a leaf that ran nothing is `done`) — should land before an unattended run against a real target. Design direction for the LLM's actual value-add: LT-172 (deterministic fast lane, `NextAction` only at decision points) + LT-171 (finding/recon digest in the prompt). Note also that this table's baseline could **not** be re-run through the eval harness as-is: `hostScopeEntry`'s port-pinned scope (LT-167's fix) triggers LT-168, so these runs used bare-host scope + isolation, the pre-LT-167 methodology.
+
 ## Verification
 
 - `wsl.exe -e bash -lc "cd /mnt/c/ML-Projects/Weekend-Projects/hacker-five && go build ./... && go vet ./... && go test ./... -race && PATH=\$PATH:\$HOME/go/bin golangci-lint run ./..."` clean after each milestone.

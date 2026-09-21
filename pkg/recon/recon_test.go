@@ -267,6 +267,53 @@ func TestRunWave1_ExactHostScope_SkipsSubdomainEnum(t *testing.T) {
 	assert.Contains(t, strings.Join(result.Warnings, " | "), "LT-35")
 }
 
+// TestRun_PortPinnedScope_ProbesOnlyThePinnedOrigin guards LT-168
+// (docs/follow-up.md): a scope entry pinned to the target's own host:port
+// (LT-167's "host:port" syntax, and what tests/eval's hostScopeEntry writes)
+// used to make filterScope reject the seed host — it checked the bare
+// hostname at the default https port — so Wave 2 got an empty host list and
+// returned early with no warning: recon went silently blind. The seed is now
+// probed at exactly its pinned origin, and never port-scanned (naabu would
+// touch every other port on the host, which the pin does not authorize).
+func TestRun_PortPinnedScope_ProbesOnlyThePinnedOrigin(t *testing.T) {
+	calls, fake := recordingRun(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+
+	s, err := scope.New([]string{u.Host}) // "127.0.0.1:PORT"
+	require.NoError(t, err)
+	r := New(newTestClient(), withRun(fake), WithScope(s))
+	result, err := r.Run(context.Background(), srv.URL, DepthActive)
+	require.NoError(t, err)
+
+	var httpxStdin string
+	for _, c := range *calls {
+		if c.name == "httpx" {
+			httpxStdin = c.stdin
+		}
+	}
+	assert.Equal(t, u.Host, strings.TrimSpace(httpxStdin), "httpx must probe exactly the pinned host:port")
+	assert.NotContains(t, namesOf(*calls), "naabu", "a port-pinned scope must never be port-scanned")
+	assert.NotContains(t, result.OutOfScope, u.Hostname(), "the authorized seed must not be reported out of scope")
+	assert.Contains(t, strings.Join(result.Warnings, " | "), "LT-168")
+}
+
+// TestRun_PortPinnedScope_OtherPortStaysOutOfScope: the pin still excludes a
+// different port on the same host — the seed exception must not widen scope.
+func TestRun_PortPinnedScope_OtherPortStaysOutOfScope(t *testing.T) {
+	calls, fake := recordingRun(t, nil)
+	s, err := scope.New([]string{"127.0.0.1:1"})
+	require.NoError(t, err)
+	r := New(newTestClient(), withRun(fake), WithScope(s))
+	result, err := r.Run(context.Background(), "http://127.0.0.1:2", DepthActive)
+	require.NoError(t, err)
+
+	assert.Empty(t, *calls, "a target on an unpinned port must trigger no wave at all")
+	assert.Contains(t, result.OutOfScope, "127.0.0.1")
+}
+
 // TestRunWave1_WildcardScope_RunsSubdomainEnum is the counterpart: a "*."
 // entry means discovered subdomains can be in scope, so enum runs.
 func TestRunWave1_WildcardScope_RunsSubdomainEnum(t *testing.T) {

@@ -44,6 +44,20 @@ type fakeLLMClient struct {
 	costs   []float64
 	calls   int
 
+	// digests/histories record what each NextAction call was shown.
+	digests   []llmfallback.RunDigest
+	histories [][]llmfallback.TurnRecord
+
+	// Failure injection (LT-173): while failLeft > 0 a NextAction call returns
+	// failErr instead of playing the script (failed counts them); failEveryN > 0
+	// additionally fails every Nth call overall. Failed calls do not consume
+	// script entries.
+	failErr    error
+	failLeft   int
+	failEveryN int
+	failed     int
+	attempts   int
+
 	triageResult llmfallback.TriageResult
 	triageCost   float64
 	triageErr    error
@@ -54,7 +68,17 @@ type fakeLLMClient struct {
 	resolveFieldCalls    int
 }
 
-func (f *fakeLLMClient) NextAction(_ context.Context, _ *agenttask.PlanTree, _ []llmfallback.ToolSpec, _ []llmfallback.TurnRecord) (llmfallback.Action, float64, error) {
+func (f *fakeLLMClient) NextAction(_ context.Context, _ *agenttask.PlanTree, _ []llmfallback.ToolSpec, history []llmfallback.TurnRecord, digest llmfallback.RunDigest) (llmfallback.Action, float64, error) {
+	f.attempts++
+	if f.failErr != nil && (f.failLeft > 0 || (f.failEveryN > 0 && f.attempts%f.failEveryN == 0)) {
+		if f.failLeft > 0 {
+			f.failLeft--
+		}
+		f.failed++
+		return llmfallback.Action{}, 0, f.failErr
+	}
+	f.digests = append(f.digests, digest)
+	f.histories = append(f.histories, history)
 	i := f.calls
 	if i >= len(f.actions) {
 		i = len(f.actions) - 1

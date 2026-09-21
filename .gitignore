@@ -50,3 +50,5 @@ dist/
 # committed. Keep the directory itself tracked via .gitkeep.
 /templates-proposed/*
 !/templates-proposed/.gitkeep
+# Ablation harness results (tests/eval/ablation_test.go) — one JSONL per run of the harness, local measurement data
+/tests/eval/results/

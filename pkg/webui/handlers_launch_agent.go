@@ -132,6 +132,7 @@ func runLaunchAgentJob(job *Job, form LaunchFormData) {
 		Budget:            orchestrator.DefaultBudgetUSD,
 		MaxIterations:     orchestrator.DefaultMaxIterations,
 		MinIterations:     orchestrator.DefaultMinIterations,
+		FastLane:          true,
 		AllowAgentScripts: form.AllowLLMAgentScripts,
 		ApprovalGate:      approvalGate,
 		OnFinding:         job.AppendFinding,
@@ -144,7 +145,7 @@ func runLaunchAgentJob(job *Job, form LaunchFormData) {
 		job.MarkDone(err)
 		return
 	}
-	job.AppendLog("info", fmt.Sprintf("agent: spent $%.4f of $%.2f budget, %d iteration(s)", res.SpendUSD, orchCfg.Budget, res.Iterations))
+	job.AppendLog("info", fmt.Sprintf("agent: spent $%.4f of $%.2f budget, %d model turn(s), %d fast-lane turn(s)", res.SpendUSD, orchCfg.Budget, res.Iterations, res.FastLaneTurns))
 	// The agent's own PlanTree is the same type/shape Plan Preview already
 	// renders — caching it here lets the operator open that page afterward
 	// to review or re-run leaves the agent left unresolved/didn't reach

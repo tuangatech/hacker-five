@@ -32,7 +32,7 @@ func TestNextAction_ValidResponse(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
 
-	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil)
+	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil, RunDigest{})
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestNextAction_MalformedResponse_DegradesToStop(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
 
-	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil)
+	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil, RunDigest{})
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestNextAction_UnrecognizedKind_DegradesToStop(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
 
-	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil)
+	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil, RunDigest{})
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestNextAction_KindNotInOfferedCatalog_DegradesToStop(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
 
-	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil)
+	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil, RunDigest{})
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestNextAction_UnknownNodeID_DegradesToStop(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
 
-	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil)
+	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), sampleOrchestrateCatalog, nil, RunDigest{})
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestNextAction_StopKindNeedsNoOffer(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
 
-	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), nil, nil)
+	got, _, err := c.NextAction(context.Background(), sampleOrchestrateTree(), nil, nil, RunDigest{})
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestBuildOrchestratePrompt_CapsHistoryLength(t *testing.T) {
 		}
 	}
 
-	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, history)
+	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, history, RunDigest{})
 
 	if !strings.Contains(prompt, "3 earlier turn(s) omitted") {
 		t.Fatalf("prompt does not note the omitted turn count:\n%s", prompt)
@@ -152,7 +152,7 @@ func TestBuildOrchestratePrompt_ShortHistoryNotTruncated(t *testing.T) {
 	history := []TurnRecord{
 		{Action: Action{Kind: "scan.leaf", NodeID: "leaf-1"}, ResultSummary: "1 finding(s)"},
 	}
-	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, history)
+	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, history, RunDigest{})
 	if strings.Contains(prompt, "omitted") {
 		t.Fatalf("short history should never be reported as truncated:\n%s", prompt)
 	}
@@ -226,12 +226,89 @@ func TestBuildOrchestratePrompt_CapsLeafListAndNotesOmission(t *testing.T) {
 	leaves = append(leaves, &agenttask.PlanNode{ID: "the-one-pending-leaf", Target: "https://example.test", Detector: "idor", Status: agenttask.StatusPending})
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: leaves}}
 
-	prompt := buildOrchestratePrompt(tree, sampleOrchestrateCatalog, nil)
+	prompt := buildOrchestratePrompt(tree, sampleOrchestrateCatalog, nil, RunDigest{})
 
 	if !strings.Contains(prompt, "leaf/leaves omitted for space") {
 		t.Fatalf("prompt does not note the omitted leaf count:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "id=the-one-pending-leaf") {
 		t.Fatalf("prompt is missing the one actionable leaf — it must never be dropped by the cap:\n%s", prompt)
+	}
+}
+
+// TestBuildOrchestratePrompt_ShowsEndpointTemplateReconFactsAndFindings guards
+// LT-171 (docs/follow-up.md): the model used to see no endpoint on an
+// endpoint-driven leaf, no recon facts and no finding beyond a per-turn
+// count, and reasoned from that to a false "already confirmed" claim.
+func TestBuildOrchestratePrompt_ShowsEndpointTemplateReconFactsAndFindings(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-1", Target: "https://example.test", Detector: "idor", Status: agenttask.StatusPending, EndpointTemplate: "/api/v1/things/{{id}}"},
+		{ID: "leaf-2", Target: "https://example.test", Detector: "misconfig", Status: agenttask.StatusPending},
+	}}}
+	digest := RunDigest{
+		Recon:    []string{"tech: Nginx 1.25 (example.test, high)"},
+		Findings: []FindingDigest{{ID: "cors-wildcard", Type: "misconfig", Severity: "medium", Target: "https://example.test/api"}},
+	}
+
+	prompt := buildOrchestratePrompt(tree, sampleOrchestrateCatalog, nil, digest)
+
+	for _, want := range []string{
+		`endpoint="/api/v1/things/{{id}}"`,
+		"tech: Nginx 1.25 (example.test, high)",
+		"id=cors-wildcard type=misconfig severity=medium target=https://example.test/api",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt is missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Count(prompt, "endpoint=") != 1 {
+		t.Errorf("only the leaf that has an endpoint template should render one:\n%s", prompt)
+	}
+}
+
+func TestBuildOrchestratePrompt_EmptyDigestSaysSo(t *testing.T) {
+	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, nil, RunDigest{})
+	if !strings.Contains(prompt, "(none recorded)") || !strings.Contains(prompt, "(none yet)") {
+		t.Fatalf("an empty digest must read as explicitly empty, not as a missing section:\n%s", prompt)
+	}
+}
+
+func TestBuildOrchestratePrompt_DigestSectionsAreBounded(t *testing.T) {
+	var digest RunDigest
+	for i := 0; i < maxReconLinesInPrompt+4; i++ {
+		digest.Recon = append(digest.Recon, fmt.Sprintf("fact-%d", i))
+	}
+	for i := 0; i < maxFindingsInPrompt+2; i++ {
+		digest.Findings = append(digest.Findings, FindingDigest{ID: fmt.Sprintf("finding-%d", i)})
+	}
+	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, nil, digest)
+	if !strings.Contains(prompt, "4 more recon fact(s) omitted") || !strings.Contains(prompt, "2 more finding(s) omitted") {
+		t.Fatalf("overflow must be counted, not silently dropped:\n%s", prompt)
+	}
+	if strings.Contains(prompt, fmt.Sprintf("fact-%d", maxReconLinesInPrompt)) {
+		t.Fatalf("a recon fact past the cap was rendered:\n%s", prompt)
+	}
+}
+
+// TestBuildOrchestratePrompt_AutoTurnsCollapseToACount guards LT-172: a long
+// run of fast-lane turns must not push the model's own decisions out of the
+// bounded history window.
+func TestBuildOrchestratePrompt_AutoTurnsCollapseToACount(t *testing.T) {
+	var history []TurnRecord
+	for i := 0; i < 15; i++ {
+		history = append(history, TurnRecord{Action: Action{Kind: "scan.leaf", NodeID: fmt.Sprintf("auto-%d", i)}, ResultSummary: "auto", Auto: true})
+	}
+	history = append(history, TurnRecord{Action: Action{Kind: "scan.leaf", NodeID: "chosen-1"}, ResultSummary: "picked by the model"})
+
+	prompt := buildOrchestratePrompt(sampleOrchestrateTree(), sampleOrchestrateCatalog, history, RunDigest{})
+
+	if !strings.Contains(prompt, "15 leaf scan(s) were auto-dispatched") {
+		t.Fatalf("auto turns must be summarized by count:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "node_id=auto-") {
+		t.Fatalf("an auto turn was rendered verbatim:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "node_id=chosen-1") || strings.Contains(prompt, "omitted — showing") {
+		t.Fatalf("the model's own turn must render, with no spurious truncation note:\n%s", prompt)
 	}
 }
