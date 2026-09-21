@@ -25,6 +25,11 @@ var Arms = []Arm{
 		ExtraArgs:   []string{"--no-model"},
 	},
 	{
+		Name:        "no-model+all-leaves",
+		Description: "control 2: no model, but every runnable leaf is dispatched (--no-model --run-every-leaf); what a model's choice of leaf has to beat",
+		ExtraArgs:   []string{"--no-model", "--run-every-leaf"},
+	},
+	{
 		Name:        "model-every-turn",
 		Description: "the agent as it was before LT-172: the model is asked before every leaf (--fast-lane=false)",
 		NeedsModel:  true,

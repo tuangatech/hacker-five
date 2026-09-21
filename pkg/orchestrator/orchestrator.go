@@ -154,6 +154,18 @@ type Config struct {
 	// original one-model-call-per-turn behavior.
 	FastLane bool
 
+	// RunEveryLeaf widens the fast lane from the parameter-free leaves to every
+	// runnable (pending, detector-assigned) leaf, in Priority order, with no
+	// decision made about which is worth running. It turns the lane on by
+	// itself. This is the deterministic baseline for what a model's choice is
+	// worth (docs/94-llm-finding-capability-strategy.md, LT-183): a model that
+	// only picks among leaves the tree already holds has to beat "run them all".
+	// It is not a recommended default — an endpoint-specific leaf run blind can
+	// cost a scan apiece — and it does not resolve unresolved leaves (that still
+	// needs a model). Same scan.leaf dispatch, so --allow-writes and the other
+	// gates apply unchanged.
+	RunEveryLeaf bool
+
 	// ReconTimeout bounds one Config.Recon.Run call (the initial
 	// tree-seeding recon and any later recon.refresh dispatch). <= 0 uses
 	// DefaultReconTimeout.
@@ -321,7 +333,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			break
 		}
 
-		if cfg.FastLane || llmDown {
+		if cfg.FastLane || cfg.RunEveryLeaf || llmDown {
 			// No NextAction call in this branch, so nothing else in the loop
 			// notices a cancelled context.
 			if err := ctx.Err(); err != nil {
@@ -329,7 +341,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				res.Iterations = iteration
 				return res, fmt.Errorf("orchestrator: %w", err)
 			}
-			if leaf := nextFastLaneLeaf(tree, fastTried); leaf != nil {
+			if leaf := nextFastLaneLeaf(tree, fastTried, cfg.RunEveryLeaf); leaf != nil {
 				fastTried[leaf.ID] = true
 				fastTurns++
 				history = append(history, dispatchFastLaneLeaf(ctx, cfg, tree, &findings, leaf))
@@ -438,23 +450,37 @@ var fastLaneDetectors = map[string]bool{"misconfig": true, "netservice": true, "
 // leaf (registry.LeafClass "templates" — one cheap single-template scan) or one
 // of the parameter-free sweeps above.
 func isFastLaneLeaf(leaf *agenttask.PlanNode) bool {
-	if leaf.Status != agenttask.StatusPending || leaf.Detector == "" {
+	if !isRunnableLeaf(leaf) {
 		return false
 	}
 	return registry.LeafClass(leaf) == "templates" || fastLaneDetectors[leaf.Detector]
 }
 
+// isRunnableLeaf is the floor for dispatching any leaf: pending, with a
+// detector assigned. Config.RunEveryLeaf makes this the whole test.
+func isRunnableLeaf(leaf *agenttask.PlanNode) bool {
+	return leaf.Status == agenttask.StatusPending && leaf.Detector != ""
+}
+
 // nextFastLaneLeaf returns the highest-Priority fast-lane leaf not yet tried
-// (leaf order breaks ties), or nil when the lane has nothing left. Priority is
+// (leaf order breaks ties), or nil when the lane has nothing left. every
+// widens "fast-lane leaf" to any runnable leaf (Config.RunEveryLeaf). Priority is
 // the decision engine's own dispatch ordering (registry.leafPriority) — the
 // same one planexec.RunPlan uses for a plain scan.
-func nextFastLaneLeaf(tree *agenttask.PlanTree, tried map[string]bool) *agenttask.PlanNode {
+func nextFastLaneLeaf(tree *agenttask.PlanTree, tried map[string]bool, every bool) *agenttask.PlanNode {
 	if tree == nil || tree.Root == nil {
 		return nil
 	}
 	var best *agenttask.PlanNode
 	for _, leaf := range agenttask.Leaves(tree.Root) {
-		if tried[leaf.ID] || !isFastLaneLeaf(leaf) {
+		if tried[leaf.ID] {
+			continue
+		}
+		if every {
+			if !isRunnableLeaf(leaf) {
+				continue
+			}
+		} else if !isFastLaneLeaf(leaf) {
 			continue
 		}
 		if best == nil || leaf.Priority > best.Priority {
@@ -472,7 +498,7 @@ func dispatchFastLaneLeaf(ctx context.Context, cfg Config, tree *agenttask.PlanT
 	action := llmfallback.Action{
 		Kind:      "scan.leaf",
 		NodeID:    leaf.ID,
-		Rationale: fmt.Sprintf("fast lane: parameter-free %s leaf, priority %d — no decision to make", leaf.Detector, leaf.Priority),
+		Rationale: fmt.Sprintf("fast lane: %s leaf, priority %d — dispatched without a model decision", leaf.Detector, leaf.Priority),
 	}
 	finish := cfg.SessionLog.BeginActor("agent", action.Kind, action.Rationale, action.Params)
 	summary, err := dispatch(ctx, cfg, tree, findings, action)

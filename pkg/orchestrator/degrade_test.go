@@ -152,6 +152,61 @@ func TestRun_NoModelClient_RunsTheFastLaneAndNothingElse(t *testing.T) {
 	}
 }
 
+// RunEveryLeaf is the fourth ablation arm: no model, but every runnable leaf is
+// dispatched, including the endpoint-specific one the plain lane leaves for a
+// decision. Same fixture, both settings, so the only difference is the flag.
+func TestRun_RunEveryLeaf_DispatchesTheLeafThePlainLaneLeavesForADecision(t *testing.T) {
+	newCfg := func(every bool) Config {
+		srv := fastLaneTargetServer(t)
+		cfg := fastLaneConfig(srv, NoModelClient{})
+		cfg.RunEveryLeaf = every
+		cfg.Recon = &fakeRecon{result: &recon.ReconResult{
+			Target: srv.URL,
+			Endpoints: []recon.EndpointFact{
+				{URL: srv.URL + "/", StatusCode: 200, Source: "httpx"},
+				{URL: srv.URL + "/api/private", Method: "GET", Source: "api-spec", AuthRequired: true},
+			},
+		}}
+		return cfg
+	}
+	plain, err := Run(context.Background(), newCfg(false))
+	if err != nil {
+		t.Fatalf("Run (plain lane): %v", err)
+	}
+	every, err := Run(context.Background(), newCfg(true))
+	if err != nil {
+		t.Fatalf("Run (every leaf): %v", err)
+	}
+	if every.Iterations != 0 || every.SpendUSD != 0 {
+		t.Fatalf("Iterations=%d Spend=%v, want no model turn and no spend", every.Iterations, every.SpendUSD)
+	}
+	if every.FastLaneTurns <= plain.FastLaneTurns {
+		t.Fatalf("FastLaneTurns: every=%d plain=%d, want the widened lane to dispatch more leaves", every.FastLaneTurns, plain.FastLaneTurns)
+	}
+	for _, leaf := range agenttask.Leaves(every.Tree.Root) {
+		if leaf.Status == agenttask.StatusPending {
+			t.Errorf("leaf %s (%s) is still pending after run-every-leaf", leaf.ID, leaf.Detector)
+		}
+	}
+}
+
+// RunEveryLeaf turns the lane on by itself, like NoModelClient does, so it works
+// with a real model and --fast-lane=false too.
+func TestRun_RunEveryLeaf_ForcesTheLaneOn(t *testing.T) {
+	srv := fastLaneTargetServer(t)
+	client := &fakeLLMClient{actions: []llmfallback.Action{{Kind: "stop"}}}
+	cfg := fastLaneConfig(srv, client)
+	cfg.FastLane = false
+	cfg.RunEveryLeaf = true
+	result, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.FastLaneTurns == 0 {
+		t.Fatalf("FastLaneTurns = 0, want the lane to have run")
+	}
+}
+
 // A cancelled run is not a model outage and must still be an error.
 func TestRun_ModelErrorWithCancelledContext_StillErrors(t *testing.T) {
 	srv := fastLaneTargetServer(t)

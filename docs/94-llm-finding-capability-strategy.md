@@ -77,27 +77,28 @@ The labs cannot currently tell us whether an LLM step helps: three never invoke 
 |---|---|
 | LT-173 reliability envelope | **Done.** Decision calls run under `max_tokens` 2048 + reasoning effort `low` + a 120s deadline; a truncated-empty response is an error; after two consecutive failed calls the run degrades to the fast lane and ends cleanly with `Result.Degraded`. Live probe on two models: valid decisions in every trial, deepseek about 40% faster and cheaper. The 4-minute stall itself was **not reproduced**, so prevention is unproven; the degrade path is the guarantee. |
 | Response-shape capture | **Done and live-verified**, but **nothing reads it yet** (J1's input). One real bug found by running it: crawl facts have no content type, so the first version captured nothing on a real crawl. |
-| Ablation harness | **Built and run once (crAPI, 3 runs per arm, 9 of 9 completed).** `--no-model` control arm, three arms, two ground-truth lists, JSONL per run, min-max ranges, never merged across models, harness overrides recorded per result. Ground truth exists for crAPI only (7 entries). See the baseline below and LT-183. |
+| Ablation harness | **Built and run once (crAPI, 3 runs per arm, 12 of 12 completed).** `--no-model` control arm, four arms (the fourth, `no-model+all-leaves`, added and run 2026-09-21), two ground-truth lists, JSONL per run, min-max ranges, never merged across models, harness overrides recorded per result. Ground truth exists for crAPI only (7 entries). See the baseline below and LT-183. |
 
 ### First baseline: crAPI, 2026-09-21
 
-Bundled templates (`./templates/`), `--rate-limit 60`, `--recon-depth full`, two accounts, model `openai/gpt-5.6-luna`, 3 runs per arm, identical settings for every arm. About 25 minutes and about $0.10 in all.
+Bundled templates (`./templates/`), `--rate-limit 60`, `--recon-depth full`, two accounts, model `openai/gpt-5.6-luna`, 3 runs per arm, identical settings for every arm. The first three arms took about 25 minutes and $0.10; the fourth arm was run later the same day (about 10 minutes, $0) with the same settings.
 
 | Arm | Findings | Expected prefixes | Known vulns | Model turns | Cost / run | Wall / run |
 |---|---|---|---|---|---|---|
 | no-model (control) | 6 | 1 of 2 | 1 of 7 | 0 | $0 | 22 s |
 | model-every-turn | 15 | 2 of 2 | 2 of 7 | 20 | $0.020 | 255 s |
 | fast-lane + model | 15 | 2 of 2 | 2 of 7 | 15 (13-17) | $0.017 | 240 s |
+| **no model, every runnable leaf** (`--no-model --run-every-leaf`) | 15 | 2 of 2 | 2 of 7 | 0 | $0 | **194 s** (191-198) |
 
 Results were identical across the three runs of each arm (same findings, same recall); only cost and time varied. Reading it:
 
 1. **The model adds one thing: the `mechanic_report` BOLA (9 `idor-*` findings).** The control leaves 15 leaves undispatched because they "need a decision": 12 `idor` leaves, an `authbypass` leaf, a `businesslogic` leaf and one unresolved leaf. The model picked the real one of twelve near-identical `?report_id={{id}}` leaves.
-2. **That is selection, not discovery, and it is not yet shown to need reasoning.** Every leaf the model ran already existed; the fast lane just declines to run it without a decision. Whether the model's *choice* matters, versus a deterministic policy that runs every runnable leaf (12 scans instead of 1), is unanswered. **A fourth arm, "no model, run every runnable leaf", is the control that answers it**; until it exists, do not credit the model with reasoning.
+2. **That is selection, not discovery, and the fourth arm shows it does not need a model here.** `no-model+all-leaves` (no model; every runnable leaf dispatched, 25 leaf scans against the fast lane's 11) reproduced the model arms on every measure the harness stores: 15 findings, 2 of 2 expected, the same 2 of 7 known vulnerabilities, in 194 s (191-198) for $0, against 240-255 s and $0.017-0.020. On this lab the model's choice of leaf is worth nothing that running everything does not already deliver, and it costs about 25% more wall time. **Limits, so this is not over-read:** 14 endpoint-specific leaves is a small tree (about 12 s each here), so "run them all" is cheap on crAPI and would not be on a target with hundreds; this shows selection is *unproven*, not that it never matters. The harness stores finding counts, not finding IDs, so "same findings" rests on equal counts and equal known-vulnerability hits (LT-183 (i)). What it does settle is where to look: if the model is going to earn its cost, it has to be by *creating* leaves and hypotheses that do not exist (J1/J2), not by ordering the ones that do.
 3. **Five of seven known vulnerabilities were missed by every arm, and the reasons are all upstream of choice:** no leaf exists for the shop-orders BOLA, the vehicle-location BOLA or the `contact_mechanic` SSRF (recon never produced them); no arm produced an `authbypass-jwt` finding although an `authbypass` leaf exists (LT-180's missing `protected_paths` is the likely cause, not verified here); the DELETE-video BFLA is unreachable by design. This is the population the J1/J2 jobs target, and it is what the strategy predicted.
 4. **Fast lane vs model-every-turn: same findings, about 15% cheaper, about 6% faster, 5 fewer model turns.** A real but small gain on this lab.
 5. **Caveats.** Bundled templates and a raised rate limit, so wall-clock is not comparable with the LT-172 tables; n = 3 and one lab; `unlabeled` (4 in every arm) is the four `misconfig-missing-header-*` findings, which are true but absent from this fixture, so it overstates candidate false positives; the known-vulnerability baselines are dated 2026-09-08.
 
-Two things this turned up that change how to read everything above:
+Two things this turned up that change how to read everything above (the fourth arm's flag, `--run-every-leaf`, is a deterministic policy, not a recommended default: it runs endpoint-specific leaves blind and does not resolve unresolved ones):
 
 1. **The control arm is nearly free to run and answers the first question.** `--no-model` needs no API key, so "what does the deterministic path alone reach on crAPI" can be measured before spending on any model arm.
 2. **The configured model changed without any code change** (`deepseek/deepseek-v4.1-flash` in the LT-162/171/172 runs, `openai/gpt-5.6-luna` now). Any before/after across those sessions is across models, which is why the harness records the model and refuses to average across it.
@@ -114,6 +115,7 @@ Two things this turned up that change how to read everything above:
 | Step | What | Why here |
 |---|---|---|
 | 0 | Ablation harness, LT-173 envelope, response-shape recon | Nothing after this is measurable without it |
+| 0b | **Miss attribution** (LT-185): for each known vulnerability, the pipeline stage where it was lost | Turns "5 of 7 missed" into a per-stage number, so step 1 is aimed at a measured gap and scored by it; the same classifier becomes step 3's coverage ledger |
 | 1 | **J1 + J2 + first skill packs** (IDOR/BOLA, auth/JWT, mass assignment) | Largest expected gain: turns a closed-set orderer into a hypothesis generator, and fills the leaf fields that LT-180/LT-164 show are the actual misses |
 | 2 | **J4 skeptic + negative-control re-issue** | Largest precision gain; serves the <5% FP target and "reports that survive triage" |
 | 3 | **J5 ledger + state-based stop** | Replaces the iteration-floor workaround; makes clean areas distinguishable from unvisited ones |

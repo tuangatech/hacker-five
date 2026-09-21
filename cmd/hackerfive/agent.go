@@ -103,6 +103,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 		minIterations       int
 		fastLane            bool
 		noModel             bool
+		runEveryLeaf        bool
 		allowAgentScripts   bool
 		scriptTimeout       time.Duration
 		verbose             bool
@@ -252,6 +253,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				MaxIterations:     maxIterations,
 				MinIterations:     minIterations,
 				FastLane:          fastLane,
+				RunEveryLeaf:      runEveryLeaf,
 				AllowAgentScripts: allowAgentScripts,
 				ScriptTimeout:     scriptTimeout,
 				ApprovalGate:      approvalGate,
@@ -314,6 +316,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", orchestrator.DefaultMaxIterations, "hard cap on the number of dispatched tool turns")
 	cmd.Flags().IntVar(&minIterations, "min-iterations", orchestrator.DefaultMinIterations, "floor on dispatched tool turns — a \"stop\" action is rejected and NextAction asked again while fewer than this many turns have run and actionable leaves remain (LT-162: the model was found stopping after 1-3 turns with 10+ pending leaves still untried)")
 	cmd.Flags().BoolVar(&noModel, "no-model", false, "make no LLM calls at all: run only the deterministic fast lane and leave leaves that need a model decision undispatched (Result.Degraded says how many). Needs no API key; the control arm for measuring what the model adds (docs/94-llm-finding-capability-strategy.md)")
+	cmd.Flags().BoolVar(&runEveryLeaf, "run-every-leaf", false, "dispatch every runnable leaf in priority order without a model decision about which (implies the fast lane). The deterministic baseline a model's leaf choice has to beat, meant for --no-model comparisons (docs/94-llm-finding-capability-strategy.md); endpoint-specific leaves run blind, so it can cost far more scan requests than the default. The same gates apply (--allow-writes etc.); unresolved leaves are still left for a model")
 	cmd.Flags().BoolVar(&fastLane, "fast-lane", true, "dispatch parameter-free leaves (single-template scans and the broad misconfig/netservice/tls sweeps) directly in priority order, calling the model only when what remains needs a decision — no LLM spend or latency for the rest (LT-172); --fast-lane=false asks the model before every leaf, as before")
 	cmd.Flags().BoolVar(&allowAgentScripts, "allow-agent-scripts", false, "allow the model to propose script.explore actions — a sandboxed Python/shell script, run only after a static precheck and a fresh interactive y/N approval every time (never batch-approved). The same independently-scoped exception convention as --allow-writes/--auto-provision-account; omitted, a proposed script is skipped with a warning, never run")
 	cmd.Flags().DurationVar(&scriptTimeout, "script-timeout", orchestrator.DefaultScriptTimeout, "wall-clock cap on one script.explore sandbox run")

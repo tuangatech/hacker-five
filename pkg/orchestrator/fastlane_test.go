@@ -58,7 +58,7 @@ func TestNextFastLaneLeaf_HighestPriorityFirstThenTreeOrder_SkippingTried(t *tes
 	tried := map[string]bool{}
 	var order []string
 	for {
-		leaf := nextFastLaneLeaf(tree, tried)
+		leaf := nextFastLaneLeaf(tree, tried, false)
 		if leaf == nil {
 			break
 		}
@@ -67,6 +67,31 @@ func TestNextFastLaneLeaf_HighestPriorityFirstThenTreeOrder_SkippingTried(t *tes
 	}
 	if got, want := strings.Join(order, ","), "hi-first,hi-second,sweep,low"; got != want {
 		t.Fatalf("fast-lane order = %s, want %s (priority desc, leaf order on ties, never the idor leaf)", got, want)
+	}
+}
+
+// RunEveryLeaf widens the lane to every runnable leaf, still highest Priority
+// first, and still never touches a leaf that is not runnable.
+func TestNextFastLaneLeaf_Every_IncludesEndpointSpecificLeavesButNotUnrunnableOnes(t *testing.T) {
+	tree := treeOf(
+		leafOf("low", "CVE-1", agenttask.StatusPending, 15),
+		leafOf("idor", "idor", agenttask.StatusPending, 99),
+		leafOf("unresolved", "", agenttask.StatusUnresolved, 90),
+		leafOf("done", "misconfig", agenttask.StatusDone, 80),
+		leafOf("sweep", "misconfig", agenttask.StatusPending, 30),
+	)
+	tried := map[string]bool{}
+	var order []string
+	for {
+		leaf := nextFastLaneLeaf(tree, tried, true)
+		if leaf == nil {
+			break
+		}
+		tried[leaf.ID] = true
+		order = append(order, leaf.ID)
+	}
+	if got, want := strings.Join(order, ","), "idor,sweep,low"; got != want {
+		t.Fatalf("run-every-leaf order = %s, want %s (the unresolved and finished leaves are never run)", got, want)
 	}
 }
 
