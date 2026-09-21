@@ -79,7 +79,7 @@ const (
 // narrowed to an interface so a test can supply a fake instead of exercising
 // a real model tier. *llmfallback.Client satisfies this as-is.
 type LLMClient interface {
-	NextAction(ctx context.Context, tree *agenttask.PlanTree, catalog []llmfallback.ToolSpec, history []llmfallback.TurnRecord) (llmfallback.Action, float64, error)
+	NextAction(ctx context.Context, tree *agenttask.PlanTree, catalog []llmfallback.ToolSpec, history []llmfallback.TurnRecord, digest llmfallback.RunDigest) (llmfallback.Action, float64, error)
 	TriageFindings(ctx context.Context, findings []detectors.Finding) (llmfallback.TriageResult, float64, error)
 	// ResolveField is I4's field-miss caller (LT-138 item 1, docs/follow-up.md)
 	// — resolveMissingLeafField's own fallback when a scan.leaf dispatch's
@@ -138,6 +138,22 @@ type Config struct {
 	// value above MaxIterations is clamped down to it.
 	MinIterations int
 
+	// FastLane runs the leaves that need no judgment — every template-ID leaf
+	// (one cheap single-template scan) and the parameter-free broad sweeps
+	// (see fastLaneDetectors) — straight from the plan tree in Priority order,
+	// without a NextAction call, and asks the model only when what remains
+	// does need a decision (an endpoint- or credential-specific detector, an
+	// unresolved leaf, recon.refresh/triage/script.explore, stop). LT-172
+	// (docs/follow-up.md): on a live run 14 of 17 model turns were
+	// single-template scans that finished in about a second, each behind a
+	// 1-4 minute model call, and the one leaf class that actually produced
+	// findings was reached 7th-9th because the model walked leaves in list
+	// order. Fast-lane turns cost no LLM spend and count toward neither
+	// MaxIterations nor MinIterations (both stay about the model's own turns);
+	// each leaf is tried at most once. false (the zero value) keeps the
+	// original one-model-call-per-turn behavior.
+	FastLane bool
+
 	// ReconTimeout bounds one Config.Recon.Run call (the initial
 	// tree-seeding recon and any later recon.refresh dispatch). <= 0 uses
 	// DefaultReconTimeout.
@@ -164,15 +180,23 @@ type Config struct {
 	// optional.
 	OnFinding func(detectors.Finding)
 	OnLog     func(level, msg string)
+
+	// observeRecon is set by Run so a later recon dispatch can feed the model's
+	// recon digest; not part of the public surface.
+	observeRecon func(*recon.ReconResult)
 }
 
-// Result is one completed Run's outcome.
+// Result is one completed Run's outcome. Iterations counts the turns the
+// model directed; FastLaneTurns counts the leaves the orchestrator dispatched
+// itself (Config.FastLane). History holds both, in dispatch order — a
+// fast-lane record has TurnRecord.Auto set.
 type Result struct {
-	Tree       *agenttask.PlanTree
-	Findings   []detectors.Finding
-	History    []llmfallback.TurnRecord
-	Iterations int
-	SpendUSD   float64
+	Tree          *agenttask.PlanTree
+	Findings      []detectors.Finding
+	History       []llmfallback.TurnRecord
+	Iterations    int
+	FastLaneTurns int
+	SpendUSD      float64
 }
 
 // ErrScriptsDisallowed is returned by the internal script.explore dispatch
@@ -240,11 +264,24 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	cfg.BaseScanConfig.DerivedTags = registry.TechStackTags(result.TechStack, cfg.TemplateIndex)
 	cfg.BaseScanConfig.UniformWallHosts = result.UniformWallHosts()
 
+	rd := &reconDigest{}
+	rd.observe(result)
+	cfg.observeRecon = rd.observe
+
 	catalog := buildCatalog(cfg)
 	var (
 		history  []llmfallback.TurnRecord
 		findings []detectors.Finding
 	)
+
+	// fastTried is every leaf the fast lane has already dispatched once —
+	// a leaf that stays pending afterwards (e.g. skipped) is never retried by
+	// the lane, and never counts as work left for it.
+	fastTried := map[string]bool{}
+	fastTurns := 0
+	snapshot := func() Result {
+		return Result{Tree: tree, Findings: findings, History: history, FastLaneTurns: fastTurns, SpendUSD: tree.SpendSoFar()}
+	}
 
 	iteration := 0
 	// rejectedStops counts "stop" actions turned away by the MinIterations
@@ -258,16 +295,33 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			cfg.logf("info", "budget exhausted ($%.4f of $%.2f) — stopping", tree.SpendSoFar(), tree.SpendCeilingUSD)
 			break
 		}
-		if !hasActionableLeaves(tree) {
+		if !hasActionableLeavesExcept(tree, fastTried) {
 			cfg.logf("info", "no pending/unresolved leaves remain — stopping")
 			break
 		}
 
-		action, cost, err := cfg.Client.NextAction(ctx, tree, catalog, history)
+		if cfg.FastLane {
+			// No NextAction call in this branch, so nothing else in the loop
+			// notices a cancelled context.
+			if err := ctx.Err(); err != nil {
+				res := snapshot()
+				res.Iterations = iteration
+				return res, fmt.Errorf("orchestrator: %w", err)
+			}
+			if leaf := nextFastLaneLeaf(tree, fastTried); leaf != nil {
+				fastTried[leaf.ID] = true
+				fastTurns++
+				history = append(history, dispatchFastLaneLeaf(ctx, cfg, tree, &findings, leaf))
+				continue
+			}
+		}
+
+		action, cost, err := cfg.Client.NextAction(ctx, tree, catalog, history, buildRunDigest(rd, findings))
 		tree.AddSpend(cost)
 		if err != nil {
-			return Result{Tree: tree, Findings: findings, History: history, Iterations: iteration, SpendUSD: tree.SpendSoFar()},
-				fmt.Errorf("orchestrator: NextAction: %w", err)
+			res := snapshot()
+			res.Iterations = iteration
+			return res, fmt.Errorf("orchestrator: NextAction: %w", err)
 		}
 
 		finish := cfg.SessionLog.BeginActor("agent", action.Kind, action.Rationale, action.Params)
@@ -299,15 +353,90 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			rec.Error = dispatchErr.Error()
 		}
 		history = append(history, rec)
+		cfg.logTurn(fmt.Sprintf("turn %d", iteration), rec)
 	}
 
-	return Result{
-		Tree:       tree,
-		Findings:   findings,
-		History:    history,
-		Iterations: iteration,
-		SpendUSD:   tree.SpendSoFar(),
-	}, nil
+	res := snapshot()
+	res.Iterations = iteration
+	return res, nil
+}
+
+// fastLaneDetectors are the built-in detectors whose leaf is a parameter-free
+// sweep of the target — nothing to choose between, so no model call is needed
+// to decide to run it. Every other built-in detector (idor, authbypass, ssrf,
+// sqli, businesslogic, ...) is specific to an endpoint, a parameter or a
+// credential and stays a decision for the model.
+var fastLaneDetectors = map[string]bool{"misconfig": true, "netservice": true, "tls": true}
+
+// isFastLaneLeaf reports whether leaf can be dispatched without a decision: a
+// runnable (pending, detector-assigned) leaf that is either a raw template-ID
+// leaf (registry.LeafClass "templates" — one cheap single-template scan) or one
+// of the parameter-free sweeps above.
+func isFastLaneLeaf(leaf *agenttask.PlanNode) bool {
+	if leaf.Status != agenttask.StatusPending || leaf.Detector == "" {
+		return false
+	}
+	return registry.LeafClass(leaf) == "templates" || fastLaneDetectors[leaf.Detector]
+}
+
+// nextFastLaneLeaf returns the highest-Priority fast-lane leaf not yet tried
+// (leaf order breaks ties), or nil when the lane has nothing left. Priority is
+// the decision engine's own dispatch ordering (registry.leafPriority) — the
+// same one planexec.RunPlan uses for a plain scan.
+func nextFastLaneLeaf(tree *agenttask.PlanTree, tried map[string]bool) *agenttask.PlanNode {
+	if tree == nil || tree.Root == nil {
+		return nil
+	}
+	var best *agenttask.PlanNode
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if tried[leaf.ID] || !isFastLaneLeaf(leaf) {
+			continue
+		}
+		if best == nil || leaf.Priority > best.Priority {
+			best = leaf
+		}
+	}
+	return best
+}
+
+// dispatchFastLaneLeaf runs leaf as a scan.leaf turn the orchestrator chose
+// itself and returns its history record (Auto set). The dispatch is the same
+// one a model-chosen scan.leaf gets — same field-miss handling, same finding
+// dedup — only the choosing differs.
+func dispatchFastLaneLeaf(ctx context.Context, cfg Config, tree *agenttask.PlanTree, findings *[]detectors.Finding, leaf *agenttask.PlanNode) llmfallback.TurnRecord {
+	action := llmfallback.Action{
+		Kind:      "scan.leaf",
+		NodeID:    leaf.ID,
+		Rationale: fmt.Sprintf("fast lane: parameter-free %s leaf, priority %d — no decision to make", leaf.Detector, leaf.Priority),
+	}
+	finish := cfg.SessionLog.BeginActor("agent", action.Kind, action.Rationale, action.Params)
+	summary, err := dispatch(ctx, cfg, tree, findings, action)
+	finish(summary, err)
+
+	rec := llmfallback.TurnRecord{Action: action, ResultSummary: summary, Auto: true}
+	if err != nil {
+		rec.Error = err.Error()
+	}
+	cfg.logTurn("fast lane", rec)
+	return rec
+}
+
+// logTurn writes one line per dispatched turn via OnLog — the only per-turn
+// visibility a CLI run had was the model's own stderr chatter, none of it
+// saying what was run or what came back (LT-170, docs/follow-up.md).
+func (cfg Config) logTurn(label string, rec llmfallback.TurnRecord) {
+	line := fmt.Sprintf("%s: %s", label, rec.Action.Kind)
+	if rec.Action.NodeID != "" {
+		line += " " + rec.Action.NodeID
+	}
+	if rec.Action.Rationale != "" && !rec.Auto { // an auto turn's rationale is the same fixed sentence every time
+		line += fmt.Sprintf(" (why: %s)", rec.Action.Rationale)
+	}
+	line += " — " + rec.ResultSummary
+	if rec.Error != "" {
+		line += " (error: " + rec.Error + ")"
+	}
+	cfg.logf("info", "%s", line)
 }
 
 func (cfg Config) logf(level, format string, args ...any) {
@@ -362,10 +491,21 @@ func leafDispatchKeyOf(leaf *agenttask.PlanNode) leafDispatchKey {
 // never becomes actionable again, so once every leaf is one of those, the
 // loop has nothing left to do regardless of what NextAction might say.
 func hasActionableLeaves(tree *agenttask.PlanTree) bool {
+	return hasActionableLeavesExcept(tree, nil)
+}
+
+// hasActionableLeavesExcept is hasActionableLeaves ignoring every leaf in
+// skip — the fast lane's already-tried set: a leaf it dispatched that is still
+// pending (skipped, not runnable) is not work the loop should keep asking the
+// model about.
+func hasActionableLeavesExcept(tree *agenttask.PlanTree, skip map[string]bool) bool {
 	if tree == nil || tree.Root == nil {
 		return false
 	}
 	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if skip[leaf.ID] {
+			continue
+		}
 		if leaf.Status == agenttask.StatusPending || leaf.Status == agenttask.StatusUnresolved {
 			return true
 		}
@@ -444,6 +584,9 @@ func dispatchReconRefresh(ctx context.Context, cfg Config, tree *agenttask.PlanT
 	result, err := runRecon(ctx, cfg, target, recon.DepthActive)
 	if err != nil {
 		return "", fmt.Errorf("recon.refresh: %w", err)
+	}
+	if cfg.observeRecon != nil {
+		cfg.observeRecon(result)
 	}
 	merged := mergeReconRefresh(tree, result, cfg.TemplateIndex)
 	suffix := "no new leaves"
@@ -606,12 +749,26 @@ func runScanLeafOnce(ctx context.Context, cfg Config, scanConfig scanner.Config,
 		}
 	}
 
+	// LT-166 (docs/follow-up.md): every dispatch's RunPlan reloads the whole
+	// corpus, so a finding from a corpus template (or the same detector hit)
+	// is re-fired by each later dispatch. Only a finding not already recorded
+	// this run is new — a repeat is counted and dropped (not appended to the
+	// run's findings, not streamed again), so neither the report nor the
+	// model's per-turn result mistakes a re-fire for fresh evidence.
+	seen := findingKeys(*findings)
 	var leafFindings []detectors.Finding
+	duplicates := 0
 	_, logs, skipped, err := planexec.RunPlan(ctx, tree, scanConfig, cfg.TemplateIndex, planexec.ExecOptions{
 		Excluded:       excluded,
 		DetConcurrency: 1,
 		LLMConcurrency: 1,
 		OnFinding: func(_ *agenttask.PlanNode, f detectors.Finding) {
+			k := findingKey(f)
+			if seen[k] {
+				duplicates++
+				return
+			}
+			seen[k] = true
 			leafFindings = append(leafFindings, f)
 			if cfg.OnFinding != nil {
 				cfg.OnFinding(f)
@@ -643,7 +800,49 @@ func runScanLeafOnce(ctx context.Context, cfg Config, scanConfig scanner.Config,
 	if len(realSkipped) > 0 {
 		return fmt.Sprintf("skipped: %s", strings.Join(realSkipped, "; ")), realSkipped, err
 	}
-	return fmt.Sprintf("%d finding(s), %d log line(s)", len(leafFindings), len(logs)), nil, err
+	return scanLeafSummary(leafFindings, duplicates, len(logs)), nil, err
+}
+
+// maxFindingsInSummary bounds how many new findings a scan.leaf result names.
+const maxFindingsInSummary = 5
+
+// scanLeafSummary is a scan.leaf turn's result as the model reads it next
+// turn: how many findings were genuinely new (named, so it can tell them
+// apart) and how many were repeats of ones already recorded — never a bare
+// count (LT-171, docs/follow-up.md).
+func scanLeafSummary(fresh []detectors.Finding, duplicates, logLines int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d new finding(s)", len(fresh))
+	if len(fresh) > 0 {
+		names := make([]string, 0, maxFindingsInSummary)
+		for i, f := range fresh {
+			if i == maxFindingsInSummary {
+				names = append(names, fmt.Sprintf("+%d more", len(fresh)-maxFindingsInSummary))
+				break
+			}
+			names = append(names, fmt.Sprintf("%s %s %s", f.ID, f.Severity, f.Target))
+		}
+		fmt.Fprintf(&b, " [%s]", strings.Join(names, "; "))
+	}
+	if duplicates > 0 {
+		fmt.Fprintf(&b, ", %d repeat(s) of already-recorded findings ignored", duplicates)
+	}
+	fmt.Fprintf(&b, ", %d log line(s)", logLines)
+	return b.String()
+}
+
+// findingKey identifies a finding for de-duplication within one run: the same
+// detection of the same target, however many dispatches re-fire it.
+func findingKey(f detectors.Finding) string {
+	return f.ID + "\x00" + f.Type + "\x00" + f.Target + "\x00" + f.Description
+}
+
+func findingKeys(fs []detectors.Finding) map[string]bool {
+	m := make(map[string]bool, len(fs))
+	for _, f := range fs {
+		m[findingKey(f)] = true
+	}
+	return m
 }
 
 // resolveMissingLeafField is LT-138 item 1's fix (docs/follow-up.md). It
@@ -777,7 +976,12 @@ func dispatchScriptExplore(ctx context.Context, cfg Config, findings *[]detector
 	// candidate whose real, re-issued response matches its own stated
 	// confirmation condition ships.
 	confirmedFindings, notes := reconfirmScriptCandidates(ctx, cfg, res.Stdout)
+	seen := findingKeys(*findings)
 	for _, f := range confirmedFindings {
+		if seen[findingKey(f)] {
+			continue
+		}
+		seen[findingKey(f)] = true
 		*findings = append(*findings, f)
 		if cfg.OnFinding != nil {
 			cfg.OnFinding(f)

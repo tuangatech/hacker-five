@@ -101,6 +101,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 		budget              float64
 		maxIterations       int
 		minIterations       int
+		fastLane            bool
 		allowAgentScripts   bool
 		scriptTimeout       time.Duration
 		verbose             bool
@@ -233,6 +234,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				Budget:            budget,
 				MaxIterations:     maxIterations,
 				MinIterations:     minIterations,
+				FastLane:          fastLane,
 				AllowAgentScripts: allowAgentScripts,
 				ScriptTimeout:     scriptTimeout,
 				ApprovalGate:      approvalGate,
@@ -271,7 +273,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 			if runErr != nil {
 				return fmt.Errorf("running agent: %w", runErr)
 			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: spent $%.4f of $%.2f budget, %d iteration(s)\n", res.SpendUSD, orchCfg.Budget, res.Iterations)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: spent $%.4f of $%.2f budget, %d model turn(s), %d fast-lane turn(s)\n", res.SpendUSD, orchCfg.Budget, res.Iterations, res.FastLaneTurns)
 			return nil
 		},
 	}
@@ -294,6 +296,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().Float64Var(&budget, "budget", orchestrator.DefaultBudgetUSD, "hard cap, in USD, on cumulative LLM cost across the whole run")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", orchestrator.DefaultMaxIterations, "hard cap on the number of dispatched tool turns")
 	cmd.Flags().IntVar(&minIterations, "min-iterations", orchestrator.DefaultMinIterations, "floor on dispatched tool turns — a \"stop\" action is rejected and NextAction asked again while fewer than this many turns have run and actionable leaves remain (LT-162: the model was found stopping after 1-3 turns with 10+ pending leaves still untried)")
+	cmd.Flags().BoolVar(&fastLane, "fast-lane", true, "dispatch parameter-free leaves (single-template scans and the broad misconfig/netservice/tls sweeps) directly in priority order, calling the model only when what remains needs a decision — no LLM spend or latency for the rest (LT-172); --fast-lane=false asks the model before every leaf, as before")
 	cmd.Flags().BoolVar(&allowAgentScripts, "allow-agent-scripts", false, "allow the model to propose script.explore actions — a sandboxed Python/shell script, run only after a static precheck and a fresh interactive y/N approval every time (never batch-approved). The same independently-scoped exception convention as --allow-writes/--auto-provision-account; omitted, a proposed script is skipped with a warning, never run")
 	cmd.Flags().DurationVar(&scriptTimeout, "script-timeout", orchestrator.DefaultScriptTimeout, "wall-clock cap on one script.explore sandbox run")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print wave-by-wave recon progress to stderr")

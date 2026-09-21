@@ -44,6 +44,10 @@ type fakeLLMClient struct {
 	costs   []float64
 	calls   int
 
+	// digests/histories record what each NextAction call was shown.
+	digests   []llmfallback.RunDigest
+	histories [][]llmfallback.TurnRecord
+
 	triageResult llmfallback.TriageResult
 	triageCost   float64
 	triageErr    error
@@ -54,7 +58,9 @@ type fakeLLMClient struct {
 	resolveFieldCalls    int
 }
 
-func (f *fakeLLMClient) NextAction(_ context.Context, _ *agenttask.PlanTree, _ []llmfallback.ToolSpec, _ []llmfallback.TurnRecord) (llmfallback.Action, float64, error) {
+func (f *fakeLLMClient) NextAction(_ context.Context, _ *agenttask.PlanTree, _ []llmfallback.ToolSpec, history []llmfallback.TurnRecord, digest llmfallback.RunDigest) (llmfallback.Action, float64, error) {
+	f.digests = append(f.digests, digest)
+	f.histories = append(f.histories, history)
 	i := f.calls
 	if i >= len(f.actions) {
 		i = len(f.actions) - 1

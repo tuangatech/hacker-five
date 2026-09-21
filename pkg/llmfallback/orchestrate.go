@@ -46,6 +46,35 @@ type TurnRecord struct {
 	Action        Action `json:"action"`
 	ResultSummary string `json:"result_summary,omitempty"`
 	Error         string `json:"error,omitempty"`
+	// Auto marks a turn the orchestrator dispatched itself, without asking the
+	// model (its deterministic fast lane, LT-172). The record is kept for the
+	// run's own audit trail, but buildOrchestratePrompt renders it only as a
+	// count — the model's window is for turns it chose, and a long auto run
+	// would otherwise push those out of the bounded history.
+	Auto bool `json:"auto,omitempty"`
+}
+
+// FindingDigest is one confirmed finding as NextAction's prompt shows it —
+// just enough to tell one finding from another. Never carries evidence bodies.
+type FindingDigest struct {
+	ID       string `json:"id"`
+	Type     string `json:"type,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	Target   string `json:"target,omitempty"`
+}
+
+// RunDigest is the run state the plan tree alone doesn't carry, supplied by
+// the caller on every NextAction call (LT-171, docs/follow-up.md). Before it
+// existed the model saw a bare "1 finding(s)" per turn and nothing of what
+// recon had actually observed, so it reasoned from leaf rationales and its
+// own earlier guesses — one run wrote "already confirmed" for a finding that
+// was a different, unrelated detection re-fired by an earlier turn.
+type RunDigest struct {
+	// Recon is one short, already-rendered line per notable recon fact
+	// (fingerprinted technology, API spec, app-surface verdict, ...).
+	Recon []string
+	// Findings is every distinct finding confirmed so far this run.
+	Findings []FindingDigest
 }
 
 // Action is one orchestrator turn's decision: which tool to run next, on
@@ -70,6 +99,8 @@ You never invent a plan-tree node id that isn't listed below. You never claim a 
 
 Prefer a deterministic tool (registry.lookup, scan.leaf) over script.explore whenever one plausibly covers the gap — script.explore is for exploration a fixed detector/template genuinely cannot do (e.g. non-numeric ID-space decoding, custom signing-scheme reverse-engineering), not a default first move. Choose "stop" once nothing left in the tree is worth another turn, or you are not confident any listed tool makes progress.
 
+The plan tree, the recon facts and the "findings confirmed so far" list are the ground truth for this run. A finding is confirmed only if it appears in that list; a turn's result summary that merely reports a count is not evidence of a new or a specific finding, so never describe something as already confirmed from it. Choose among leaves by what recon actually observed for the target — a leaf naming a specific endpoint or technology recon found is a stronger candidate than a generic one. Some leaves may already have been run for you (status=done); pick from what remains.
+
 Respond with ONLY a JSON object, no other text, matching exactly:
 {"kind": "<one of the catalog kinds below>", "node_id": "<existing plan-tree node id, or omit if this action doesn't target one>", "params": {<tool-specific parameters, or omit if the tool needs none>}, "rationale": "<short reason>"}`
 
@@ -82,8 +113,8 @@ Respond with ONLY a JSON object, no other text, matching exactly:
 // Action{Kind: "stop"} with the reason in Rationale — never fabricated,
 // never silently retried. costUSD is the cost of the one call made (0 if the
 // local tier served it).
-func (c *Client) NextAction(ctx context.Context, tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord) (Action, float64, error) {
-	prompt := buildOrchestratePrompt(tree, catalog, history)
+func (c *Client) NextAction(ctx context.Context, tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord, digest RunDigest) (Action, float64, error) {
+	prompt := buildOrchestratePrompt(tree, catalog, history, digest)
 	text, cost, err := c.completeBestAvailableLabeled(ctx, orchestrateSystemPrompt, prompt, "NextAction", requestTimeout)
 	if err != nil {
 		return Action{}, cost, err
@@ -167,7 +198,15 @@ func boundedLeavesForPrompt(leaves []*agenttask.PlanNode) (shown []*agenttask.Pl
 	return shown, len(leaves) - len(shown)
 }
 
-func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord) string {
+// maxReconLinesInPrompt / maxFindingsInPrompt bound the two RunDigest
+// sections for the same reason maxLeafNodesInPrompt/maxHistoryTurnsInPrompt
+// bound theirs: NextAction's latency scales with prompt size.
+const (
+	maxReconLinesInPrompt = 30
+	maxFindingsInPrompt   = 25
+)
+
+func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord, digest RunDigest) string {
 	var b strings.Builder
 
 	b.WriteString("plan tree nodes (leaves only — only these ids are valid node_id values):\n")
@@ -181,9 +220,40 @@ func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, histor
 			if det == "" {
 				det = "(unresolved)"
 			}
-			fmt.Fprintf(&b, "- id=%s target=%s detector=%s status=%s confidence=%s attempts=%d spend_usd=%.4f rationale=%q\n",
-				leaf.ID, leaf.Target, det, leaf.Status, leaf.Confidence, leaf.Attempts, leaf.SpendUSD, leaf.Rationale)
+			// The endpoint template is what distinguishes one endpoint-driven leaf
+			// from its siblings on the same host+detector — without it (LT-171)
+			// every such leaf read identically apart from an opaque id.
+			endpoint := ""
+			if leaf.EndpointTemplate != "" {
+				endpoint = fmt.Sprintf(" endpoint=%q", leaf.EndpointTemplate)
+			}
+			fmt.Fprintf(&b, "- id=%s target=%s%s detector=%s status=%s confidence=%s attempts=%d spend_usd=%.4f rationale=%q\n",
+				leaf.ID, leaf.Target, endpoint, det, leaf.Status, leaf.Confidence, leaf.Attempts, leaf.SpendUSD, leaf.Rationale)
 		}
+	}
+
+	b.WriteString("\nrecon facts (observed this run):\n")
+	if len(digest.Recon) == 0 {
+		b.WriteString("(none recorded)\n")
+	}
+	for i, line := range digest.Recon {
+		if i == maxReconLinesInPrompt {
+			fmt.Fprintf(&b, "(%d more recon fact(s) omitted)\n", len(digest.Recon)-maxReconLinesInPrompt)
+			break
+		}
+		fmt.Fprintf(&b, "- %s\n", line)
+	}
+
+	b.WriteString("\nfindings confirmed so far this run (distinct):\n")
+	if len(digest.Findings) == 0 {
+		b.WriteString("(none yet)\n")
+	}
+	for i, f := range digest.Findings {
+		if i == maxFindingsInPrompt {
+			fmt.Fprintf(&b, "(%d more finding(s) omitted)\n", len(digest.Findings)-maxFindingsInPrompt)
+			break
+		}
+		fmt.Fprintf(&b, "- id=%s type=%s severity=%s target=%s\n", f.ID, f.Type, f.Severity, f.Target)
 	}
 
 	b.WriteString("\navailable tools:\n")
@@ -192,7 +262,20 @@ func buildOrchestratePrompt(tree *agenttask.PlanTree, catalog []ToolSpec, histor
 	}
 
 	b.WriteString("\nturn history this run (most recent last):\n")
-	shown := history
+	// Auto-dispatched turns (the orchestrator's fast lane) are summarized as a
+	// count, not listed — see TurnRecord.Auto.
+	var shown []TurnRecord
+	auto := 0
+	for _, h := range history {
+		if h.Auto {
+			auto++
+			continue
+		}
+		shown = append(shown, h)
+	}
+	if auto > 0 {
+		fmt.Fprintf(&b, "(%d leaf scan(s) were auto-dispatched without a decision — their outcome is in the plan tree statuses and the findings list above)\n", auto)
+	}
 	if len(shown) == 0 {
 		b.WriteString("(none yet)\n")
 	} else if len(shown) > maxHistoryTurnsInPrompt {
