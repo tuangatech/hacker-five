@@ -24,6 +24,32 @@ type OrchestratorScenario struct {
 	Header            func() string // raw "Name: Value" for --header, nil if none
 	Templates         string        // --templates override, "" leaves the CLI default (full bundled+synced corpus)
 	SkipPrefixes      []string
+
+	// KnownVulnsFile is the tests/fixtures/known-vulns/*.json ground truth the
+	// ablation harness grades against, "" if this lab has none yet (only crAPI
+	// does so far). See grade.go for why it exists beside ExpectedFile.
+	KnownVulnsFile string
+}
+
+// AgentArgs builds the `hackerfive agent` command line for this scenario, with
+// extra (an ablation arm's flags) appended. TestOrchestratorEvalHarness and the
+// ablation harness both use it so they cannot drift into running different
+// commands.
+func (sc OrchestratorScenario) AgentArgs(target, scopeFile string, extra ...string) []string {
+	args := []string{"agent", "-t", target, "--recon-depth", sc.Depth, "--scope", scopeFile}
+	if sc.AuthTokenEnv != "" {
+		args = append(args, "--auth-token", os.Getenv(sc.AuthTokenEnv))
+	}
+	if sc.OtherAuthTokenEnv != "" {
+		args = append(args, "--other-auth-token", os.Getenv(sc.OtherAuthTokenEnv))
+	}
+	if sc.Header != nil {
+		args = append(args, "--header", sc.Header())
+	}
+	if sc.Templates != "" {
+		args = append(args, "--templates", sc.Templates)
+	}
+	return append(args, extra...)
 }
 
 // OrchestratorScenarios mirrors AgentScenarios' four live lab targets.
@@ -85,5 +111,6 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		AuthTokenEnv:      "CRAPI_OWNER_TOKEN",
 		OtherAuthTokenEnv: "CRAPI_OTHER_TOKEN",
 		Templates:         templatesDir(),
+		KnownVulnsFile:    "tests/fixtures/known-vulns/crapi.json",
 	},
 }

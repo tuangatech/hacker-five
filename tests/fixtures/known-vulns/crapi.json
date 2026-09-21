@@ -1,0 +1,71 @@
+{
+  "description": "Vulnerabilities crAPI is documented to contain, each with the deterministic scan's verdict as RECORDED at the source's date. This is ground truth for measuring what an agent arm adds (docs/94-llm-finding-capability-strategy.md Phase 0), not a claim the scanner finds them today: 'baseline' is context, never re-measured here, and several 'missed' entries have since had detector work (see note). Left out until a finding class and ID exist to grade them: mass assignment, NoSQL/SQL injection, OTP rate limiting. Endpoint paths and finding-ID prefixes are taken from docs/follow-up.md (Step E table) and the detectors' own ID formats, not invented.",
+  "vulns": [
+    {
+      "id": "crapi-broken-auth-jwt-alg-none",
+      "class": "broken-authentication",
+      "description": "JWT signature is not verified: an alg:none forged token is accepted and returns real PII.",
+      "id_prefixes": ["authbypass-jwt-"],
+      "baseline": "found",
+      "source": "docs/follow-up.md, crAPI live round 2 (Step E), 2026-09-08: 8x critical, manually reproduced"
+    },
+    {
+      "id": "crapi-bola-shop-orders",
+      "class": "bola",
+      "description": "Any authenticated user can read another user's order, including card data (orders 1-5).",
+      "endpoint_contains": "/workshop/api/shop/orders/",
+      "id_prefixes": ["idor-"],
+      "baseline": "found",
+      "source": "docs/follow-up.md, Step E, 2026-09-08: 5x high; orders 6-100 return 500 and are not flagged"
+    },
+    {
+      "id": "crapi-env-file-exposed",
+      "class": "sensitive-data-exposure",
+      "description": "/.env is served and contains real database credentials.",
+      "endpoint_contains": "/.env",
+      "id_prefixes": ["misconfig-exposed-path-"],
+      "baseline": "found",
+      "source": "docs/follow-up.md, Step E, 2026-09-08: 1x high misconfig"
+    },
+    {
+      "id": "crapi-bola-mechanic-report",
+      "class": "bola",
+      "description": "Another user's mechanic report is readable by report_id.",
+      "endpoint_contains": "/workshop/api/mechanic/mechanic_report",
+      "id_prefixes": ["idor-"],
+      "baseline": "missed",
+      "source": "docs/follow-up.md, Step E, 2026-09-08: missed, LT-95",
+      "note": "LT-95 fixed 2026-09-09. A `hackerfive agent` run on 2026-09-21 found 9 idor-* findings here. Reachable in agent mode only at --recon-depth full (LT-164)."
+    },
+    {
+      "id": "crapi-bola-vehicle-location",
+      "class": "bola",
+      "description": "Another user's vehicle location is readable by vehicle UUID.",
+      "endpoint_contains": "/location",
+      "id_prefixes": ["idor-"],
+      "baseline": "missed",
+      "source": "docs/follow-up.md, Step E, 2026-09-08: missed, LT-95",
+      "note": "LT-95 added UUID-keyed BOLA (idor.RandomUUIDStrategy) 2026-09-09; not re-measured."
+    },
+    {
+      "id": "crapi-bfla-delete-video",
+      "class": "bfla",
+      "description": "A user can delete another user's video via DELETE.",
+      "endpoint_contains": "/video/delete/",
+      "id_prefixes": ["mutatebfla-"],
+      "baseline": "missed",
+      "source": "docs/follow-up.md, Step E, 2026-09-08: missed, LT-132",
+      "note": "LT-132 added pkg/detectors/mutatebfla, but it needs --allow-mutating-bfla and an operator-supplied, ownership-confirmed path; the agent has no route to it, so expect a miss in every agent arm."
+    },
+    {
+      "id": "crapi-ssrf-contact-mechanic",
+      "class": "ssrf",
+      "description": "contact_mechanic forwards an attacker-supplied URL taken from the POST body.",
+      "endpoint_contains": "contact_mechanic",
+      "id_prefixes": ["ssrf-"],
+      "baseline": "missed",
+      "source": "docs/follow-up.md, Step E, 2026-09-08: missed, LT-96",
+      "note": "LT-96 fixed 2026-09-09 (body-param SSRF check); not re-measured."
+    }
+  ]
+}

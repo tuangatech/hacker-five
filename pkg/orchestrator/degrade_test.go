@@ -127,6 +127,31 @@ func TestRun_NonConsecutiveModelFailuresDoNotDegrade(t *testing.T) {
 	}
 }
 
+// NoModelClient is the ablation control arm: the deterministic fast lane runs,
+// nothing is ever asked of a model (not even the two failing calls a real
+// outage costs), and Degraded says the model was disabled, not that it failed.
+func TestRun_NoModelClient_RunsTheFastLaneAndNothingElse(t *testing.T) {
+	srv := fastLaneTargetServer(t)
+	cfg := fastLaneConfig(srv, NoModelClient{})
+	cfg.FastLane = false // NoModelClient must force the lane on by itself
+
+	result, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.FastLaneTurns != 1 || result.Iterations != 0 || result.SpendUSD != 0 {
+		t.Fatalf("FastLaneTurns=%d Iterations=%d Spend=%v, want 1, 0, 0", result.FastLaneTurns, result.Iterations, result.SpendUSD)
+	}
+	if !strings.Contains(result.Degraded, "disabled") || strings.Contains(result.Degraded, "consecutive") {
+		t.Fatalf("Degraded = %q, want it to say the model was disabled, not that calls failed", result.Degraded)
+	}
+	for _, leaf := range agenttask.Leaves(result.Tree.Root) {
+		if leaf.Status != agenttask.StatusDone {
+			t.Errorf("leaf %s status = %s, want done", leaf.ID, leaf.Status)
+		}
+	}
+}
+
 // A cancelled run is not a model outage and must still be an error.
 func TestRun_ModelErrorWithCancelledContext_StillErrors(t *testing.T) {
 	srv := fastLaneTargetServer(t)

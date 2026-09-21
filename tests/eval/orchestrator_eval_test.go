@@ -89,23 +89,7 @@ func TestOrchestratorEvalHarness(t *testing.T) {
 			scopeFile := filepath.Join(t.TempDir(), "scope.txt")
 			require.NoError(t, os.WriteFile(scopeFile, []byte(hostScopeEntry(target)+"\n"), 0o644))
 
-			args := []string{
-				"agent", "-t", target,
-				"--recon-depth", sc.Depth,
-				"--scope", scopeFile,
-			}
-			if sc.AuthTokenEnv != "" {
-				args = append(args, "--auth-token", os.Getenv(sc.AuthTokenEnv))
-			}
-			if sc.OtherAuthTokenEnv != "" {
-				args = append(args, "--other-auth-token", os.Getenv(sc.OtherAuthTokenEnv))
-			}
-			if sc.Header != nil {
-				args = append(args, "--header", sc.Header())
-			}
-			if sc.Templates != "" {
-				args = append(args, "--templates", sc.Templates)
-			}
+			args := sc.AgentArgs(target, scopeFile)
 
 			// 20m, not TestAgentEvalHarness's 10m (LT-137): active-depth recon
 			// plus one or more scan.leaf template-corpus passes legitimately

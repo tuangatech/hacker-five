@@ -307,6 +307,10 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	// lane runs regardless of cfg.FastLane and the model is never asked again.
 	llmFailures, llmDown := 0, false
 	var lastLLMErr error
+	if _, off := cfg.Client.(NoModelClient); off {
+		llmDown, lastLLMErr = true, ErrModelDisabled
+		cfg.logf("info", "%v — running the deterministic fast lane only", ErrModelDisabled)
+	}
 	for iteration < cfg.MaxIterations {
 		if tree.SpendCeilingUSD > 0 && tree.SpendSoFar() >= tree.SpendCeilingUSD {
 			cfg.logf("info", "budget exhausted ($%.4f of $%.2f) — stopping", tree.SpendSoFar(), tree.SpendCeilingUSD)
@@ -395,7 +399,11 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	res.Iterations = iteration
 	if llmDown {
 		left := countActionableLeavesExcept(tree, fastTried)
-		res.Degraded = fmt.Sprintf("model unavailable after %d consecutive failed decision calls (last: %v); %d leaf/leaves left undispatched because they need a model decision", MaxConsecutiveLLMFailures, lastLLMErr, left)
+		if errors.Is(lastLLMErr, ErrModelDisabled) {
+			res.Degraded = fmt.Sprintf("%v; %d leaf/leaves left undispatched because they need a model decision", lastLLMErr, left)
+		} else {
+			res.Degraded = fmt.Sprintf("model unavailable after %d consecutive failed decision calls (last: %v); %d leaf/leaves left undispatched because they need a model decision", MaxConsecutiveLLMFailures, lastLLMErr, left)
+		}
 		cfg.logf("warn", "degraded: %s", res.Degraded)
 	}
 	return res, nil
