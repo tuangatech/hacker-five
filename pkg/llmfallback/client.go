@@ -215,7 +215,42 @@ type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
+
+	// MaxTokens and Reasoning are set only by a caller that opted in via
+	// callOpts (LT-173); omitted otherwise, so every other call is byte-for-byte
+	// what it was before.
+	MaxTokens int               `json:"max_tokens,omitempty"`
+	Reasoning *reasoningControl `json:"reasoning,omitempty"`
 }
+
+// reasoningControl is OpenRouter's `reasoning` request object. Only Effort is
+// used: OpenRouter documents effort and max_tokens as either/or, and effort is
+// the form a non-Anthropic reasoning model honors.
+type reasoningControl struct {
+	Effort string `json:"effort,omitempty"`
+}
+
+// callOpts are the optional per-call output controls (LT-173). The zero value
+// changes nothing.
+//
+// maxTokens caps the response. On most OpenRouter providers that cap covers
+// hidden reasoning tokens as well as the visible answer, so a small cap on a
+// reasoning-capable model can come back empty with finish_reason "length" — set
+// reasoningEffort alongside it and keep maxTokens generous (see
+// errTruncatedResponse for how that case is reported).
+//
+// reasoningEffort ("minimal"/"low"/"medium"/"high", OpenRouter's vocabulary) is
+// sent to the frontier tier only; the local tier's runtime has no such field and
+// would at best ignore it.
+type callOpts struct {
+	maxTokens       int
+	reasoningEffort string
+}
+
+// errTruncatedResponse is returned when the model hit its output cap before
+// producing any answer text — reasoning ate the whole budget. It is an error,
+// not an empty answer, so a caller never parses "" as a decision.
+var errTruncatedResponse = errors.New("llmfallback: response hit the output cap before any answer text (reasoning consumed the budget)")
 
 type chatResponse struct {
 	Choices []struct {
@@ -244,6 +279,11 @@ const (
 // schema (neither tier is guaranteed to support one uniformly) — callers
 // parse the response themselves via decodeJSONResponse.
 func (c *Client) complete(ctx context.Context, t tier, system, user string) (text string, costUSD float64, err error) {
+	return c.completeWith(ctx, t, system, user, callOpts{})
+}
+
+// completeWith is complete with LT-173's optional output controls.
+func (c *Client) completeWith(ctx context.Context, t tier, system, user string, opts callOpts) (text string, costUSD float64, err error) {
 	var url, model, authHeader string
 	switch t {
 	case tierLocal:
@@ -266,14 +306,19 @@ func (c *Client) complete(ctx context.Context, t tier, system, user string) (tex
 		return "", 0, fmt.Errorf("llmfallback: unknown tier %d", t)
 	}
 
-	body, err := json.Marshal(chatRequest{
+	req0 := chatRequest{
 		Model: model,
 		Messages: []chatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
 		Temperature: 0,
-	})
+		MaxTokens:   opts.maxTokens,
+	}
+	if t == tierFrontier && opts.reasoningEffort != "" {
+		req0.Reasoning = &reasoningControl{Effort: opts.reasoningEffort}
+	}
+	body, err := json.Marshal(req0)
 	if err != nil {
 		return "", 0, fmt.Errorf("llmfallback: encoding request: %w", err)
 	}
@@ -314,7 +359,29 @@ func (c *Client) complete(ctx context.Context, t tier, system, user string) (tex
 			float64(cr.Usage.CompletionTokens)/1_000_000*c.openRouterOutputUSD
 		addGlobalSpend(costUSD) // process-lifetime total, independent of any one Client/plan-call
 	}
-	return cr.Choices[0].Message.Content, costUSD, nil
+	content := cr.Choices[0].Message.Content
+	if opts.maxTokens > 0 && strings.TrimSpace(content) == "" && finishReasonOf(raw) == "length" {
+		// The tokens were spent (costUSD is real and already counted above) but
+		// there is nothing to parse.
+		return "", costUSD, errTruncatedResponse
+	}
+	return content, costUSD, nil
+}
+
+// finishReasonOf reads choices[0].finish_reason from a raw chat-completions
+// body, "" when absent or unparseable. Decoded on its own rather than as a
+// chatResponse field so that struct (and the tests that build it) stay as they
+// were.
+func finishReasonOf(raw []byte) string {
+	var fr struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &fr); err != nil || len(fr.Choices) == 0 {
+		return ""
+	}
+	return fr.Choices[0].FinishReason
 }
 
 // completeLabeled wraps complete with LT-146's reliability behavior for one
@@ -329,12 +396,17 @@ func (c *Client) complete(ctx context.Context, t tier, system, user string) (tex
 // a second call for nothing). label identifies the call in every heartbeat/
 // retry line logCB sees — e.g. "ResolveLeaf leaf-10", "PlanFromRecon".
 func (c *Client) completeLabeled(ctx context.Context, t tier, system, user, label string, timeout time.Duration) (text string, costUSD float64, err error) {
-	text, costUSD, err = c.completeOnce(ctx, t, system, user, label, timeout)
+	return c.completeLabeledWith(ctx, t, system, user, label, timeout, callOpts{})
+}
+
+// completeLabeledWith is completeLabeled with LT-173's optional output controls.
+func (c *Client) completeLabeledWith(ctx context.Context, t tier, system, user, label string, timeout time.Duration, opts callOpts) (text string, costUSD float64, err error) {
+	text, costUSD, err = c.completeOnceWith(ctx, t, system, user, label, timeout, opts)
 	if err != nil && isOwnTimeout(ctx, err) {
 		c.logf("warn", "%s: timed out after %s — retrying once", label, timeout)
 		var retryText string
 		var retryCost float64
-		retryText, retryCost, err = c.completeOnce(ctx, t, system, user, label, timeout)
+		retryText, retryCost, err = c.completeOnceWith(ctx, t, system, user, label, timeout, opts)
 		costUSD += retryCost
 		if err == nil {
 			text = retryText
@@ -352,6 +424,11 @@ func (c *Client) completeLabeled(ctx context.Context, t tier, system, user, labe
 // same "periodic progress line on a long operation" shape rather than a
 // shared dependency, since each logs through its own package's seam.
 func (c *Client) completeOnce(ctx context.Context, t tier, system, user, label string, timeout time.Duration) (string, float64, error) {
+	return c.completeOnceWith(ctx, t, system, user, label, timeout, callOpts{})
+}
+
+// completeOnceWith is completeOnce with LT-173's optional output controls.
+func (c *Client) completeOnceWith(ctx context.Context, t tier, system, user, label string, timeout time.Duration, opts callOpts) (string, float64, error) {
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -372,7 +449,7 @@ func (c *Client) completeOnce(ctx context.Context, t tier, system, user, label s
 		}
 	}()
 
-	text, cost, err := c.complete(callCtx, t, system, user)
+	text, cost, err := c.completeWith(callCtx, t, system, user, opts)
 	close(done)
 	<-stopped
 	return text, cost, err
@@ -392,8 +469,14 @@ func isOwnTimeout(callerCtx context.Context, err error) bool {
 // VetPendingLeaves, Suggest), routed through completeLabeled so each gets
 // LT-146's heartbeat/timeout/retry behavior with a label/timeout it chooses.
 func (c *Client) completeBestAvailableLabeled(ctx context.Context, system, user, label string, timeout time.Duration) (string, float64, error) {
+	return c.completeBestAvailableWith(ctx, system, user, label, timeout, callOpts{})
+}
+
+// completeBestAvailableWith is completeBestAvailableLabeled with LT-173's
+// optional output controls.
+func (c *Client) completeBestAvailableWith(ctx context.Context, system, user, label string, timeout time.Duration, opts callOpts) (string, float64, error) {
 	if c.localAvailable {
-		text, cost, err := c.completeLabeled(ctx, tierLocal, system, user, label, timeout)
+		text, cost, err := c.completeLabeledWith(ctx, tierLocal, system, user, label, timeout, opts)
 		if err == nil {
 			return text, cost, nil
 		}
@@ -401,7 +484,7 @@ func (c *Client) completeBestAvailableLabeled(ctx context.Context, system, user,
 			return "", 0, err
 		}
 	}
-	return c.completeLabeled(ctx, tierFrontier, system, user, label, timeout)
+	return c.completeLabeledWith(ctx, tierFrontier, system, user, label, timeout, opts)
 }
 
 // ModelLabel names the model a call would actually use right now: the

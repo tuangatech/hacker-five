@@ -246,7 +246,9 @@ func TestReconDigest_WarningsAreBounded(t *testing.T) {
 }
 
 func TestScanLeafSummary(t *testing.T) {
-	f := func(id string) detectors.Finding { return detectors.Finding{ID: id, Severity: "high", Target: "https://x/" + id} }
+	f := func(id string) detectors.Finding {
+		return detectors.Finding{ID: id, Severity: "high", Target: "https://x/" + id}
+	}
 
 	got := scanLeafSummary(nil, 0, 3)
 	if got != "0 new finding(s), 3 log line(s)" {

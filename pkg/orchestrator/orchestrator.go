@@ -197,7 +197,19 @@ type Result struct {
 	Iterations    int
 	FastLaneTurns int
 	SpendUSD      float64
+
+	// Degraded is empty on a healthy run. When the model stopped answering
+	// (MaxConsecutiveLLMFailures decision calls in a row failed) it says so and
+	// how much was left undone (LT-173): the run finished what needed no
+	// decision and ended cleanly rather than failing with findings in hand.
+	Degraded string
 }
+
+// MaxConsecutiveLLMFailures is how many decision calls in a row may fail
+// (each already carries the client's own deadline and one retry) before Run
+// stops asking the model and degrades (LT-173). Two, not one: a single
+// transient failure should cost a retry, not the model for the rest of the run.
+const MaxConsecutiveLLMFailures = 2
 
 // ErrScriptsDisallowed is returned by the internal script.explore dispatch
 // when Config.AllowAgentScripts is false — Run itself never surfaces this as
@@ -290,6 +302,11 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	// choosing "stop" regardless of the nudge still terminates instead of
 	// looping until MaxIterations purely on rejected-stop calls.
 	rejectedStops := 0
+	// llmFailures counts consecutive failed NextAction calls; llmDown is set
+	// once it reaches MaxConsecutiveLLMFailures (LT-173). From then on the fast
+	// lane runs regardless of cfg.FastLane and the model is never asked again.
+	llmFailures, llmDown := 0, false
+	var lastLLMErr error
 	for iteration < cfg.MaxIterations {
 		if tree.SpendCeilingUSD > 0 && tree.SpendSoFar() >= tree.SpendCeilingUSD {
 			cfg.logf("info", "budget exhausted ($%.4f of $%.2f) — stopping", tree.SpendSoFar(), tree.SpendCeilingUSD)
@@ -300,7 +317,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			break
 		}
 
-		if cfg.FastLane {
+		if cfg.FastLane || llmDown {
 			// No NextAction call in this branch, so nothing else in the loop
 			// notices a cancelled context.
 			if err := ctx.Err(); err != nil {
@@ -315,14 +332,32 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 				continue
 			}
 		}
+		if llmDown {
+			// The lane has nothing left and the model is gone: what remains
+			// needs a decision nobody can make. End here, not by asking again.
+			break
+		}
 
 		action, cost, err := cfg.Client.NextAction(ctx, tree, catalog, history, buildRunDigest(rd, findings))
 		tree.AddSpend(cost)
 		if err != nil {
-			res := snapshot()
-			res.Iterations = iteration
-			return res, fmt.Errorf("orchestrator: NextAction: %w", err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				// The run itself was cancelled — not a model problem, and not
+				// something to degrade around.
+				res := snapshot()
+				res.Iterations = iteration
+				return res, fmt.Errorf("orchestrator: NextAction: %w", err)
+			}
+			llmFailures++
+			lastLLMErr = err
+			cfg.logf("warn", "NextAction failed (%d of %d consecutive): %v", llmFailures, MaxConsecutiveLLMFailures, err)
+			if llmFailures >= MaxConsecutiveLLMFailures {
+				llmDown = true
+				cfg.logf("warn", "model unavailable — finishing the leaves that need no decision, then stopping cleanly")
+			}
+			continue
 		}
+		llmFailures = 0
 
 		finish := cfg.SessionLog.BeginActor("agent", action.Kind, action.Rationale, action.Params)
 		if action.Kind == "stop" {
@@ -358,7 +393,29 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 
 	res := snapshot()
 	res.Iterations = iteration
+	if llmDown {
+		left := countActionableLeavesExcept(tree, fastTried)
+		res.Degraded = fmt.Sprintf("model unavailable after %d consecutive failed decision calls (last: %v); %d leaf/leaves left undispatched because they need a model decision", MaxConsecutiveLLMFailures, lastLLMErr, left)
+		cfg.logf("warn", "degraded: %s", res.Degraded)
+	}
 	return res, nil
+}
+
+// countActionableLeavesExcept is hasActionableLeavesExcept's count.
+func countActionableLeavesExcept(tree *agenttask.PlanTree, skip map[string]bool) int {
+	if tree == nil || tree.Root == nil {
+		return 0
+	}
+	n := 0
+	for _, leaf := range agenttask.Leaves(tree.Root) {
+		if skip[leaf.ID] {
+			continue
+		}
+		if leaf.Status == agenttask.StatusPending || leaf.Status == agenttask.StatusUnresolved {
+			n++
+		}
+	}
+	return n
 }
 
 // fastLaneDetectors are the built-in detectors whose leaf is a parameter-free

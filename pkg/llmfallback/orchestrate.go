@@ -4,10 +4,47 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 )
+
+// The decision call is a ~150-token JSON choice, so it gets a tight envelope
+// (LT-173, docs/follow-up.md). Live, before this: the model spent minutes on
+// hidden reasoning tokens for that answer and two consecutive 4-minute stalls
+// ended otherwise healthy vAPI and crAPI runs.
+const (
+	// decisionTimeout is one NextAction attempt's deadline. completeLabeled
+	// retries once on this deadline, so a stalled call costs at most twice this
+	// (4 minutes) rather than twice requestTimeout (8), and the orchestrator
+	// gives up on the model after MaxConsecutiveLLMFailures such calls.
+	decisionTimeout = 120 * time.Second
+
+	// decisionMaxTokens is generous on purpose: on most providers the cap covers
+	// reasoning plus the answer (see callOpts), so it bounds a runaway rather
+	// than trimming a normal reply.
+	decisionMaxTokens = 2048
+
+	// decisionReasoningEffort keeps a reasoning-capable model from deliberating
+	// at length over a choice among six tools.
+	decisionReasoningEffort = "low"
+
+	// envDecisionReasoningEffort overrides decisionReasoningEffort. Set it to an
+	// empty value to send no `reasoning` field at all — the escape hatch for a
+	// model or provider that rejects the field, since support is per-model.
+	envDecisionReasoningEffort = "HACKERFIVE_DECISION_REASONING_EFFORT"
+)
+
+// decisionCallOpts is the output envelope NextAction's model call runs under.
+func decisionCallOpts() callOpts {
+	effort := decisionReasoningEffort
+	if v, ok := os.LookupEnv(envDecisionReasoningEffort); ok {
+		effort = strings.TrimSpace(v)
+	}
+	return callOpts{maxTokens: decisionMaxTokens, reasoningEffort: effort}
+}
 
 // orchestrateActionKinds is the fixed allow-list NextAction validates every
 // returned Action.Kind against (docs/93-implementation-plan-agent-
@@ -115,7 +152,7 @@ Respond with ONLY a JSON object, no other text, matching exactly:
 // local tier served it).
 func (c *Client) NextAction(ctx context.Context, tree *agenttask.PlanTree, catalog []ToolSpec, history []TurnRecord, digest RunDigest) (Action, float64, error) {
 	prompt := buildOrchestratePrompt(tree, catalog, history, digest)
-	text, cost, err := c.completeBestAvailableLabeled(ctx, orchestrateSystemPrompt, prompt, "NextAction", requestTimeout)
+	text, cost, err := c.completeBestAvailableWith(ctx, orchestrateSystemPrompt, prompt, "NextAction", decisionTimeout, decisionCallOpts())
 	if err != nil {
 		return Action{}, cost, err
 	}
