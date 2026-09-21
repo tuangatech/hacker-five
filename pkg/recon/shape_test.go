@@ -79,23 +79,27 @@ func TestJSONShape_IsDeterministic(t *testing.T) {
 	}
 }
 
-func TestShapeCandidate(t *testing.T) {
+func TestShapeTier(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		ep   EndpointFact
-		want bool
+		want int
 	}{
-		{"observed 2xx json GET", EndpointFact{URL: "http://x.test/api/items", Method: "GET", StatusCode: 200, ContentType: "application/json; charset=utf-8"}, true},
-		{"observed with no method recorded", EndpointFact{URL: "http://x.test/api/items", StatusCode: 200, ContentType: "application/json"}, true},
-		{"spec route with no observed status", EndpointFact{URL: "http://x.test/api/items", Method: "GET", Source: "api-spec"}, true},
-		{"templated spec route has no concrete URL", EndpointFact{URL: "http://x.test/api/items/{id}", Method: "GET", Source: "api-spec"}, false},
-		{"POST is never probed", EndpointFact{URL: "http://x.test/api/items", Method: "POST", Source: "api-spec"}, false},
-		{"html page", EndpointFact{URL: "http://x.test/home", StatusCode: 200, ContentType: "text/html"}, false},
-		{"401 is not a resource", EndpointFact{URL: "http://x.test/api/items", StatusCode: 401, ContentType: "application/json"}, false},
-		{"static asset", EndpointFact{URL: "http://x.test/app.js", Method: "GET", Source: "api-spec"}, false},
-		{"already shaped", EndpointFact{URL: "http://x.test/api/items", StatusCode: 200, ContentType: "application/json", ResponseShape: `{}`}, false},
+		{"observed 2xx json GET", EndpointFact{URL: "http://x.test/api/items", Method: "GET", StatusCode: 200, ContentType: "application/json; charset=utf-8"}, shapeTierKnownJSON},
+		{"spec route with no observed status", EndpointFact{URL: "http://x.test/api/items", Method: "GET", Source: "api-spec"}, shapeTierKnownJSON},
+		// A katana crawl fact has a status but no content type at all.
+		{"crawl hit on an api-looking path", EndpointFact{URL: "http://x.test/api/me", Method: "GET", StatusCode: 200, Source: "katana-crawl"}, shapeTierLikelyAPI},
+		{"crawl hit on a .json path", EndpointFact{URL: "http://x.test/data/site.json", StatusCode: 200, Source: "katana-crawl"}, shapeTierLikelyAPI},
+		{"crawl hit that says nothing", EndpointFact{URL: "http://x.test/about", StatusCode: 200, Source: "katana-crawl"}, shapeTierUnknown},
+		{"templated spec route has no concrete URL", EndpointFact{URL: "http://x.test/api/items/{id}", Method: "GET", Source: "api-spec"}, shapeTierNotCandidate},
+		{"POST is never probed", EndpointFact{URL: "http://x.test/api/items", Method: "POST", Source: "api-spec"}, shapeTierNotCandidate},
+		{"observed html", EndpointFact{URL: "http://x.test/home", StatusCode: 200, ContentType: "text/html"}, shapeTierNotCandidate},
+		{"401 is not a resource", EndpointFact{URL: "http://x.test/api/items", StatusCode: 401, ContentType: "application/json"}, shapeTierNotCandidate},
+		{"no status observed and not from a spec", EndpointFact{URL: "http://x.test/api/items", Source: "robots-txt"}, shapeTierNotCandidate},
+		{"static asset", EndpointFact{URL: "http://x.test/app.js", Method: "GET", Source: "api-spec"}, shapeTierNotCandidate},
+		{"already shaped", EndpointFact{URL: "http://x.test/api/items", StatusCode: 200, ContentType: "application/json", ResponseShape: `{}`}, shapeTierNotCandidate},
 	} {
-		assert.Equal(t, tc.want, shapeCandidate(&tc.ep), tc.name)
+		assert.Equal(t, tc.want, shapeTier(&tc.ep), tc.name)
 	}
 }
 
@@ -129,7 +133,7 @@ func TestProbeResponseShapes(t *testing.T) {
 
 	agg := &aggregator{target: srv.URL}
 	agg.addEndpoint(EndpointFact{URL: srv.URL + "/api/orders", Method: "GET", Source: "api-spec"})
-	agg.addEndpoint(EndpointFact{URL: srv.URL + "/api/orders", Method: "GET", StatusCode: 200, ContentType: "application/json", Source: "katana-crawl"})
+	agg.addEndpoint(EndpointFact{URL: srv.URL + "/api/orders", Method: "GET", StatusCode: 200, Source: "katana-crawl"}) // katana records no content type
 	agg.addEndpoint(EndpointFact{URL: srv.URL + "/api/private", Method: "GET", Source: "api-spec"})
 	agg.addEndpoint(EndpointFact{URL: srv.URL + "/api/orders/{id}", Method: "GET", Source: "api-spec"})
 	agg.addEndpoint(EndpointFact{URL: srv.URL + "/home", StatusCode: 200, ContentType: "text/html"})
@@ -187,4 +191,35 @@ func TestProbeResponseShapes_OutOfScopeHostIsNeverProbed(t *testing.T) {
 	// seeds do not include the other server's host, and no scope is configured.
 	New(newTestClient()).probeResponseShapes(context.Background(), agg, []string{"http://seed.invalid"})
 	assert.Zero(t, hits.Load(), "a host outside the seeds and scope must not be requested")
+}
+
+// The cap must not be spent on crawled pages while a known-JSON endpoint waits:
+// with far more unknown-type crawl hits than the cap allows, the spec-documented
+// endpoint (queued last) is still probed.
+func TestProbeResponseShapes_KnownJSONIsNotStarvedByCrawledPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/spec/only" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html></html>"))
+	}))
+	defer srv.Close()
+
+	agg := &aggregator{target: srv.URL}
+	for i := 0; i < 3*maxShapeProbes; i++ {
+		agg.addEndpoint(EndpointFact{URL: fmt.Sprintf("%s/page/%d", srv.URL, i), Method: "GET", StatusCode: 200, Source: "katana-crawl"})
+	}
+	agg.addEndpoint(EndpointFact{URL: srv.URL + "/spec/only", Method: "GET", Source: "api-spec"})
+
+	New(newTestClient()).probeResponseShapes(context.Background(), agg, []string{srv.URL})
+	var got string
+	for _, ep := range agg.endpoints {
+		if strings.HasSuffix(ep.URL, "/spec/only") {
+			got = ep.ResponseShape
+		}
+	}
+	assert.Equal(t, `{"ok":"bool"}`, got)
 }

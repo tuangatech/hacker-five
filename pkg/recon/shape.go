@@ -219,28 +219,56 @@ func isHex(s string) bool {
 	return true
 }
 
-// shapeCandidate reports whether ep is worth one GET for its response shape: a
-// parameter-free GET that either an API spec documents or was observed
-// answering 2xx with a JSON content type. A templated path ("{id}") has no
-// concrete URL to fetch, and recon never invents an id.
-func shapeCandidate(ep *EndpointFact) bool {
+// Shape-candidate tiers, best first. The pass is capped, so what it spends its
+// requests on matters: an endpoint known to be JSON should not queue behind
+// crawl hits that might be HTML pages.
+const (
+	shapeTierKnownJSON    = iota // an API spec documents it, or it was observed answering JSON
+	shapeTierLikelyAPI           // observed 2xx, content type unknown, path looks like an API route
+	shapeTierUnknown             // observed 2xx, content type unknown, path says nothing
+	shapeTierNotCandidate = -1
+)
+
+// shapeTier reports whether ep is worth one GET for its response shape and how
+// early: a parameter-free GET that an API spec documents, or that was observed
+// answering 2xx. A templated path ("{id}") has no concrete URL to fetch, and
+// recon never invents an id.
+//
+// A katana crawl fact has a status but no content type, so "content type
+// unknown" must stay eligible — the body decides: a response only yields a
+// shape if it parses as JSON. An observed non-JSON content type is excluded.
+func shapeTier(ep *EndpointFact) int {
 	if ep.ResponseShape != "" {
-		return false
+		return shapeTierNotCandidate
 	}
 	if ep.Method != "" && !strings.EqualFold(ep.Method, http.MethodGet) {
-		return false
+		return shapeTierNotCandidate
 	}
 	p := endpointPath(ep.URL)
 	if p == "" || IsStaticAssetPath(p) || !IsPlausibleURLPath(p) {
-		return false
+		return shapeTierNotCandidate
 	}
 	if strings.ContainsAny(ep.URL, "{}") || strings.Contains(strings.ToLower(ep.URL), "%7b") {
-		return false
+		return shapeTierNotCandidate
 	}
 	if ep.Source == "api-spec" {
-		return true
+		return shapeTierKnownJSON
 	}
-	return ep.StatusCode >= 200 && ep.StatusCode < 300 && strings.Contains(strings.ToLower(ep.ContentType), "json")
+	if ep.StatusCode < 200 || ep.StatusCode >= 300 {
+		return shapeTierNotCandidate
+	}
+	ct := strings.ToLower(ep.ContentType)
+	switch {
+	case strings.Contains(ct, "json"):
+		return shapeTierKnownJSON
+	case ct != "":
+		return shapeTierNotCandidate // observed as something else (html, image, ...)
+	}
+	lp := strings.ToLower(p)
+	if strings.HasSuffix(lp, ".json") || strings.Contains(lp, "/api") || strings.Contains(lp, "/v1/") || strings.Contains(lp, "/v2/") || strings.Contains(lp, "/graphql") {
+		return shapeTierLikelyAPI
+	}
+	return shapeTierUnknown
 }
 
 // probeResponseShapes issues one bounded GET each against the most interesting
@@ -256,27 +284,39 @@ func (r *Recon) probeResponseShapes(ctx context.Context, agg *aggregator, seeds 
 	}
 
 	type candidate struct {
-		url  string
-		rank int
+		url        string
+		tier, rank int
 	}
 	var candidates []candidate
-	seen := map[string]bool{}
+	seen := map[string]int{} // url -> index in candidates, so a better-tiered duplicate fact wins
 	for i := range agg.endpoints {
 		ep := &agg.endpoints[i]
-		if seen[ep.URL] || !shapeCandidate(ep) {
+		tier := shapeTier(ep)
+		if tier == shapeTierNotCandidate {
 			continue
 		}
 		host := hostOnly(ep.URL)
 		if !seedHosts[NormalizeHost(host)] && (r.scope == nil || !r.scope.Allowed("https://"+host)) {
 			continue
 		}
-		seen[ep.URL] = true
-		candidates = append(candidates, candidate{url: ep.URL, rank: pathInterestRank(endpointPath(ep.URL))})
+		if at, dup := seen[ep.URL]; dup {
+			if tier < candidates[at].tier {
+				candidates[at].tier = tier
+			}
+			continue
+		}
+		seen[ep.URL] = len(candidates)
+		candidates = append(candidates, candidate{url: ep.URL, tier: tier, rank: pathInterestRank(endpointPath(ep.URL))})
 	}
 	if len(candidates) == 0 {
 		return
 	}
-	sort.SliceStable(candidates, func(a, b int) bool { return candidates[a].rank < candidates[b].rank })
+	sort.SliceStable(candidates, func(a, b int) bool {
+		if candidates[a].tier != candidates[b].tier {
+			return candidates[a].tier < candidates[b].tier
+		}
+		return candidates[a].rank < candidates[b].rank
+	})
 	if len(candidates) > maxShapeProbes {
 		candidates = candidates[:maxShapeProbes]
 	}
