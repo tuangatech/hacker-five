@@ -114,3 +114,33 @@ func splitNonEmptyLines(t *testing.T, s string) [][]byte {
 	require.NoError(t, sc.Err())
 	return lines
 }
+
+func TestReconAuthHeader(t *testing.T) {
+	origin, h, err := reconAuthHeader("app.example.com:8443", "tok", "", "")
+	require.NoError(t, err)
+	require.Equal(t, "https://app.example.com:8443", origin, "a scheme-less target gets https, as recon does")
+	require.Equal(t, map[string]string{"Authorization": "Bearer tok"}, h)
+
+	origin, h, err = reconAuthHeader("http://127.0.0.1:8888", "tok", "X-Api-Key", "{token}")
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:8888", origin)
+	require.Equal(t, map[string]string{"X-Api-Key": "tok"}, h)
+
+	_, _, err = reconAuthHeader("http://x", "", "", "")
+	require.ErrorContains(t, err, "--recon-auth needs an owner token")
+	_, _, err = reconAuthHeader("http://x", "tok", "", "Bearer")
+	require.ErrorContains(t, err, "{token}")
+}
+
+// --recon-auth is opt-in and must fail before any network call when there is no
+// token to send, rather than silently running an unauthenticated recon.
+func TestAgentCmd_ReconAuthWithoutTokenFailsEarly(t *testing.T) {
+	t.Setenv("HACKERFIVE_AUTH_TOKEN", "")
+	cmd := newAgentCmd(&rootFlags{})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--targets", "http://127.0.0.1:1", "--allow-no-scope", "--no-model", "--recon-auth"})
+	err := cmd.Execute()
+	require.ErrorContains(t, err, "--recon-auth needs an owner token")
+}

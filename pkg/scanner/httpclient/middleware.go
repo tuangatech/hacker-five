@@ -4,6 +4,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,53 @@ func WithHeaders(headers map[string]string) Middleware {
 			return next.RoundTrip(req)
 		})
 	}
+}
+
+// WithHostHeaders sets headers only on requests to the same host and port as
+// origin (a URL such as the scan target; its scheme's default port is implied
+// when it names none), for a header that carries a credential. WithHeaders
+// would send it wherever recon follows a link, a redirect or a discovered
+// subdomain.
+//
+// It works on a clone of the request. net/http builds a redirect's request
+// from the caller's original, so setting the header on the original would
+// carry it to whatever host a 3xx points at (net/http itself only strips
+// Authorization, Cookie and WWW-Authenticate across domains, not a custom
+// header name). Every hop, including retries, passes through here again and
+// gets the header only if its own host matches.
+func WithHostHeaders(origin string, headers map[string]string) Middleware {
+	want := ""
+	if u, err := url.Parse(origin); err == nil && u.Host != "" {
+		want = hostKeyOf(u.Host, u.Scheme)
+	}
+	return func(next http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if want == "" || len(headers) == 0 || req.URL == nil || hostKeyOf(req.URL.Host, req.URL.Scheme) != want {
+				return next.RoundTrip(req)
+			}
+			req = req.Clone(req.Context())
+			for k, v := range headers {
+				req.Header.Set(k, v)
+			}
+			return next.RoundTrip(req)
+		})
+	}
+}
+
+// hostKeyOf normalises a URL host to "lowercase-hostname:port"; with no port
+// in host, scheme picks the default (443 for https, 80 otherwise).
+func hostKeyOf(host, scheme string) string {
+	h, port := host, ""
+	if u, err := url.Parse("//" + host); err == nil {
+		h, port = u.Hostname(), u.Port()
+	}
+	if port == "" {
+		port = "80"
+		if scheme == "https" {
+			port = "443"
+		}
+	}
+	return strings.ToLower(h) + ":" + port
 }
 
 // WithRateLimit paces every actual outgoing request through limiter — one

@@ -44,9 +44,9 @@ import (
 //	                             makes one misconfig sweep take 16+ minutes at the default rate, LT-179)
 //	HACKERFIVE_ABLATION_EXTRA_ARGS  extra `hackerfive agent` flags, space-separated, added to every run
 //	                             of every arm (e.g. "--rate-limit 60")
-//	HACKERFIVE_ABLATION_RECON_AUTH  when set, also send the scenario's owner token as an Authorization header so
-//	                             recon itself is authenticated (`agent --auth-token` alone reaches only the leaf
-//	                             dispatches, not recon; LT-187). Recorded in Settings as recon-auth=true, never the token
+//	HACKERFIVE_ABLATION_RECON_AUTH  when set, add `--recon-auth` so recon itself is authenticated with the scenario's
+//	                             owner token (`agent --auth-token` alone reaches only the leaf dispatches, not
+//	                             recon; LT-187). Recorded in Settings as recon-auth=true, never the token
 //
 // Both overrides are recorded on every result (RunRecord.Settings). They apply equally to all
 // arms of an invocation, so a comparison inside one results file is like-for-like; do not compare
@@ -152,7 +152,7 @@ func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, pr
 	defer cancel()
 	armArgs := append(append([]string{}, arm.ExtraArgs...), extraArgs...)
 	if reconAuth && sc.AuthTokenEnv != "" {
-		armArgs = append(armArgs, "--header", "Authorization: Bearer "+os.Getenv(sc.AuthTokenEnv))
+		armArgs = append(armArgs, "--recon-auth")
 	}
 	cmd := exec.CommandContext(ctx, binPath, sc.AgentArgs(target, scopeFile, armArgs...)...)
 	cmd.Dir = repoRoot()

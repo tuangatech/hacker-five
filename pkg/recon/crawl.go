@@ -282,6 +282,11 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	waveCtx, cancel := context.WithTimeout(ctx, crawlTimeout)
 	defer cancel()
 	katanaArgs = append(katanaArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every crawl request
+	authArgs, authSkipped := r.crawlAuthArgs(seeds)
+	katanaArgs = append(katanaArgs, authArgs...)
+	if authSkipped {
+		agg.addWarning("wave3: crawl ran unauthenticated: its seeds include hosts other than the credential's origin, and the credential is only ever sent to that origin")
+	}
 	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana", katanaArgs...)
 	if err != nil && !isWaveTimeout(err) {
 		if isBinaryMissing(err) {

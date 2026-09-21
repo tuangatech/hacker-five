@@ -278,3 +278,77 @@ func TestClient_Proxy(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&proxied))
 }
+
+// LT-187: a credential header must reach only the origin it was configured
+// for. Server B answers with what it received; server A redirects to B, so a
+// leak through net/http's own redirect header copy would show up there.
+func TestClient_WithHostHeaders_OnlyTheConfiguredOrigin(t *testing.T) {
+	var gotOnB atomic.Value
+	gotOnB.Store("")
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOnB.Store(r.Header.Get("X-Session"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer b.Close()
+	var gotOnA atomic.Value
+	gotOnA.Store("")
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, b.URL+"/landed", http.StatusFound)
+			return
+		}
+		gotOnA.Store(r.Header.Get("X-Session"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer a.Close()
+
+	client := httpclient.New(httpclient.Config{Timeout: 5 * time.Second, MaxRedirects: 5, MaxIdleConnsPerHost: 4},
+		httpclient.WithHostHeaders(a.URL, map[string]string{"X-Session": "secret"}))
+	do := func(u string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, u, nil)
+		require.NoError(t, err)
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.Empty(t, req.Header.Get("X-Session"), "the caller's own request must not be mutated")
+	}
+
+	do(a.URL + "/plain")
+	assert.Equal(t, "secret", gotOnA.Load(), "the configured origin gets the header")
+
+	do(b.URL + "/direct")
+	assert.Empty(t, gotOnB.Load(), "another origin (same host, other port) must not")
+
+	gotOnB.Store("")
+	do(a.URL + "/redirect")
+	assert.Empty(t, gotOnB.Load(), "a redirect to another origin must not carry it")
+}
+
+func TestClient_WithHostHeaders_DefaultPortsAndCase(t *testing.T) {
+	var got atomic.Value
+	rt := httpclient.WithHostHeaders("https://Example.COM", map[string]string{"X-Session": "secret"})(roundTripFn(func(r *http.Request) (*http.Response, error) {
+		got.Store(r.Header.Get("X-Session"))
+		return &http.Response{StatusCode: 200, Body: http.NoBody, Request: r}, nil
+	}))
+	for url, want := range map[string]string{
+		"https://example.com/x":     "secret",
+		"https://example.com:443/x": "secret",
+		"https://example.com:8443/": "",
+		"http://example.com/":       "",
+		"https://sub.example.com/":  "",
+		"https://example.com.evil/": "",
+	} {
+		got.Store("")
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		require.NoError(t, err)
+		resp, err := rt.RoundTrip(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.Equal(t, want, got.Load(), url)
+	}
+}
+
+type roundTripFn func(*http.Request) (*http.Response, error)
+
+func (f roundTripFn) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

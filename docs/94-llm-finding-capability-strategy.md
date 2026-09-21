@@ -79,6 +79,7 @@ The labs cannot currently tell us whether an LLM step helps: three never invoke 
 | Response-shape capture | **Done and live-verified**, but **nothing reads it yet** (J1's input). One real bug found by running it: crawl facts have no content type, so the first version captured nothing on a real crawl. |
 | Miss attribution (LT-185) | **Built and run once on crAPI (1 run per arm).** `pkg/coverage` classifies each known vulnerability by the pipeline stage where it was lost; the agent's result event now carries recon's endpoint list (values stripped); the harness prints a per-arm table. First result below: none of the five misses is a selection problem. |
 | LT-184 spurious idor leaves | **Fixed** (recon's JS-join step crossed every `?key=` literal with every route). 12 `idor` leaves became 1; the run-every-leaf arm went from 194 s to 44 s with the same findings. |
+| LT-187 recon authentication | **Built as an opt-in `--recon-auth` and measured.** On crAPI it adds observed endpoints (55 to 69) but no findings: the same 20 findings and 3 of 7 known vulnerabilities with and without it. See "Authenticated recon (LT-187)". |
 | LT-186 recon route extraction | **Fixed for placeholder routes and the route cap; measured.** Shop-orders BOLA moved from stage 0 to found (known vulnerabilities 2 of 7 to 3 of 7). Vehicle-location is now dispatched but still not found (no UUID seed); the SSRF body field is untouched. See "After the LT-186 fixes". |
 | Ablation harness | **Built and run once (crAPI, 3 runs per arm, 12 of 12 completed).** `--no-model` control arm, four arms (the fourth, `no-model+all-leaves`, added and run 2026-09-21), two ground-truth lists, JSONL per run, min-max ranges, never merged across models, harness overrides recorded per result. Ground truth exists for crAPI only (7 entries). See the baseline below and LT-183. |
 
@@ -161,7 +162,27 @@ Reading it:
 5. **Vehicle-location is now a two-part problem with a known second half.** The route and its `idor` leaf exist; what is missing is a real vehicle UUID as a seed. The only place one appears is the authenticated `GET /identity/api/v2/vehicle/vehicles` response, and recon keeps shapes, not values (LT-186 item c, gated by the privacy question in section 7).
 6. **The stage-5 label is only a hint.** Same-class findings exist elsewhere (14 `idor` findings on other routes), so the classifier cannot separate "detector limit" from "ground-truth mismatch". Here the cause is the missing seed.
 
-Caveats: 1 run per arm; recon authentication and the code change are confounded in the totals (the direct recon dumps separate them: without a token the orders leaf and the community-posts leaves appear after the fix, and only with a token do the identity `api/v2/*` routes and `vehicle/{carId}/location`); one lab.
+Caveats: 1 run per arm; recon authentication and the code change are confounded in the totals (separated in "Authenticated recon (LT-187)" below: authentication added no findings) (the direct recon dumps separate them: without a token the orders leaf and the community-posts leaves appear after the fix, and only with a token do the identity `api/v2/*` routes and `vehicle/{carId}/location`); one lab.
+
+### Authenticated recon (LT-187): `agent --recon-auth`, crAPI, 2026-09-21, 1 run per arm
+
+`hackerfive agent --auth-token` reached the leaf dispatches but not recon. `--recon-auth` (opt-in) now sends that same header on recon's own requests to the target's host. The harness knob `HACKERFIVE_ABLATION_RECON_AUTH` adds the flag, so the measurement is the product path. Same code, same settings (`--rate-limit 60`, bundled templates, `openai/gpt-5.6-luna`); the only difference between the two rows of each arm is the flag.
+
+| Arm | Recon | Recon endpoints | Findings | Known vulns | Model turns | Cost | Wall |
+|---|---|---|---|---|---|---|---|
+| no model, every runnable leaf | unauthenticated | 55 | 20 | 3 of 7 | 0 | $0 | 382 s |
+| no model, every runnable leaf | `--recon-auth` | 69 | 20 | 3 of 7 | 0 | $0 | 409 s |
+| fast-lane + model | unauthenticated | 56 | 20 | 3 of 7 | 10 | $0.0099 | 427 s |
+| fast-lane + model | `--recon-auth` | 69 | 20 | 3 of 7 | 12 | $0.0122 | 457 s |
+
+Reading it:
+
+1. **On crAPI, authenticated recon adds coverage but not findings.** It observes 14 more endpoints (identity's `api/v2/*` family and `vehicle/{carId}/location`), and the vehicle-location vulnerability moves from stage 0 (not observed) to stage 5 (dispatched, not found). Every finding-level number is unchanged. **This corrects the LT-186 run above**, whose caveat left open how much of the change came from authenticating recon: none of the finding gain did. The shop-orders find comes from the route extractor alone.
+2. **The reason is the seed, not the token.** The location route needs a real vehicle UUID and recon does not harvest one (LT-186 item c). Authenticated recon is a precondition for that fix (the UUID only appears in an authenticated response), not a substitute for it.
+3. **Its cost is small and its risk is real.** About 7% more wall time here; the endpoints it adds also become leaves. The risk is that a crawl carrying a live session can reach a state-changing GET, which is why it is opt-in.
+4. **The model arm again matches the deterministic arm** (20 findings, 3 of 7), with or without recon authentication.
+
+How the credential is kept from leaking (tested): recon's HTTP client gets the header through a middleware that keys on the target's host and port, works on a clone of the request, and so never passes it to another host or across a redirect (`net/http` copies a redirect's headers from the original request, and strips only `Authorization`/`Cookie`, so a custom header name would otherwise follow the redirect). The katana crawl carries it only when every seed is on the target's origin and is then pinned to the exact hostname (`-fs fqdn`); httpx, which probes many hosts, never receives it. Caveats: 1 run per arm, one lab.
 
 Two things this turned up that change how to read everything above (the fourth arm's flag, `--run-every-leaf`, is a deterministic policy, not a recommended default: it runs endpoint-specific leaves blind and does not resolve unresolved ones):
 
