@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -231,9 +232,10 @@ func truncate(s string, n int) string {
 // RunRecord is one (lab, arm, run) measurement, written one per line to the
 // ablation results file so runs can be compared later without re-running them.
 type RunRecord struct {
-	Lab string `json:"lab"`
-	Arm string `json:"arm"`
-	Run int    `json:"run"`
+	Lab   string `json:"lab"`
+	Arm   string `json:"arm"`
+	Run   int    `json:"run"`
+	Model string `json:"model,omitempty"` // what answered the model calls; "none" for --no-model
 
 	Findings       int      `json:"findings"`
 	ExpectedHit    int      `json:"expected_hit"`
@@ -253,6 +255,19 @@ type RunRecord struct {
 	// result event; its findings are then only what streamed out.
 	SawResult bool   `json:"saw_result"`
 	Error     string `json:"error,omitempty"`
+}
+
+// modelLineRe matches the line `hackerfive agent` writes to stderr naming the
+// model, e.g. "agent: model: openrouter:openai/gpt-5.6-luna".
+var modelLineRe = regexp.MustCompile(`(?m)^agent: model: (\S+)\s*$`)
+
+// ModelFromStderr returns the model an agent run reported, "" if it reported
+// none (an older binary, or a run that died before printing it).
+func ModelFromStderr(stderr string) string {
+	if m := modelLineRe.FindStringSubmatch(stderr); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // NewRunRecord assembles a record from a parsed run and its grade.
@@ -292,6 +307,7 @@ func statOf(xs []float64) Stat {
 // ArmSummary aggregates every run of one arm against one lab.
 type ArmSummary struct {
 	Lab, Arm string
+	Model    string // rows are never merged across models: their results are not comparable
 	Runs     int
 	Failed   int // runs that never produced a result event
 	Degraded int // runs that ended with the model unavailable or disabled
@@ -314,11 +330,11 @@ func frac(hit, total int) float64 {
 
 // Summarize groups records by lab and arm, in a stable order.
 func Summarize(records []RunRecord) []ArmSummary {
-	type key struct{ lab, arm string }
+	type key struct{ lab, arm, model string }
 	groups := map[key][]RunRecord{}
 	var keys []key
 	for _, r := range records {
-		k := key{r.Lab, r.Arm}
+		k := key{r.Lab, r.Arm, r.Model}
 		if _, ok := groups[k]; !ok {
 			keys = append(keys, k)
 		}
@@ -328,13 +344,16 @@ func Summarize(records []RunRecord) []ArmSummary {
 		if keys[i].lab != keys[j].lab {
 			return keys[i].lab < keys[j].lab
 		}
-		return keys[i].arm < keys[j].arm
+		if keys[i].arm != keys[j].arm {
+			return keys[i].arm < keys[j].arm
+		}
+		return keys[i].model < keys[j].model
 	})
 
 	out := make([]ArmSummary, 0, len(keys))
 	for _, k := range keys {
 		rs := groups[k]
-		s := ArmSummary{Lab: k.lab, Arm: k.arm, Runs: len(rs), KnownTotal: rs[0].KnownTotal}
+		s := ArmSummary{Lab: k.lab, Arm: k.arm, Model: k.model, Runs: len(rs), KnownTotal: rs[0].KnownTotal}
 		var er, kr, un, cost, turns, wall []float64
 		for _, r := range rs {
 			if !r.SawResult {
@@ -376,8 +395,8 @@ func num(s Stat, format string) string {
 // the range shown is a single point.
 func FormatSummary(sums []ArmSummary) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-26s %-18s %4s %4s %-16s %-16s %-10s %-10s %-9s %s\n",
-		"lab", "arm", "runs", "fail", "expected recall", "known-vuln recall", "unlabeled", "cost $", "model trn", "wall s")
+	fmt.Fprintf(&b, "%-26s %-18s %-34s %4s %4s %-16s %-16s %-10s %-10s %-9s %s\n",
+		"lab", "arm", "model", "runs", "fail", "expected recall", "known-vuln recall", "unlabeled", "cost $", "model trn", "wall s")
 	for _, s := range sums {
 		known := "n/a"
 		if s.KnownTotal > 0 {
@@ -387,8 +406,12 @@ func FormatSummary(sums []ArmSummary) string {
 		if s.Degraded > 0 {
 			arm += "*"
 		}
-		fmt.Fprintf(&b, "%-26s %-18s %4d %4d %-16s %-16s %-10s %-10s %-9s %s\n",
-			s.Lab, arm, s.Runs, s.Failed, pct(s.ExpectedRecall), known,
+		model := s.Model
+		if model == "" {
+			model = "?"
+		}
+		fmt.Fprintf(&b, "%-26s %-18s %-34s %4d %4d %-16s %-16s %-10s %-10s %-9s %s\n",
+			s.Lab, arm, model, s.Runs, s.Failed, pct(s.ExpectedRecall), known,
 			num(s.Unlabeled, "%.1f"), num(s.CostUSD, "%.4f"), num(s.ModelTurns, "%.1f"), num(s.WallSeconds, "%.0f"))
 	}
 	b.WriteString("* = at least one run ended degraded (model disabled or unavailable)\n")

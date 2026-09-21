@@ -106,8 +106,8 @@ func TestAblation(t *testing.T) {
 				rec := runAblationOnce(t, sc, arm, run, prefixes, known, timeout)
 				records = append(records, rec)
 				require.NoError(t, enc.Encode(rec)) // written per run, so a killed harness keeps what finished
-				t.Logf("%s / %s run %d: %d finding(s), expected %d/%d, known %d/%d, unlabeled %d, $%.4f, %.0fs, result=%v",
-					rec.Lab, rec.Arm, rec.Run, rec.Findings, rec.ExpectedHit, rec.ExpectedTotal, rec.KnownHit, rec.KnownTotal,
+				t.Logf("%s / %s [%s] run %d: %d finding(s), expected %d/%d, known %d/%d, unlabeled %d, $%.4f, %.0fs, result=%v",
+					rec.Lab, rec.Arm, rec.Model, rec.Run, rec.Findings, rec.ExpectedHit, rec.ExpectedTotal, rec.KnownHit, rec.KnownTotal,
 					rec.Unlabeled, rec.CostUSD, rec.WallSeconds, rec.SawResult)
 			}
 		}
@@ -145,7 +145,9 @@ func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, pr
 	if parseErr != nil {
 		errText += " parse: " + parseErr.Error()
 	}
-	return NewRunRecord(sc.Name, arm.Name, run, parsed, GradeRun(parsed.Findings, prefixes, known), wall, errText)
+	rec := NewRunRecord(sc.Name, arm.Name, run, parsed, GradeRun(parsed.Findings, prefixes, known), wall, errText)
+	rec.Model = ModelFromStderr(stderr.String())
+	return rec
 }
 
 func envInt(key string, def int) int {

@@ -203,6 +203,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 			var llmClient orchestrator.LLMClient
 			if noModel {
 				llmClient = orchestrator.NoModelClient{}
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "agent: model: none")
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "agent: --no-model set — no LLM calls will be made; leaves that need a model decision are left undispatched")
 			} else {
 				fb, fbErr := llmfallback.New(llmfallback.WithLogCallback(func(level, msg string) {
@@ -212,6 +213,10 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 					return fmt.Errorf("agent requires a configured LLM tier (OPENROUTER_API_KEY and/or a reachable local runtime), or pass --no-model: %w", fbErr)
 				}
 				llmClient = fb
+				// One stable line the ablation harness reads: results from
+				// different models are not comparable, and the configured model
+				// changes without any code change.
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: model: %s\n", fb.ModelLabel())
 			}
 
 			var approvalGate scriptexec.ApprovalGate

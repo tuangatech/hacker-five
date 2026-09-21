@@ -143,6 +143,25 @@ func TestSummarize_AggregatesPerLabAndArmWithRange(t *testing.T) {
 	assert.Equal(t, 4, strings.Count(table, "\n"), "header, two rows, footnote")
 }
 
+func TestModelFromStderr(t *testing.T) {
+	assert.Equal(t, "openrouter:openai/gpt-5.6-luna", ModelFromStderr("agent: [info] x\nagent: model: openrouter:openai/gpt-5.6-luna\nagent: [info] y\n"))
+	assert.Equal(t, "none", ModelFromStderr("agent: model: none\n"))
+	assert.Empty(t, ModelFromStderr("agent: [info] no model line\n"))
+}
+
+// Runs under different models are never averaged together.
+func TestSummarize_DoesNotMergeAcrossModels(t *testing.T) {
+	mk := func(model string) RunRecord {
+		return RunRecord{Lab: "crAPI", Arm: "fast-lane+model", Model: model, ExpectedTotal: 1, SawResult: true}
+	}
+	sums := Summarize([]RunRecord{mk("openrouter:a"), mk("openrouter:b"), mk("openrouter:a")})
+	require.Len(t, sums, 2)
+	assert.Equal(t, "openrouter:a", sums[0].Model)
+	assert.Equal(t, 2, sums[0].Runs)
+	assert.Equal(t, "openrouter:b", sums[1].Model)
+	assert.Equal(t, 1, sums[1].Runs)
+}
+
 func TestArms_ControlFirstNoModelAndNamesUnique(t *testing.T) {
 	require.NotEmpty(t, Arms)
 	assert.Equal(t, "no-model", Arms[0].Name, "the control arm comes first")
