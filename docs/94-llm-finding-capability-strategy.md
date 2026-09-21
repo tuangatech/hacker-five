@@ -55,6 +55,19 @@ The labs cannot currently tell us whether an LLM step helps: three never invoke 
 2. **Reliability envelope for every new call** (LT-173): `max_tokens`/reasoning cap, per-call deadline shorter than the 4-minute stall that killed vAPI and crAPI runs, and graceful degradation to the deterministic result. New LLM jobs multiply the exposure to that failure.
 3. **Response-shape capture in recon** (shape only): J1's input does not exist yet. Key names and types keep doc91 §4's "no raw response bodies in agent context".
 
+### Phase 0 status (2026-09-21, branch `feat/llm-finding-capability-phase0`)
+
+| Item | State |
+|---|---|
+| LT-173 reliability envelope | **Done.** Decision calls run under `max_tokens` 2048 + reasoning effort `low` + a 120s deadline; a truncated-empty response is an error; after two consecutive failed calls the run degrades to the fast lane and ends cleanly with `Result.Degraded`. Live probe on two models: valid decisions in every trial, deepseek about 40% faster and cheaper. The 4-minute stall itself was **not reproduced**, so prevention is unproven; the degrade path is the guarantee. |
+| Response-shape capture | **Done and live-verified**, but **nothing reads it yet** (J1's input). One real bug found by running it: crawl facts have no content type, so the first version captured nothing on a real crawl. |
+| Ablation harness | **Built, not yet run live.** `--no-model` control arm, three arms today, two ground-truth lists, N runs per arm, JSONL results, min-max ranges, never merged across models. Ground truth exists for crAPI only (7 entries, sourced from the Step E table). See LT-183. |
+
+Two things this turned up that change how to read everything above:
+
+1. **The control arm is nearly free to run and answers the first question.** `--no-model` needs no API key, so "what does the deterministic path alone reach on crAPI" can be measured before spending on any model arm.
+2. **The configured model changed without any code change** (`deepseek/deepseek-v4.1-flash` in the LT-162/171/172 runs, `openai/gpt-5.6-luna` now). Any before/after across those sessions is across models, which is why the harness records the model and refuses to average across it.
+
 ## 5. Consistency with existing decisions
 
 - **Decision 5/6 (LLM only where the registry cannot decide):** J1-J6 all sit at points the registry structurally cannot cover: semantic classification, app-specific hypotheses, adversarial review. They are opt-in under `hackerfive agent` (default off in Web UI), capped and schema-bound. doc90 should gain a cross-reference when implementation starts, per its own reopening discipline.
