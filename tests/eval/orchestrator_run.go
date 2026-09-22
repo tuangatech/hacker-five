@@ -68,6 +68,17 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		RequiredEnv:  []string{"JUICESHOP_BASE_URL"},
 		Target:       func() string { return os.Getenv("JUICESHOP_BASE_URL") },
 		Depth:        "active",
+		// Optional: JUICESHOP_OWNER_TOKEN/JUICESHOP_OTHER_TOKEN (two accounts'
+		// Bearer tokens, e.g. via POST /api/Users then POST /rest/user/login —
+		// docs/20-setup-testing-targets.md's Juice Shop section) give the idor
+		// leaf an identity, same convention as vAPI below. Whether recon reaches
+		// /rest/basket/{id} and /rest/products/search on its own at "active"
+		// depth (vs. crAPI's own Wave-3-needs-"full" finding for its
+		// endpoint-driven leaves) has not been measured yet — left at "active"
+		// rather than guessed; the ablation table this file feeds will show it.
+		AuthTokenEnv:      "JUICESHOP_OWNER_TOKEN",
+		OtherAuthTokenEnv: "JUICESHOP_OTHER_TOKEN",
+		KnownVulnsFile:    "tests/fixtures/known-vulns/juiceshop.json",
 	},
 	{
 		// Templates: "./templates/", mirroring challenges.go's deterministic

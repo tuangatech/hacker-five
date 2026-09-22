@@ -1,0 +1,44 @@
+{
+  "description": "Vulnerabilities Juice Shop (bkimminich/juice-shop, http://localhost:3000) is documented to contain, live-verified 2026-09-22 both by hand (curl, two throwaway accounts registered via /api/Users) and via the real `hackerfive scan` CLI against a running container — not written from memory (LT-183 b). Ground truth for measuring what an agent arm adds (docs/94-llm-finding-capability-strategy.md); tests/fixtures/expected-findings/juiceshop.json already covers the misconfig/header findings every arm gets for free, so this file only lists real per-challenge vulnerabilities. Left out: Juice Shop's DOM-based XSS challenges (client-side, no server-side detector reaches them — see docs/20-setup-testing-targets.md's Juice Shop XSS caveat) and its mass-assignment/NoSQL-style challenges (no finding class or ID exists to grade them yet), matching how crapi.json/vapi.json scope themselves.",
+  "vulns": [
+    {
+      "id": "juiceshop-bola-basket",
+      "class": "bola",
+      "description": "GET /rest/basket/{id} returns any user's basket by ID with no ownership check — Juice Shop's 'View Basket' challenge. Confirmed by hand: a second throwaway account's token read the first account's basket (real UserId, real products) with HTTP 200.",
+      "endpoint_contains": "/rest/basket/",
+      "id_prefixes": ["idor-"],
+      "baseline": "found",
+      "source": "Live-verified 2026-09-22: `hackerfive scan --detector idor --endpoint '/rest/basket/{{id}}' --auth-token <A> --other-auth-token <B>` against two accounts registered via POST /api/Users found idor-3 through idor-7, each a distinct account's real basket (default 1-100 ID sweep, pkg/scanner/engine.go's idEnumRangeStart/End)."
+    },
+    {
+      "id": "juiceshop-authbypass-jwt-alg-none",
+      "class": "broken-authentication",
+      "description": "A Bearer JWT rewritten to alg:none (empty signature) is still accepted on a genuinely auth-gated endpoint — the server does not restrict the algorithms it will verify with. Confirmed the endpoint really is gated first (401 with no header, a garbage token, or a signature-stripped-but-alg-untouched variant), then that only the alg:none rewrite is accepted.",
+      "endpoint_contains": "/rest/basket/",
+      "id_prefixes": ["authbypass-jwt-"],
+      "baseline": "found",
+      "source": "Live-verified 2026-09-22: direct curl with a hand-built alg:none token (correct signature-stripped variant correctly rejected, 401 'invalid signature') and `hackerfive scan --detector authbypass --protected-paths /rest/basket/6 --auth-token <A>` -> authbypass-jwt-alg-none-rest-basket-6.",
+      "note": "The same rewrite against /rest/user/whoami looked like a hit in an early pass but was not: that endpoint returns HTTP 200 with an empty {\"user\":{}} body for literally any input, including no Authorization header at all (it reads identity from a cookie, not the Bearer header) — not a real signature-verification bypass, so /rest/user/whoami was dropped in favor of the genuinely-gated basket endpoint as this entry's evidence."
+    },
+    {
+      "id": "juiceshop-sqli-product-search",
+      "class": "sqli",
+      "description": "GET /rest/products/search?q= concatenates the query directly into a SQL statement — Juice Shop's classic search-based SQLi, exploitable up to full UNION-based extraction of the Users table (email + password hash).",
+      "endpoint_contains": "/rest/products/search",
+      "id_prefixes": ["sqli-error-q-"],
+      "baseline": "found",
+      "source": "Live-verified 2026-09-22: `hackerfive scan --detector sqli --sqli-path /rest/products/search --sqli-param q` -> sqli-error-q-x (a bare ' payload triggered a real SQLITE_ERROR, absent from baseline); separately confirmed by hand that a UNION SELECT payload on the same param returns every user's email and password hash embedded in the product list."
+    },
+    {
+      "id": "juiceshop-sqli-login-bypass",
+      "class": "broken-authentication",
+      "description": "POST /rest/user/login with email set to \"' OR 1=1--\" logs in as the first matching user (admin@juice-sh.op) with no password — Juice Shop's 'Login Admin' challenge, the same class of bug as juiceshop-sqli-product-search but reached through a JSON request-body field instead of a URL query parameter.",
+      "endpoint_contains": "/rest/user/login",
+      "id_prefixes": ["sqli-error-email-", "sqli-boolean-email-", "sqli-time-email-"],
+      "baseline": "missed",
+      "source": "Live-verified by hand 2026-09-22 (curl, real admin token with role:\"admin\" returned) that the bug is real.",
+      "note": "The sqli detector (pkg/detectors/sqli) only appends a payload to an existing URL query parameter's value (Target.Params, engine.go's sqli.Target{URL, Params}); it has no path for a POST JSON request-body field, so this can never be found with the detector as built today. id_prefixes names the prefix a body-field extension would produce if one reused sqli's existing sanitizeParam(param)-based ID convention with param=\"email\" — it will not match anything until that capability exists.",
+      "gated": "no detector capability reaches a POST JSON body field; would need a body-field SQLi mode analogous to ssrf's --allow-ssrf-body-fill (LT-188 a), not an operator flag on an existing capability"
+    }
+  ]
+}
