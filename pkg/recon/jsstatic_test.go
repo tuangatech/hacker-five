@@ -53,6 +53,130 @@ func TestExtractJSEndpoints_DedupedWithinOneAsset(t *testing.T) {
 	assert.Len(t, got, 1)
 }
 
+// --- backtick template literals (LT-190) --------------------------------
+
+// TestExtractJSEndpoints_BacktickTemplateLiteral_JuiceShopShape is the real
+// live-observed Juice Shop bundle shape (2026-09-22): its Angular services
+// build every REST call as a template literal, a host-variable
+// interpolation immediately followed by the real path, with an id segment
+// interpolated at the end. Before jsQuotedStringRe captured backtick
+// strings at all, none of this was even visible to extraction.
+func TestExtractJSEndpoints_BacktickTemplateLiteral_JuiceShopShape(t *testing.T) {
+	body := "basketService.get=e=>this.http.get(`${this.hostServer}/rest/basket/${e}`)," +
+		"basketService.checkout=(e,i)=>this.http.post(`${this.hostServer}/rest/basket/${e}/checkout`,i)"
+	got := extractJSEndpoints("https://target.example/main.js", body)
+	assert.Contains(t, got, "https://target.example/rest/basket/{param}")
+	assert.Contains(t, got, "https://target.example/rest/basket/{param}/checkout")
+}
+
+// TestExtractJSEndpoints_PlainBacktickLiteral_Found covers the other real
+// shape in the same bundle: a backtick string with no interpolation at all
+// (`/rest/products`) — found exactly like a double-quoted one would be.
+func TestExtractJSEndpoints_PlainBacktickLiteral_Found(t *testing.T) {
+	body := "const P=`/rest/products`;"
+	got := extractJSEndpoints("https://target.example/main.js", body)
+	assert.Contains(t, got, "https://target.example/rest/products")
+}
+
+// TestExtractJSEndpoints_BacktickEmbeddedInterpolation_Rejected guards the
+// false-positive side: an interpolation that only fills *part* of a segment
+// can't be normalized with confidence (what "${x}" contains isn't known),
+// so the literal is dropped rather than emitted with the raw "${x}" text
+// still in it or guessed at.
+func TestExtractJSEndpoints_BacktickEmbeddedInterpolation_Rejected(t *testing.T) {
+	body := "u(`/rest/product-${id}-detail`)"
+	got := extractJSEndpoints("https://target.example/main.js", body)
+	assert.Empty(t, got, "an interpolation embedded inside a segment must not be guessed at")
+}
+
+func TestNormalizeJSTemplateLiteral(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     string
+		want   string
+		wantOK bool
+	}{
+		{name: "no interpolation", in: "/rest/products", want: "/rest/products", wantOK: true},
+		{name: "leading host variable stripped", in: "${this.hostServer}/rest/basket/${e}", want: "/rest/basket/{param}", wantOK: true},
+		{name: "two trailing placeholders", in: "${this.hostServer}/rest/basket/${e}/coupon/${i}", want: "/rest/basket/{param}/coupon/{param}", wantOK: true},
+		{name: "query value interpolated", in: "${this.hostServer}/rest/products/search?q=${e}", want: "/rest/products/search?q={param}", wantOK: true},
+		{name: "embedded, not whole-segment", in: "/rest/product-${id}-detail", want: "", wantOK: false},
+		{name: "query value embedded, not whole", in: "/rest/products/search?q=x-${e}", want: "", wantOK: false},
+		{name: "query pair with no equals", in: "/rest/products/search?${e}", want: "", wantOK: false},
+		{name: "nested braces rejected", in: "/rest/${a[`${b}`]}", want: "", wantOK: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := normalizeJSTemplateLiteral(c.in)
+			assert.Equal(t, c.wantOK, ok)
+			if c.wantOK {
+				assert.Equal(t, c.want, got)
+			}
+		})
+	}
+}
+
+// TestCollectJSPathJoinParts_BacktickBaseWithPlaceholder: the join-parts
+// pipeline (LT-164/LT-186) gets the same backtick+placeholder handling as
+// the direct endpoint pipeline, for a bundle that declares its bare
+// "api/..." route constants as template literals instead of plain strings.
+func TestCollectJSPathJoinParts_BacktickBaseWithPlaceholder(t *testing.T) {
+	body := "ig=`workshop/`,sg={A:`api/shop/orders/${orderId}`}"
+	_, bases, _ := collectJSPathJoinParts(body)
+	assert.Contains(t, bases, "api/shop/orders/{param}")
+}
+
+// TestExtractJSEndpoints_QuerySuffixTemplateLiteral is Juice Shop's actual
+// live-verified SQLi endpoint's real declared shape: a query value
+// interpolated directly into the same template literal as the path, not a
+// separately-declared "?key=" constant the way collectJSPathJoinParts'
+// isJSQuerySuffixCandidate bucket already handles for crAPI-style bundles.
+func TestExtractJSEndpoints_QuerySuffixTemplateLiteral(t *testing.T) {
+	body := "search=e=>this.http.get(`${this.hostServer}/rest/products/search?q=${e}`)"
+	got := extractJSEndpoints("https://target.example/main.js", body)
+	assert.Contains(t, got, "https://target.example/rest/products/search?q={param}")
+}
+
+// TestExtractBacktickLiterals_NestedTemplateLiteralDoesNotDesyncLaterOnes is
+// the real bug LT-190's first attempt (a flat regex "backtick" alternative
+// on jsQuotedStringRe) had, live-verified against Juice Shop's actual
+// main.js: a template literal nested inside another one's own "${...}"
+// (Angular Material's internal CSS-in-JS calc() logic, three deep in the
+// real bundle) desynchronized every backtick pairing after it, silently
+// dropping a real, unrelated, non-nested route declared much later in the
+// same file. This reproduces the shape at unit-test scale: a nested
+// literal, then later, a completely ordinary one — both must be found.
+func TestExtractBacktickLiterals_NestedTemplateLiteralDoesNotDesyncLaterOnes(t *testing.T) {
+	body := "css=t=>`calc(${t?`-1`:`1`} * (${`${1}px`}))`;" +
+		"basketService.get=e=>this.http.get(`${this.hostServer}/rest/basket/${e}`)"
+	got := extractJSEndpoints("https://target.example/main.js", body)
+	assert.Contains(t, got, "https://target.example/rest/basket/{param}",
+		"a route declared after a nested template literal must still be found")
+}
+
+// TestExtractBacktickLiterals_EscapedBacktickDoesNotEndTheLiteral: a real
+// "\`" inside a template literal (live-verified in Juice Shop's own bundle,
+// an angularx-qrcode error message) must not be mistaken for the closing
+// delimiter, which would truncate the literal early and, same as an
+// unhandled nested literal, desync every pairing after it.
+func TestExtractBacktickLiterals_EscapedBacktickDoesNotEndTheLiteral(t *testing.T) {
+	body := "throw new Error(`Field \\`qrdata\\` is empty`);" +
+		"basketService.get=e=>this.http.get(`${this.hostServer}/rest/basket/${e}`)"
+	lits := extractBacktickLiterals(body)
+	assert.Contains(t, lits, "Field \\`qrdata\\` is empty")
+	got := extractJSEndpoints("https://target.example/main.js", body)
+	assert.Contains(t, got, "https://target.example/rest/basket/{param}")
+}
+
+// TestExtractBacktickLiterals_UnterminatedLiteralIsSkippedNotHung guards
+// against an unclosed backtick (a truncated JS body, LT-164's own body-size
+// cap) hanging or panicking rather than just skipping it.
+func TestExtractBacktickLiterals_UnterminatedLiteralIsSkippedNotHung(t *testing.T) {
+	body := "const x = `/rest/unterminated"
+	assert.NotPanics(t, func() { extractBacktickLiterals(body) })
+	assert.Empty(t, extractBacktickLiterals(body))
+}
+
 // --- extractJSPathJoinParts / collectJSPathJoinParts / verifyJSJoinBases (LT-164, LT-186) -----------------
 
 func TestExtractJSPathJoinParts_PlantedCrAPIShape(t *testing.T) {

@@ -8,7 +8,8 @@
       "endpoint_contains": "/rest/basket/",
       "id_prefixes": ["idor-"],
       "baseline": "found",
-      "source": "Live-verified 2026-09-22: `hackerfive scan --detector idor --endpoint '/rest/basket/{{id}}' --auth-token <A> --other-auth-token <B>` against two accounts registered via POST /api/Users found idor-3 through idor-7, each a distinct account's real basket (default 1-100 ID sweep, pkg/scanner/engine.go's idEnumRangeStart/End)."
+      "source": "Live-verified 2026-09-22: `hackerfive scan --detector idor --endpoint '/rest/basket/{{id}}' --auth-token <A> --other-auth-token <B>` against two accounts registered via POST /api/Users found idor-3 through idor-7, each a distinct account's real basket (default 1-100 ID sweep, pkg/scanner/engine.go's idEnumRangeStart/End).",
+      "note": "Also live-verified through the real orchestrated agent path (LT-190, docs/follow-up.md): `hackerfive agent --recon-depth full` with both tokens recon-discovered /rest/basket/{id} on its own (previously invisible — a template-literal route-extraction gap), built a real idor leaf from it, and the model dispatched it on turn 1, producing real idor-1..idor-7 findings — not a hand-built --endpoint."
     },
     {
       "id": "juiceshop-authbypass-jwt-alg-none",

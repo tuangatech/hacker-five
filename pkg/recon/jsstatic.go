@@ -98,7 +98,249 @@ func looksLikeJSAsset(rawURL string, headers map[string]string) bool {
 // of a JS body — deliberately shape-agnostic (LinkFinder-style: grab
 // everything quoted, then filter in Go) rather than trying to encode "looks
 // like a URL" into the regex itself, which is far harder to review and tune.
+// Backtick (template-literal) strings are extracted separately, by
+// extractBacktickLiterals below, not folded into this alternation — see its
+// own doc comment for why a flat regex can't do that correctly.
 var jsQuotedStringRe = regexp.MustCompile(`"([^"\n]{2,200})"|'([^'\n]{2,200})'`)
+
+// maxBacktickNestingDepth bounds how deeply consumeBacktickLiteral recurses
+// into nested "${`...`}" template literals — a defensive cap against a
+// pathological/adversarial input's call-stack depth, not a real-world limit:
+// the deepest nesting live-verified so far (Angular Material's own internal
+// CSS-in-JS, Juice Shop's bundle, LT-190) is 2 levels.
+const maxBacktickNestingDepth = 20
+
+// consumeBacktickLiteral scans body starting at the opening backtick index
+// open, returning that literal's raw content, the index just past its
+// closing backtick, and whether it found one (false on an unterminated
+// literal, in which case the caller should just skip forward). depth guards
+// against runaway recursion via maxBacktickNestingDepth.
+//
+// A backslash escapes the next character (so "\`" never ends the literal
+// early and "\\" is never itself mistaken for an escape). "${" opens an
+// interpolation: from there the content is JS, not string text, so a bare
+// "`" inside it starts a *nested* template literal (recursed into, not
+// treated as this literal's own close) and a bare "{"/"}" adjusts a brace
+// depth so a nested object literal or arrow-function body inside the
+// interpolation doesn't end it early — the interpolation, and only it,
+// ends when that depth returns to zero at a "}". Newlines are ordinary
+// content throughout: a real template literal is a multi-line string by
+// design, and Angular's own component templates commonly are.
+func consumeBacktickLiteral(body string, open, depth int) (content string, end int, ok bool) {
+	if depth > maxBacktickNestingDepth {
+		return "", 0, false
+	}
+	i, n := open+1, len(body)
+	for i < n {
+		switch c := body[i]; {
+		case c == '\\':
+			i += 2 // skip the escaped character too, whatever it is (may overshoot n by 1; loop condition catches it)
+		case c == '`':
+			return body[open+1 : i], i + 1, true
+		case c == '$' && i+1 < n && body[i+1] == '{':
+			i += 2
+			braceDepth := 1
+			for i < n && braceDepth > 0 {
+				switch body[i] {
+				case '\\':
+					i += 2
+				case '`':
+					if _, nestedEnd, nestedOK := consumeBacktickLiteral(body, i, depth+1); nestedOK {
+						i = nestedEnd
+					} else {
+						i++ // unterminated nested literal — just advance past the stray backtick
+					}
+				case '{':
+					braceDepth++
+					i++
+				case '}':
+					braceDepth--
+					i++
+				default:
+					i++
+				}
+			}
+		default:
+			i++
+		}
+	}
+	return "", 0, false // ran off the end of body without a closing backtick
+}
+
+// extractBacktickLiterals returns the raw content of every top-level
+// backtick template literal in body, tracking interpolation nesting
+// properly (consumeBacktickLiteral) instead of a flat regex — LT-190
+// (docs/follow-up.md).
+//
+// A modern TypeScript/Angular bundle (Juice Shop, live-verified) builds
+// essentially every REST call as a template literal
+// (`` `${this.hostServer}/rest/basket/${e}` ``), never a plain quoted
+// string, so without extracting these at all every one of these real,
+// present-in-the-bundle routes was structurally invisible to this package.
+// The first attempt at this used jsQuotedStringRe's own alternation-based
+// approach (a fourth "backtick" branch, "capture up to the next backtick"),
+// the same technique the double/single-quote alternatives already use —
+// live-verified against Juice Shop's actual main.js, this silently broke:
+// its bundle contains a template literal nested three deep inside another
+// one's own "${...}" (Angular Material's internal CSS-in-JS,
+// `` `calc(${this._currentDirection===`rtl`?`-1`:`1`} * (${`${a+l}px`} ...` ``),
+// and a flat regex has no way to track nesting depth — regular languages
+// fundamentally can't recognize balanced/nested delimiters. That one nested
+// literal, ~256KB into the file, desynchronized every backtick pairing
+// after it for the rest of the bundle: `/rest/basket/${e}`, a completely
+// unrelated, non-nested literal ~285KB further on, and everything like it
+// was silently dropped as a result. This function tracks real nesting
+// instead, so a desync like that can't happen.
+//
+// Content is returned raw — normalizeJSTemplateLiteral still has to make
+// sense of whatever "${...}" pieces it contains before it's a usable
+// candidate; extractBacktickLiterals' only job is finding where each
+// literal actually starts and ends.
+func extractBacktickLiterals(body string) []string {
+	var out []string
+	for i := 0; i < len(body); {
+		if body[i] != '`' {
+			i++
+			continue
+		}
+		content, end, ok := consumeBacktickLiteral(body, i, 0)
+		if !ok {
+			i++ // unterminated from here — skip this backtick, keep scanning
+			continue
+		}
+		if len(content) >= 2 {
+			out = append(out, content)
+		}
+		i = end
+		if len(out) >= maxJSQuotedStringsPerAsset {
+			break
+		}
+	}
+	return out
+}
+
+// jsTemplateLiteralInterpRe matches one non-nested "${...}" interpolation
+// block inside a backtick template literal's already-extracted content.
+var jsTemplateLiteralInterpRe = regexp.MustCompile(`\$\{[^{}]*\}`)
+
+// jsLeadingTemplateLiteralInterpRe is jsTemplateLiteralInterpRe anchored to
+// the very start of the string — recognizes a base-URL/host variable
+// written as the literal's first piece, e.g. "${this.hostServer}/rest/...".
+var jsLeadingTemplateLiteralInterpRe = regexp.MustCompile(`^\$\{[^{}]*\}`)
+
+// jsTemplateLiteralPlaceholder is the placeholder name substituted for a
+// "${...}" interpolation that fills a whole path segment or query value —
+// the OpenAPI-style "{name}" spelling isSpecPathParam/normalizeJSPathPlaceholders
+// already use (LT-186/LT-40), emitted directly rather than through the
+// "<name>" intermediate those two use: a query-embedded placeholder
+// ("?q={param}") isn't a whole "/"-delimited segment, so
+// normalizeJSPathPlaceholders' own segment-shaped rewrite wouldn't reach it,
+// and IsPlausibleURLPath's jsSyntaxInPath check rejects "<"/">" wherever
+// they appear in the string, segment boundary or not — so the earlier
+// "<name>" first, converted to "{name}" downstream" approach was only ever
+// safe for the whole-segment case (LT-190's second live-verification pass
+// found the query case: crAPI's own `/rest/products/search?q=${e}`). The
+// minified variable name itself ("e", "i") carries no meaning, so a fixed
+// generic name is used rather than trying to preserve it.
+const jsTemplateLiteralPlaceholder = "{param}"
+
+// normalizeJSTemplateLiteral turns a backtick template literal's dynamic
+// "${...}" pieces into "{param}" placeholders, or rejects the literal
+// outright when it can't be normalized with confidence — LT-190.
+//
+// Three shapes are recognized, all live-verified against Juice Shop's own
+// bundle:
+//   - a "${...}" at the very start of the string is a base-URL/host
+//     variable, not a path segment — stripped outright, since
+//     extractJSEndpoints already resolves a relative path against the
+//     asset's own host and has no use for a second one. What's left still
+//     has to independently look like a real path (isCandidateEndpointString)
+//     to be considered further, so this is never a blanket accept.
+//   - any other "${...}" that fills a *whole* path segment
+//     ("/basket/${e}", "/basket/${e}/coupon/${i}") becomes "{param}".
+//   - a "${...}" that is a whole query-parameter *value*
+//     ("/products/search?q=${e}") becomes "{param}" there too — the query
+//     string is split off (at the first "?") and its "&"-separated pairs
+//     are normalized the same way a path segment is, independently of the
+//     path portion.
+//
+// A literal with no "${" at all — most of Juice Shop's own backtick routes,
+// e.g. `/rest/products`, use no interpolation at all — is returned
+// unchanged. A "${...}" that sits *inside* a path segment or a query value
+// rather than filling it ("prefix-${x}", "?q=x-${y}"), or a query pair with
+// no "=", makes the whole literal ineligible (ok=false): this project's
+// stated bias (docs/follow-up.md, Phase 8 Step 3's own note on
+// jsSecretPatterns) is that a doubtful pattern is left out, not emitted as
+// a possibly-wrong candidate.
+func normalizeJSTemplateLiteral(s string) (string, bool) {
+	if !strings.Contains(s, "${") {
+		return s, true
+	}
+	s = jsLeadingTemplateLiteralInterpRe.ReplaceAllString(s, "")
+
+	path, query, hasQuery := s, "", false
+	if qi := strings.IndexByte(s, '?'); qi >= 0 {
+		path, query, hasQuery = s[:qi], s[qi+1:], true
+	}
+
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		if !strings.Contains(seg, "${") {
+			continue
+		}
+		if jsTemplateLiteralInterpRe.ReplaceAllString(seg, "") != "" {
+			return "", false // interpolation doesn't cleanly fill the whole segment
+		}
+		segs[i] = jsTemplateLiteralPlaceholder
+	}
+	path = strings.Join(segs, "/")
+	if !hasQuery {
+		return path, true
+	}
+
+	pairs := strings.Split(query, "&")
+	for i, pair := range pairs {
+		if !strings.Contains(pair, "${") {
+			continue
+		}
+		eq := strings.IndexByte(pair, '=')
+		if eq <= 0 {
+			return "", false // no "key=", or an empty key — not a recognizable query assignment
+		}
+		key, val := pair[:eq], pair[eq+1:]
+		if jsTemplateLiteralInterpRe.ReplaceAllString(val, "") != "" {
+			return "", false // interpolation doesn't cleanly fill the whole value
+		}
+		pairs[i] = key + "=" + jsTemplateLiteralPlaceholder
+	}
+	return path + "?" + strings.Join(pairs, "&"), true
+}
+
+// jsCandidateLiterals returns every candidate string literal in body worth
+// checking as a possible endpoint/join-part fragment: every double- or
+// single-quoted string (jsQuotedStringRe), plus every backtick template
+// literal (extractBacktickLiterals), each normalized
+// (normalizeJSTemplateLiteral) or dropped when it can't be normalized with
+// confidence. The single place extractJSEndpoints and
+// collectJSPathJoinParts both pull their candidate literals from, so
+// neither can drift from the other's handling of the same body.
+func jsCandidateLiterals(body string) []string {
+	matches := jsQuotedStringRe.FindAllStringSubmatch(body, maxJSQuotedStringsPerAsset)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		s := m[1]
+		if s == "" {
+			s = m[2]
+		}
+		out = append(out, s)
+	}
+	for _, lit := range extractBacktickLiterals(body) {
+		if s, ok := normalizeJSTemplateLiteral(lit); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // isCandidateEndpointString reports whether a quoted string literal is
 // shaped like a real request path or absolute URL — the coarse pre-filter
@@ -123,18 +365,21 @@ func extractJSEndpoints(assetURL, body string) []string {
 		assetHost = u.Scheme + "://" + u.Host
 	}
 
-	matches := jsQuotedStringRe.FindAllStringSubmatch(body, maxJSQuotedStringsPerAsset)
 	seen := map[string]bool{}
 	var out []string
-	for _, m := range matches {
-		s := m[1]
-		if s == "" {
-			s = m[2]
-		}
+	for _, s := range jsCandidateLiterals(body) {
 		if !isCandidateEndpointString(s) {
 			continue
 		}
 		if strings.HasPrefix(s, "/") {
+			// LT-190: a template-literal-derived "<name>" segment (or one
+			// written that way directly in a plain quoted string) has to be
+			// normalized to "{name}" before IsPlausibleURLPath, which rejects
+			// "<"/">" as JS-syntax punctuation (jsSyntaxInPath) — the same
+			// treatment collectJSPathJoinParts' API-path-base bucket already
+			// gives it (LT-186), just not previously applied on this,
+			// absolute-path branch.
+			s = normalizeJSPathPlaceholders(s)
 			if !IsPlausibleURLPath(s) || IsNonRouteAssetPath(s) {
 				continue
 			}
@@ -240,13 +485,8 @@ func normalizeJSPathPlaceholders(s string) string {
 // cut; extractJSPathJoinParts is the capped form. A base written with "<name>"
 // placeholders comes back in "{name}" form (LT-186).
 func collectJSPathJoinParts(body string) (prefixes, bases, querySuffixes []string) {
-	matches := jsQuotedStringRe.FindAllStringSubmatch(body, maxJSQuotedStringsPerAsset)
 	seenPrefix, seenBase, seenSuffix := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, m := range matches {
-		s := m[1]
-		if s == "" {
-			s = m[2]
-		}
+	for _, s := range jsCandidateLiterals(body) {
 		switch {
 		case isJSPathPrefixCandidate(s):
 			if !seenPrefix[s] {
