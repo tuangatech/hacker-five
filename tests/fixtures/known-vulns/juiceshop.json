@@ -19,7 +19,7 @@
       "id_prefixes": ["authbypass-jwt-"],
       "baseline": "found",
       "source": "Live-verified 2026-09-22: direct curl with a hand-built alg:none token (correct signature-stripped variant correctly rejected, 401 'invalid signature') and `hackerfive scan --detector authbypass --protected-paths /rest/basket/6 --auth-token <A>` -> authbypass-jwt-alg-none-rest-basket-6.",
-      "note": "The same rewrite against /rest/user/whoami looked like a hit in an early pass but was not: that endpoint returns HTTP 200 with an empty {\"user\":{}} body for literally any input, including no Authorization header at all (it reads identity from a cookie, not the Bearer header) — not a real signature-verification bypass, so /rest/user/whoami was dropped in favor of the genuinely-gated basket endpoint as this entry's evidence."
+      "note": "The same rewrite against /rest/user/whoami looked like a hit in an early pass but was not: that endpoint returns HTTP 200 with an empty {\"user\":{}} body for literally any input, including no Authorization header at all (it reads identity from a cookie, not the Bearer header) — not a real signature-verification bypass, so /rest/user/whoami was dropped in favor of the genuinely-gated basket endpoint as this entry's evidence. Separately (not a permanent gate, so left off the `gated` field on purpose — this is stage 1, not stage 6): the real orchestrated `hackerfive agent` doesn't build an authbypass leaf for this endpoint on its own yet, even though recon observes it fine and the deterministic CLI finds it with an explicit --protected-paths (docs/follow-up.md's LT-190 follow-up run, 2026-09-22, tests/eval/TestAblation). recon.SuggestAuthBypassPathsFromRecon (pkg/recon/suggest.go) deliberately excludes any {param}-shaped route, leaving it to idor — which answers a different question (BOLA, not JWT-forgery) on the same URL."
     },
     {
       "id": "juiceshop-sqli-product-search",
@@ -28,7 +28,8 @@
       "endpoint_contains": "/rest/products/search",
       "id_prefixes": ["sqli-error-q-"],
       "baseline": "found",
-      "source": "Live-verified 2026-09-22: `hackerfive scan --detector sqli --sqli-path /rest/products/search --sqli-param q` -> sqli-error-q-x (a bare ' payload triggered a real SQLITE_ERROR, absent from baseline); separately confirmed by hand that a UNION SELECT payload on the same param returns every user's email and password hash embedded in the product list."
+      "source": "Live-verified 2026-09-22: `hackerfive scan --detector sqli --sqli-path /rest/products/search --sqli-param q` -> sqli-error-q-x (a bare ' payload triggered a real SQLITE_ERROR, absent from baseline); separately confirmed by hand that a UNION SELECT payload on the same param returns every user's email and password hash embedded in the product list.",
+      "note": "Not a permanent gate (deliberately left off the `gated` field): the real orchestrated `hackerfive agent` doesn't build a sqli leaf for this endpoint on its own yet, even though recon observes /rest/products/search?q={param} fine (LT-190) and the deterministic CLI finds it directly (docs/follow-up.md's LT-190 follow-up run, 2026-09-22, tests/eval/TestAblation). recon.SuggestSQLiTargets (pkg/recon/suggest.go) only accepts a query value that looks like a concrete ID (isIDShaped); it has no path for LT-190's own {param} placeholder spelling, so a JS-extracted, never-crawled-with-a-real-value search endpoint is invisible to sqli leaf-building specifically (unrelated to juiceshop-sqli-login-bypass's detector-capability gap below)."
     },
     {
       "id": "juiceshop-sqli-login-bypass",
