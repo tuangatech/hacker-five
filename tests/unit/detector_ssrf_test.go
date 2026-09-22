@@ -127,6 +127,81 @@ func TestSSRFBodyParamTarget_Hit(t *testing.T) {
 	assert.Equal(t, "repair_url", got[0].Evidence["body_field"])
 }
 
+// TestSSRFBodyParamTarget_OtherFieldRequired_FillDisabled_NoFinding is
+// LT-188 (a)'s root cause, reproduced: a target that validates its other
+// required body fields before ever attempting the URL fetch answers the
+// same generic error whether the payload is reachable or not (verified live
+// against crAPI's contact_mechanic), so the default single-field body can
+// never see a fetch happen — with or without a real SSRF underneath.
+func TestSSRFBodyParamTarget_OtherFieldRequired_FillDisabled_NoFinding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["other_field"] == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"other_field is required"}`))
+			return
+		}
+		data := base64.StdEncoding.EncodeToString([]byte("root:x:0:0:root:/root:/bin/bash"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":"` + data + `"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", nil, []string{"repair_url"}, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "ssrf-body-"), "the single-field body never satisfies other_field, so the fetch is never attempted")
+}
+
+// TestSSRFBodyParamTarget_WithBodyFill_PastRequiredFieldValidation_Hit is
+// the fix: WithBodyFill fills the target's other recovered field names, so
+// the same endpoint above now gets past its own validation and the fetch is
+// actually attempted and seen.
+func TestSSRFBodyParamTarget_WithBodyFill_PastRequiredFieldValidation_Hit(t *testing.T) {
+	var postCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		postCount++
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["other_field"] == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"other_field is required"}`))
+			return
+		}
+		if body["repair_url"] == "http://"+r.Host+"/" {
+			// WithBodyFill's one internal-network payload is the target's own
+			// origin (bodyFillSelfOriginHost), not a fixed 127.0.0.1 — reachable
+			// for any target, unlike a container-specific loopback (LT-188 a,
+			// found live against crAPI's own multi-container topology).
+			data := base64.StdEncoding.EncodeToString([]byte("root:x:0:0:root:/root:/bin/bash"))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":"` + data + `"}`))
+			return
+		}
+		// Validation passes (other_field present) for every other payload too,
+		// including the baseline's own unreachable URL — same generic "ok" body,
+		// short enough that the baseline comparison never mistakes it for a
+		// real fetch of its own accord.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"message":"ok"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient(), ssrf.WithBodyFill([]string{"repair_url", "other_field"}, nil))
+	findings, err := detector.Run(context.Background(), srv.URL, "", nil, []string{"repair_url"}, nil)
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "ssrf-body-")
+	require.NotEmpty(t, got, "filling other_field gets past validation, so the fetch is now attempted and seen")
+
+	// LT-188 (a)'s own capped payload set: 1 internal address + 1 cloud path +
+	// 1 scheme payload, plus the baseline, per body field under test — far
+	// fewer requests than the full sweep, since every one may be a live write.
+	assert.LessOrEqual(t, postCount, 4, "WithBodyFill sends a capped payload set, not the full sweep")
+}
+
 func TestSSRFBodyParamTarget_Blocked_NoFinding(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -143,6 +218,54 @@ func TestSSRFBodyParamTarget_Blocked_NoFinding(t *testing.T) {
 // TestSSRFBodyParamTarget_NoBodyParams_NoRequests confirms an empty
 // bodyParams list makes zero requests — a bare-params ssrf run (query mode
 // only) must not silently also probe an empty body-field set.
+// TestSSRFBodyParamTarget_WithBodyFill_OmittedForFieldUnderTest confirms
+// buildProbeBody never overwrites the field under test with the placeholder
+// even when that field's own name is also listed in the fill set (recon's
+// recovered key list includes the SSRF candidate itself).
+func TestSSRFBodyParamTarget_WithBodyFill_OmittedForFieldUnderTest(t *testing.T) {
+	var lastBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&lastBody)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient(), ssrf.WithBodyFill([]string{"repair_url", "vin"}, nil))
+	_, err := detector.Run(context.Background(), srv.URL, "", nil, []string{"repair_url"}, nil)
+	require.NoError(t, err)
+
+	require.NotNil(t, lastBody)
+	assert.Equal(t, "hackerfive-probe-value", lastBody["vin"], "the other recovered field gets the placeholder")
+	assert.NotEqual(t, "hackerfive-probe-value", lastBody["repair_url"], "the field under test always carries the real payload, never the placeholder")
+}
+
+// TestSSRFBodyParamTarget_WithBodyFill_RecoveredLiteralSentVerbatim is
+// LT-188 (a)'s live-measured fix: crAPI's contact_mechanic rejects the
+// generic placeholder string on its boolean/integer fields just as it
+// rejects an absent field, so WithBodyFill's values map (the literal the
+// bundle itself declared for that field) has to reach the wire as real JSON
+// true/false/a number, never a quoted string.
+func TestSSRFBodyParamTarget_WithBodyFill_RecoveredLiteralSentVerbatim(t *testing.T) {
+	var lastBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&lastBody)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient(), ssrf.WithBodyFill(
+		[]string{"repair_url", "repeat_request_if_failed", "number_of_repeats", "unrecovered_field"},
+		map[string]string{"repeat_request_if_failed": "false", "number_of_repeats": "1"},
+	))
+	_, err := detector.Run(context.Background(), srv.URL, "", nil, []string{"repair_url"}, nil)
+	require.NoError(t, err)
+
+	require.NotNil(t, lastBody)
+	assert.Equal(t, false, lastBody["repeat_request_if_failed"], "a recovered boolean literal is sent as real JSON false, not the placeholder string")
+	assert.Equal(t, float64(1), lastBody["number_of_repeats"], "a recovered integer literal is sent as a real JSON number")
+	assert.Equal(t, "hackerfive-probe-value", lastBody["unrecovered_field"], "a field with no recovered literal still falls back to the placeholder")
+}
+
 func TestSSRFBodyParamTarget_NoBodyParams_NoRequests(t *testing.T) {
 	var postCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

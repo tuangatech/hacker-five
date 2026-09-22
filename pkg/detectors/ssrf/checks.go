@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
@@ -225,17 +226,60 @@ func looksLikeFetchedContent(content []byte) bool {
 	return false
 }
 
-// buildProbeBody returns a JSON body with exactly one field set to payload —
-// same "names only, no values invented beyond the payload" scope
-// checkBodyParamTargets holds to.
-func buildProbeBody(field, payload string) string {
-	return fmt.Sprintf(`{%q:%q}`, field, payload)
+// bodyFillPlaceholder is the value WithBodyFill mode (LT-188 a) sends for
+// every field it fills besides the one under test — not a real, meaningful
+// value, just enough to (often) satisfy a target's own "field present and
+// non-empty" required-field validation. Field names recon recovers carry no
+// type information, so a field requiring a specific shape (a number, an id
+// that must reference something real) may still reject this and 400 — an
+// accepted false negative, not a wrong finding, same tradeoff
+// checkBodyParamTargets' original single-field body already accepted in the
+// other direction.
+const bodyFillPlaceholder = "hackerfive-probe-value"
+
+// buildProbeBody returns a JSON body with field set to payload. fill is nil
+// in the package's default mode — exactly one field, same "names only, no
+// values invented beyond the payload" scope checkBodyParamTargets originally
+// held to. Non-empty (WithBodyFill, LT-188 a), every other name in fill also
+// gets a value, so a target that validates its other required fields before
+// attempting the URL fetch at all (crAPI's contact_mechanic) gets past that
+// validation: values[k]'s literal verbatim (a true/false/integer the bundle
+// itself declared for a strictly-typed field), else bodyFillPlaceholder.
+func buildProbeBody(field, payload string, fill []string, values map[string]string) string {
+	if len(fill) == 0 {
+		return fmt.Sprintf(`{%q:%q}`, field, payload)
+	}
+	body := make(map[string]json.RawMessage, len(fill)+1)
+	for _, k := range fill {
+		if k == field {
+			continue
+		}
+		if lit, ok := values[k]; ok && jsonLiteralRe.MatchString(lit) {
+			body[k] = json.RawMessage(lit)
+		} else {
+			body[k], _ = json.Marshal(bodyFillPlaceholder)
+		}
+	}
+	body[field], _ = json.Marshal(payload)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Sprintf(`{%q:%q}`, field, payload) // never expected: every value above is pre-validated
+	}
+	return string(b)
 }
 
+// jsonLiteralRe is the same true/false/integer whitelist
+// recon.jsValueLiteral produces — checked again here so a value map from any
+// caller can only ever inject one of those three shapes as raw JSON, never
+// arbitrary text.
+var jsonLiteralRe = regexp.MustCompile(`^(?:true|false|-?[0-9]{1,9})$`)
+
 // fetchBodyBaseline is fetchBaseline's body-mode counterpart (LT-96,
-// docs/follow-up.md).
-func (d *Detector) fetchBodyBaseline(ctx context.Context, target, authToken, field string) probeBaseline {
-	_, resp, body, err := d.doRequestBody(ctx, target, authToken, buildProbeBody(field, baselinePayload))
+// docs/follow-up.md). fill is threaded straight to buildProbeBody, so the
+// baseline body has the same shape (single field, or field-filled) as the
+// payload bodies it's compared against.
+func (d *Detector) fetchBodyBaseline(ctx context.Context, target, authToken, field string, fill []string, values map[string]string) probeBaseline {
+	_, resp, body, err := d.doRequestBody(ctx, target, authToken, buildProbeBody(field, baselinePayload, fill, values))
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return probeBaseline{}
 	}
@@ -243,10 +287,10 @@ func (d *Detector) fetchBodyBaseline(ctx context.Context, target, authToken, fie
 }
 
 // probeAndRecordBody is probeAndRecord's body-mode counterpart: POSTs a
-// JSON body with exactly one field set to payload, rather than injecting
-// into the query string.
-func (d *Detector) probeAndRecordBody(ctx context.Context, target, authToken, field, idSuffix, payload, checkKind, description string, baseline probeBaseline) []detectors.Finding {
-	reqBody := buildProbeBody(field, payload)
+// JSON body with field set to payload (plus fill, in WithBodyFill mode)
+// rather than injecting into the query string.
+func (d *Detector) probeAndRecordBody(ctx context.Context, target, authToken, field, idSuffix, payload, checkKind, description string, baseline probeBaseline, fill []string, values map[string]string) []detectors.Finding {
+	reqBody := buildProbeBody(field, payload, fill, values)
 	req, resp, body, err := d.doRequestBody(ctx, target, authToken, reqBody)
 	if err != nil {
 		return nil
@@ -273,32 +317,69 @@ func (d *Detector) probeAndRecordBody(ctx context.Context, target, authToken, fi
 	}}
 }
 
+// bodyFillCloudPath/bodyFillSchemePayload are two of the three representative
+// payloads checkBodyParamTargets tries in WithBodyFill mode (LT-188 a),
+// instead of the full sweep below — every probe in that mode may complete
+// the endpoint's real action, not just read from it, so it stays
+// deliberately small rather than multiplying a live-write risk by ~15
+// payloads per field. The third, an internal-network address, is
+// bodyFillSelfOriginPayload below, not a fixed loopback literal.
+var bodyFillCloudPath = cloudMetadataPaths()[0]
+var bodyFillSchemePayload = schemeBasedPayloads()[0]
+
+// bodyFillSelfOriginHost returns the target's own host (and port, if any) —
+// used as checkBodyParamTargets' one internal-network payload address in
+// WithBodyFill mode, wrapped into "http://<host>/" the same way every other
+// address in internalPayloads already is. Reachable for any target, unlike a
+// fixed 127.0.0.1: in a multi-container deployment the vulnerable service's
+// own loopback often isn't where the app it's meant to reach actually
+// listens (found live: crAPI's workshop container has nothing on
+// 127.0.0.1, so that payload alone proved nothing there), while the target's
+// own origin always is. A target that fetches its own front door is still a
+// real SSRF (a common way to reach an internal-only route that trusts
+// server-to-server calls), and it needs no target-specific knowledge to
+// pick. Falls back to the loopback literal only if target doesn't parse.
+func bodyFillSelfOriginHost(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		return "127.0.0.1"
+	}
+	return u.Host
+}
+
 // checkBodyParamTargets is checkInternalTargets/checkSchemeBasedTargets'
 // JSON-request-body counterpart (LT-96, docs/follow-up.md): a target may
 // take the attacker-controlled URL in a body field rather than a query
 // param — e.g. crAPI's contact_mechanic takes it as mechanic_api/repair_url.
-// Named, accepted limitation: the probe body contains only the
-// SSRF-candidate field, not the route's other possibly-required fields — a
-// target with strict body validation may 400 before the payload is ever
-// evaluated. Worth revisiting only if live testing shows it matters, same
-// "iterate on evidence, don't pre-solve" discipline the rest of this
-// detector already follows (see probeBaseline's own doc comment).
+// In the package's default mode (d.bodyFillFields empty), the probe body
+// contains only the SSRF-candidate field, not the route's other possibly-
+// required fields — a target with strict body validation may 400 before the
+// payload is ever evaluated (verified live against crAPI's contact_mechanic,
+// LT-188 a: the same generic 400 for a reachable and an unreachable payload).
+// WithBodyFill trades that read-only safety for the ability to see past that
+// validation at all — see its own doc comment for why that's gated.
 func (d *Detector) checkBodyParamTargets(ctx context.Context, target, authToken string, bodyParams []string) ([]detectors.Finding, error) {
 	if len(bodyParams) == 0 {
 		return nil, nil
 	}
+	fill, values := d.bodyFillFields, d.bodyFillValues
 	baselines := make(map[string]probeBaseline, len(bodyParams))
 	for _, field := range bodyParams {
 		if ctx.Err() != nil {
 			break
 		}
-		baselines[field] = d.fetchBodyBaseline(ctx, target, authToken, field)
+		baselines[field] = d.fetchBodyBaseline(ctx, target, authToken, field, fill, values)
 	}
 
 	var findings []detectors.Finding
-	var internalPayloads []string
-	internalPayloads = append(internalPayloads, loopbackEncodings()...)
-	internalPayloads = append(internalPayloads, internalNetworkSamples()...)
+	internalPayloads := []string{bodyFillSelfOriginHost(target)}
+	cloudPaths := []string{bodyFillCloudPath}
+	schemePayloads := []string{bodyFillSchemePayload}
+	if len(fill) == 0 {
+		internalPayloads = append(append([]string{}, loopbackEncodings()...), internalNetworkSamples()...)
+		cloudPaths = cloudMetadataPaths()
+		schemePayloads = schemeBasedPayloads()
+	}
 
 	for _, field := range bodyParams {
 		if ctx.Err() != nil {
@@ -307,16 +388,16 @@ func (d *Detector) checkBodyParamTargets(ctx context.Context, target, authToken 
 		baseline := baselines[field]
 		for _, addr := range internalPayloads {
 			findings = append(findings, d.probeAndRecordBody(ctx, target, authToken, field, addr, "http://"+addr+"/",
-				"internal-target", fmt.Sprintf("body field %q accepted an internal-network address (%s) and the response suggests the server fetched it", field, addr), baseline)...)
+				"internal-target", fmt.Sprintf("body field %q accepted an internal-network address (%s) and the response suggests the server fetched it", field, addr), baseline, fill, values)...)
 		}
-		for _, path := range cloudMetadataPaths() {
+		for _, path := range cloudPaths {
 			payloadURL := "http://" + cloudMetadataTarget + path
 			findings = append(findings, d.probeAndRecordBody(ctx, target, authToken, field, cloudMetadataTarget+path, payloadURL,
-				"cloud-metadata", fmt.Sprintf("body field %q accepted a cloud-metadata URL (%s) via a bare GET and the response suggests the server fetched it", field, payloadURL), baseline)...)
+				"cloud-metadata", fmt.Sprintf("body field %q accepted a cloud-metadata URL (%s) via a bare GET and the response suggests the server fetched it", field, payloadURL), baseline, fill, values)...)
 		}
-		for _, payload := range schemeBasedPayloads() {
+		for _, payload := range schemePayloads {
 			findings = append(findings, d.probeAndRecordBody(ctx, target, authToken, field, payload, payload,
-				"scheme-based", fmt.Sprintf("body field %q accepted a %s payload and the response suggests the server fetched it — target's URL-fetch logic doesn't restrict schemes to http(s)", field, schemeOf(payload)), baseline)...)
+				"scheme-based", fmt.Sprintf("body field %q accepted a %s payload and the response suggests the server fetched it — target's URL-fetch logic doesn't restrict schemes to http(s)", field, schemeOf(payload)), baseline, fill, values)...)
 		}
 	}
 	return findings, nil

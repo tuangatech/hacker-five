@@ -1550,6 +1550,8 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, coupon *r
 		leaf.SSRFPath = st.Path
 		leaf.SSRFParams = st.Params
 		leaf.SSRFBodyParams = st.BodyParams
+		leaf.SSRFBodyFillFields = st.FillFields
+		leaf.SSRFBodyFillValues = st.FillValues
 		leaves = append(leaves, leaf)
 	}
 	params := recon.SuggestSSRFParamsFromRecon(hostResult)

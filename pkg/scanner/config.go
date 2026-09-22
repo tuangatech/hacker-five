@@ -127,6 +127,45 @@ type Config struct {
 	// configuration.
 	SSRFBodyParams []string
 
+	// SSRFBodyFillFields are every request-body field name recon recovered for
+	// the endpoint under test (recon-derived, EndpointFact.BodyParamKeys via
+	// recon.SSRFTarget), not just the candidate URL-carrying ones in
+	// SSRFBodyParams. Only used when AllowSSRFBodyFill is also true (LT-188 a):
+	// some targets validate their other required body fields before ever
+	// attempting the URL fetch (crAPI's contact_mechanic answers the same
+	// generic 400 whether the payload is reachable or not, because the request
+	// never gets that far), so the single-field body checkBodyParamTargets
+	// otherwise sends can never see a fetch happen. With AllowSSRFBodyFill,
+	// each of these (other than the one field under test) is filled with a
+	// generic placeholder value, which can satisfy that validation.
+	SSRFBodyFillFields []string
+
+	// SSRFBodyFillValues is SSRFBodyFillFields' companion (recon-derived,
+	// EndpointFact.BodyParamLiterals/recon.SSRFTarget.FillValues): for a
+	// field whose value in the target's own JS bundle is a simple
+	// true/false/integer literal, that literal's canonical JSON text, used
+	// in place of the generic placeholder a strictly-typed field would
+	// otherwise reject (LT-188 a — verified live: crAPI's contact_mechanic
+	// requires a real boolean and integer on two of its other fields).
+	SSRFBodyFillValues map[string]string
+
+	// AllowSSRFBodyFill (from --allow-ssrf-body-fill) gates filling an
+	// endpoint's other required body fields (SSRFBodyFillFields) so the ssrf
+	// detector's body-field payload actually gets evaluated. Absent (the
+	// default, false), the body-injection check sends only the candidate
+	// field, same as before — a stderr warning is printed once per scan when
+	// SSRFBodyFillFields is non-empty but this is false. This is not like
+	// --oob-server's leak tradeoff: getting past an endpoint's own required-
+	// field validation can complete whatever real, state-changing action that
+	// endpoint performs (verified live: crAPI's contact_mechanic filed a real
+	// mechanic report), so it is CLAUDE.md's fourth explicit, independently-
+	// scoped exception to this tool's read/enumerate-only rule, alongside
+	// AllowWrites/AllowMutatingBFLA/auto-provision — never folded into any of
+	// those. When on, the payload set per field is also capped far below the
+	// single-field mode's full sweep, since every probe may be a live write,
+	// not a read.
+	AllowSSRFBodyFill bool
+
 	// SSRFPath is the endpoint the ssrf probes are sent to, joined onto the target
 	// (the sqli detector's SQLiPath convention). Blank means the target itself,
 	// which is how the CLI is used (-t already names the endpoint). A recon-derived

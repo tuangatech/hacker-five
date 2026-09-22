@@ -925,6 +925,7 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 					fact := EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static-joined", Confidence: ConfidenceLow, StatusCode: pair.Status, AuthRequired: pair.AuthRequired}
 					if bf, ok := bodyByRoute[pair.Base]; ok {
 						fact.BodyParamKeys, fact.URLBodyParamKeys = bf.Keys, bf.URLKeys
+						fact.BodyParamLiterals = bf.Literals
 					}
 					agg.addEndpoint(fact)
 					endpointsAdded++

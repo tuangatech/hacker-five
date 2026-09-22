@@ -24,9 +24,10 @@ import (
 // is an inline object literal. Anything else yields nothing, never a guess.
 
 type jsBodyFields struct {
-	Route   string   // the route literal the call requests, e.g. "api/merchant/contact_mechanic"
-	Keys    []string // every field name of the body object literal, in order
-	URLKeys []string // the fields whose value is built from an origin or a route constant
+	Route    string            // the route literal the call requests, e.g. "api/merchant/contact_mechanic"
+	Keys     []string          // every field name of the body object literal, in order
+	URLKeys  []string          // the fields whose value is built from an origin or a route constant
+	Literals map[string]string // fields whose value is a simple true/false/integer literal (LT-188 a)
 }
 
 const (
@@ -42,6 +43,7 @@ var (
 	jsBodyKeyRe    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.\-]{0,63}$`)
 	jsIdentRe      = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
 	jsCallStartRe  = regexp.MustCompile(`\bfetch\(|\.(?:post|put|patch)\(`)
+	jsIntLiteralRe = regexp.MustCompile(`^-?[0-9]{1,9}$`)
 )
 
 // extractJSBodyFields returns the body fields of every fetch()/axios call in body
@@ -88,12 +90,12 @@ func extractJSBodyFields(body string) []jsBodyFields {
 		if end < 0 || end > maxJSBodyLiteral {
 			continue
 		}
-		keys, urlKeys := jsObjectFields(obj[1:end], consts)
+		keys, urlKeys, literals := jsObjectFields(obj[1:end], consts)
 		if len(keys) == 0 {
 			continue
 		}
 		seen[route] = true
-		out = append(out, jsBodyFields{Route: route, Keys: keys, URLKeys: urlKeys})
+		out = append(out, jsBodyFields{Route: route, Keys: keys, URLKeys: urlKeys, Literals: literals})
 	}
 	return out
 }
@@ -142,8 +144,13 @@ func jsCallRoute(s string, callAt int, arg string, consts map[string]string) str
 
 // jsObjectFields lists the keys of an object literal's body ("a:1,b:x") and which
 // of them have a value built from a route constant, the page origin or an absolute
-// URL literal. A spread or a computed key is skipped.
-func jsObjectFields(objBody string, consts map[string]string) (keys, urlKeys []string) {
+// URL literal. A spread or a computed key is skipped. literals carries, for a field
+// whose value is a simple true/false/integer literal in the source (LT-188 a: e.g.
+// "number_of_repeats:1"), that literal's canonical JSON text — the app's own
+// declared default, not an invented value, useful for a body-fill probe
+// (--allow-ssrf-body-fill) that would otherwise send a placeholder string a
+// strictly-typed field rejects.
+func jsObjectFields(objBody string, consts map[string]string) (keys, urlKeys []string, literals map[string]string) {
 	for _, entry := range splitTopLevel(objBody, ',') {
 		entry = strings.TrimSpace(entry)
 		if entry == "" || strings.HasPrefix(entry, "...") || strings.HasPrefix(entry, "[") {
@@ -155,11 +162,41 @@ func jsObjectFields(objBody string, consts map[string]string) (keys, urlKeys []s
 			continue
 		}
 		keys = append(keys, key)
-		if hasValue && jsValueBuildsURL(value, consts) {
+		if !hasValue {
+			continue
+		}
+		if jsValueBuildsURL(value, consts) {
 			urlKeys = append(urlKeys, key)
 		}
+		if lit, ok := jsValueLiteral(value); ok {
+			if literals == nil {
+				literals = map[string]string{}
+			}
+			literals[key] = lit
+		}
 	}
-	return keys, urlKeys
+	return keys, urlKeys, literals
+}
+
+// jsValueLiteral recognizes a value expression as a simple true/false/integer
+// literal and returns its canonical JSON text. "!0"/"!1" are a common minifier
+// idiom for true/false (double-negation coerces to boolean); anything else —
+// a variable, a string, an expression — is not a literal this can read, and
+// ok is false rather than a guess.
+func jsValueLiteral(value string) (string, bool) {
+	switch v := strings.TrimSpace(value); v {
+	case "!0":
+		return "true", true
+	case "!1":
+		return "false", true
+	case "true", "false":
+		return v, true
+	default:
+		if jsIntLiteralRe.MatchString(v) {
+			return v, true
+		}
+		return "", false
+	}
 }
 
 func jsValueBuildsURL(value string, consts map[string]string) bool {

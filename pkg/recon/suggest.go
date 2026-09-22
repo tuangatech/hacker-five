@@ -696,6 +696,21 @@ type SSRFTarget struct {
 	Path       string
 	Params     []string
 	BodyParams []string
+
+	// FillFields is every request-body field name recon recovered for this
+	// endpoint (EndpointFact.BodyParamKeys, unfiltered by ssrfParamKeywords),
+	// not just the URL-shaped candidates in BodyParams. Only meaningful with
+	// --allow-ssrf-body-fill (LT-188 a): some targets validate these other
+	// fields before ever attempting a BodyParams field's URL fetch, so
+	// filling them (with a placeholder, or FillValues' literal where one was
+	// recovered) is what lets the probe get far enough to see one.
+	FillFields []string
+
+	// FillValues is FillFields' companion (EndpointFact.BodyParamLiterals):
+	// for a field whose value in the bundle is a simple true/false/integer
+	// literal, its canonical JSON text, used instead of a generic placeholder
+	// string a strictly-typed field would otherwise reject.
+	FillValues map[string]string
 }
 
 // SuggestSSRFTargets groups the SSRF candidates SuggestSSRFParamsFromRecon and
@@ -767,6 +782,21 @@ func SuggestSSRFTargets(result *ReconResult) []SSRFTarget {
 		for _, b := range body {
 			if !has(t.BodyParams, b) {
 				t.BodyParams = append(t.BodyParams, b)
+			}
+		}
+		if len(body) > 0 {
+			for _, k := range ep.BodyParamKeys {
+				if !has(t.FillFields, k) {
+					t.FillFields = append(t.FillFields, k)
+				}
+			}
+			for k, v := range ep.BodyParamLiterals {
+				if t.FillValues == nil {
+					t.FillValues = map[string]string{}
+				}
+				if _, ok := t.FillValues[k]; !ok {
+					t.FillValues[k] = v
+				}
 			}
 		}
 	}

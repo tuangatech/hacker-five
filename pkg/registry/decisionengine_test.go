@@ -490,6 +490,8 @@ func TestResolve_SSRFLeavesCarryTheirEndpointPath(t *testing.T) {
 	require.NotNil(t, body)
 	assert.Equal(t, []string{"mechanic_api"}, body.SSRFBodyParams)
 	assert.Empty(t, body.SSRFParams)
+	assert.Equal(t, []string{"mechanic_code", "mechanic_api"}, body.SSRFBodyFillFields,
+		"LT-188 (a): every recovered body key, not just the URL-carrying one, so --allow-ssrf-body-fill can satisfy the endpoint's other required fields")
 	query := byPath["/api/fetch"]
 	require.NotNil(t, query)
 	assert.Equal(t, []string{"url"}, query.SSRFParams)

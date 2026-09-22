@@ -147,3 +147,13 @@ func TestAgentCmd_OOBDefaultMirrorsScan(t *testing.T) {
 	require.NotNil(t, off, "--no-oob must be the way out on agent, as on scan")
 	assert.Equal(t, "false", off.DefValue)
 }
+
+// LT-188 (a): --allow-ssrf-body-fill is off by default, same convention as
+// --allow-writes/--allow-mutating-bfla — filling an endpoint's other required
+// body fields can complete its real action, so it must never run unasked.
+func TestAgentCmd_AllowSSRFBodyFillDefaultsOff(t *testing.T) {
+	cmd := newAgentCmd(&rootFlags{})
+	flag := cmd.Flags().Lookup("allow-ssrf-body-fill")
+	require.NotNil(t, flag, "--allow-ssrf-body-fill must be registered")
+	assert.Equal(t, "false", flag.DefValue)
+}

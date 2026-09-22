@@ -99,6 +99,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 		insecure            bool
 		headers             []string
 		allowWrites         bool
+		allowSSRFBodyFill   bool
 		budget              float64
 		maxIterations       int
 		minIterations       int
@@ -263,20 +264,21 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				Recon:         r,
 				TemplateIndex: index,
 				BaseScanConfig: scanner.Config{
-					TemplatePaths:    templatesPaths,
-					Concurrency:      concurrency,
-					RateLimit:        rateLimit,
-					Timeout:          root.timeout,
-					ProxyURL:         root.proxy,
-					Insecure:         insecure,
-					AuthToken:        authToken,
-					OtherAuthToken:   otherAuthToken,
-					AuthHeaderName:   authHeaderName,
-					AuthHeaderFormat: authHeaderFormat,
-					Scope:            s,
-					ExtraHeaders:     extraHeaders,
-					AllowWrites:      allowWrites,
-					OOBServers:       expandedOOBServers,
+					TemplatePaths:     templatesPaths,
+					Concurrency:       concurrency,
+					RateLimit:         rateLimit,
+					Timeout:           root.timeout,
+					ProxyURL:          root.proxy,
+					Insecure:          insecure,
+					AuthToken:         authToken,
+					OtherAuthToken:    otherAuthToken,
+					AuthHeaderName:    authHeaderName,
+					AuthHeaderFormat:  authHeaderFormat,
+					Scope:             s,
+					ExtraHeaders:      extraHeaders,
+					AllowWrites:       allowWrites,
+					OOBServers:        expandedOOBServers,
+					AllowSSRFBodyFill: allowSSRFBodyFill,
 				},
 				Client:            llmClient,
 				SessionLog:        agenttask.NewSessionLog(nil),
@@ -346,6 +348,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification — lab targets only, never the default")
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every scan.leaf request (repeatable)`)
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks to run during a scan.leaf dispatch — the same independently-scoped exception as scan's --allow-writes; omitted, those checks are skipped with a warning")
+	cmd.Flags().BoolVar(&allowSSRFBodyFill, "allow-ssrf-body-fill", false, "allow the ssrf detector to fill an endpoint's other recon-recovered request-body fields (with a placeholder value, never real data) so a body-field SSRF payload actually gets evaluated instead of rejected by the target's own required-field validation (LT-188) — a fourth independently-scoped mutating exception: getting past that validation can complete the endpoint's real action (verified live: crAPI's contact_mechanic filed a real mechanic report), so this is never folded into --allow-writes. Omitted, the ssrf detector's body-field check sends only the candidate field, as before")
 	cmd.Flags().Float64Var(&budget, "budget", orchestrator.DefaultBudgetUSD, "hard cap, in USD, on cumulative LLM cost across the whole run")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", orchestrator.DefaultMaxIterations, "hard cap on the number of dispatched tool turns")
 	cmd.Flags().IntVar(&minIterations, "min-iterations", orchestrator.DefaultMinIterations, "floor on dispatched tool turns — a \"stop\" action is rejected and NextAction asked again while fewer than this many turns have run and actionable leaves remain (LT-162: the model was found stopping after 1-3 turns with 10+ pending leaves still untried)")

@@ -39,6 +39,8 @@ type Detector struct {
 
 	authHeaderName   string
 	authHeaderFormat string
+	bodyFillFields   []string
+	bodyFillValues   map[string]string
 }
 
 // Option configures a Detector at construction time. Mirrors
@@ -61,6 +63,26 @@ func WithAuthHeader(name, format string) Option {
 	}
 }
 
+// WithBodyFill turns on filling an endpoint's other request-body fields
+// (LT-188 a) — checkBodyParamTargets sets every name in fields other than
+// the one under test, alongside the payload, instead of sending the
+// candidate field alone. Each filled field uses values[field]'s literal
+// (the target's own recovered true/false/integer default, verbatim, for a
+// strictly-typed field) when present, else a generic placeholder. nil/empty
+// fields (the package default) keeps the original single-field body. This
+// exists because some targets validate their other required fields before
+// ever attempting the URL fetch — verified live against crAPI's
+// contact_mechanic, whose response is the same generic 400 for a reachable
+// and an unreachable payload when sent alone, and which also rejects a
+// placeholder string on its boolean/integer fields — so the single-field
+// body can never see a fetch happen at all. Getting past that validation can
+// also complete the endpoint's real action (contact_mechanic filed an actual
+// mechanic report), so the caller is expected to gate this the way
+// scanner.Config.AllowSSRFBodyFill does, never pass fields unconditionally.
+func WithBodyFill(fields []string, values map[string]string) Option {
+	return func(d *Detector) { d.bodyFillFields, d.bodyFillValues = fields, values }
+}
+
 // New constructs a Detector.
 func New(client *httpclient.Client, opts ...Option) *Detector {
 	d := &Detector{
@@ -80,7 +102,10 @@ func New(client *httpclient.Client, opts ...Option) *Detector {
 // request-body field names (LT-96, docs/follow-up.md) for a target that
 // takes the attacker-controlled URL there instead (e.g. crAPI's
 // contact_mechanic). authToken, if non-empty, is sent on every probe
-// request per the configured auth header. If oobServers is non-empty
+// request per the configured auth header. bodyParams' probe body carries
+// only the field under test unless WithBodyFill set the Detector's
+// bodyFillFields (LT-188 a), in which case it also carries a placeholder
+// value for each other recovered field name. If oobServers is non-empty
 // (Interactsh-protocol server URLs, tried in order — see
 // oob.NewClientWithFallback), the blind OOB check additionally runs (query
 // params only for now — bodyParams' blind-callback mode is not yet built);

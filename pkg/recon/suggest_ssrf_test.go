@@ -20,8 +20,13 @@ func TestSuggestSSRFTargets(t *testing.T) {
 	got := SuggestSSRFTargets(res)
 	require.Len(t, got, 3)
 	assert.Equal(t, SSRFTarget{Path: "/api/fetch", Params: []string{"url", "callback"}}, got[0])
-	assert.Equal(t, SSRFTarget{Path: "/workshop/api/merchant/contact_mechanic", BodyParams: []string{"mechanic_api"}}, got[1],
-		"only the URL-carrying field, not every body key")
-	assert.Equal(t, SSRFTarget{Path: "/api/webhooks", BodyParams: []string{"callback_url"}}, got[2])
+	assert.Equal(t, SSRFTarget{
+		Path: "/workshop/api/merchant/contact_mechanic", BodyParams: []string{"mechanic_api"},
+		FillFields: []string{"mechanic_code", "mechanic_api", "vin"},
+	}, got[1], "BodyParams stays only the URL-carrying field; FillFields (LT-188 a) carries every recovered body key, for --allow-ssrf-body-fill")
+	assert.Equal(t, SSRFTarget{
+		Path: "/api/webhooks", BodyParams: []string{"callback_url"},
+		FillFields: []string{"callback_url", "name"},
+	}, got[2])
 	assert.Nil(t, SuggestSSRFTargets(nil))
 }

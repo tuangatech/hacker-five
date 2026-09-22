@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -239,6 +240,26 @@ func TestApplyLeafReconFields_SSRFPathCopied(t *testing.T) {
 	applyLeafReconFields(&explicit, leaf, nil)
 	if explicit.SSRFPath != "/operator/chosen" {
 		t.Fatalf("got SSRFPath %q, want the operator's to win", explicit.SSRFPath)
+	}
+}
+
+// LT-188 (a): a leaf's recovered body-field names reach the config that
+// ssrfOptions reads, so --allow-ssrf-body-fill has something to act on.
+func TestApplyLeafReconFields_SSRFBodyFillFieldsCopied(t *testing.T) {
+	leaf := &agenttask.PlanNode{
+		Detector: "ssrf", SSRFPath: "/api/contact_mechanic", SSRFBodyParams: []string{"mechanic_api"},
+		SSRFBodyFillFields: []string{"mechanic_code", "mechanic_api", "vin"},
+	}
+	var cfg scanner.Config
+	applyLeafReconFields(&cfg, leaf, nil)
+	if got, want := cfg.SSRFBodyFillFields, leaf.SSRFBodyFillFields; !slices.Equal(got, want) {
+		t.Fatalf("got SSRFBodyFillFields %v, want %v", got, want)
+	}
+
+	explicit := scanner.Config{SSRFBodyFillFields: []string{"operator_chosen"}}
+	applyLeafReconFields(&explicit, leaf, nil)
+	if got := explicit.SSRFBodyFillFields; len(got) != 1 || got[0] != "operator_chosen" {
+		t.Fatalf("got SSRFBodyFillFields %v, want the operator's to win", got)
 	}
 }
 

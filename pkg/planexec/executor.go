@@ -13,6 +13,7 @@ package planexec
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"sort"
 	"strings"
@@ -439,6 +440,12 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 		if notify != nil {
 			notify(fmt.Sprintf("ssrf: testing recon-derived endpoint %s", leaf.SSRFPath))
 		}
+	}
+	if len(leaf.SSRFBodyFillFields) > 0 && len(cfg.SSRFBodyFillFields) == 0 {
+		cfg.SSRFBodyFillFields = append([]string(nil), leaf.SSRFBodyFillFields...)
+	}
+	if len(leaf.SSRFBodyFillValues) > 0 && len(cfg.SSRFBodyFillValues) == 0 {
+		cfg.SSRFBodyFillValues = maps.Clone(leaf.SSRFBodyFillValues)
 	}
 	if leaf.SQLiPath != "" && cfg.SQLiPath == "" {
 		cfg.SQLiPath = leaf.SQLiPath

@@ -130,6 +130,15 @@ type EndpointFact struct {
 	// SSRF candidate whatever its name ("mechanic_api"). Names only.
 	URLBodyParamKeys []string `json:"url_body_param_keys,omitempty"`
 
+	// BodyParamLiterals holds, for a BodyParamKeys field whose value in the
+	// bundle is a simple true/false/integer literal (LT-188 a, e.g.
+	// "number_of_repeats: 1"), that literal's canonical JSON text — the app's
+	// own declared default, recovered the same way BodyParamKeys itself is,
+	// not an invented value. Used by --allow-ssrf-body-fill so a strictly-
+	// typed other field is filled with a value of the right shape instead of
+	// a generic placeholder string a target may reject.
+	BodyParamLiterals map[string]string `json:"body_param_literals,omitempty"`
+
 	// ResponseShape is the JSON structure of this endpoint's 2xx answer with
 	// every value replaced by its type name — e.g.
 	// {"items":[{"id":"int","owner_id":"int"}]} — set by probeResponseShapes

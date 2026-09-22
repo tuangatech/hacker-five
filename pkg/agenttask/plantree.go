@@ -189,6 +189,16 @@ type PlanNode struct {
 	// treatment. Without it the probes are sent to the host root and the field they
 	// name does not exist there. Empty on a leaf that is not endpoint-driven.
 	SSRFPath string `json:"ssrf_path,omitempty"`
+	// SSRFBodyFillFields is every request-body field name recon recovered for
+	// this endpoint (recon.SSRFTarget.FillFields), not just the URL-shaped
+	// SSRFBodyParams candidates. Only used by the ssrf detector when
+	// --allow-ssrf-body-fill is also given (LT-188 a); values are field
+	// names, never real data.
+	SSRFBodyFillFields []string `json:"ssrf_body_fill_fields,omitempty"`
+	// SSRFBodyFillValues is SSRFBodyFillFields' companion
+	// (recon.SSRFTarget.FillValues): a true/false/integer literal the bundle
+	// itself declared for a field, used in place of a generic placeholder.
+	SSRFBodyFillValues map[string]string `json:"ssrf_body_fill_values,omitempty"`
 	// SQLiPath / SQLiParams are the recon-derived required-field values for
 	// an endpoint-driven sqli leaf (docs/18-implementation-plan-ph9.md Step
 	// 4, LT-87): one leaf per recon.SuggestSQLiTargets candidate path, same

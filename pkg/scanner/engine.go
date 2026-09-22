@@ -552,6 +552,9 @@ func (e *Engine) warnIfWritesUngated() {
 	if e.cfg.Detector == "mutatebfla" && !e.cfg.AllowMutatingBFLA {
 		e.warnf("warn", "--allow-mutating-bfla not set — the mutatebfla detector will be skipped; pass --allow-mutating-bfla to run it (LT-132: it fires a real DELETE against the resource, gated behind its own flag per CLAUDE.md)")
 	}
+	if e.cfg.Detector == "ssrf" && len(e.cfg.SSRFBodyFillFields) > 0 && !e.cfg.AllowSSRFBodyFill {
+		e.warnf("warn", "--allow-ssrf-body-fill not set — the ssrf detector's body-field check sends only the candidate field, so a target requiring its other fields before attempting the fetch (LT-188) will show no finding here; pass --allow-ssrf-body-fill to fill them (this can complete the endpoint's real action)")
+	}
 }
 
 // loadTemplates parses every template directory in cfg.TemplatePaths once,
@@ -1178,7 +1181,11 @@ func (e *Engine) authbypassOptions() []authbypass.Option {
 // path applies. WithAuthHeader is unconditional, same no-op-on-empty-string
 // reasoning as idorOptions/authbypassOptions.
 func (e *Engine) ssrfOptions() []ssrf.Option {
-	return []ssrf.Option{ssrf.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
+	opts := []ssrf.Option{ssrf.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
+	if e.cfg.AllowSSRFBodyFill && len(e.cfg.SSRFBodyFillFields) > 0 {
+		opts = append(opts, ssrf.WithBodyFill(e.cfg.SSRFBodyFillFields, e.cfg.SSRFBodyFillValues))
+	}
+	return opts
 }
 
 // businesslogicOptions builds the businesslogic.Option set the flag-driven

@@ -25,6 +25,8 @@ func TestExtractJSBodyFields_CrapiContactMechanic(t *testing.T) {
 	assert.Equal(t, "api/merchant/contact_mechanic", got[0].Route)
 	assert.Equal(t, []string{"mechanic_code", "problem_details", "vin", "mechanic_api", "repeat_request_if_failed", "number_of_repeats"}, got[0].Keys)
 	assert.Equal(t, []string{"mechanic_api"}, got[0].URLKeys, "the field the bundle fills with origin + a route constant carries a URL")
+	assert.Equal(t, map[string]string{"repeat_request_if_failed": "false", "number_of_repeats": "1"}, got[0].Literals,
+		"LT-188 (a): the bundle's own !1/!0 minifier idiom and integer literal are recovered as the app's declared defaults")
 }
 
 func TestExtractJSBodyFields_Variants(t *testing.T) {
@@ -34,9 +36,9 @@ func TestExtractJSBodyFields_Variants(t *testing.T) {
 		want []jsBodyFields
 	}{
 		"axios post, url expression inline": {consts + `a.post(base+R.SAVE,{name:n,avatar_url:"https://x/"+R.HOOK,age:3})`,
-			[]jsBodyFields{{Route: "api/profile/save", Keys: []string{"name", "avatar_url", "age"}, URLKeys: []string{"avatar_url"}}}},
+			[]jsBodyFields{{Route: "api/profile/save", Keys: []string{"name", "avatar_url", "age"}, URLKeys: []string{"avatar_url"}, Literals: map[string]string{"age": "3"}}}},
 		"quoted keys and a spread": {consts + `fetch(u+R.SAVE,{method:"PUT",body:JSON.stringify({"a-b":1,...rest,c:2})})`,
-			[]jsBodyFields{{Route: "api/profile/save", Keys: []string{"a-b", "c"}}}},
+			[]jsBodyFields{{Route: "api/profile/save", Keys: []string{"a-b", "c"}, Literals: map[string]string{"a-b": "1", "c": "2"}}}},
 		"a body that is a variable is not guessed at": {consts + `fetch(u+R.SAVE,{method:"POST",body:JSON.stringify(payload)})`, nil},
 		"a url that resolves to no route constant":    {consts + `fetch("/other",{method:"POST",body:JSON.stringify({a:1})})`, nil},
 		"no route constants in the bundle":            {`fetch(e,{method:"POST",body:JSON.stringify({a:1})})`, nil},
@@ -44,6 +46,34 @@ func TestExtractJSBodyFields_Variants(t *testing.T) {
 	}
 	for name, c := range cases {
 		assert.Equal(t, c.want, extractJSBodyFields(c.js), name)
+	}
+}
+
+// LT-188 (a): jsValueLiteral only ever recognizes the true/false/integer shapes
+// it documents — a variable, a string or an expression is never guessed at.
+func TestJSValueLiteral(t *testing.T) {
+	cases := map[string]struct {
+		val    string
+		want   string
+		wantOK bool
+	}{
+		"minifier true":     {"!0", "true", true},
+		"minifier false":    {"!1", "false", true},
+		"literal true":      {"true", "true", true},
+		"literal false":     {"false", "false", true},
+		"positive integer":  {"42", "42", true},
+		"negative integer":  {"-1", "-1", true},
+		"padded":            {"  7  ", "7", true},
+		"a variable":        {"n", "", false},
+		"a string literal":  {`"1"`, "", false},
+		"a decimal":         {"1.5", "", false},
+		"an expression":     {"a+1", "", false},
+		"an overlong digit": {"1234567890123", "", false},
+	}
+	for name, c := range cases {
+		got, ok := jsValueLiteral(c.val)
+		assert.Equal(t, c.wantOK, ok, name)
+		assert.Equal(t, c.want, got, name)
 	}
 }
 
@@ -66,4 +96,11 @@ func TestRunWave3_JSJoin_BodyFieldsReachTheSSRFSuggestion(t *testing.T) {
 	assert.Contains(t, fact.BodyParamKeys, "mechanic_code")
 	assert.Equal(t, []string{"mechanic_api"}, fact.URLBodyParamKeys)
 	assert.Equal(t, []string{"mechanic_api"}, SuggestSSRFBodyParamsFromRecon(result))
+	assert.Equal(t, map[string]string{"repeat_request_if_failed": "false", "number_of_repeats": "1"}, fact.BodyParamLiterals,
+		"LT-188 (a) end to end: the recovered literals reach the endpoint fact")
+
+	targets := SuggestSSRFTargets(result)
+	require.Len(t, targets, 1)
+	assert.Equal(t, map[string]string{"repeat_request_if_failed": "false", "number_of_repeats": "1"}, targets[0].FillValues,
+		"and from there into the SSRFTarget a --allow-ssrf-body-fill probe reads")
 }
