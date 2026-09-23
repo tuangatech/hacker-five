@@ -64,9 +64,9 @@
       "description": "contact_mechanic forwards an attacker-supplied URL taken from the POST body.",
       "endpoint_contains": "contact_mechanic",
       "id_prefixes": ["ssrf-"],
-      "baseline": "missed",
-      "source": "docs/follow-up.md, Step E, 2026-09-08: missed, LT-96",
-      "note": "LT-96 fixed 2026-09-09 (body-param SSRF check); not re-measured."
+      "baseline": "found",
+      "source": "Live-verified 2026-09-23 (LT-194, docs/follow-up.md): `hackerfive scan -t http://localhost:8888/workshop/api/merchant/contact_mechanic --detector ssrf --ssrf-body-param mechanic_api --auth-token <owner> --templates <empty>` -> ssrf-body-internal-target-mechanic_api-localhost-8888, a real 404 response from the target's own origin, distinct from the unreachable baseline's 400 (confirmed by hand with curl, byte-for-byte reproducible).",
+      "note": "LT-96/LT-188(a) built the body-field check and the field-fill mechanism; the detector's own response check still required HTTP 200 before comparing anything, so this endpoint's real non-200 reflected-fetch convention was invisible regardless of body content — closed by LT-194's baseline generalization (status code now counts, not just body length under an assumed-200 baseline) plus adding the target's own origin to the default internal-address sweep. Confidence is \"low\", not \"high\": a generic <html marker on a non-2xx status isn't distinctive enough to assert with confidence on its own (also found live: 3 further, false, low-confidence findings from file://gopher://dict:// scheme payloads that crash the endpoint into a generic framework error page rather than actually reading a file/service — same run, see LT-194's note on why generic HTML markers are gated to a 2xx status)."
     }
   ]
 }

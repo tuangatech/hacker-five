@@ -374,6 +374,183 @@ func TestSSRFInternalTarget_DistinctFromBaseline_StillFires(t *testing.T) {
 	assert.Empty(t, withPrefix(findings, "ssrf-internal-target-url-10-0-0-1"), "a payload matching the baseline must be suppressed even though a different payload fired")
 }
 
+// TestSSRFInternalTarget_NonOKStatusReflection_Hit reproduces crAPI's
+// contact_mechanic shape end to end (LT-194, docs/follow-up.md,
+// hand-verified live against the real container): a payload aimed at a
+// reachable address answers 500 with the fetched content embedded in the
+// body, an unreachable one (including the baseline) answers a generic 400
+// — never 200 either way. The old check required resp.StatusCode == 200
+// before ever comparing to a baseline, so this whole response shape was
+// invisible regardless of what its body held. The address that actually
+// triggers the reachable branch here is the target's own origin
+// (checkInternalTargets' LT-194 addition to its default payload sweep) —
+// none of the RFC1918/loopback samples in the sweep are reachable from a
+// bare httptest server. Confidence is "low", not "high": a generic <html
+// marker on a non-2xx status is exactly the shape a target's own crash
+// page can also produce (see TestSSRFInternalTarget_DistinctiveMarker_
+// HighConfidenceEvenOnErrorStatus and its doc comment for the live false
+// positive this guards, and confidenceFor's own doc comment).
+func TestSSRFInternalTarget_NonOKStatusReflection_Hit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		url := r.URL.Query().Get("url")
+		if url == "http://"+r.Host+"/" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"response_from_upstream":"<html>fetched content from the reached address</html>","status":500}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"could not connect"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil, nil)
+	require.NoError(t, err)
+
+	// Every other payload (loopback encodings, RFC1918 samples, cloud
+	// metadata, scheme-based) gets the same generic 400 the baseline did —
+	// only the self-origin address diverges, so exactly one finding.
+	require.Len(t, findings, 1)
+	assert.Contains(t, findings[0].ID, "ssrf-internal-target-url-")
+	assert.Equal(t, "low", findings[0].Confidence, "a generic <html marker on a non-2xx status isn't distinctive enough for high confidence on its own")
+}
+
+// TestSSRFInternalTarget_DistinctiveMarker_HighConfidenceEvenOnErrorStatus
+// is the counterpart proving confidenceFor's status gate applies only to
+// the generic HTML markers, not the distinctive ones: a marker specific
+// enough to real service content (here, a Redis INFO dump) still earns
+// "high" even paired with a non-2xx status, since nothing short of a real
+// fetch plausibly produces it.
+func TestSSRFInternalTarget_DistinctiveMarker_HighConfidenceEvenOnErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		url := r.URL.Query().Get("url")
+		if url == "http://"+r.Host+"/" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"upstream":"redis_version:6.2.6\r\nrun_id:abc\r\n","status":500}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"could not connect"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil, nil)
+	require.NoError(t, err)
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "high", findings[0].Confidence, "redis_version is distinctive enough to trust regardless of status")
+}
+
+// TestSSRFInternalTarget_GenericMarkerWith2xxStatus_HighConfidence proves
+// the flip side: a genuine 2xx reflection (the original, pre-LT-194
+// absolute-check shape) still earns "high" off a generic HTML marker alone
+// — the new status gate on genericHTMLMarkers narrows an over-broad case,
+// it doesn't regress the original one.
+func TestSSRFInternalTarget_GenericMarkerWith2xxStatus_HighConfidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		url := r.URL.Query().Get("url")
+		if url == "http://"+r.Host+"/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><body>a real reflected internal page</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"could not connect"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil, nil)
+	require.NoError(t, err)
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "high", findings[0].Confidence)
+}
+
+// TestSSRFInternalTarget_StatusDivergesNoMarker_LowConfidence is the
+// previous test's low-confidence counterpart: a status divergence from the
+// baseline is still real signal worth a finding, but without any
+// recognizable fetched-content marker in the body it's triaged low, not
+// asserted high — same two-tier convention confidenceFor already applies
+// to the body-content case.
+func TestSSRFInternalTarget_StatusDivergesNoMarker_LowConfidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		url := r.URL.Query().Get("url")
+		if url == "http://"+r.Host+"/" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(strings.Repeat("x", 40))) // long enough, no recognizable marker
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"could not connect"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil, nil)
+	require.NoError(t, err)
+
+	require.Len(t, findings, 1)
+	assert.Equal(t, "low", findings[0].Confidence)
+}
+
+// TestSSRFInternalTarget_IdenticalNon200AcrossPayloads_Suppressed proves
+// the status-code generalization above doesn't reintroduce the false-
+// positive class baselinePayload's own doc comment describes: a target
+// that answers a non-200 status identically regardless of payload (a
+// generic error page, not gated on 200 the way the old absolute check
+// assumed a real target always would be) must still be suppressed.
+func TestSSRFInternalTarget_IdenticalNon200AcrossPayloads_Suppressed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"internal error, always the same regardless of payload"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", []string{"url"}, nil, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, withPrefix(findings, "ssrf-internal-target-"))
+	assert.Empty(t, withPrefix(findings, "ssrf-cloud-metadata-"))
+	assert.Empty(t, withPrefix(findings, "ssrf-scheme-based-"))
+}
+
+// TestSSRFBodyParamTarget_NonOKStatusReflection_Hit is
+// TestSSRFInternalTarget_NonOKStatusReflection_Hit's body-field-mode
+// counterpart — the exact shape hand-verified live against crAPI's real
+// contact_mechanic endpoint (docs/follow-up.md's LT-188 entry): a reachable
+// payload answers 500 with the fetched content embedded in-band, an
+// unreachable one answers a generic 400. Deliberately does not use
+// WithBodyFill — this is the package's plain default mode, proving the
+// gap closed even without the body-fill mechanism in play (the self-origin
+// address was previously missing from checkBodyParamTargets' own default,
+// non-fill payload set entirely, a second, independent cause of the same
+// miss — see checkBodyParamTargets' LT-194 comment).
+func TestSSRFBodyParamTarget_NonOKStatusReflection_Hit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["repair_url"] == "http://"+r.Host+"/" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"response_from_mechanic_api":"<html>fetched</html>","status":500}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"could not connect"}`))
+	}))
+	defer srv.Close()
+
+	detector := ssrf.New(newSSRFClient())
+	findings, err := detector.Run(context.Background(), srv.URL, "", nil, []string{"repair_url"}, nil)
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "ssrf-body-internal-target-repair_url-")
+	require.Len(t, got, 1)
+	assert.Equal(t, "low", got[0].Confidence, "a generic <html marker on a non-2xx status isn't distinctive enough for high confidence on its own")
+}
+
 // TestSSRFAuthHeader_Override proves WithAuthHeader actually changes the
 // header carrying authToken on every probe — same convention as
 // authbypass's equivalent test.
