@@ -143,6 +143,28 @@ func TestSummarize_AggregatesPerLabAndArmWithRange(t *testing.T) {
 	assert.Equal(t, 4, strings.Count(table, "\n"), "header, two rows, footnote")
 }
 
+func TestFormatFindingDiff_IdenticalAndDivergentArms(t *testing.T) {
+	rec := func(arm string, ids ...string) RunRecord {
+		return RunRecord{Lab: "crAPI", Arm: arm, FindingIDs: ids}
+	}
+	out := FormatFindingDiff([]RunRecord{
+		// no-model+all-leaves and fast-lane+model find exactly the same set (across their runs' union).
+		rec("no-model+all-leaves", "idor-a t1", "ssrf-b t2"),
+		rec("fast-lane+model", "ssrf-b t2", "idor-a t1"),
+		// model-every-turn is missing idor-a but has an extra finding no other arm has.
+		rec("model-every-turn", "ssrf-b t2", "sqli-c t3"),
+	})
+	assert.Contains(t, out, "crAPI finding-ID diff (3 arm(s))")
+	assert.Contains(t, out, "fast-lane+model == no-model+all-leaves: identical (2 finding(s))")
+	assert.Contains(t, out, "only in fast-lane+model: idor-a t1")
+	assert.Contains(t, out, "only in model-every-turn: sqli-c t3")
+}
+
+func TestFormatFindingDiff_SkipsALabWithOnlyOneArm(t *testing.T) {
+	out := FormatFindingDiff([]RunRecord{{Lab: "vAPI", Arm: "no-model", FindingIDs: []string{"a b"}}})
+	assert.Empty(t, out, "nothing to diff with only one arm")
+}
+
 func TestModelFromStderr(t *testing.T) {
 	assert.Equal(t, "openrouter:openai/gpt-5.6-luna", ModelFromStderr("agent: [info] x\nagent: model: openrouter:openai/gpt-5.6-luna\nagent: [info] y\n"))
 	assert.Equal(t, "none", ModelFromStderr("agent: model: none\n"))
