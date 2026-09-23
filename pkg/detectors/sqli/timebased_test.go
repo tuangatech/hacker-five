@@ -104,11 +104,19 @@ func TestTimeBasedCheck_SlowBaseline_Skipped(t *testing.T) {
 	defer srv.Close()
 
 	d := New(newTestClient())
-	baseline, ok := d.probeWithToken(context.Background(), srv.URL+"?id=1", "", hostMust(t, srv.URL))
+	target, host := srv.URL+"?id=1", hostMust(t, srv.URL)
+	baseline, ok := d.probeWithToken(context.Background(), target, "", host)
 	if !ok {
 		t.Fatalf("baseline probe failed")
 	}
-	findings := d.timeBasedCheck(context.Background(), srv.URL+"?id=1", "id", "", hostMust(t, srv.URL), baseline)
+	c := sqliCandidate{
+		name:        "id",
+		evidenceKey: "param",
+		probe: func(ctx context.Context, suffix string) (probeResult, bool) {
+			return d.probeWithToken(ctx, buildPayloadURL(target, "id", suffix), "", host)
+		},
+	}
+	findings := d.timeBasedCheck(context.Background(), c, baseline)
 	if len(findings) != 0 {
 		t.Fatalf("got %d findings, want 0 (baseline already slow): %+v", len(findings), findings)
 	}

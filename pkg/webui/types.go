@@ -62,7 +62,11 @@ type LaunchFormData struct {
 	OtherAuthToken   string
 	AuthHeaderName   string
 	AuthHeaderFormat string
-	Headers          string // one "Name: Value" per line, mirrors repeatable --header
+	// ReconAuth also sends the auth token on recon's own requests to the target's
+	// host (LT-187), mirroring agent --recon-auth. Off by default, never remembered
+	// (excluded from LT-122's FIELDS prefill, like AuthToken), and it needs AuthToken.
+	ReconAuth bool
+	Headers   string // one "Name: Value" per line, mirrors repeatable --header
 
 	RateLimit   int
 	Concurrency int

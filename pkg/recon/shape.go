@@ -321,17 +321,22 @@ func (r *Recon) probeResponseShapes(ctx context.Context, agg *aggregator, seeds 
 		candidates = candidates[:maxShapeProbes]
 	}
 
+	base := &http.Transport{
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // matches recon.ClientConfig / endpointprobe — internal-cert hosts must not fail closed
+		ForceAttemptHTTP2: true,
+	}
+	// credentialed: this probe builds its own client, so the credential the shared
+	// client carries (LT-187) has to be added here too; without it an authenticated
+	// recon would read the anonymous 401 body of every route it can now see.
 	probe := &http.Client{
-		Timeout: shapeProbeTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // matches recon.ClientConfig / endpointprobe — internal-cert hosts must not fail closed
-			ForceAttemptHTTP2: true,
-		},
+		Timeout:       shapeProbeTimeout,
+		Transport:     r.credentialed(base),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	defer probe.CloseIdleConnections()
+	defer base.CloseIdleConnections()
 
 	shapes := map[string]string{}
+	seedSources := map[string]string{} // list URL -> one object id in it; memory only (EndpointFact.SeedID)
 	for _, c := range candidates {
 		host := hostOnly(c.url)
 		if r.hostErrors.ShouldSkip(host) {
@@ -359,6 +364,12 @@ func (r *Recon) probeResponseShapes(ctx context.Context, agg *aggregator, seeds 
 		if shape, ok := jsonShape(body); ok {
 			shapes[c.url] = shape
 		}
+		if id := harvestUUIDSeed(body); id != "" {
+			seedSources[c.url] = id
+		}
+	}
+	if n := attachHarvestedSeeds(agg, seedSources); n > 0 {
+		agg.addWarning("wave3: %d templated route(s) were given an object id read from a list response, so an idor leaf can test them (the id is held in memory only and is never recorded)", n)
 	}
 	if len(shapes) == 0 {
 		return

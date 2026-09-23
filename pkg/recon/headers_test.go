@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -104,4 +106,73 @@ func TestWithHeaders_EmptyMapIsNoOp(t *testing.T) {
 	assert.Nil(t, r.headers)
 	r = New(newTestClient(), WithHeaders(map[string]string{}))
 	assert.Nil(t, r.headers)
+}
+
+// LT-187: a credential given through WithCrawlHeaders reaches katana only when
+// every seed is on its origin, pins the crawl to that exact hostname, and never
+// reaches httpx (which probes many hosts).
+func TestWithCrawlHeaders_KatanaOnlyOnTheCredentialsOrigin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer srv.Close()
+
+	run := func(origin string) (map[string][]string, *ReconResult) {
+		var mu sync.Mutex
+		argsByTool := map[string][]string{}
+		capture := func(_ context.Context, _ string, name string, args ...string) ([]byte, error) {
+			mu.Lock()
+			argsByTool[name] = args
+			mu.Unlock()
+			return nil, nil
+		}
+		r := New(newTestClient(), withRun(capture), WithCrawlHeaders(origin, map[string]string{"Authorization": "Bearer s3cret"}))
+		res, err := r.Run(context.Background(), srv.URL, DepthFull)
+		require.NoError(t, err)
+		mu.Lock()
+		defer mu.Unlock()
+		return argsByTool, res
+	}
+
+	args, res := run(srv.URL)
+	assert.Contains(t, args["katana"], "Authorization: Bearer s3cret")
+	assert.Contains(t, args["katana"], "fqdn", "an authenticated crawl is pinned to the exact hostname")
+	assert.Contains(t, args["katana"], StateChangingCrawlExclusion(), "an authenticated crawl skips state-changing URLs")
+	assert.NotContains(t, args["httpx"], "Authorization: Bearer s3cret", "httpx probes many hosts and must never carry the credential")
+	assert.NotContains(t, strings.Join(res.Warnings, "\n"), "crawl ran unauthenticated")
+
+	args, res = run("http://another-host.invalid")
+	assert.NotContains(t, args["katana"], "Authorization: Bearer s3cret", "a crawl seeded off the credential's origin must not carry it")
+	assert.Contains(t, strings.Join(res.Warnings, "\n"), "crawl ran unauthenticated")
+}
+
+func TestSameOrigin(t *testing.T) {
+	assert.True(t, sameOrigin("https://Example.com/a", "https://example.com:443"))
+	assert.True(t, sameOrigin("http://example.com", "http://example.com:80/x"))
+	assert.False(t, sameOrigin("https://example.com", "http://example.com"), "scheme changes the default port")
+	assert.False(t, sameOrigin("https://example.com:8443", "https://example.com"))
+	assert.False(t, sameOrigin("https://sub.example.com", "https://example.com"))
+	assert.False(t, sameOrigin("", ""), "an unparseable origin matches nothing")
+}
+
+func TestStateChangingURL(t *testing.T) {
+	match := []string{
+		"https://x.test/logout", "https://x.test/api/auth/sign-out", "https://x.test/api/v2/user/signout",
+		"https://x.test/api/videos/delete_video", "https://x.test/api/item/12/delete", "https://x.test/account/revoke",
+		"https://x.test/api/order/cancel?id=1", "https://x.test/app?action=logout", "https://x.test/password/reset",
+		"https://x.test/API/LogOut",
+	}
+	for _, raw := range match {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		assert.Truef(t, StateChangingURL(u), "%s should be treated as state-changing", raw)
+	}
+	keep := []string{
+		"https://x.test/api/deleted-items", "https://x.test/api/removal-policy", "https://x.test/api/v2/user/videos",
+		"https://x.test/api/resetting", "https://x.test/api/cancellations", "https://x.test/workshop/api/shop/orders/1",
+	}
+	for _, raw := range keep {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		assert.Falsef(t, StateChangingURL(u), "%s is not a state-changing action", raw)
+	}
+	assert.False(t, StateChangingURL(nil))
 }

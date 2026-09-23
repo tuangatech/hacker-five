@@ -80,13 +80,25 @@ type EndpointFact struct {
 	Source      string `json:"source"`
 	Confidence  string `json:"confidence"`
 
-	// AuthRequired is set (LT-90, docs/follow-up.md) only on a Source
-	// "api-spec" fact: the OpenAPI document declares this route needs
-	// authentication (operation-level `security`, else the document
-	// default). The decision engine turns a parameterless auth-required
-	// spec route into an authbypass "should reject me" candidate. Absent /
-	// false on every other fact and on a spec route the doc leaves open.
+	// AuthRequired is set on a fact whose route is known to need authentication:
+	// a Source "api-spec" fact the OpenAPI document declares so (LT-90:
+	// operation-level `security`, else the document default), or a Source
+	// "js-static-joined" route that answered an anonymous request 401/403 when
+	// verified (LT-186). The decision engine turns a parameterless auth-required
+	// route into an authbypass "should reject me" candidate. Absent / false on
+	// every other fact, and on a route that answered anonymously.
 	AuthRequired bool `json:"auth_required,omitempty"`
+
+	// SeedID is an object id (a UUID) recon read from an authenticated or public
+	// list response, matched to this templated route by resource name — e.g. the
+	// id of one item from GET .../vehicles for .../vehicle/{id}/location. It is
+	// what lets an idor leaf test a UUID-keyed route (LT-186 item c).
+	//
+	// It is response data, so it is held in memory only: json:"-" keeps it out of
+	// every stream, result document, session log and coverage ledger, and nothing
+	// that builds a model prompt reads it. The only consumer is the idor dispatch
+	// (planexec), which puts it in the request it sends.
+	SeedID string `json:"-"`
 
 	// RedirectChain / FinalURL are populated (LT-64, docs/follow-up.md) only
 	// when httpx followed a redirect whose final host differs from the
@@ -111,6 +123,21 @@ type EndpointFact struct {
 	// URL is taken in a JSON body field (e.g. crAPI's contact_mechanic)
 	// rather than a query string.
 	BodyParamKeys []string `json:"body_param_keys,omitempty"`
+
+	// URLBodyParamKeys are the request-body fields of a Source "js-static-joined"
+	// fact whose value the bundle builds from a route constant or the page origin
+	// (LT-186 item d): the app is itself sending a URL in that field, so it is an
+	// SSRF candidate whatever its name ("mechanic_api"). Names only.
+	URLBodyParamKeys []string `json:"url_body_param_keys,omitempty"`
+
+	// BodyParamLiterals holds, for a BodyParamKeys field whose value in the
+	// bundle is a simple true/false/integer literal (LT-188 a, e.g.
+	// "number_of_repeats: 1"), that literal's canonical JSON text — the app's
+	// own declared default, recovered the same way BodyParamKeys itself is,
+	// not an invented value. Used by --allow-ssrf-body-fill so a strictly-
+	// typed other field is filled with a value of the right shape instead of
+	// a generic placeholder string a target may reject.
+	BodyParamLiterals map[string]string `json:"body_param_literals,omitempty"`
 
 	// ResponseShape is the JSON structure of this endpoint's 2xx answer with
 	// every value replaced by its type name — e.g.

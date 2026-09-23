@@ -77,6 +77,12 @@ The labs cannot currently tell us whether an LLM step helps: three never invoke 
 |---|---|
 | LT-173 reliability envelope | **Done.** Decision calls run under `max_tokens` 2048 + reasoning effort `low` + a 120s deadline; a truncated-empty response is an error; after two consecutive failed calls the run degrades to the fast lane and ends cleanly with `Result.Degraded`. Live probe on two models: valid decisions in every trial, deepseek about 40% faster and cheaper. The 4-minute stall itself was **not reproduced**, so prevention is unproven; the degrade path is the guarantee. |
 | Response-shape capture | **Done and live-verified**, but **nothing reads it yet** (J1's input). One real bug found by running it: crawl facts have no content type, so the first version captured nothing on a real crawl. |
+| Miss attribution (LT-185) | **Built and run once on crAPI (1 run per arm).** `pkg/coverage` classifies each known vulnerability by the pipeline stage where it was lost; the agent's result event now carries recon's endpoint list (values stripped); the harness prints a per-arm table. First result below: none of the five misses is a selection problem. |
+| LT-184 spurious idor leaves | **Fixed** (recon's JS-join step crossed every `?key=` literal with every route). 12 `idor` leaves became 1; the run-every-leaf arm went from 194 s to 44 s with the same findings. |
+| Second lab (vAPI) and documentation-page routes (LT-189) | **Ground truth written, measured, and a recon gap found and fixed.** At the pinned `active` depth recon saw 1 endpoint and every known vulnerability was lost at stage 0; at `full` depth, with routes read from the served docs page, recon saw 23 and the BOLA is found (0 of 3 to 1 of 3). The two misses left have no evidence anywhere the target serves. See "A second lab". |
+| Deterministic gaps (seed, protected paths, SSRF field) | **Built and measured on crAPI: known vulnerabilities 3 of 7 to 5 of 7 with `--recon-auth`, 4 of 7 without.** Vehicle-location (harvested id) and JWT alg-none (derived protected path) are now found with no model. SSRF is now dispatched at the right endpoint but still not found (detector oracle, agent OOB). The model arm again equals the run-everything arm. See "Closing the deterministic gaps". |
+| LT-187 recon authentication | **Built as an opt-in `--recon-auth` and measured.** On crAPI it adds observed endpoints (55 to 69) but no findings: the same 20 findings and 3 of 7 known vulnerabilities with and without it. See "Authenticated recon (LT-187)". |
+| LT-186 recon route extraction | **Fixed for placeholder routes and the route cap; measured.** Shop-orders BOLA moved from stage 0 to found (known vulnerabilities 2 of 7 to 3 of 7). Vehicle-location is now dispatched but still not found (no UUID seed); the SSRF body field is untouched. See "After the LT-186 fixes". |
 | Ablation harness | **Built and run once (crAPI, 3 runs per arm, 12 of 12 completed).** `--no-model` control arm, four arms (the fourth, `no-model+all-leaves`, added and run 2026-09-21), two ground-truth lists, JSONL per run, min-max ranges, never merged across models, harness overrides recorded per result. Ground truth exists for crAPI only (7 entries). See the baseline below and LT-183. |
 
 ### First baseline: crAPI, 2026-09-21
@@ -98,6 +104,159 @@ Results were identical across the three runs of each arm (same findings, same re
 4. **Fast lane vs model-every-turn: same findings, about 15% cheaper, about 6% faster, 5 fewer model turns.** A real but small gain on this lab.
 5. **Caveats.** Bundled templates and a raised rate limit, so wall-clock is not comparable with the LT-172 tables; n = 3 and one lab; `unlabeled` (4 in every arm) is the four `misconfig-missing-header-*` findings, which are true but absent from this fixture, so it overstates candidate false positives; the known-vulnerability baselines are dated 2026-09-08.
 
+### Miss attribution and the LT-184 fix: crAPI, 2026-09-21, 1 run per arm
+
+Same settings as the baseline (bundled templates, `--rate-limit 60`, `--recon-depth full`, `openai/gpt-5.6-luna`), one run per arm, run after the LT-184 fix. Findings and recall did not move; time and cost did:
+
+| Arm | Findings | Expected prefixes | Known vulns | Model turns | Cost / run | Wall / run |
+|---|---|---|---|---|---|---|
+| no-model (control) | 6 | 1 of 2 | 1 of 7 | 0 | $0 | 24 s |
+| no model, every runnable leaf | 15 | 2 of 2 | 2 of 7 | 0 | $0 | 44 s (was 194 s) |
+| fast-lane + model | 15 | 2 of 2 | 2 of 7 | 6 (was 15) | $0.0057 (was $0.017) | 67 s (was 240 s) |
+
+Where each known vulnerability was lost (`pkg/coverage` stages; the two arms that dispatched everything agree):
+
+| Known vulnerability | no-model | every-leaf / model | Why |
+|---|---|---|---|
+| `mechanic_report` BOLA | 3 not dispatched | **7 found** | the control never dispatches a leaf that needs a decision |
+| `.env` exposed | 7 found | 7 found | a host-wide misconfig sweep |
+| shop-orders BOLA | **0 not observed** | **0 not observed** | no recon endpoint contains `/workshop/api/shop/orders/` |
+| vehicle-location BOLA | **0 not observed** | **0 not observed** | no recon endpoint contains `/location` |
+| `contact_mechanic` SSRF | **1 no leaf** | **1 no leaf** | the endpoint was observed, but no `ssrf` leaf covers it |
+| `authbypass-jwt` | 3 not dispatched | **2 blocked** | `skipped — no --protected-paths given and recon/I4 found no usable candidate` |
+| DELETE-video BFLA | 6 gated | 6 gated | `mutatebfla` has no agent route by design |
+
+Reading it:
+
+1. **The LT-184 fix is confirmed on the live lab.** The tree now has one `idor` leaf, on `mechanic_report`, where it had twelve; `download_report` correctly keeps its own `?filename=` instead of borrowing `?report_id=`. That is a 4x speed-up for run-everything and a 3x cost cut for the model arm, from one recon bug. It is a before/after on the same harness (3 runs before, 1 after), not a controlled experiment, but the gap is far outside the run-to-run spread.
+2. **None of the five misses is a selection problem.** Two are lost at stage 0 (recon never saw the route), one at stage 1 (route seen, no leaf built), one at stage 2 (leaf built, blocked on a field), one is gated. A better chooser among existing leaves cannot recover any of them. This is the evidence the strategy needed for putting J1/J2 ahead of any work on leaf ordering.
+3. **Stage 0 is the largest loss, and its cause is deterministic and upstream of any model** (checked 2026-09-21 against the bundle crAPI serves). Recon on this lab has no API spec (a separate direct run recorded 45 endpoints from `httpx` 1, `katana-crawl` 4, `js-static` 26, `js-static-joined` 14), but both missing routes are in the client bundle as string literals, `"api/shop/orders/<orderId>"` and `"api/v2/vehicle/<carId>/location"`, and the extractor discards them twice over. The bundle holds 41 `api/` route literals. 15 became join bases; 18 were cut by `maxJSPathBases` (the candidates are sorted alphabetically and capped at 15, so everything from `api/shop/orders/all` onward, all of `api/v2/*` included, was never considered); 8 were rejected because a `<orderId>`-style placeholder fails `IsPlausibleURLPath` (angle brackets count as JavaScript syntax). **26 of 41 never became endpoints.** No authenticated crawl is needed to reach either route. The join step also cannot verify a placeholder route as written: a GET on the literal `<orderId>` path answers 404, the same as the canary. Downstream the detector is fine: given the orders leaf, `idor` produces the 5 known high findings (`scan --detector idor --endpoint '/workshop/api/shop/orders/{{id}}'`, 5 minutes at 60 requests a minute). The vehicle route is a second, separate problem: its UUID-keyed check needs a real vehicle UUID as a seed, and that value only appears in the authenticated response of `GET /identity/api/v2/vehicle/vehicles`; recon keeps response shapes, not values, so no seed exists. So **shop-orders is a pure extractor fix; vehicle-location needs the extractor fix plus id harvesting from a list response**, which is the privacy question in section 7. Nothing here needs a model, so for crAPI J1's route-probe idea is not the first tool; it stays for routes that appear in no client artifact, which no lab here exhibits. Logged as LT-186.
+4. **Stage 1 names J2's job.** `/workshop/api/merchant/contact_mechanic` was observed (via the JS join), but body-field names only come from an API spec (`BodyParamKeys`), so no `ssrf` leaf was built. Proposing the body field is exactly the "fill a leaf parameter the registry cannot derive" job, validated by the detector's own check.
+5. **Stage 2 settles LT-180.** The `authbypass` leaf exists and was dispatched by the every-leaf and model arms; it skipped for want of `--protected-paths`, so the JWT check never ran. That was "likely, not verified" in the baseline; it is now measured.
+6. **Endpoint mode sizes the population.** Of 46 recon endpoints, 2 are static assets and are excluded; of the other 44, 42 have no endpoint-specific leaf and 2 have a finding. That is an upper bound on what leaf-building could reach: many are UI routes (`/orders`, `/past-orders`) that no vulnerability class applies to, which is why J1's applicability judgement matters.
+
+Caveats: 1 run per arm; one lab; the stage of a known vulnerability depends on the fixture's `endpoint_contains` and finding-ID prefixes, so a wrong fixture entry reads as a pipeline loss (stage 5, "mismatch", is the hint for that); the leaf-to-endpoint match is by path shape and parameter name, so it cannot tell two leaves on the same host apart when neither names a path.
+
+### After the LT-186 fixes: crAPI, 2026-09-21, 1 run per arm, recon authenticated
+
+Two changes to the JS join step (`<name>` route placeholders are accepted as `{name}`; the 15-route cap became an 80-route cap with a probe budget and a warning), plus one found while testing them (a route that answers 500 to a parameterless request now counts as existing). The harness ran with `HACKERFIVE_ABLATION_RECON_AUTH=1`, which also sends the owner token to recon: `agent --auth-token` alone does not reach recon (LT-187), and without it identity's `api/v2/*` routes cannot be told from that service's blanket 401. **This run is therefore not like-for-like with the tables above**; two things changed at once.
+
+| Arm | Findings | Known vulns | Model turns | Cost | Wall |
+|---|---|---|---|---|---|
+| no model, every runnable leaf | 20 (was 15) | 3 of 7 (was 2) | 0 | $0 | 410 s (was 44 s) |
+| fast-lane + model | 20 | 3 of 7 | 10 | $0.0101 | 447 s |
+
+| Known vulnerability | Before | After | Why |
+|---|---|---|---|
+| shop-orders BOLA | 0 not observed | **7 found** | the `<orderId>` route is emitted under `workshop/` (borrowed from its verified sibling `api/shop/orders`) and `idor` finds the 5 known cases |
+| vehicle-location BOLA | 0 not observed | 5 mismatch | the route is observed and dispatched, but the leaf has no UUID seed, so the integer strategy cannot reach a UUID-keyed route. The stage-5 label is the classifier's hint; the precise stage is 4 (see below) |
+| `contact_mechanic` SSRF | 1 no leaf | 1 no leaf | body-field derivation (LT-186 item d) is not done |
+| `authbypass-jwt` | 2 blocked | 2 blocked | no `--protected-paths` (LT-180) |
+| `mechanic_report` BOLA, `.env` | found | found | unchanged |
+| DELETE-video BFLA | 6 gated | 6 gated | unchanged |
+
+Reading it:
+
+1. **The extractor fix converts one stage-0 loss into a finding with no model involved**, and the model arm again reproduces the run-everything arm exactly (20 findings, 3 of 7) at a cost of 10 turns and $0.0101. With six `idor` leaves in the tree rather than one, the model still adds nothing the deterministic policy does not.
+2. **What it cost.** Wall time went from 44 s to 410 s because the tree now holds six `idor` leaves, each enumerating an id range, instead of one; finding more is not free. This is the case the selection question was always about: run-everything is fine at 6 leaves and would not be at 60.
+3. **The recon call count is modest.** Authenticated recon recorded 38 joined routes (23 without a token) from 41 bundle literals, with about one probe per route once a service prefix is known; before, it verified 14. Two of the 41 stay uninferred by design (no verified sibling to borrow a prefix from), and each such route is reported in a recon warning.
+4. **A route that returns 500 on a parameterless request was silently lost.** `mechanic_report` (the known BOLA) answers 500 to an authenticated GET with no `report_id`. The first version of the fix lost it as soon as recon carried a token; that regression is why 500 is now a verifying status, with 502/503/504 deliberately excluded.
+5. **Vehicle-location is now a two-part problem with a known second half.** The route and its `idor` leaf exist; what is missing is a real vehicle UUID as a seed. The only place one appears is the authenticated `GET /identity/api/v2/vehicle/vehicles` response, and recon keeps shapes, not values (LT-186 item c, gated by the privacy question in section 7).
+6. **The stage-5 label is only a hint.** Same-class findings exist elsewhere (14 `idor` findings on other routes), so the classifier cannot separate "detector limit" from "ground-truth mismatch". Here the cause is the missing seed.
+
+Caveats: 1 run per arm; recon authentication and the code change are confounded in the totals (separated in "Authenticated recon (LT-187)" below: authentication added no findings) (the direct recon dumps separate them: without a token the orders leaf and the community-posts leaves appear after the fix, and only with a token do the identity `api/v2/*` routes and `vehicle/{carId}/location`); one lab.
+
+### Authenticated recon (LT-187): `agent --recon-auth`, crAPI, 2026-09-21, 1 run per arm
+
+`hackerfive agent --auth-token` reached the leaf dispatches but not recon. `--recon-auth` (opt-in) now sends that same header on recon's own requests to the target's host. The harness knob `HACKERFIVE_ABLATION_RECON_AUTH` adds the flag, so the measurement is the product path. Same code, same settings (`--rate-limit 60`, bundled templates, `openai/gpt-5.6-luna`); the only difference between the two rows of each arm is the flag.
+
+| Arm | Recon | Recon endpoints | Findings | Known vulns | Model turns | Cost | Wall |
+|---|---|---|---|---|---|---|---|
+| no model, every runnable leaf | unauthenticated | 55 | 20 | 3 of 7 | 0 | $0 | 382 s |
+| no model, every runnable leaf | `--recon-auth` | 69 | 20 | 3 of 7 | 0 | $0 | 409 s |
+| fast-lane + model | unauthenticated | 56 | 20 | 3 of 7 | 10 | $0.0099 | 427 s |
+| fast-lane + model | `--recon-auth` | 69 | 20 | 3 of 7 | 12 | $0.0122 | 457 s |
+
+Reading it:
+
+1. **On crAPI, authenticated recon adds coverage but not findings.** It observes 14 more endpoints (identity's `api/v2/*` family and `vehicle/{carId}/location`), and the vehicle-location vulnerability moves from stage 0 (not observed) to stage 5 (dispatched, not found). Every finding-level number is unchanged. **This corrects the LT-186 run above**, whose caveat left open how much of the change came from authenticating recon: none of the finding gain did. The shop-orders find comes from the route extractor alone.
+2. **The reason is the seed, not the token.** The location route needs a real vehicle UUID and recon does not harvest one (LT-186 item c). Authenticated recon is a precondition for that fix (the UUID only appears in an authenticated response), not a substitute for it.
+3. **Its cost is small and its risk is real.** About 7% more wall time here; the endpoints it adds also become leaves. The risk is that a crawl carrying a live session can reach a state-changing GET, which is why it is opt-in.
+4. **The model arm again matches the deterministic arm** (20 findings, 3 of 7), with or without recon authentication.
+
+How the credential is kept from leaking (tested): recon's HTTP client gets the header through a middleware that keys on the target's host and port, works on a clone of the request, and so never passes it to another host or across a redirect (`net/http` copies a redirect's headers from the original request, and strips only `Authorization`/`Cookie`, so a custom header name would otherwise follow the redirect). The katana crawl carries it only when every seed is on the target's origin and is then pinned to the exact hostname (`-fs fqdn`); httpx, which probes many hosts, never receives it. Caveats: 1 run per arm, one lab.
+
+### Closing the deterministic gaps (LT-186 c and d, protected paths), crAPI, 2026-09-21, 1 run per arm
+
+The three misses the stage table left were each given a deterministic first step before any model design:
+
+- **The seed (LT-186 c).** The response-shape probe already reads authenticated list responses, so it also lifts one object id (a UUID that is the object's own `uuid`/`id`) from each list and matches it to a templated route by resource name (`.../vehicle/vehicles` seeds `.../vehicle/{carId}/location`). The id lives in `EndpointFact.SeedID` and `PlanNode.HarvestedSeedID`, both `json:"-"`: it is in no stream, result, session log, coverage ledger or prompt, and the only thing that reads it is the idor dispatch. The ledger records a fact only: `Templated` and `Seeded`. A finding's own evidence still names the id it tested, as it must (the vehicle-location finding's URL carries the UUID).
+- **Protected paths (LT-180 in part).** A route the JS bundle names and verification confirmed used to lose its status. It now keeps it, and a route that turns away an anonymous request (401/403) is marked `AuthRequired`, which `SuggestAuthBypassPathsFromRecon` already turns into an authbypass protected path. When recon is signed in, one credential-free GET per verified route asks the anonymous question.
+- **The SSRF body field (LT-186 d).** From the bundle's own request code (`fetch(url,{body:JSON.stringify({...})})` or `.post(url,{...})` whose URL resolves to a route constant): the route, its body field names, and which field is built from a route constant or the page origin (`mechanic_api`). Names only.
+
+| Arm | Recon | Recon endpoints | Findings | Known vulns | Model turns | Cost | Wall |
+|---|---|---|---|---|---|---|---|
+| no model, every runnable leaf | unauthenticated | 56 | 25 | 4 of 7 | 0 | $0 | 383 s |
+| fast-lane + model | unauthenticated | 56 | 25 | 4 of 7 | 8 | $0.0078 | 414 s |
+| no model, every runnable leaf | `--recon-auth` | 69 | 27 | 5 of 7 | 0 | $0 | 413 s |
+| fast-lane + model | `--recon-auth` | 69 | 27 | 5 of 7 | 10 | $0.0102 | 446 s |
+| no model, every runnable leaf, after the SSRF path and SQLi fan-out fixes | `--recon-auth` | 69 | 27 | 5 of 7 | 0 | $0 | 488 s |
+
+| Known vulnerability | Before (previous section) | Unauthenticated | `--recon-auth` |
+|---|---|---|---|
+| shop-orders BOLA, mechanic-report BOLA, `.env` | found | found | found |
+| JWT alg-none | 2 blocked (no protected path) | **found** | **found** |
+| vehicle-location BOLA | 0 not observed (5 with recon-auth) | 0 not observed | **found**, with the harvested id |
+| `contact_mechanic` SSRF | 1 no leaf | 4 dispatched, nothing raised | 4 dispatched, nothing raised |
+| DELETE-video BFLA | 6 gated | 6 gated | 6 gated |
+
+Reading it:
+
+1. **Two more misses closed with no model.** JWT alg-none needed only that the verified routes keep their status, so it is found even without recon authentication. Vehicle-location needs both a token (the route and the list are behind login) and the harvested id, so it needs `--recon-auth`.
+2. **The model arm equals the deterministic arm in every pair** (25/4 of 7 and 27/5 of 7), at 8 and 10 turns. It is the fourth consecutive comparison with that result on crAPI.
+3. **The SSRF leaf was aimed at the host root.** A leaf's target is only the host, and the ssrf leaf named parameters but not the endpoint, so its probes went to a path where the field does not exist. Leaves now carry `SSRFPath`, one per endpoint. The tree's dedup key had also collapsed every endpoint-driven ssrf leaf into one, and, found by checking, the same for sqli (two candidate paths produced one leaf); both are fixed and tested.
+4. **SSRF is still not found, for two reasons that are not recon.** (a) The detector posts only the SSRF field. Live: crAPI answers `400 "Could not connect to mechanic api."` to that, which the detector's markers do not recognise, while the full body returns `{"response_from_mechanic_api": "<fetched content>", "status": 500}`, a plain in-band SSRF whose oracle is the field name. (b) `hackerfive agent` never runs the blind out-of-band check that `scan` runs by default, because the agent configures no OOB server. Both are logged as LT-188. (a) is a good J2 case: the hypothesis "this route reflects what it fetched" comes from reading a response shape, and its oracle is checkable.
+5. **Cost.** Wall time for the deterministic arm is 383 to 488 s, up from 44 s before LT-186, because more routes are found and each becomes a leaf; selection at scale is still unproven.
+
+Caveats: 1 run per arm, one lab, and the last row is a single run of one arm.
+
+**Correction.** The previous section's follow-up text said `--recon-auth` reached the response-shape probe "through the same client". It did not: that probe builds its own HTTP client, so it ran unauthenticated and would have read every route's anonymous 401 body. It now wraps its transport with the credential, and a test that would fail otherwise (an identity-style service that answers 401 to everything anonymous) covers it. The status probe for robots/sitemap paths also builds its own client and is left anonymous on purpose: a 401 there is what marks a path as protected.
+
+### A second lab (vAPI) and what it says about J1/J2, 2026-09-21, 1 run per arm
+
+vAPI (roottusk/vapi) has a ground-truth file (`tests/fixtures/known-vulns/vapi.json`: BOLA on `api1/user/{id}`, SSRF via `serversurfer`, JWT alg-none on `jwt/user`), each with the recorded scan that verified it. It is a poor fit for crawl-driven recon on purpose: a JSON API, no served spec, a custom `Authorization-Token` header (`--auth-header-name Authorization-Token --auth-header-format {token}`), one auth module per exercise.
+
+| Arm | Depth | Recon | Recon endpoints | Findings | Known vulns | Model turns | Cost | Wall |
+|---|---|---|---|---|---|---|---|---|
+| both arms | `active` (the scenario's old pin) | either | 1 | 10 | 0 of 3 | 0 | $0 | ~132 s |
+| no model, every leaf | `full` | unauthenticated | 23 | 17 | 1 of 3 | 0 | $0 | 847 s |
+| fast-lane + model | `full` | unauthenticated | 23 | 17 | 1 of 3 | 3 | $0.0022 | 851 s |
+| no model, every leaf | `full` | `--recon-auth` | 23 | 17 | 1 of 3 | 0 | $0 | 852 s |
+| fast-lane + model | `full` | `--recon-auth` | 23 | 17 | 1 of 3 | 3 | $0.0022 | 848 s |
+
+Reading it:
+
+1. **The first result was a stage-0 collapse, and it was a depth setting.** At `active`, recon skips the application-layer wave (crawl, JS analysis, response shapes, and the new documentation step) and saw one endpoint. The model arm made **0 turns**: with no vAPI route in the tree there was nothing for a model to choose among. `hackerfive agent`'s own default is `--recon-depth active`, so an operator who does not know this gets the same result on a real target (LT-189).
+2. **The documentation page was the missing evidence.** vAPI's front page only says, in prose, "Browse http://localhost/vapi/ for Documentation". That page is a Redoc rendering whose link anchors spell out 21 routes with their methods (`#tag/API1/paths/~1vapi~1api1~1user~1{api1_id}/get`). Recon now follows same-host URLs a page mentions (never another host or port), tries `/docs`, `/redoc`, `/api-docs` and `/documentation`, and reads those anchors: 1 endpoint to 23, and the BOLA is found by the idor leaf with no model.
+3. **The model arm equals the deterministic arm again** (17 findings, 1 of 3, 3 turns, $0.0022), with and without recon authentication, which changes nothing here (the docs page is anonymous).
+4. **The two misses left have no served evidence.** `serversurfer` and `jwt/user` are not in the docs page's 21 routes, not linked, not in a spec. The only way to find them is a prior (knowing vAPI) or a wordlist; a model reading what the target serves has nothing to reason from. (Real routes answer 403 and unknown ones 500 under `/vapi/`, so a canary-differential sweep could confirm a guess cheaply, but the guess has to come from somewhere.)
+
+**What the ten known vulnerabilities on the two labs say about J1/J2.** Six are found, all by deterministic work. Of the four left: DELETE-video is gated on a mutating flag by design (not a model problem); crAPI's SSRF needs a better detector oracle (LT-188: the tell is a response field that echoes what was fetched, which a differential check between two payloads can also see); and vAPI's two have no evidence to derive them from. Not one is a case where evidence the target served exists in unstructured form and only a model can read it. Each stall so far was a deterministic gap (a dropped status, an unread list, an unfetched docs page, a leaf without its endpoint), and closing them took less code than J1/J2 would.
+
+So J1/J2 as written (an app model, then a hypothesis engine) is **not yet justified by any measured miss**, and building it now would be scored against a baseline that has not been exhausted. What would justify it: a target where the served evidence exists but is unstructured or ambiguous (prose API docs, an undocumented-but-linked admin surface, a business flow spanning several routes), a larger tree where selection matters (the 6 to 20 leaf trees here cannot show it), and an oracle a rule cannot express. Until one appears, the next work is the cheaper deterministic set: LT-188 (done, see the update below), more ground truth (Juice Shop, done — see the update below), and the depth default. If J2 is built at all, the narrow form is the one to try first: given one leaf's endpoint, body field names and a response shape, propose the request body and the expected-if-vulnerable / expected-if-safe pair the detector then checks, capped and gated as everywhere else.
+
+Caveats: 1 run per arm, two labs, and both are intentionally vulnerable applications whose routes were public knowledge before the fix (the fixes are generic, but they were found on these targets).
+
+**LT-188 (a) update, 2026-09-21, on the user's explicit choice: built, off by default.** `--allow-ssrf-body-fill` fills an endpoint's other recon-recovered body fields (a recovered `true`/`false`/integer literal where the bundle declares one, else a placeholder) so the payload field's fetch is actually attempted — gated the same way `--allow-writes` is, since getting past that validation can complete the endpoint's real action (verified live: crAPI's `contact_mechanic` filed a real mechanic report). Verified by hand that the mechanism works end to end (the fill gets past crAPI's validation, the literal values satisfy its typed fields, and a reachable payload produces the real echo); the running `hackerfive agent --allow-ssrf-body-fill` against crAPI itself still finds nothing, because the one capped internal-address payload is the target's own origin as recon saw it (`localhost:8888`), which is a host-mapped port unreachable from inside crAPI's own workshop container — a property of this lab's docker-compose networking that no legitimately-discoverable evidence resolves, not a defect in the fix. Full account in follow-up.md's LT-188 entry.
+
+**Ground truth (Juice Shop) update, 2026-09-22.** `tests/fixtures/known-vulns/juiceshop.json` added, same shape as `crapi.json`/`vapi.json`: 4 entries, all live-verified 2026-09-22 (hand curl with two throwaway accounts, plus the real CLI), not written from memory. Found: BOLA on `GET /rest/basket/{id}` (`idor-`), a JWT `alg:none` bypass on the same endpoint (`authbypass-jwt-`), and search-based SQLi on `GET /rest/products/search?q=` (`sqli-error-q-`, confirmed by hand to extend to full UNION-based extraction of user credentials). Missed: the classic login SQLi bypass (`POST /rest/user/login`, `email: "' OR 1=1--"`, confirmed real by hand) — the `sqli` detector only tests an existing URL query parameter's value, never a JSON request-body field, so this is a capability gap rather than a config gap (the same shape as LT-188 a before it was built for `ssrf`, not yet built for `sqli`). Full account, including a near-miss where an apparently-successful JWT bypass on `/rest/user/whoami` turned out to be a false read (that endpoint accepts any input at all, proving nothing), in follow-up.md's LT-183 entry.
+
+**Measured the same day: none of the three "found" entries are reachable by an agent run at either recon depth.** `hackerfive agent --recon-depth active` never runs wave3 (crawl + JS-static analysis) at all; `--recon-depth full` does (katana fetches `main.js` and every lazy-loaded chunk), but the tree still ends up with exactly one host-level `misconfig` leaf. Root cause, not a crawl-reach or auth problem: Juice Shop's Angular bundle builds every REST path as a backtick template literal (`` `${this.hostServer}/rest/basket/${e}` ``), and recon's literal-extraction regex (`jsQuotedStringRe`, `pkg/recon/jsstatic.go:101`) matches only `"..."`/`'...'`, never `` `...` ``, so these real, present-in-the-bundle routes are structurally invisible to it. Template-literal path construction is the default idiom in modern TypeScript/Angular, not a quirk of this one lab.
+
+**LT-190 built and live-verified, 2026-09-22.** A regex-based backtick alternative (the plan above) turned out to be genuinely broken against the real bundle, not just untried: Juice Shop's `main.js` nests a template literal three levels deep inside another one's own `${...}` (Angular Material's internal CSS-in-JS), which a flat regex can't track — regular languages can't recognize nested delimiters. One nested literal ~256KB into the file desynchronized every backtick pairing after it, silently consuming `/rest/basket/${e}`'s real opening backtick as part of an unrelated bogus match. Fixed with a small depth-tracking scanner (`consumeBacktickLiteral`/`extractBacktickLiterals` in `pkg/recon/jsstatic.go`) instead of a regex, handling escapes (a real `` \` `` exists in the same bundle) and arbitrary nesting depth properly. A second live-verification pass found Juice Shop's real SQLi endpoint (`` `${this.hostServer}/rest/products/search?q=${e}` ``) uses an interpolated query *value*, not a whole path segment, so the normalizer now handles that shape too. Live-verified both ways: standalone recon now finds 71 real endpoints including `/rest/basket/{param}` and `/rest/products/search?q={param}` (was 23, zero `/rest/*` routes); a real `hackerfive agent` run (both throwaway tokens, `--recon-depth full`) built and dispatched a real `idor` leaf from the recon-discovered basket route and found real `idor-1`..`idor-7` findings — `juiceshop-bola-basket`'s known-vuln entry, through the actual orchestrated path, not a hand-built `--endpoint`. Full account, including why the first regex attempt looked fine in unit tests but wasn't, in follow-up.md's LT-190 entry.
+
+**LT-191/LT-192/LT-193 built and live-verified, 2026-09-22 — the ablation confirmation surfaced two more stage-1 gaps, both closed the same day.** Running `TestAblation` against Juice Shop for real (not just the manual check above) found `idor` working end to end but `authbypass`/`sqli` still lost at "recon observed the endpoint, but no leaf covers it" — a leaf-builder gap, not a recon-extraction one. `authbypass` (LT-191) deliberately never built a candidate from a `{param}`-shaped route at all (left to `idor`, which answers a different question — BOLA, not JWT-forgery — on the same URL); fixed with a new bounded recon pass that substitutes a concrete id and live-probes the route's own auth boundary. `sqli` (LT-193) required an ID-shaped key *and* value; Juice Shop's real vulnerable key is `q` (a search term), which never looked ID-shaped by name — fixed by trusting a JS-declared query value as a candidate regardless of key name. Separately, on the user's explicit "fix Body-field SQLi mode" (LT-192): `pkg/detectors/sqli` gained a JSON-request-body counterpart to every existing check (mirroring LT-188 a's ssrf pattern exactly, including its own `--allow-*-body-fill` gate), live-verified against Juice Shop's real login bypass — which surfaced a genuine, separate precision gap (the error-based check's DBMS signature list didn't recognize this specific endpoint's Node.js/Sequelize error shape) that got fixed too before calling it done. All three: docs/follow-up.md's LT-190 follow-up entry has the full account.
+
 Two things this turned up that change how to read everything above (the fourth arm's flag, `--run-every-leaf`, is a deterministic policy, not a recommended default: it runs endpoint-specific leaves blind and does not resolve unresolved ones):
 
 1. **The control arm is nearly free to run and answers the first question.** `--no-model` needs no API key, so "what does the deterministic path alone reach on crAPI" can be measured before spending on any model arm.
@@ -115,8 +274,9 @@ Two things this turned up that change how to read everything above (the fourth a
 | Step | What | Why here |
 |---|---|---|
 | 0 | Ablation harness, LT-173 envelope, response-shape recon | Nothing after this is measurable without it |
-| 0b | **Miss attribution** (LT-185): for each known vulnerability, the pipeline stage where it was lost | Turns "5 of 7 missed" into a per-stage number, so step 1 is aimed at a measured gap and scored by it; the same classifier becomes step 3's coverage ledger |
-| 1 | **J1 + J2 + first skill packs** (IDOR/BOLA, auth/JWT, mass assignment) | Largest expected gain: turns a closed-set orderer into a hypothesis generator, and fills the leaf fields that LT-180/LT-164 show are the actual misses |
+| 0b | **Miss attribution** (LT-185, **built; first result above**): for each known vulnerability, the pipeline stage where it was lost | Turns "5 of 7 missed" into a per-stage number, so step 1 is aimed at a measured gap and scored by it; the same classifier becomes step 3's coverage ledger |
+| 0c | **Recon route extraction** (LT-186, **placeholders and the cap done; measured above**): placeholder routes and the 15-base cap in the JS join | Measured cause of two of the five crAPI misses, fixable without a model; doing it first means J1 is scored on what deterministic recon genuinely cannot reach |
+| 1 | **J1 + J2 + first skill packs** (IDOR/BOLA, auth/JWT, mass assignment), **deferred 2026-09-21 (see "A second lab"): no measured miss on two labs is beyond deterministic work; a narrow J2 is the form to try first** | Largest expected gain: turns a closed-set orderer into a hypothesis generator, and fills the leaf fields that LT-180/LT-164 show are the actual misses |
 | 2 | **J4 skeptic + negative-control re-issue** | Largest precision gain; serves the <5% FP target and "reports that survive triage" |
 | 3 | **J5 ledger + state-based stop** | Replaces the iteration-floor workaround; makes clean areas distinguishable from unvisited ones |
 | 4 | J3 finding-driven follow-up | Needs J2's schema and J4's validated findings to be safe |
@@ -126,6 +286,7 @@ Two things this turned up that change how to read everything above (the fourth a
 
 - **Recall cost of J4.** Strix's own published result is higher precision at lower recall. J4 is designed to annotate/downgrade rather than drop; the ablation must show whether that holds.
 - **Is response-shape capture enough for J1?** If not, the next step is a bounded, redacted sample of response bodies for the model, which needs its own privacy review.
+- **Resolved (2026-09-21): ids read from a response.** Held in memory only, never in a stream, result, log, ledger or prompt; the ledger says whether a route was seeded, not with what. A finding's evidence naming the id it tested is the finding, not a leak. The same rule should govern any value J1/J2 could ever want to read from a response.
 - **Skill-pack maintenance.** Who curates them, and how do we stop them drifting toward whichever lab was used to validate them?
 - **Second-account hypotheses.** Many high-value BOLA tests need `--auto-provision-account`; J2 should propose them as `needs`, but the UX for surfacing that in an unattended run is undecided.
 

@@ -38,6 +38,15 @@ const maxEndpointDrivenIdorLeaves = 12
 // leaves resolveEndpointFacts fans out from SuggestSQLiTargets.
 const maxEndpointDrivenSQLiLeaves = 12
 
+// maxEndpointDrivenSSRFLeaves bounds the per-endpoint ssrf leaves (LT-186), the same
+// ceiling idea as the idor and sqli fan-outs above.
+const maxEndpointDrivenSSRFLeaves = 8
+
+// maxEndpointDrivenSQLiBodyLeaves bounds the per-endpoint body-field sqli
+// leaves (LT-192, docs/follow-up.md), the same ceiling idea as the
+// query-parameter sqli/ssrf fan-outs above.
+const maxEndpointDrivenSQLiBodyLeaves = 8
+
 // minTemplateLeafScore is the relevance floor a scored template entry must
 // clear before it becomes its own leaf (LT-48, docs/follow-up.md).
 // scoreTemplateForTech gives a primary product-tag hit a base of 100 and a
@@ -1252,6 +1261,12 @@ func Resolve(result *recon.ReconResult, templateIndex []templatesync.Entry) (*ag
 			switch {
 			case leaf.EndpointTemplate != "":
 				key += "\x00" + leaf.EndpointTemplate
+			case leaf.SSRFPath != "":
+				key += "\x00ssrf\x00" + leaf.SSRFPath // LT-186: one ssrf leaf per endpoint
+			case leaf.SQLiPath != "":
+				key += "\x00sqli\x00" + leaf.SQLiPath // the same for sqli: doc18's per-candidate fan-out was collapsing to one leaf
+			case leaf.SQLiBodyPath != "":
+				key += "\x00sqli-body\x00" + leaf.SQLiBodyPath // LT-192: one leaf per endpoint's body-field candidates, same reasoning
 			case len(leaf.ProtectedPaths) > 0 || len(leaf.SSRFParams) > 0 || len(leaf.SSRFBodyParams) > 0 || leaf.CouponMintPath != "":
 				key += "\x00endpoint-driven"
 			}
@@ -1480,12 +1495,16 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, coupon *r
 		// same leaf so scanner/engine.go can dispatch RandomUUIDStrategy
 		// instead of a numeric range that would never reach it.
 		seeds := recon.SuggestIDORSeedIDs(hostResult)
+		harvested := recon.SuggestIDORHarvestedSeeds(hostResult) // response data: memory only, see PlanNode.HarvestedSeedID
 		for _, cand := range candidates {
 			leaf := newEndpointLeaf(host, "idor", endpointConf,
 				fmt.Sprintf("recon derived the ID-shaped endpoint %s on this host — enumerating its {{id}}", cand), leafIdx)
 			leaf.EndpointTemplate = cand
 			if seed, ok := seeds[cand]; ok {
 				leaf.EndpointSeedID = seed
+				leaf.EndpointIDIsUUID = true
+			} else if id, ok := harvested[cand]; ok {
+				leaf.HarvestedSeedID = id
 				leaf.EndpointIDIsUUID = true
 			}
 			leaves = append(leaves, leaf)
@@ -1517,9 +1536,54 @@ func resolveEndpointFacts(host string, endpoints []recon.EndpointFact, coupon *r
 		leaf.SQLiParams = sqliTarget.Params
 		leaves = append(leaves, leaf)
 	}
+	// LT-192 (docs/follow-up.md): one sqli leaf per endpoint whose recon-
+	// recovered request-body fields are worth SQLi-testing — SuggestSQLiTargets'
+	// own loop above covers a URL query value only, so a value that lives in
+	// the JSON body (juiceshop-sqli-login-bypass's login email field,
+	// tests/fixtures/known-vulns/juiceshop.json) needs its own leaf, same
+	// "carry the endpoint path, not just the host" reasoning the ssrf loop
+	// below gives for its own body-field candidates.
+	sqliBodyTargets := recon.SuggestSQLiBodyTargets(hostResult)
+	if len(sqliBodyTargets) > maxEndpointDrivenSQLiBodyLeaves {
+		sqliBodyTargets = sqliBodyTargets[:maxEndpointDrivenSQLiBodyLeaves]
+	}
+	for _, bt := range sqliBodyTargets {
+		leaf := newEndpointLeaf(host, "sqli", endpointConf,
+			fmt.Sprintf("recon derived the request-body field(s) %s on %s", strings.Join(bt.BodyParams, ", "), bt.Path), leafIdx)
+		leaf.SQLiBodyPath = bt.Path
+		leaf.SQLiBodyParams = bt.BodyParams
+		leaf.SQLiBodyFillFields = bt.FillFields
+		leaf.SQLiBodyFillValues = bt.FillValues
+		leaves = append(leaves, leaf)
+	}
+	// LT-186: one ssrf leaf per endpoint that takes a URL, carrying its path. The
+	// leaf's target is only the host, so a leaf that names the parameters but not
+	// the endpoint sends its probes to the host root, where they cannot reach the
+	// field (found live on crAPI: the leaf was dispatched and raised nothing).
+	ssrfTargets := recon.SuggestSSRFTargets(hostResult)
+	if len(ssrfTargets) > maxEndpointDrivenSSRFLeaves {
+		ssrfTargets = ssrfTargets[:maxEndpointDrivenSSRFLeaves]
+	}
+	for _, st := range ssrfTargets {
+		var parts []string
+		if len(st.Params) > 0 {
+			parts = append(parts, fmt.Sprintf("query param(s) %s", strings.Join(st.Params, ", ")))
+		}
+		if len(st.BodyParams) > 0 {
+			parts = append(parts, fmt.Sprintf("body param(s) %s", strings.Join(st.BodyParams, ", ")))
+		}
+		leaf := newEndpointLeaf(host, "ssrf", endpointConf,
+			fmt.Sprintf("recon observed URL-shaped %s on %s", strings.Join(parts, " and "), st.Path), leafIdx)
+		leaf.SSRFPath = st.Path
+		leaf.SSRFParams = st.Params
+		leaf.SSRFBodyParams = st.BodyParams
+		leaf.SSRFBodyFillFields = st.FillFields
+		leaf.SSRFBodyFillValues = st.FillValues
+		leaves = append(leaves, leaf)
+	}
 	params := recon.SuggestSSRFParamsFromRecon(hostResult)
 	bodyParams := recon.SuggestSSRFBodyParamsFromRecon(hostResult)
-	if len(params) > 0 || len(bodyParams) > 0 {
+	if len(ssrfTargets) == 0 && (len(params) > 0 || len(bodyParams) > 0) {
 		var rationaleParts []string
 		if len(params) > 0 {
 			rationaleParts = append(rationaleParts, fmt.Sprintf("query param(s) %s", strings.Join(params, ", ")))

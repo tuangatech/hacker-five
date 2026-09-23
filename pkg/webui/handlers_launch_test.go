@@ -619,6 +619,34 @@ func TestStartLaunch_CheckedButInvalidTab_RerendersWithErrorNotSilentSkip(t *tes
 	assert.Contains(t, string(body), "authbypass:", "a checked-but-invalid detector must produce a visible error, not a silent no-op")
 }
 
+// LT-187: ticking "also use the auth token for recon" without giving a token must
+// be refused at submit time, where the operator can fix it, not silently run an
+// unauthenticated recon they believe is authenticated.
+func TestStartLaunch_ReconAuthWithoutToken_IsRejected(t *testing.T) {
+	ts := newTestServer(t)
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+	getResp, err := client.Get(ts.URL + "/")
+	require.NoError(t, err)
+	require.NoError(t, getResp.Body.Close())
+
+	resp, err := client.PostForm(ts.URL+"/scans", url.Values{
+		"csrf_token":    {cookieValue(t, jar, ts.URL, csrfCookieName)},
+		"target":        {"http://127.0.0.1:1"},
+		"run_misconfig": {"on"},
+		"recon_auth":    {"on"},
+		"authorized":    {"on"},
+	})
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Contains(t, string(body), "recon auth: recon authentication needs an owner token")
+}
+
 // TestStartLaunch_Authbypass_NoToken_DeferredNotRejected confirms authbypass
 // can now start with zero token given at all — it narrows to
 // checkMissingAuth/checkRateLimitSignal internally (see ValidateOptions'
@@ -896,7 +924,7 @@ func TestLaunchForm_PrefillScript_ExcludesSecretsAndAuthorized(t *testing.T) {
 	i := strings.Index(html, marker)
 	require.GreaterOrEqual(t, i, 0)
 	fieldsLiteral := html[i : i+strings.Index(html[i:], "]")+1]
-	for _, banned := range []string{"auth_token", "other_auth_token", "headers", "authorized", "allow_writes"} {
+	for _, banned := range []string{"auth_token", "other_auth_token", "headers", "authorized", "allow_writes", "recon_auth"} {
 		assert.NotContainsf(t, fieldsLiteral, `"`+banned+`"`, "LT-122: %q must never be persisted to localStorage", banned)
 	}
 	// Sanity: it does remember the ordinary fields, including LT-115's textarea.

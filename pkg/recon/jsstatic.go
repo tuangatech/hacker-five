@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/tuangatech/hacker-five/pkg/scanner/httpclient"
 )
 
 // jsAsset is one served JavaScript body Wave 3 already fetched (via katana's
@@ -57,27 +59,22 @@ const (
 
 	// maxJSPathPrefixes / maxJSPathBases / maxJSQuerySuffixes bound how many
 	// of each join-part class (LT-164, docs/follow-up.md) one asset
-	// contributes — a real SPA bundle declares a handful of service-route
-	// prefixes and API-path constants, not dozens; capping keeps the
-	// combinatorial join below bounded.
+	// contributes. maxJSPathBases was 15 until LT-186: the candidates are
+	// sorted, so on a real bundle (crAPI: 41 route literals) everything past the
+	// 15th name alphabetically was never considered, including every route
+	// under "api/v2/". Candidates beyond a cap are counted and reported in a
+	// warning, never dropped silently.
 	maxJSPathPrefixes  = 8
-	maxJSPathBases     = 15
+	maxJSPathBases     = 80
 	maxJSQuerySuffixes = 10
-	// maxJSJoinProbes caps how many prefix+base pair candidates
-	// runJSStaticAnalysis actually GETs in total, across every asset in one
-	// recon run — the one place this pass stops being "pure, no new
-	// requests" (runJSStaticAnalysis's own doc comment), so the cost is
-	// bounded the same way verifyAuthCandidates/probeSignupCandidates bound
-	// theirs. Sized to maxJSPathPrefixes*maxJSPathBases (120) deliberately:
-	// live-verified against crAPI, an earlier per-call cap of 40 (rather
-	// than this total budget) silently starved the one real prefix
-	// ("workshop/", last alphabetically among 4 prefixes) because the first
-	// 40 of a single asset's 60 sorted pairs were all spent on the three
-	// prefixes that sort before it — a real bug, not just a tight bound. A
-	// budget sized to one asset's full realistic cross product removes that
-	// ordering hazard for the common case of one dominant bundle, while
-	// still capping a pathological multi-asset run.
-	maxJSJoinProbes = maxJSPathPrefixes * maxJSPathBases
+	// maxJSJoinProbes caps how many prefix+base GETs runJSStaticAnalysis issues
+	// in total, across every asset in one recon run — the one place this pass
+	// stops being "pure, no new requests" (runJSStaticAnalysis's own doc
+	// comment). It counts requests, not pairs: verifyJSJoinBases stops at the
+	// first prefix that verifies a base and tries the prefix that verified its
+	// nearest sibling first, so a bundle usually costs one to two probes per
+	// route rather than one per prefix (LT-186). Templated routes cost none.
+	maxJSJoinProbes = 300
 )
 
 // looksLikeJSAsset reports whether a katana-observed record is a JavaScript
@@ -101,7 +98,249 @@ func looksLikeJSAsset(rawURL string, headers map[string]string) bool {
 // of a JS body — deliberately shape-agnostic (LinkFinder-style: grab
 // everything quoted, then filter in Go) rather than trying to encode "looks
 // like a URL" into the regex itself, which is far harder to review and tune.
+// Backtick (template-literal) strings are extracted separately, by
+// extractBacktickLiterals below, not folded into this alternation — see its
+// own doc comment for why a flat regex can't do that correctly.
 var jsQuotedStringRe = regexp.MustCompile(`"([^"\n]{2,200})"|'([^'\n]{2,200})'`)
+
+// maxBacktickNestingDepth bounds how deeply consumeBacktickLiteral recurses
+// into nested "${`...`}" template literals — a defensive cap against a
+// pathological/adversarial input's call-stack depth, not a real-world limit:
+// the deepest nesting live-verified so far (Angular Material's own internal
+// CSS-in-JS, Juice Shop's bundle, LT-190) is 2 levels.
+const maxBacktickNestingDepth = 20
+
+// consumeBacktickLiteral scans body starting at the opening backtick index
+// open, returning that literal's raw content, the index just past its
+// closing backtick, and whether it found one (false on an unterminated
+// literal, in which case the caller should just skip forward). depth guards
+// against runaway recursion via maxBacktickNestingDepth.
+//
+// A backslash escapes the next character (so "\`" never ends the literal
+// early and "\\" is never itself mistaken for an escape). "${" opens an
+// interpolation: from there the content is JS, not string text, so a bare
+// "`" inside it starts a *nested* template literal (recursed into, not
+// treated as this literal's own close) and a bare "{"/"}" adjusts a brace
+// depth so a nested object literal or arrow-function body inside the
+// interpolation doesn't end it early — the interpolation, and only it,
+// ends when that depth returns to zero at a "}". Newlines are ordinary
+// content throughout: a real template literal is a multi-line string by
+// design, and Angular's own component templates commonly are.
+func consumeBacktickLiteral(body string, open, depth int) (content string, end int, ok bool) {
+	if depth > maxBacktickNestingDepth {
+		return "", 0, false
+	}
+	i, n := open+1, len(body)
+	for i < n {
+		switch c := body[i]; {
+		case c == '\\':
+			i += 2 // skip the escaped character too, whatever it is (may overshoot n by 1; loop condition catches it)
+		case c == '`':
+			return body[open+1 : i], i + 1, true
+		case c == '$' && i+1 < n && body[i+1] == '{':
+			i += 2
+			braceDepth := 1
+			for i < n && braceDepth > 0 {
+				switch body[i] {
+				case '\\':
+					i += 2
+				case '`':
+					if _, nestedEnd, nestedOK := consumeBacktickLiteral(body, i, depth+1); nestedOK {
+						i = nestedEnd
+					} else {
+						i++ // unterminated nested literal — just advance past the stray backtick
+					}
+				case '{':
+					braceDepth++
+					i++
+				case '}':
+					braceDepth--
+					i++
+				default:
+					i++
+				}
+			}
+		default:
+			i++
+		}
+	}
+	return "", 0, false // ran off the end of body without a closing backtick
+}
+
+// extractBacktickLiterals returns the raw content of every top-level
+// backtick template literal in body, tracking interpolation nesting
+// properly (consumeBacktickLiteral) instead of a flat regex — LT-190
+// (docs/follow-up.md).
+//
+// A modern TypeScript/Angular bundle (Juice Shop, live-verified) builds
+// essentially every REST call as a template literal
+// (`` `${this.hostServer}/rest/basket/${e}` ``), never a plain quoted
+// string, so without extracting these at all every one of these real,
+// present-in-the-bundle routes was structurally invisible to this package.
+// The first attempt at this used jsQuotedStringRe's own alternation-based
+// approach (a fourth "backtick" branch, "capture up to the next backtick"),
+// the same technique the double/single-quote alternatives already use —
+// live-verified against Juice Shop's actual main.js, this silently broke:
+// its bundle contains a template literal nested three deep inside another
+// one's own "${...}" (Angular Material's internal CSS-in-JS,
+// `` `calc(${this._currentDirection===`rtl`?`-1`:`1`} * (${`${a+l}px`} ...` ``),
+// and a flat regex has no way to track nesting depth — regular languages
+// fundamentally can't recognize balanced/nested delimiters. That one nested
+// literal, ~256KB into the file, desynchronized every backtick pairing
+// after it for the rest of the bundle: `/rest/basket/${e}`, a completely
+// unrelated, non-nested literal ~285KB further on, and everything like it
+// was silently dropped as a result. This function tracks real nesting
+// instead, so a desync like that can't happen.
+//
+// Content is returned raw — normalizeJSTemplateLiteral still has to make
+// sense of whatever "${...}" pieces it contains before it's a usable
+// candidate; extractBacktickLiterals' only job is finding where each
+// literal actually starts and ends.
+func extractBacktickLiterals(body string) []string {
+	var out []string
+	for i := 0; i < len(body); {
+		if body[i] != '`' {
+			i++
+			continue
+		}
+		content, end, ok := consumeBacktickLiteral(body, i, 0)
+		if !ok {
+			i++ // unterminated from here — skip this backtick, keep scanning
+			continue
+		}
+		if len(content) >= 2 {
+			out = append(out, content)
+		}
+		i = end
+		if len(out) >= maxJSQuotedStringsPerAsset {
+			break
+		}
+	}
+	return out
+}
+
+// jsTemplateLiteralInterpRe matches one non-nested "${...}" interpolation
+// block inside a backtick template literal's already-extracted content.
+var jsTemplateLiteralInterpRe = regexp.MustCompile(`\$\{[^{}]*\}`)
+
+// jsLeadingTemplateLiteralInterpRe is jsTemplateLiteralInterpRe anchored to
+// the very start of the string — recognizes a base-URL/host variable
+// written as the literal's first piece, e.g. "${this.hostServer}/rest/...".
+var jsLeadingTemplateLiteralInterpRe = regexp.MustCompile(`^\$\{[^{}]*\}`)
+
+// jsTemplateLiteralPlaceholder is the placeholder name substituted for a
+// "${...}" interpolation that fills a whole path segment or query value —
+// the OpenAPI-style "{name}" spelling isSpecPathParam/normalizeJSPathPlaceholders
+// already use (LT-186/LT-40), emitted directly rather than through the
+// "<name>" intermediate those two use: a query-embedded placeholder
+// ("?q={param}") isn't a whole "/"-delimited segment, so
+// normalizeJSPathPlaceholders' own segment-shaped rewrite wouldn't reach it,
+// and IsPlausibleURLPath's jsSyntaxInPath check rejects "<"/">" wherever
+// they appear in the string, segment boundary or not — so the earlier
+// "<name>" first, converted to "{name}" downstream" approach was only ever
+// safe for the whole-segment case (LT-190's second live-verification pass
+// found the query case: crAPI's own `/rest/products/search?q=${e}`). The
+// minified variable name itself ("e", "i") carries no meaning, so a fixed
+// generic name is used rather than trying to preserve it.
+const jsTemplateLiteralPlaceholder = "{param}"
+
+// normalizeJSTemplateLiteral turns a backtick template literal's dynamic
+// "${...}" pieces into "{param}" placeholders, or rejects the literal
+// outright when it can't be normalized with confidence — LT-190.
+//
+// Three shapes are recognized, all live-verified against Juice Shop's own
+// bundle:
+//   - a "${...}" at the very start of the string is a base-URL/host
+//     variable, not a path segment — stripped outright, since
+//     extractJSEndpoints already resolves a relative path against the
+//     asset's own host and has no use for a second one. What's left still
+//     has to independently look like a real path (isCandidateEndpointString)
+//     to be considered further, so this is never a blanket accept.
+//   - any other "${...}" that fills a *whole* path segment
+//     ("/basket/${e}", "/basket/${e}/coupon/${i}") becomes "{param}".
+//   - a "${...}" that is a whole query-parameter *value*
+//     ("/products/search?q=${e}") becomes "{param}" there too — the query
+//     string is split off (at the first "?") and its "&"-separated pairs
+//     are normalized the same way a path segment is, independently of the
+//     path portion.
+//
+// A literal with no "${" at all — most of Juice Shop's own backtick routes,
+// e.g. `/rest/products`, use no interpolation at all — is returned
+// unchanged. A "${...}" that sits *inside* a path segment or a query value
+// rather than filling it ("prefix-${x}", "?q=x-${y}"), or a query pair with
+// no "=", makes the whole literal ineligible (ok=false): this project's
+// stated bias (docs/follow-up.md, Phase 8 Step 3's own note on
+// jsSecretPatterns) is that a doubtful pattern is left out, not emitted as
+// a possibly-wrong candidate.
+func normalizeJSTemplateLiteral(s string) (string, bool) {
+	if !strings.Contains(s, "${") {
+		return s, true
+	}
+	s = jsLeadingTemplateLiteralInterpRe.ReplaceAllString(s, "")
+
+	path, query, hasQuery := s, "", false
+	if qi := strings.IndexByte(s, '?'); qi >= 0 {
+		path, query, hasQuery = s[:qi], s[qi+1:], true
+	}
+
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		if !strings.Contains(seg, "${") {
+			continue
+		}
+		if jsTemplateLiteralInterpRe.ReplaceAllString(seg, "") != "" {
+			return "", false // interpolation doesn't cleanly fill the whole segment
+		}
+		segs[i] = jsTemplateLiteralPlaceholder
+	}
+	path = strings.Join(segs, "/")
+	if !hasQuery {
+		return path, true
+	}
+
+	pairs := strings.Split(query, "&")
+	for i, pair := range pairs {
+		if !strings.Contains(pair, "${") {
+			continue
+		}
+		eq := strings.IndexByte(pair, '=')
+		if eq <= 0 {
+			return "", false // no "key=", or an empty key — not a recognizable query assignment
+		}
+		key, val := pair[:eq], pair[eq+1:]
+		if jsTemplateLiteralInterpRe.ReplaceAllString(val, "") != "" {
+			return "", false // interpolation doesn't cleanly fill the whole value
+		}
+		pairs[i] = key + "=" + jsTemplateLiteralPlaceholder
+	}
+	return path + "?" + strings.Join(pairs, "&"), true
+}
+
+// jsCandidateLiterals returns every candidate string literal in body worth
+// checking as a possible endpoint/join-part fragment: every double- or
+// single-quoted string (jsQuotedStringRe), plus every backtick template
+// literal (extractBacktickLiterals), each normalized
+// (normalizeJSTemplateLiteral) or dropped when it can't be normalized with
+// confidence. The single place extractJSEndpoints and
+// collectJSPathJoinParts both pull their candidate literals from, so
+// neither can drift from the other's handling of the same body.
+func jsCandidateLiterals(body string) []string {
+	matches := jsQuotedStringRe.FindAllStringSubmatch(body, maxJSQuotedStringsPerAsset)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		s := m[1]
+		if s == "" {
+			s = m[2]
+		}
+		out = append(out, s)
+	}
+	for _, lit := range extractBacktickLiterals(body) {
+		if s, ok := normalizeJSTemplateLiteral(lit); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // isCandidateEndpointString reports whether a quoted string literal is
 // shaped like a real request path or absolute URL — the coarse pre-filter
@@ -126,18 +365,21 @@ func extractJSEndpoints(assetURL, body string) []string {
 		assetHost = u.Scheme + "://" + u.Host
 	}
 
-	matches := jsQuotedStringRe.FindAllStringSubmatch(body, maxJSQuotedStringsPerAsset)
 	seen := map[string]bool{}
 	var out []string
-	for _, m := range matches {
-		s := m[1]
-		if s == "" {
-			s = m[2]
-		}
+	for _, s := range jsCandidateLiterals(body) {
 		if !isCandidateEndpointString(s) {
 			continue
 		}
 		if strings.HasPrefix(s, "/") {
+			// LT-190: a template-literal-derived "<name>" segment (or one
+			// written that way directly in a plain quoted string) has to be
+			// normalized to "{name}" before IsPlausibleURLPath, which rejects
+			// "<"/">" as JS-syntax punctuation (jsSyntaxInPath) — the same
+			// treatment collectJSPathJoinParts' API-path-base bucket already
+			// gives it (LT-186), just not previously applied on this,
+			// absolute-path branch.
+			s = normalizeJSPathPlaceholders(s)
 			if !IsPlausibleURLPath(s) || IsNonRouteAssetPath(s) {
 				continue
 			}
@@ -215,25 +457,44 @@ func isJSQuerySuffixCandidate(s string) bool {
 	return jsQuerySuffixPattern.MatchString(s)
 }
 
-// extractJSPathJoinParts classifies every quoted string literal in body into
-// (at most) one of three join-part buckets — LT-164, docs/follow-up.md.
-// Sorted and capped per bucket so the combinatorial join this feeds stays
-// bounded and its output order is deterministic.
-func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []string) {
-	matches := jsQuotedStringRe.FindAllStringSubmatch(body, maxJSQuotedStringsPerAsset)
-	seenPrefix, seenBase, seenSuffix := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, m := range matches {
-		s := m[1]
-		if s == "" {
-			s = m[2]
+// jsPlaceholderSegment matches one whole path segment written as a client-side
+// route placeholder, "<orderId>". A bundle declares a parameterised route as a
+// template ("api/shop/orders/<orderId>") and fills the segment at call time.
+var jsPlaceholderSegment = regexp.MustCompile(`^<([A-Za-z_][A-Za-z0-9_]{0,30})>$`)
+
+// normalizeJSPathPlaceholders rewrites "<name>" path segments to the OpenAPI
+// spelling "{name}", the form recon already treats as an identifier position
+// (isSpecPathParam) and that no JS-syntax filter rejects. Only a whole segment
+// counts: "a<b>c" is left alone and so still fails the plausibility check.
+func normalizeJSPathPlaceholders(s string) string {
+	if !strings.Contains(s, "<") {
+		return s
+	}
+	segs := strings.Split(s, "/")
+	for i, seg := range segs {
+		if m := jsPlaceholderSegment.FindStringSubmatch(seg); m != nil {
+			segs[i] = "{" + m[1] + "}"
 		}
+	}
+	return strings.Join(segs, "/")
+}
+
+// collectJSPathJoinParts classifies every quoted string literal in body into
+// (at most) one of three join-part buckets — LT-164, docs/follow-up.md. Sorted
+// and de-duplicated but not capped, so a caller that caps can say how many it
+// cut; extractJSPathJoinParts is the capped form. A base written with "<name>"
+// placeholders comes back in "{name}" form (LT-186).
+func collectJSPathJoinParts(body string) (prefixes, bases, querySuffixes []string) {
+	seenPrefix, seenBase, seenSuffix := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, s := range jsCandidateLiterals(body) {
 		switch {
 		case isJSPathPrefixCandidate(s):
 			if !seenPrefix[s] {
 				seenPrefix[s] = true
 				prefixes = append(prefixes, s)
 			}
-		case isJSAPIPathBaseCandidate(s):
+		case isJSAPIPathBaseCandidate(normalizeJSPathPlaceholders(s)):
+			s = normalizeJSPathPlaceholders(s)
 			if !seenBase[s] {
 				seenBase[s] = true
 				bases = append(bases, s)
@@ -248,44 +509,121 @@ func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []strin
 	sort.Strings(prefixes)
 	sort.Strings(bases)
 	sort.Strings(querySuffixes)
-	if len(prefixes) > maxJSPathPrefixes {
-		prefixes = prefixes[:maxJSPathPrefixes]
-	}
-	if len(bases) > maxJSPathBases {
-		bases = bases[:maxJSPathBases]
-	}
-	if len(querySuffixes) > maxJSQuerySuffixes {
-		querySuffixes = querySuffixes[:maxJSQuerySuffixes]
-	}
 	return prefixes, bases, querySuffixes
 }
 
+// extractJSPathJoinParts is collectJSPathJoinParts with each bucket capped at
+// its maxJS* limit, silently. runJSStaticAnalysis caps for itself so it can warn.
+func extractJSPathJoinParts(body string) (prefixes, bases, querySuffixes []string) {
+	prefixes, bases, querySuffixes = collectJSPathJoinParts(body)
+	prefixes, _ = capStrings(prefixes, maxJSPathPrefixes)
+	bases, _ = capStrings(bases, maxJSPathBases)
+	querySuffixes, _ = capStrings(querySuffixes, maxJSQuerySuffixes)
+	return prefixes, bases, querySuffixes
+}
+
+// capStrings truncates xs to n and reports how many it cut.
+func capStrings(xs []string, n int) (kept []string, cut int) {
+	if len(xs) <= n {
+		return xs, 0
+	}
+	return xs[:n], len(xs) - n
+}
+
+// minJSTieNameLen is the shortest identifier assignQuerySuffixes trusts as a
+// tie. A minifier mangles local variables to one or two letters that recur all
+// over a bundle, so two unrelated statements sharing "t" prove nothing; an
+// object property such as GET_SERVICE_REPORT survives minification and does.
+const minJSTieNameLen = 3
+
+// assignQuerySuffixes decides which keyless query suffix belongs to which
+// verified base route (LT-184, docs/follow-up.md). A bundle declares a route
+// constant in one place (`GET_SERVICE_REPORT:"api/mechanic/mechanic_report"`)
+// and completes it where it is used (`ig+sg.GET_SERVICE_REPORT+"?report_id="+n`),
+// so a suffix is tied to a base when the identifier the base is declared under
+// is the one immediately followed by the suffix literal. Before this the
+// suffixes were crossed with every verified base: one real `?report_id=` route
+// became a dozen look-alikes across unrelated paths, and each became an idor
+// leaf.
+//
+// A suffix that ties to no verified base is attached only when exactly one base
+// verified, where there is nothing to be ambiguous about; with several it is
+// dropped rather than guessed. The result maps a base to its suffixes; a base
+// with none is emitted bare by the caller.
+func assignQuerySuffixes(body string, verifiedBases, suffixes []string) map[string][]string {
+	out := map[string][]string{}
+	if len(verifiedBases) == 0 || len(suffixes) == 0 {
+		return out
+	}
+	declaredAs := map[string]map[string]bool{} // base -> identifiers it is declared under
+	for _, b := range verifiedBases {
+		re := regexp.MustCompile("([A-Za-z_$][\\w$]*)\\s*[:=]\\s*[\"'`]" + regexp.QuoteMeta(b) + "[\"'`]")
+		names := map[string]bool{}
+		for _, m := range re.FindAllStringSubmatch(body, -1) {
+			if len(m[1]) >= minJSTieNameLen {
+				names[m[1]] = true
+			}
+		}
+		declaredAs[b] = names
+	}
+
+	distinctBases := map[string]bool{}
+	for _, b := range verifiedBases {
+		distinctBases[b] = true
+	}
+	for _, s := range suffixes {
+		re := regexp.MustCompile("([A-Za-z_$][\\w$]*)\\s*\\+\\s*[\"'`]" + regexp.QuoteMeta(s) + "[\"'`]")
+		usedAfter := map[string]bool{}
+		for _, m := range re.FindAllStringSubmatch(body, -1) {
+			usedAfter[m[1]] = true
+		}
+		tied := false
+		for b := range distinctBases {
+			for name := range declaredAs[b] {
+				if usedAfter[name] {
+					out[b] = appendUnique(out[b], s)
+					tied = true
+				}
+			}
+		}
+		if !tied && len(distinctBases) == 1 {
+			for b := range distinctBases {
+				out[b] = appendUnique(out[b], s)
+			}
+		}
+	}
+	for b := range out {
+		sort.Strings(out[b])
+	}
+	return out
+}
+
+func appendUnique(xs []string, s string) []string {
+	for _, x := range xs {
+		if x == s {
+			return xs
+		}
+	}
+	return append(xs, s)
+}
+
 // jsJoinPair is one candidate prefix+base combination, kept structured
-// (rather than pre-concatenated) so verifyJSJoinCandidates can group
+// (rather than pre-concatenated) so verifyJSJoinBases can group
 // candidates by their originating prefix for the per-prefix canary check
 // below — string-splitting a joined "prefix+base" back apart would be
 // ambiguous whenever one prefix is itself a suffix of another.
 type jsJoinPair struct {
 	Prefix, Base string
+	// Status is what the verifying GET answered (as the signed-in user when recon
+	// carries a credential). AuthRequired is whether an anonymous request is turned
+	// away (401/403): the verifying GET when recon is anonymous, one extra
+	// credential-free GET when it is not. Zero/false for a templated route, which
+	// is never requested.
+	Status       int
+	AuthRequired bool
 }
 
 func (p jsJoinPair) joined() string { return p.Prefix + p.Base }
-
-// buildJSJoinPairs forms every prefix+base combination. Already implicitly
-// bounded to maxJSPathPrefixes*maxJSPathBases by its inputs; the caller
-// enforces the separate, run-wide maxJSJoinProbes request budget (not done
-// here — an earlier per-call cap here silently starved whichever prefix
-// sorted last, a real bug fixed by moving the budget to the caller, see
-// maxJSJoinProbes' own doc comment).
-func buildJSJoinPairs(prefixes, bases []string) []jsJoinPair {
-	var pairs []jsJoinPair
-	for _, p := range prefixes {
-		for _, b := range bases {
-			pairs = append(pairs, jsJoinPair{Prefix: p, Base: b})
-		}
-	}
-	return pairs
-}
 
 // jsJoinVerifyStatuses are the response statuses that count as "this route
 // really exists" for a bare prefix+base join candidate — deliberately not a
@@ -300,6 +638,12 @@ var jsJoinVerifyStatuses = map[int]bool{
 	http.StatusOK: true, http.StatusCreated: true,
 	http.StatusBadRequest: true, http.StatusUnauthorized: true, http.StatusForbidden: true,
 	http.StatusMethodNotAllowed: true, http.StatusUnprocessableEntity: true,
+	// A route that throws on a request missing its parameter still exists: crAPI's
+	// mechanic_report answers 500 to an authenticated GET with no report_id, where an
+	// unknown path answers 404. Without this the one known-vulnerable route dropped out
+	// of recon whenever recon carried a token (LT-186). 502/503/504 are infrastructure
+	// answers, not route evidence, and stay out; the prefix canary still has to differ.
+	http.StatusInternalServerError: true,
 }
 
 // fetchJSPrefixCanary GETs a guaranteed-nonexistent path under prefix once,
@@ -312,7 +656,7 @@ var jsJoinVerifyStatuses = map[int]bool{
 // them, turning one real endpoint into several same-confidence look-alikes
 // and reintroducing exactly the "multiple distinct candidates" ambiguity
 // this whole verification step exists to resolve (see
-// verifyJSJoinCandidates' own doc comment). ok is false on a request error;
+// verifyJSJoinBases' own doc comment). ok is false on a request error;
 // the caller then skips the canary-diff check for that prefix rather than
 // blocking every candidate under it.
 func (r *Recon) fetchJSPrefixCanary(ctx context.Context, assetHost, prefix string) (status int, ok bool) {
@@ -331,60 +675,193 @@ func (r *Recon) fetchJSPrefixCanary(ctx context.Context, assetHost, prefix strin
 	return resp.StatusCode, true
 }
 
-// verifyJSJoinCandidates GETs each of pairs (already capped at
-// maxJSJoinProbes) against assetHost and returns the subset that both (a)
-// answered with a jsJoinVerifyStatuses status and (b) differs from that
-// candidate's own prefix's canary status (fetchJSPrefixCanary, probed once
-// per distinct prefix among pairs and cached) — LT-164's live-verification
-// step, without which a wrong prefix+base combination would sit at the same
-// confidence as the right one and multiply idor's candidate-ambiguity
-// problem (idorCandidatesAndSeeds' own doc comment: "multiple distinct
-// candidates" makes a caller skip rather than dispatch) instead of resolving
-// it. Same per-host circuit breaker (hostErrors) and scope gate every other
-// live probe in this package uses.
-func (r *Recon) verifyJSJoinCandidates(ctx context.Context, agg *aggregator, assetHost string, pairs []jsJoinPair) []jsJoinPair {
-	host := hostOnly(assetHost)
-	if r.hostErrors.ShouldSkip(host) {
-		return nil
+func isAuthRejection(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+// turnsAwayAnonymous reports whether a verified route rejects an anonymous request
+// (LT-186): it is what makes a path a "protected path" for authbypass, which the
+// verification used to throw away. status is what the verifying GET answered. When
+// recon is anonymous that already is the answer; when it carries a credential, the
+// verifying GET was signed in, so one extra GET is sent without the credential.
+// The extra request spends one unit of budget and is skipped when none is left.
+func (r *Recon) turnsAwayAnonymous(ctx context.Context, reqURL string, status int, budget *int) bool {
+	if isAuthRejection(status) {
+		return true
 	}
+	if r.credential == nil || *budget <= 0 {
+		return false
+	}
+	req, err := http.NewRequestWithContext(httpclient.WithoutHostHeaders(ctx), http.MethodGet, reqURL, nil)
+	if err != nil {
+		return false
+	}
+	r.applyHeaders(req)
+	*budget--
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+	_ = resp.Body.Close()
+	return isAuthRejection(resp.StatusCode)
+}
+
+// jsJoinResult is what verifyJSJoinBases found and what it could not settle.
+type jsJoinResult struct {
+	Verified []jsJoinPair
+	// Unsettled counts plain bases left unverified because the probe budget ran
+	// out; Uninferred counts templated bases with no verified sibling to borrow
+	// a prefix from. Both are reported, never silent.
+	Unsettled, Uninferred int
+}
+
+func jsSegments(base string) []string { return strings.Split(strings.Trim(base, "/"), "/") }
+
+// sharedLeadingSegments is how many leading path segments a and b have in common.
+func sharedLeadingSegments(a, b string) int {
+	as, bs := jsSegments(a), jsSegments(b)
+	n := 0
+	for n < len(as) && n < len(bs) && as[n] == bs[n] {
+		n++
+	}
+	return n
+}
+
+// preferSiblingPrefix orders prefixes for base: the prefix that verified the
+// base sharing the most leading segments with it (two at least) comes first,
+// the rest keep their order. A service owns a resource family, so this turns
+// "try all four prefixes" into "try the likely one first".
+func preferSiblingPrefix(prefixes []string, verified []jsJoinPair, base string) []string {
+	best, bestPrefix := 1, ""
+	for _, v := range verified {
+		if n := sharedLeadingSegments(v.Base, base); n > best {
+			best, bestPrefix = n, v.Prefix
+		}
+	}
+	if bestPrefix == "" {
+		return prefixes
+	}
+	out := make([]string, 0, len(prefixes))
+	out = append(out, bestPrefix)
+	for _, p := range prefixes {
+		if p != bestPrefix {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// verifyJSJoinBases finds, for each base, the service prefix under which the
+// route is real — LT-164's live-verification step, reworked in LT-186.
+//
+// A plain base is GETed under each prefix (sibling-preferred order) until one
+// answers as a route (jsJoinVerifyStatuses) and differently from that prefix's
+// canary (fetchJSPrefixCanary); the first such prefix wins, since a route lives
+// in one service. Every probe spends one unit of *budget, shared across the run.
+//
+// A templated base ("api/shop/orders/{orderId}") is never requested: the literal
+// placeholder answers 404 like any unknown path (measured on crAPI), and recon
+// does not invent an id to put there. It borrows the prefix of a verified plain
+// base that shares all of its leading static segments ("api/shop/orders" for
+// "api/shop/orders/{orderId}"), on the same reasoning that a service owns a
+// resource family. With fewer than two leading static segments, or no such
+// sibling, it is left unverified and counted. Same per-host circuit breaker
+// (hostErrors) and scope gate as every other live probe in this package.
+func (r *Recon) verifyJSJoinBases(ctx context.Context, agg *aggregator, assetHost string, prefixes, bases []string, budget *int) jsJoinResult {
+	var res jsJoinResult
+	host := hostOnly(assetHost)
+	var plain, templated []string
+	for _, b := range bases {
+		if strings.Contains(b, "{") {
+			templated = append(templated, b)
+		} else {
+			plain = append(plain, b)
+		}
+	}
+	if r.hostErrors.ShouldSkip(host) {
+		res.Unsettled = len(plain)
+		res.Uninferred = len(templated)
+		return res
+	}
+
 	canaryByPrefix := map[string]int{}
 	canaryFetched := map[string]bool{}
-	var verified []jsJoinPair
-	for _, pair := range pairs {
-		reqURL := strings.TrimRight(assetHost, "/") + "/" + pair.joined()
-		if r.scope != nil && !r.scope.Allowed(reqURL) {
-			agg.addOutOfScope(hostOnly(reqURL))
-			continue
-		}
-		if !canaryFetched[pair.Prefix] {
-			if status, ok := r.fetchJSPrefixCanary(ctx, assetHost, pair.Prefix); ok {
-				canaryByPrefix[pair.Prefix] = status
+	for i, base := range plain {
+		found := false
+		for _, prefix := range preferSiblingPrefix(prefixes, res.Verified, base) {
+			if *budget <= 0 {
+				break
 			}
-			canaryFetched[pair.Prefix] = true
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-		if err != nil {
-			continue
-		}
-		r.applyHeaders(req)
-		resp, err := r.client.Do(req)
-		if err != nil {
-			if !isRequestTimeout(err) {
-				r.hostErrors.RecordError(host)
+			reqURL := strings.TrimRight(assetHost, "/") + "/" + prefix + base
+			if r.scope != nil && !r.scope.Allowed(reqURL) {
+				agg.addOutOfScope(hostOnly(reqURL))
+				continue
 			}
-			continue
+			if !canaryFetched[prefix] {
+				if status, ok := r.fetchJSPrefixCanary(ctx, assetHost, prefix); ok {
+					canaryByPrefix[prefix] = status
+				}
+				canaryFetched[prefix] = true
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+			if err != nil {
+				continue
+			}
+			r.applyHeaders(req)
+			*budget--
+			resp, err := r.client.Do(req)
+			if err != nil {
+				if !isRequestTimeout(err) {
+					r.hostErrors.RecordError(host)
+				}
+				continue
+			}
+			r.hostErrors.RecordSuccess(host)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+			_ = resp.Body.Close()
+			if canaryStatus, ok := canaryByPrefix[prefix]; ok && resp.StatusCode == canaryStatus {
+				continue // this prefix answers every path alike — not a real signal
+			}
+			if jsJoinVerifyStatuses[resp.StatusCode] {
+				res.Verified = append(res.Verified, jsJoinPair{
+					Prefix: prefix, Base: base, Status: resp.StatusCode,
+					AuthRequired: r.turnsAwayAnonymous(ctx, reqURL, resp.StatusCode, budget),
+				})
+				found = true
+				break
+			}
 		}
-		r.hostErrors.RecordSuccess(host)
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
-		_ = resp.Body.Close()
-		if canaryStatus, ok := canaryByPrefix[pair.Prefix]; ok && resp.StatusCode == canaryStatus {
-			continue // this prefix answers every path alike — not a real signal
-		}
-		if jsJoinVerifyStatuses[resp.StatusCode] {
-			verified = append(verified, pair)
+		if !found && *budget <= 0 {
+			// Out of probes: this base and every later plain one is unsettled.
+			res.Unsettled += len(plain) - i
+			break
 		}
 	}
-	return verified
+
+	plainVerified := append([]jsJoinPair(nil), res.Verified...)
+	for _, t := range templated {
+		static := 0
+		for _, seg := range jsSegments(t) {
+			if strings.Contains(seg, "{") {
+				break
+			}
+			static++
+		}
+		seen := map[string]bool{}
+		if static >= 2 {
+			for _, v := range plainVerified {
+				if sharedLeadingSegments(v.Base, t) >= static && !seen[v.Prefix] {
+					seen[v.Prefix] = true
+					res.Verified = append(res.Verified, jsJoinPair{Prefix: v.Prefix, Base: t})
+				}
+			}
+		}
+		if len(seen) == 0 {
+			res.Uninferred++
+		}
+	}
+	return res
 }
 
 // jsSecretPattern is one curated, high-signal secret pattern — deliberately
@@ -581,8 +1058,8 @@ func (r *Recon) recordCloudBucketRef(agg *aggregator, ref cloudBucketRef) {
 // runtime from two or three separately-declared string constants (a
 // service-route prefix, a bare API-path constant, a keyless query-string
 // literal) that individually never pass extractJSEndpoints' "starts with /
-// or http" gate. extractJSPathJoinParts/buildJSJoinPairs reconstruct the
-// candidate joins; verifyJSJoinCandidates GETs each one (capped at
+// or http" gate. collectJSPathJoinParts reconstructs the
+// candidate joins; verifyJSJoinBases GETs each one (capped at
 // maxJSJoinProbes) so a wrong prefix+base combination — indistinguishable
 // from the right one by shape alone — is pruned before it can multiply
 // idor's own "multiple distinct candidates" ambiguity problem
@@ -607,7 +1084,7 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 	endpointsTruncated, secretsTruncated := false, false
 	joinCandidatesVerified := 0
 	joinProbeBudget := maxJSJoinProbes
-	joinProbesTruncated := false
+	joinBasesCut, joinUnsettled, joinUninferred := 0, 0, 0
 
 	// LT-164 (docs/follow-up.md): runKatana's crawl commonly observes the
 	// same asset URL more than once (the same bundle linked from several
@@ -650,17 +1127,28 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 			assetHost = u.Scheme + "://" + u.Host
 		}
 		if assetHost != "" && endpointsAdded < maxJSStaticEndpoints && joinProbeBudget > 0 {
-			prefixes, bases, querySuffixes := extractJSPathJoinParts(asset.Body)
-			pairs := buildJSJoinPairs(prefixes, bases)
-			if len(pairs) > joinProbeBudget {
-				pairs = pairs[:joinProbeBudget]
-				joinProbesTruncated = true
+			prefixes, bases, querySuffixes := collectJSPathJoinParts(asset.Body)
+			prefixes, _ = capStrings(prefixes, maxJSPathPrefixes)
+			bases, cutBases := capStrings(bases, maxJSPathBases)
+			querySuffixes, _ = capStrings(querySuffixes, maxJSQuerySuffixes)
+			joinBasesCut += cutBases
+			join := r.verifyJSJoinBases(ctx, agg, assetHost, prefixes, bases, &joinProbeBudget)
+			joinUnsettled += join.Unsettled
+			joinUninferred += join.Uninferred
+			verified := join.Verified
+			verifiedBases := make([]string, 0, len(verified))
+			for _, pair := range verified {
+				verifiedBases = append(verifiedBases, pair.Base)
 			}
-			joinProbeBudget -= len(pairs)
-			for _, pair := range r.verifyJSJoinCandidates(ctx, agg, assetHost, pairs) {
+			suffixesByBase := assignQuerySuffixes(asset.Body, verifiedBases, querySuffixes)
+			bodyByRoute := map[string]jsBodyFields{}
+			for _, bf := range extractJSBodyFields(asset.Body) {
+				bodyByRoute[bf.Route] = bf
+			}
+			for _, pair := range verified {
 				joinCandidatesVerified++
 				pairURL := strings.TrimRight(assetHost, "/") + "/" + pair.joined()
-				variants := querySuffixes
+				variants := suffixesByBase[pair.Base]
 				if len(variants) == 0 {
 					variants = []string{""}
 				}
@@ -674,7 +1162,12 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 						agg.addOutOfScope(hostOnly(epURL))
 						continue
 					}
-					agg.addEndpoint(EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static-joined", Confidence: ConfidenceLow})
+					fact := EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static-joined", Confidence: ConfidenceLow, StatusCode: pair.Status, AuthRequired: pair.AuthRequired}
+					if bf, ok := bodyByRoute[pair.Base]; ok {
+						fact.BodyParamKeys, fact.URLBodyParamKeys = bf.Keys, bf.URLKeys
+						fact.BodyParamLiterals = bf.Literals
+					}
+					agg.addEndpoint(fact)
 					endpointsAdded++
 				}
 			}
@@ -717,8 +1210,14 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 	if secretsTruncated {
 		agg.addWarning("wave3: js-static: secret detection hit its %d-hit cap — more may be present in the crawled JS (Phase 8 Step 3)", maxJSStaticSecrets)
 	}
-	if joinProbesTruncated {
-		agg.addWarning("wave3: js-static: joined path-candidate verification hit its %d-probe run-wide budget — more service-prefix+API-path combinations may be present in the crawled JS (LT-164)", maxJSJoinProbes)
+	if joinBasesCut > 0 {
+		agg.addWarning("wave3: js-static: %d API-route candidate(s) beyond the %d-per-bundle cap were not considered (LT-186)", joinBasesCut, maxJSPathBases)
+	}
+	if joinUnsettled > 0 {
+		agg.addWarning("wave3: js-static: joined path-candidate verification hit its %d-probe run-wide budget — %d API-route candidate(s) were left unverified (LT-186)", maxJSJoinProbes, joinUnsettled)
+	}
+	if joinUninferred > 0 {
+		agg.addWarning("wave3: js-static: %d parameterised API route(s) (\"<name>\" segments) had no live-verified sibling route to borrow a service prefix from and were not emitted (LT-186)", joinUninferred)
 	}
 	if secretsAdded > 0 {
 		agg.addWarning("wave3: js-static: found %d hardcoded secret(s) in served JavaScript (Phase 8 Step 3) — see the ReconResult's \"secrets\" field", secretsAdded)

@@ -2,6 +2,7 @@ package unit
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -200,4 +201,127 @@ func TestSQLiDetector_AuthHeaderOption(t *testing.T) {
 	for _, v := range sawAuth {
 		assert.Equal(t, "secret-token", v)
 	}
+}
+
+// TestSQLiRunBodyFields_ErrorBased_Hit mirrors juiceshop-sqli-login-bypass's
+// shape (tests/fixtures/known-vulns/juiceshop.json, LT-192,
+// docs/follow-up.md): a JSON request-body field, not a URL query parameter,
+// concatenated into a SQL query.
+func TestSQLiRunBodyFields_ErrorBased_Hit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Email string `json:"email"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.ContainsAny(body.Email, `'"`) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("SQLITE_ERROR: unrecognized token"))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid credentials"}`))
+	}))
+	defer srv.Close()
+
+	detector := sqli.New(newSQLiClient())
+	findings, err := detector.RunBodyFields(context.Background(), []sqli.BodyTarget{{URL: srv.URL, Params: []string{"email"}}}, "")
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "sqli-error-email")
+	require.Len(t, got, 1)
+	assert.Equal(t, "sqli", got[0].Type)
+	assert.Equal(t, "SQLite", got[0].Evidence["dbms"])
+	assert.Equal(t, "email", got[0].Evidence["body_field"])
+	assert.Equal(t, srv.URL, got[0].Target, "body-mode Target is the endpoint URL, not a mutated query string")
+}
+
+// TestSQLiRunBodyFields_NodeSequelizeErrorShape_Hit reproduces the real
+// gap live-verification found (LT-192, docs/follow-up.md) against Juice
+// Shop's actual POST /rest/user/login: the response has no DBMS-specific
+// error string anywhere on the page (no "SQLITE_ERROR", no "syntax error
+// near") — the only signal is a Sequelize dialect-runner stack-trace frame
+// inside an Express default error page. errorPatterns' SQLite entry alone
+// does not match this shape; the dedicated Node.js/Sequelize entry does.
+func TestSQLiRunBodyFields_NodeSequelizeErrorShape_Hit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.Contains(body["email"], "'") {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`<html><head><title>Error</title></head><body><h2><em>500</em> Error</h2>` +
+				`<ul id="stacktrace"><li>at Database.&lt;anonymous&gt; (/juice-shop/node_modules/sequelize/lib/dialects/sqlite/query.js:185:27)</li></ul>` +
+				`</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`Invalid email or password.`))
+	}))
+	defer srv.Close()
+
+	detector := sqli.New(newSQLiClient())
+	findings, err := detector.RunBodyFields(context.Background(), []sqli.BodyTarget{{URL: srv.URL, Params: []string{"email"}}}, "")
+	require.NoError(t, err)
+
+	got := withPrefix(findings, "sqli-error-email")
+	require.Len(t, got, 1)
+	assert.Equal(t, "Node.js/Sequelize", got[0].Evidence["dbms"])
+}
+
+// TestSQLiRunBodyFields_SequelizeValidationError_NotMatched guards the
+// Node.js/Sequelize pattern's precision: a validation error Sequelize
+// raises before any query ever runs (a malformed field, unrelated to
+// injection) must not match just because "sequelize" appears somewhere on
+// the page — only a stack frame inside a dialect's own query runner does.
+func TestSQLiRunBodyFields_SequelizeValidationError_NotMatched(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"name":"SequelizeValidationError","message":"email cannot be null"}`))
+	}))
+	defer srv.Close()
+
+	detector := sqli.New(newSQLiClient())
+	findings, err := detector.RunBodyFields(context.Background(), []sqli.BodyTarget{{URL: srv.URL, Params: []string{"email"}}}, "")
+	require.NoError(t, err)
+	assert.Empty(t, withPrefix(findings, "sqli-error-email"), "a Sequelize validation error is not a driver-level SQL error")
+}
+
+// TestSQLiRunBodyFields_RequiredFieldGatesTheSignal_NeedsBodyFill: the
+// endpoint 400s unless every field is present, so the single-field body the
+// default mode sends never reaches the SQL query at all — the same
+// "validated before evaluated" shape ssrf's own WithBodyFill closes
+// (LT-188 a). WithBodyFill fills the other required field and the same
+// probe becomes visible.
+func TestSQLiRunBodyFields_RequiredFieldGatesTheSignal_NeedsBodyFill(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["password"] == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"password required"}`))
+			return
+		}
+		if strings.ContainsAny(body["email"], `'"`) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("SQLITE_ERROR: unrecognized token"))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid credentials"}`))
+	}))
+	defer srv.Close()
+
+	// Default mode: email alone, password always missing — every probe
+	// (baseline included) gets the same 400, so no signal is ever visible.
+	plain := sqli.New(newSQLiClient())
+	findings, err := plain.RunBodyFields(context.Background(), []sqli.BodyTarget{{URL: srv.URL, Params: []string{"email"}}}, "")
+	require.NoError(t, err)
+	assert.Empty(t, withPrefix(findings, "sqli-error-email"), "without WithBodyFill the required password field is never filled, so the query is never reached")
+
+	// WithBodyFill: password gets a placeholder, clearing the 400 so the
+	// SQL error becomes visible.
+	filled := sqli.New(newSQLiClient(), sqli.WithBodyFill([]string{"email", "password"}, nil))
+	findings, err = filled.RunBodyFields(context.Background(), []sqli.BodyTarget{{URL: srv.URL, Params: []string{"email"}}}, "")
+	require.NoError(t, err)
+	got := withPrefix(findings, "sqli-error-email")
+	require.Len(t, got, 1, "WithBodyFill must fill the other required field so the payload actually reaches the query")
 }

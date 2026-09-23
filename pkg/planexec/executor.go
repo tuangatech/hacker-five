@@ -13,6 +13,7 @@ package planexec
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"sort"
 	"strings"
@@ -407,6 +408,9 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 		// only means anything paired with the template it was derived from.
 		if leaf.EndpointIDIsUUID {
 			cfg.IDORSeedID = leaf.EndpointSeedID
+			if leaf.HarvestedSeedID != "" {
+				cfg.IDORSeedID = leaf.HarvestedSeedID
+			}
 			cfg.IDOREndpointIsUUID = true
 			if notify != nil {
 				notify("idor: UUID-shaped endpoint — enumerating with a random-UUID baseline seeded from a real observed ID (LT-95)")
@@ -431,12 +435,37 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 			notify(fmt.Sprintf("ssrf: probing recon-derived body param(s) %s (LT-96)", strings.Join(leaf.SSRFBodyParams, ", ")))
 		}
 	}
+	if leaf.SSRFPath != "" && cfg.SSRFPath == "" {
+		cfg.SSRFPath = leaf.SSRFPath
+		if notify != nil {
+			notify(fmt.Sprintf("ssrf: testing recon-derived endpoint %s", leaf.SSRFPath))
+		}
+	}
+	if len(leaf.SSRFBodyFillFields) > 0 && len(cfg.SSRFBodyFillFields) == 0 {
+		cfg.SSRFBodyFillFields = append([]string(nil), leaf.SSRFBodyFillFields...)
+	}
+	if len(leaf.SSRFBodyFillValues) > 0 && len(cfg.SSRFBodyFillValues) == 0 {
+		cfg.SSRFBodyFillValues = maps.Clone(leaf.SSRFBodyFillValues)
+	}
 	if leaf.SQLiPath != "" && cfg.SQLiPath == "" {
 		cfg.SQLiPath = leaf.SQLiPath
 		cfg.SQLiParams = append([]string(nil), leaf.SQLiParams...)
 		if notify != nil {
 			notify(fmt.Sprintf("sqli: testing recon-derived endpoint %s (doc18 Step 4)", leaf.SQLiPath))
 		}
+	}
+	if leaf.SQLiBodyPath != "" && cfg.SQLiBodyPath == "" {
+		cfg.SQLiBodyPath = leaf.SQLiBodyPath
+		cfg.SQLiBodyParams = append([]string(nil), leaf.SQLiBodyParams...)
+		if notify != nil {
+			notify(fmt.Sprintf("sqli: testing recon-derived request-body field(s) %s on %s (LT-192)", strings.Join(leaf.SQLiBodyParams, ", "), leaf.SQLiBodyPath))
+		}
+	}
+	if len(leaf.SQLiBodyFillFields) > 0 && len(cfg.SQLiBodyFillFields) == 0 {
+		cfg.SQLiBodyFillFields = append([]string(nil), leaf.SQLiBodyFillFields...)
+	}
+	if len(leaf.SQLiBodyFillValues) > 0 && len(cfg.SQLiBodyFillValues) == 0 {
+		cfg.SQLiBodyFillValues = maps.Clone(leaf.SQLiBodyFillValues)
 	}
 	if leaf.CouponMintPath != "" && cfg.CouponMintPath == "" && cfg.CouponApplyPath == "" {
 		cfg.CouponMintPath = leaf.CouponMintPath
@@ -464,8 +493,10 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 			return "no --ssrf-param given and recon found no usable query or body param candidate"
 		}
 	case "sqli":
-		if cfg.SQLiPath == "" || len(cfg.SQLiParams) == 0 {
-			return "no --sqli-path/--sqli-param given and recon found no usable candidate"
+		hasQuery := cfg.SQLiPath != "" && len(cfg.SQLiParams) > 0
+		hasBody := cfg.SQLiBodyPath != "" && len(cfg.SQLiBodyParams) > 0
+		if !hasQuery && !hasBody {
+			return "no --sqli-path/--sqli-param given and recon found no usable query or body field candidate"
 		}
 	case "businesslogic":
 		if !cfg.AllowWrites {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/tuangatech/hacker-five/pkg/agenttask"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 	"github.com/tuangatech/hacker-five/pkg/orchestrator"
 	"github.com/tuangatech/hacker-five/pkg/recon"
@@ -98,12 +99,17 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 		insecure            bool
 		headers             []string
 		allowWrites         bool
+		allowSSRFBodyFill   bool
+		allowSQLiBodyFill   bool
 		budget              float64
 		maxIterations       int
 		minIterations       int
 		fastLane            bool
 		noModel             bool
 		runEveryLeaf        bool
+		reconAuth           bool
+		oobServers          []string
+		noOOB               bool
 		allowAgentScripts   bool
 		scriptTimeout       time.Duration
 		verbose             bool
@@ -173,14 +179,24 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				warnIndexDrift(cmd.ErrOrStderr(), index)
 			}
 
+			clientMWs := []httpclient.Middleware{httpclient.WithRateLimit(ratelimit.New(rateLimit))}
+			reconOpts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
+			if reconAuth {
+				cred, err := recon.NewCredential(target, authToken, authHeaderName, authHeaderFormat)
+				if err != nil {
+					return fmt.Errorf("--recon-auth: %w (pass --auth-token or set HACKERFIVE_AUTH_TOKEN)", err)
+				}
+				clientMWs = append(clientMWs, cred.Middleware())
+				reconOpts = append(reconOpts, cred.Option())
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: %s\n", cred.Note())
+			}
 			client := httpclient.New(recon.ClientConfig(httpclient.Config{
 				Timeout:             root.timeout,
 				MaxRedirects:        5,
 				MaxIdleConnsPerHost: concurrency,
 				ProxyURL:            root.proxy,
-			}), httpclient.WithRateLimit(ratelimit.New(rateLimit)))
+			}), clientMWs...)
 
-			reconOpts := []recon.Option{recon.WithRateLimit(rateLimit), recon.WithConcurrency(concurrency)}
 			if s != nil {
 				reconOpts = append(reconOpts, recon.WithScope(s))
 			}
@@ -227,25 +243,44 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "agent: --allow-agent-scripts not set — a proposed script.explore action will be skipped (its leaf marked unresolved) rather than run")
 			}
 
+			// The same default as scan: two of ProjectDiscovery's public Interactsh
+			// servers, so a blind SSRF (the target fetches a URL and reflects
+			// nothing) can be proven at all. The target's address and the time it
+			// called back are visible to that server's operator, so a real
+			// third-party engagement passes --no-oob. Said once, up front, because
+			// an unattended run has nobody to notice it otherwise.
+			expandedOOBServers := expandOOBServers(oobServers)
+			if noOOB {
+				expandedOOBServers = nil
+			}
+			if len(expandedOOBServers) > 0 {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "agent: blind SSRF checks use the public Interactsh server(s) %s; the target's address and callback time are visible to that operator; pass --no-oob for a third-party engagement\n", strings.Join(expandedOOBServers, ", "))
+			} else {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "agent: --no-oob set: blind (out-of-band) SSRF checks are skipped")
+			}
+
 			orchCfg := orchestrator.Config{
 				Target:        target,
 				ReconDepth:    d,
 				Recon:         r,
 				TemplateIndex: index,
 				BaseScanConfig: scanner.Config{
-					TemplatePaths:    templatesPaths,
-					Concurrency:      concurrency,
-					RateLimit:        rateLimit,
-					Timeout:          root.timeout,
-					ProxyURL:         root.proxy,
-					Insecure:         insecure,
-					AuthToken:        authToken,
-					OtherAuthToken:   otherAuthToken,
-					AuthHeaderName:   authHeaderName,
-					AuthHeaderFormat: authHeaderFormat,
-					Scope:            s,
-					ExtraHeaders:     extraHeaders,
-					AllowWrites:      allowWrites,
+					TemplatePaths:     templatesPaths,
+					Concurrency:       concurrency,
+					RateLimit:         rateLimit,
+					Timeout:           root.timeout,
+					ProxyURL:          root.proxy,
+					Insecure:          insecure,
+					AuthToken:         authToken,
+					OtherAuthToken:    otherAuthToken,
+					AuthHeaderName:    authHeaderName,
+					AuthHeaderFormat:  authHeaderFormat,
+					Scope:             s,
+					ExtraHeaders:      extraHeaders,
+					AllowWrites:       allowWrites,
+					OOBServers:        expandedOOBServers,
+					AllowSSRFBodyFill: allowSSRFBodyFill,
+					AllowSQLiBodyFill: allowSQLiBodyFill,
 				},
 				Client:            llmClient,
 				SessionLog:        agenttask.NewSessionLog(nil),
@@ -298,7 +333,7 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&target, "targets", "t", "", "target URL to run the agent loop against (required)")
-	cmd.Flags().StringVar(&depth, "recon-depth", "active", `how far the initial recon escalates before building the plan tree: "passive", "active" (default), "full"`)
+	cmd.Flags().StringVar(&depth, "recon-depth", "active", `how far the initial recon escalates before building the plan tree: "passive", "active" (default), "full". "active" skips the application-layer wave (crawl, JS analysis, documentation routes, response shapes), so on an API most routes are never seen; use "full" to give the agent anything to work with beyond the host-level checks`)
 	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to a target allow-list file (same format as scan's --scope) — required unless --allow-no-scope is set; also bounds a script.explore sandbox's network access")
 	cmd.Flags().BoolVar(&allowNoScope, "allow-no-scope", false, "proceed with no --scope boundary — every host recon discovers is treated as in-scope; lab/local use only, never a real engagement")
 	cmd.Flags().IntVar(&rateLimit, "rate-limit", 10, "requests/sec used by both the initial recon and every scan.leaf dispatch")
@@ -306,12 +341,17 @@ func newAgentCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringArrayVar(&templatesPaths, "templates", []string{templatesync.DefaultBundledDir}, "template directory (repeatable) for scan.leaf dispatches; left at its default, the synced directory from 'hackerfive templates sync' is auto-appended if present")
 	cmd.Flags().StringVar(&templateIndex, "template-index", "templates/index.json", "path to the index generated by 'hackerfive templates index' — missing file degrades to skipping template-tag matching, not a hard failure")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "owner/primary account token for scan.leaf dispatches (env: HACKERFIVE_AUTH_TOKEN)")
+	cmd.Flags().BoolVar(&reconAuth, "recon-auth", false, "also send --auth-token (as --auth-header-name/--auth-header-format) on recon's own requests to the target's host, so the endpoint map includes what only a signed-in session sees (the default sends it to scan.leaf dispatches only). Read-only GETs, but a live session can reach a state-changing GET (a logout link); the header is never sent to another host, including across a redirect, and the katana crawl is pinned to the target's exact hostname. Needs --auth-token")
+	cmd.Flags().StringArrayVar(&oobServers, "oob-server", ssrf.DefaultOOBServers, `base URL of an Interactsh-protocol server for the ssrf detector's blind out-of-band check (repeatable, tried in order); "public" expands to ProjectDiscovery's full public pool. Same flag and default as scan: 2 public servers (oast.pro, oast.live) when omitted, which sends the target's address and callback time to that operator, so pass --no-oob for a real third-party engagement`)
+	cmd.Flags().BoolVar(&noOOB, "no-oob", false, "disable the ssrf detector's blind out-of-band check entirely, overriding --oob-server's default public servers — use for a real, authorized third-party engagement")
 	cmd.Flags().StringVar(&otherAuthToken, "other-auth-token", "", "second account token for scan.leaf dispatches (env: HACKERFIVE_OTHER_AUTH_TOKEN)")
 	cmd.Flags().StringVar(&authHeaderName, "auth-header-name", "", `HTTP header name for the auth token (default "Authorization")`)
 	cmd.Flags().StringVar(&authHeaderFormat, "auth-header-format", "", `header value template for the auth token, must contain "{token}" (default "Bearer {token}")`)
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "skip TLS verification — lab targets only, never the default")
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every scan.leaf request (repeatable)`)
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks to run during a scan.leaf dispatch — the same independently-scoped exception as scan's --allow-writes; omitted, those checks are skipped with a warning")
+	cmd.Flags().BoolVar(&allowSSRFBodyFill, "allow-ssrf-body-fill", false, "allow the ssrf detector to fill an endpoint's other recon-recovered request-body fields (with a placeholder value, never real data) so a body-field SSRF payload actually gets evaluated instead of rejected by the target's own required-field validation (LT-188) — a fourth independently-scoped mutating exception: getting past that validation can complete the endpoint's real action (verified live: crAPI's contact_mechanic filed a real mechanic report), so this is never folded into --allow-writes. Omitted, the ssrf detector's body-field check sends only the candidate field, as before")
+	cmd.Flags().BoolVar(&allowSQLiBodyFill, "allow-sqli-body-fill", false, "allow the sqli detector to fill an endpoint's other recon-recovered request-body fields (with a placeholder value, never real data) so a body-field SQLi payload actually reaches the query it feeds, instead of being rejected by the target's own required-field validation (LT-192, docs/follow-up.md — juiceshop-sqli-login-bypass's exact shape: an email field's injection never reaches the query when the login endpoint's password field is missing) — another independently-scoped exception: if the injection succeeds, getting past that validation can complete a real unauthorized action (an authentication bypass), so this is never folded into --allow-writes or --allow-ssrf-body-fill. Omitted, the sqli detector's body-field check sends only the candidate field, as before")
 	cmd.Flags().Float64Var(&budget, "budget", orchestrator.DefaultBudgetUSD, "hard cap, in USD, on cumulative LLM cost across the whole run")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", orchestrator.DefaultMaxIterations, "hard cap on the number of dispatched tool turns")
 	cmd.Flags().IntVar(&minIterations, "min-iterations", orchestrator.DefaultMinIterations, "floor on dispatched tool turns — a \"stop\" action is rejected and NextAction asked again while fewer than this many turns have run and actionable leaves remain (LT-162: the model was found stopping after 1-3 turns with 10+ pending leaves still untried)")

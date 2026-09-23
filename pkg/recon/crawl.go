@@ -208,6 +208,10 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	// uniform wall.
 	r.discoverContentPaths(ctx, agg, seeds)
 
+	// LT-189: read API routes from a served documentation page (Redoc-style route
+	// anchors), which nothing links to and a crawl therefore never reaches.
+	r.discoverDocRoutes(ctx, agg, seeds)
+
 	// LT-76 (docs/follow-up.md, Phase 8 Step 5): give the highest-interest
 	// paths that Wave 0 lifted from robots.txt / sitemap.xml but never
 	// probed a live status, so resolveEndpointFacts can reason over them.
@@ -226,6 +230,14 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	// reconstructed from the same JS bodies — see runJSStaticAnalysis's own
 	// doc comment.
 	r.runJSStaticAnalysis(ctx, agg, jsAssets)
+
+	// LT-191 (docs/follow-up.md): a companion to LT-76 above, now that
+	// runJSStaticAnalysis has added whatever {param}-shaped routes it found —
+	// probeUnprobedEndpoints skips them (still a template, no id ever filled
+	// in), so without this they never get a live status and
+	// SuggestAuthBypassPathsFromRecon never builds an authbypass leaf for
+	// them at all, even when the route is genuinely auth-gated.
+	r.probeTemplatedRouteAuthBoundary(ctx, agg, seeds)
 
 	// docs/94 Phase 0: last, so it sees every endpoint the passes above found
 	// (spec routes, crawl hits, JS-derived ones) and gives each a response shape.
@@ -282,6 +294,11 @@ func (r *Recon) runKatana(ctx context.Context, agg *aggregator, seeds []string) 
 	waveCtx, cancel := context.WithTimeout(ctx, crawlTimeout)
 	defer cancel()
 	katanaArgs = append(katanaArgs, r.headerArgs()...) // LT-36: program-mandated identifying header on every crawl request
+	authArgs, authSkipped := r.crawlAuthArgs(seeds)
+	katanaArgs = append(katanaArgs, authArgs...)
+	if authSkipped {
+		agg.addWarning("wave3: crawl ran unauthenticated: its seeds include hosts other than the credential's origin, and the credential is only ever sent to that origin")
+	}
 	out, err := r.run(waveCtx, strings.Join(seeds, "\n"), "katana", katanaArgs...)
 	if err != nil && !isWaveTimeout(err) {
 		if isBinaryMissing(err) {

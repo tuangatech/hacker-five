@@ -50,6 +50,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		ssrfParams           []string
 		sqliPath             string
 		sqliParams           []string
+		sqliBodyPath         string
+		sqliBodyParams       []string
+		sqliBodyFillFields   []string
+		allowSQLiBodyFill    bool
 		oobServers           []string
 		noOOB                bool
 		allowWrites          bool
@@ -164,6 +168,10 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				SSRFParams:              ssrfParams,
 				SQLiPath:                sqliPath,
 				SQLiParams:              sqliParams,
+				SQLiBodyPath:            sqliBodyPath,
+				SQLiBodyParams:          sqliBodyParams,
+				SQLiBodyFillFields:      sqliBodyFillFields,
+				AllowSQLiBodyFill:       allowSQLiBodyFill,
 				OOBServers:              expandedOOBServers,
 				AllowWrites:             allowWrites,
 				CouponMintPath:          couponMintPath,
@@ -403,8 +411,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&logoutPaths, "logout-paths", "", `comma-separated candidate logout paths for authbypass's broken-session check (default: authbypass's built-in generic guesses, e.g. "/logout")`)
 	cmd.Flags().StringArrayVar(&headers, "header", nil, `static "Name: Value" header added to every template-driven request (repeatable) — e.g. a session cookie a login flow issued outside this scan, since template placeholders can't carry one yet`)
 	cmd.Flags().StringArrayVar(&ssrfParams, "ssrf-param", nil, `candidate URL-accepting query parameter name for the ssrf detector to probe (repeatable), e.g. "url", "webhook", "callback" — required for --detector ssrf`)
-	cmd.Flags().StringVar(&sqliPath, "sqli-path", "", `endpoint path+query observed with a candidate parameter, e.g. "/product?id=5" (required for --detector sqli) — normally recon-derived (recon.SuggestSQLiTargets), see docs/18-implementation-plan-ph9.md Step 4`)
-	cmd.Flags().StringArrayVar(&sqliParams, "sqli-param", nil, `candidate query parameter name on --sqli-path for the sqli detector to test (repeatable) — required for --detector sqli`)
+	cmd.Flags().StringVar(&sqliPath, "sqli-path", "", `endpoint path+query observed with a candidate parameter, e.g. "/product?id=5" (required for --detector sqli, unless --sqli-body-path is given instead) — normally recon-derived (recon.SuggestSQLiTargets), see docs/18-implementation-plan-ph9.md Step 4`)
+	cmd.Flags().StringArrayVar(&sqliParams, "sqli-param", nil, `candidate query parameter name on --sqli-path for the sqli detector to test (repeatable)`)
+	cmd.Flags().StringVar(&sqliBodyPath, "sqli-body-path", "", `endpoint path (no query string) the sqli detector POSTs a JSON body to, e.g. "/rest/user/login" (LT-192, docs/follow-up.md) — for a value that lives in a request-body field rather than a URL query parameter (a login form's email field, not a search box); additive to --sqli-path, not a replacement — normally recon-derived (recon.SuggestSQLiBodyTargets)`)
+	cmd.Flags().StringArrayVar(&sqliBodyParams, "sqli-body-param", nil, `candidate JSON request-body field name on --sqli-body-path for the sqli detector to test (repeatable)`)
+	cmd.Flags().StringArrayVar(&sqliBodyFillFields, "sqli-body-fill-field", nil, `a request-body field name (besides the one under test) to fill with a placeholder value alongside --sqli-body-param, so a target that validates its other required fields before evaluating the query (e.g. a login endpoint's password) doesn't reject the request first — repeatable, only takes effect with --allow-sqli-body-fill`)
+	cmd.Flags().BoolVar(&allowSQLiBodyFill, "allow-sqli-body-fill", false, "allow the sqli detector to fill --sqli-body-fill-field's other request-body fields (with a placeholder value, never real data) so a body-field SQLi payload actually reaches the query it feeds (LT-192) — an independently-scoped exception: if the injection succeeds, getting past that validation can complete a real unauthorized action (an authentication bypass), so this is never folded into --allow-writes or --allow-ssrf-body-fill. Omitted, the sqli detector's body-field check sends only the candidate field, as before")
 	cmd.Flags().StringArrayVar(&oobServers, "oob-server", ssrf.DefaultOOBServers, `base URL of an Interactsh-protocol server for the ssrf detector's blind out-of-band check (repeatable — tried in order, falls back if one is unreachable); the literal value "public" expands to ProjectDiscovery's full known public server pool (6 servers) — an explicit, real leak tradeoff (see docs/follow-up.md and docs/discussions.md). Defaults to 2 of those public servers (oast.pro, oast.live) when omitted entirely — pass --no-oob to disable for a real third-party engagement, where sending target-request data to a public server is not appropriate`)
 	cmd.Flags().BoolVar(&noOOB, "no-oob", false, "disable the ssrf detector's blind out-of-band check entirely, overriding --oob-server's default public servers — use for a real, authorized third-party engagement (see --oob-server's own help text)")
 	cmd.Flags().BoolVar(&allowWrites, "allow-writes", false, "allow the businesslogic detector's mutating checks (coupon self-mint/apply, apply-race) to run — the one explicit exception to this tool's read/enumerate-only default; omitted, those checks are skipped with a warning")

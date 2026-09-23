@@ -75,6 +75,8 @@
 <input type="text" id="auth_header_name" name="auth_header_name" value="{{.AuthHeaderName}}" placeholder="Authorization">
 <label for="auth_header_format">Auth header format (--auth-header-format, optional, must contain {token})</label>
 <input type="text" id="auth_header_format" name="auth_header_format" value="{{.AuthHeaderFormat}}" placeholder="Bearer {token}">
+<label class="inline"><input type="checkbox" id="recon_auth" name="recon_auth" {{if .ReconAuth}}checked{{end}}> Also use the auth token for recon (--recon-auth) &mdash; off by default</label>
+<p class="hint">Recon then sees what a signed-in session sees (more endpoints), and can reach a route only a token unlocks. The token goes only to this target&rsquo;s own host, never across a redirect or to another host; URLs that look like logout/delete/revoke actions are requested without it. Recon only makes read-only requests, but a GET is not always harmless on a live session. Needs the auth token above; for a cookie session, set the header name to Cookie and the format to <code>session={token}</code>. Never remembered between launches.</p>
 </div>
 </fieldset>
 
@@ -135,7 +137,8 @@
   // Non-secret, safe-to-remember fields. Excludes auth_token,
   // other_auth_token, headers (session Cookie), authorized (fresh
   // per-launch acknowledgement), allow_writes (deliberate mutating-checks
-  // opt-in per CLAUDE.md), use_llm_agent / allow_llm_agent_scripts (same
+  // opt-in per CLAUDE.md), recon_auth (a per-launch decision about where the
+  // token goes, LT-187), use_llm_agent / allow_llm_agent_scripts (same
   // deliberate-opt-in reasoning as allow_writes — docs/93 M4), and the
   // mechanical csrf_token / _activetab.
   var FIELDS = [

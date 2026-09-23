@@ -249,6 +249,27 @@ No tokens, no `--endpoint`. `misconfig-comment-leak` (Phase 2 Step 4) live-verif
 ```
 Live-verified (2026-08-28): **0 findings**, for different reasons than DVWA's 0 (see DVWA section above for the full explanation of the shared root cause — path-appended vs. param-based payloads). Juice Shop specifically: its most XSS-relevant surface (`/rest/products/search?q=`) returns `Content-Type: application/json`, confirmed via direct `curl` — `xss-uri-reflected.yaml`'s `part: content_type: text/html` matcher deliberately excludes JSON responses (to avoid false-positiving on API payload echoes), so this is the matcher working as designed, not a miss. Juice Shop's actual XSS challenges are predominantly DOM-based (client-side), explicitly deferred pending Chromedp per [11-implementation-plan-ph2.md](11-implementation-plan-ph2.md)'s Scope section.
 
+### BOLA, JWT alg:none and search SQLi (`--detector idor`/`authbypass`/`sqli`) — real bugs, live-verified 2026-09-22
+
+Unlike the misconfig/header findings above, these need two throwaway accounts. `--auto-provision-account` (`pkg/provision`) already handles Juice Shop's signup shape generically — its response nests the token under `authentication.token`, and `extractToken` already checks one level of nesting — but the manual path is just as fast for a one-off run:
+```bash
+curl -s -X POST http://localhost:3000/api/Users -H "Content-Type: application/json" \
+  -d '{"email":"a@test.com","password":"Passw0rd1!","passwordRepeat":"Passw0rd1!"}'
+curl -s -X POST http://localhost:3000/api/Users -H "Content-Type: application/json" \
+  -d '{"email":"b@test.com","password":"Passw0rd1!","passwordRepeat":"Passw0rd1!"}'
+TOKEN_A=$(curl -s -X POST http://localhost:3000/rest/user/login -H "Content-Type: application/json" \
+  -d '{"email":"a@test.com","password":"Passw0rd1!"}' | grep -oE '"token":"[^"]+"' | cut -d'"' -f4)
+TOKEN_B=$(curl -s -X POST http://localhost:3000/rest/user/login -H "Content-Type: application/json" \
+  -d '{"email":"b@test.com","password":"Passw0rd1!"}' | grep -oE '"token":"[^"]+"' | cut -d'"' -f4)
+```
+
+- **BOLA on the shopping basket (`GET /rest/basket/{id}`)** — real, found: `./hackerfive scan -t http://localhost:3000 --detector idor --endpoint '/rest/basket/{{id}}' --auth-token "$TOKEN_A" --other-auth-token "$TOKEN_B"` returns several `idor-<id>` findings, each a different account's basket with no ownership check (Juice Shop's "View Basket" challenge). Confirmed by hand too: `TOKEN_A` read `TOKEN_B`'s basket at HTTP 200.
+- **JWT `alg:none` bypass** — real, found, but pick the protected path carefully: `./hackerfive scan -t http://localhost:3000 --detector authbypass --protected-paths /rest/basket/6 --auth-token "$TOKEN_A" --login-paths /rest/user/login` finds `authbypass-jwt-alg-none-rest-basket-6`. `/rest/user/whoami` looks like an easier protected path but isn't one — it returns HTTP 200 with an empty `{"user":{}}` for literally any input, including no `Authorization` header at all (it reads identity from a cookie, not the Bearer header), so any "bypass" found through it is not real signature-verification evidence. `/rest/basket/{id}` is genuinely gated (confirmed 401 with no header, a garbage token, and a signature-stripped-but-alg-untouched variant) — only the `alg:none` rewrite gets through.
+- **Search SQLi (`GET /rest/products/search?q=`)** — real, found: `./hackerfive scan -t http://localhost:3000 --detector sqli --sqli-path /rest/products/search --sqli-param q` finds `sqli-error-q-x` (a bare `'` payload triggers a real `SQLITE_ERROR`). Confirmed by hand that the same param supports a full `UNION SELECT` extracting every user's email and password hash.
+- **Login SQLi bypass (`POST /rest/user/login`, `email: "' OR 1=1--"`)** — real (confirmed by hand: logs in as `admin@juice-sh.op` with `role:"admin"`, no password needed) and **found** (LT-192, docs/follow-up.md, 2026-09-22): `./hackerfive scan -t http://localhost:3000 --detector sqli --sqli-body-path /rest/user/login --sqli-body-param email` finds `sqli-error-email-x`, a real HTTP 500 from a genuine Sequelize/SQLite driver error, no `--allow-sqli-body-fill` needed here (Juice Shop's login route runs the query before it ever checks whether a password was supplied). `sqli` now has a JSON-request-body counterpart to its query-parameter checks (`sqli.Detector.RunBodyFields`) — see `tests/fixtures/known-vulns/juiceshop.json`'s `juiceshop-sqli-login-bypass` entry for the full account, including a real DBMS-signature gap live verification found and fixed along the way, and the one thing still open (recon's own auto-derivation of this endpoint's body fields, an unrelated, separate gap in `pkg/recon/jsbody.go`).
+
+These four are recorded as this lab's ground truth for `docs/94-llm-finding-capability-strategy.md`'s ablation harness (`tests/fixtures/known-vulns/juiceshop.json`, LT-183 b) — measuring what an agent arm finds on its own against what the deterministic CLI can already reach by hand, same pattern as `crapi.json`/`vapi.json`.
+
 For the Nuclei-compatible engine (not CLI-wired yet, so via the Go integration test instead):
 ```bash
 export JUICESHOP_BASE_URL=http://localhost:3000   # optional if already synced

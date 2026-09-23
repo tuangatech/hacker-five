@@ -37,20 +37,46 @@ func sameShape(a, b probeResult) bool {
 	return d <= tol
 }
 
-// errorBasedCheck appends each errorPayloads entry to param's value and
-// looks for a DBMS error signature present in the payload response but
-// absent from baseline — the highest-confidence of the three techniques
-// since a literal DBMS error string is distinctive and never expected in a
-// normal response.
-func (d *Detector) errorBasedCheck(ctx context.Context, target, param, authToken, host string, baseline probeResult) []detectors.Finding {
+// sqliCandidate is what errorBasedCheck/booleanBasedCheck/timeBasedCheck
+// actually need — one named value worth injecting into and a way to fire a
+// probe with a suffix appended to it — so the same three techniques serve
+// both a URL query parameter (runParam) and a JSON request-body field
+// (runBodyParam, LT-192, docs/follow-up.md), whichever transport built the
+// probe function. evidenceKey names the Evidence map key that carries name
+// ("param" for the query-parameter path, "body_field" for the body-field
+// one, matching ssrf's own body_field convention).
+type sqliCandidate struct {
+	name        string
+	evidenceKey string
+	probe       func(ctx context.Context, suffix string) (probeResult, bool)
+}
+
+// targetFor reads the Finding.Target value straight off the request the
+// probe actually sent, rather than each check reconstructing it: for a
+// query-parameter probe that's the mutated URL (equivalent to
+// buildPayloadURL's own result), for a body-field probe it's the endpoint
+// URL itself (the payload lives in the body, not the URL) — either way,
+// exactly what was requested.
+func targetFor(resp probeResult) string {
+	if resp.req == nil {
+		return ""
+	}
+	return resp.req.URL.String()
+}
+
+// errorBasedCheck appends each errorPayloads entry to c's value and looks
+// for a DBMS error signature present in the payload response but absent
+// from baseline — the highest-confidence of the three techniques since a
+// literal DBMS error string is distinctive and never expected in a normal
+// response.
+func (d *Detector) errorBasedCheck(ctx context.Context, c sqliCandidate, baseline probeResult) []detectors.Finding {
 	baselineMatch := matchedErrorPattern(baseline.body)
 	var findings []detectors.Finding
 	for _, payload := range errorPayloads {
 		if ctx.Err() != nil {
 			return findings
 		}
-		probeURL := buildPayloadURL(target, param, payload)
-		resp, ok := d.probeWithToken(ctx, probeURL, authToken, host)
+		resp, ok := c.probe(ctx, payload)
 		if !ok {
 			continue
 		}
@@ -59,18 +85,18 @@ func (d *Detector) errorBasedCheck(ctx context.Context, target, param, authToken
 			continue // no DBMS signature, or the same one the baseline already carries
 		}
 		findings = append(findings, detectors.Finding{
-			ID:          fmt.Sprintf("sqli-error-%s-%s", sanitizeParam(param), sanitizeParam(payload)),
+			ID:          fmt.Sprintf("sqli-error-%s-%s", sanitizeParam(c.name), sanitizeParam(payload)),
 			Type:        "sqli",
 			Severity:    "high",
 			Confidence:  "high",
-			Target:      probeURL,
-			Description: fmt.Sprintf("parameter %q returned a %s error signature when a syntax-breaking payload was appended to its value, and the unmodified baseline request did not — the value is concatenated directly into a SQL query", param, dbms),
+			Target:      targetFor(resp),
+			Description: fmt.Sprintf("parameter %q returned a %s error signature when a syntax-breaking payload was appended to its value, and the unmodified baseline request did not — the value is concatenated directly into a SQL query", c.name, dbms),
 			Evidence: map[string]string{
-				"param":    param,
-				"payload":  payload,
-				"dbms":     dbms,
-				"request":  requestEvidenceFor(resp),
-				"response": evidenceFor(resp),
+				c.evidenceKey: c.name,
+				"payload":     payload,
+				"dbms":        dbms,
+				"request":     requestEvidenceFor(resp),
+				"response":    evidenceFor(resp),
 			},
 		})
 		return findings // one confirmed error-based hit per param is enough; stop trying the rest
@@ -85,19 +111,17 @@ func (d *Detector) errorBasedCheck(ctx context.Context, target, param, authToken
 // different (the WHERE clause now excludes everything it previously
 // matched). Requires both conditions — a param with no effect on output at
 // all produces true==false==baseline and is correctly never flagged.
-func (d *Detector) booleanBasedCheck(ctx context.Context, target, param, authToken, host string, baseline probeResult) []detectors.Finding {
+func (d *Detector) booleanBasedCheck(ctx context.Context, c sqliCandidate, baseline probeResult) []detectors.Finding {
 	var findings []detectors.Finding
 	for _, pair := range booleanPairs {
 		if ctx.Err() != nil {
 			return findings
 		}
-		trueURL := buildPayloadURL(target, param, pair.trueSuffix)
-		trueResp, ok := d.probeWithToken(ctx, trueURL, authToken, host)
+		trueResp, ok := c.probe(ctx, pair.trueSuffix)
 		if !ok {
 			continue
 		}
-		falseURL := buildPayloadURL(target, param, pair.falseSuffix)
-		falseResp, ok := d.probeWithToken(ctx, falseURL, authToken, host)
+		falseResp, ok := c.probe(ctx, pair.falseSuffix)
 		if !ok {
 			continue
 		}
@@ -108,14 +132,14 @@ func (d *Detector) booleanBasedCheck(ctx context.Context, target, param, authTok
 			continue // negation had no effect — the param likely isn't reaching a WHERE clause at all
 		}
 		findings = append(findings, detectors.Finding{
-			ID:          fmt.Sprintf("sqli-boolean-%s-%s", sanitizeParam(param), pair.name),
+			ID:          fmt.Sprintf("sqli-boolean-%s-%s", sanitizeParam(c.name), pair.name),
 			Type:        "sqli",
 			Severity:    "high",
 			Confidence:  "medium",
-			Target:      trueURL,
-			Description: fmt.Sprintf("parameter %q: a tautology (%s) appended to its value returned a response indistinguishable from the baseline, while the matching negation (%s) returned a materially different response — consistent with boolean-based blind SQL injection", param, pair.trueSuffix, pair.falseSuffix),
+			Target:      targetFor(trueResp),
+			Description: fmt.Sprintf("parameter %q: a tautology (%s) appended to its value returned a response indistinguishable from the baseline, while the matching negation (%s) returned a materially different response — consistent with boolean-based blind SQL injection", c.name, pair.trueSuffix, pair.falseSuffix),
 			Evidence: map[string]string{
-				"param":          param,
+				c.evidenceKey:    c.name,
 				"true_payload":   pair.trueSuffix,
 				"false_payload":  pair.falseSuffix,
 				"request":        requestEvidenceFor(trueResp),
@@ -137,7 +161,7 @@ func (d *Detector) booleanBasedCheck(ctx context.Context, target, param, authTok
 // itself was already slow (a loaded/slow backend makes timing evidence
 // meaningless), and only counted when both the first and the repeat-confirm
 // request each independently show the delay.
-func (d *Detector) timeBasedCheck(ctx context.Context, target, param, authToken, host string, baseline probeResult) []detectors.Finding {
+func (d *Detector) timeBasedCheck(ctx context.Context, c sqliCandidate, baseline probeResult) []detectors.Finding {
 	if baseline.elapsed >= timeBasedBaselineCeiling {
 		return nil
 	}
@@ -146,24 +170,23 @@ func (d *Detector) timeBasedCheck(ctx context.Context, target, param, authToken,
 		if ctx.Err() != nil {
 			return findings
 		}
-		probeURL := buildPayloadURL(target, param, tp.suffix)
-		first, ok := d.probeWithToken(ctx, probeURL, authToken, host)
+		first, ok := c.probe(ctx, tp.suffix)
 		if !ok || !delayedBy(baseline, first, tp.seconds) {
 			continue
 		}
-		confirm, ok := d.probeWithToken(ctx, probeURL, authToken, host)
+		confirm, ok := c.probe(ctx, tp.suffix)
 		if !ok || !delayedBy(baseline, confirm, tp.seconds) {
 			continue // the first delay didn't repeat — likely jitter/a slow network hop, not the DB honoring a sleep
 		}
 		findings = append(findings, detectors.Finding{
-			ID:          fmt.Sprintf("sqli-time-%s-%s", sanitizeParam(param), sanitizeParam(tp.dbms)),
+			ID:          fmt.Sprintf("sqli-time-%s-%s", sanitizeParam(c.name), sanitizeParam(tp.dbms)),
 			Type:        "sqli",
 			Severity:    "high",
 			Confidence:  "medium",
-			Target:      probeURL,
-			Description: fmt.Sprintf("parameter %q: appending a %s sleep payload to its value delayed the response by roughly the encoded duration, repeatably across two independent requests, while the baseline responded quickly — consistent with time-based blind SQL injection", param, tp.dbms),
+			Target:      targetFor(first),
+			Description: fmt.Sprintf("parameter %q: appending a %s sleep payload to its value delayed the response by roughly the encoded duration, repeatably across two independent requests, while the baseline responded quickly — consistent with time-based blind SQL injection", c.name, tp.dbms),
 			Evidence: map[string]string{
-				"param":            param,
+				c.evidenceKey:      c.name,
 				"payload":          tp.suffix,
 				"dbms":             tp.dbms,
 				"baseline_elapsed": baseline.elapsed.String(),

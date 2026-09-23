@@ -10,7 +10,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tuangatech/hacker-five/pkg/agenttask"
+	"github.com/tuangatech/hacker-five/pkg/coverage"
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/llmfallback"
 )
 
 // This file is the measurement half of docs/94-llm-finding-capability-
@@ -43,6 +46,11 @@ type KnownVuln struct {
 	Baseline string `json:"baseline"`
 	Source   string `json:"source"`
 	Note     string `json:"note,omitempty"`
+
+	// Gated, when set, says why no agent run can reach this vulnerability (a
+	// mutating class behind an operator-only flag). Miss attribution reports it
+	// as unreachable by design rather than as a pipeline loss.
+	Gated string `json:"gated,omitempty"`
 }
 
 // KnownVulnsFile is the on-disk shape of tests/fixtures/known-vulns/<lab>.json.
@@ -176,6 +184,13 @@ type agentResult struct {
 	FastLaneTurns int
 	SpendUSD      float64
 	Degraded      string
+
+	// What miss attribution (attribution.go) reads: the plan tree, the turns that
+	// dispatched its leaves, and the endpoints recon observed.
+	Tree         *agenttask.PlanTree
+	History      []llmfallback.TurnRecord
+	Recon        []coverage.Endpoint
+	ReconDropped int
 }
 
 // ParsedRun is what ParseAgentStream recovers from a run's stdout.
@@ -247,6 +262,18 @@ type RunRecord struct {
 	KnownMissedIDs []string `json:"known_missed_ids,omitempty"`
 	Unlabeled      int      `json:"unlabeled"`
 
+	// FindingIDs is every finding as "<id> <target>", sorted, so two runs can be
+	// diffed exactly instead of inferred equal from their counts (LT-183 item i).
+	FindingIDs []string `json:"finding_ids,omitempty"`
+
+	// Miss attribution (LT-185), set by AddAttribution: the stage each known
+	// vulnerability reached ("1-no-leaf"), the reason in a sentence, and how many
+	// recon endpoints ended at each stage.
+	KnownStages    map[string]string `json:"known_stages,omitempty"`
+	KnownWhy       map[string]string `json:"known_why,omitempty"`
+	ReconEndpoints int               `json:"recon_endpoints,omitempty"`
+	EndpointStages map[string]int    `json:"endpoint_stages,omitempty"`
+
 	CostUSD       float64 `json:"cost_usd"`
 	ModelTurns    int     `json:"model_turns"`
 	FastLaneTurns int     `json:"fast_lane_turns"`
@@ -280,7 +307,17 @@ func NewRunRecord(lab, arm string, run int, p ParsedRun, g Grade, wallSeconds fl
 		KnownHit: g.KnownHit, KnownTotal: g.KnownTotal, KnownMissedIDs: g.KnownMissedIDs, Unlabeled: g.Unlabeled,
 		CostUSD: p.Result.SpendUSD, ModelTurns: p.Result.Iterations, FastLaneTurns: p.Result.FastLaneTurns,
 		Degraded: p.Result.Degraded, WallSeconds: wallSeconds, SawResult: p.SawResult, Error: runErr,
+		FindingIDs: findingIDs(p.Findings),
 	}
+}
+
+func findingIDs(fs []detectors.Finding) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.ID+" "+f.Target)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Stat is a mean with the range behind it. A model-driven arm is not

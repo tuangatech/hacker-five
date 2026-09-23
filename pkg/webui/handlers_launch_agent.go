@@ -77,13 +77,14 @@ func runLaunchAgentJob(job *Job, form LaunchFormData) {
 	baseCfg := execCfg
 	baseCfg.Scope = s
 
+	clientMWs, credOpts := reconCredentialParts(job, form, target)
 	client := httpclient.New(recon.ClientConfig(httpclient.Config{
 		Timeout:             defaultTimeout,
 		MaxRedirects:        5,
 		MaxIdleConnsPerHost: form.Concurrency,
-	}), httpclient.WithRateLimit(ratelimit.New(form.RateLimit)))
+	}), append([]httpclient.Middleware{httpclient.WithRateLimit(ratelimit.New(form.RateLimit))}, clientMWs...)...)
 
-	reconOpts := []recon.Option{
+	reconOpts := append([]recon.Option{
 		recon.WithRateLimit(form.RateLimit),
 		recon.WithConcurrency(form.Concurrency),
 		recon.WithProgressCallback(func(wave, status string) {
@@ -92,7 +93,7 @@ func runLaunchAgentJob(job *Job, form LaunchFormData) {
 				job.AppendLog("info", waveDescription(wave))
 			}
 		}),
-	}
+	}, credOpts...)
 	if s != nil {
 		reconOpts = append(reconOpts, recon.WithScope(s))
 	}

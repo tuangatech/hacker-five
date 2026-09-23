@@ -8,9 +8,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/tuangatech/hacker-five/pkg/detectors"
+	"github.com/tuangatech/hacker-five/pkg/detectors/ssrf"
 	"github.com/tuangatech/hacker-five/pkg/orchestrator"
 )
 
@@ -113,4 +115,45 @@ func splitNonEmptyLines(t *testing.T, s string) [][]byte {
 	}
 	require.NoError(t, sc.Err())
 	return lines
+}
+
+// --recon-auth is opt-in and must fail before any network call when there is no
+// token to send, rather than silently running an unauthenticated recon.
+func TestAgentCmd_ReconAuthWithoutTokenFailsEarly(t *testing.T) {
+	t.Setenv("HACKERFIVE_AUTH_TOKEN", "")
+	cmd := newAgentCmd(&rootFlags{})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--targets", "http://127.0.0.1:1", "--allow-no-scope", "--no-model", "--recon-auth"})
+	err := cmd.Execute()
+	require.ErrorContains(t, err, "--recon-auth: recon authentication needs an owner token")
+}
+
+// agent mirrors scan's blind-SSRF default (LT-188 b, the user's explicit choice on
+// 2026-09-21): two public Interactsh servers unless --no-oob. Before this the agent
+// passed no server at all, so its ssrf leaves could never prove a blind SSRF.
+func TestAgentCmd_OOBDefaultMirrorsScan(t *testing.T) {
+	agent := newAgentCmd(&rootFlags{})
+	scan := newScanCmd(&rootFlags{})
+
+	oob := agent.Flags().Lookup("oob-server")
+	require.NotNil(t, oob, "--oob-server must be registered on agent")
+	assert.Equal(t, scan.Flags().Lookup("oob-server").DefValue, oob.DefValue, "the same default as scan")
+	assert.Equal(t, "[https://oast.pro,https://oast.live]", oob.DefValue)
+	assert.Equal(t, []string{"https://oast.pro", "https://oast.live"}, ssrf.DefaultOOBServers)
+
+	off := agent.Flags().Lookup("no-oob")
+	require.NotNil(t, off, "--no-oob must be the way out on agent, as on scan")
+	assert.Equal(t, "false", off.DefValue)
+}
+
+// LT-188 (a): --allow-ssrf-body-fill is off by default, same convention as
+// --allow-writes/--allow-mutating-bfla — filling an endpoint's other required
+// body fields can complete its real action, so it must never run unasked.
+func TestAgentCmd_AllowSSRFBodyFillDefaultsOff(t *testing.T) {
+	cmd := newAgentCmd(&rootFlags{})
+	flag := cmd.Flags().Lookup("allow-ssrf-body-fill")
+	require.NotNil(t, flag, "--allow-ssrf-body-fill must be registered")
+	assert.Equal(t, "false", flag.DefValue)
 }

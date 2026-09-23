@@ -67,7 +67,40 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		ExpectedFile: "tests/fixtures/expected-findings/juiceshop.json",
 		RequiredEnv:  []string{"JUICESHOP_BASE_URL"},
 		Target:       func() string { return os.Getenv("JUICESHOP_BASE_URL") },
-		Depth:        "active",
+		// "full", not "active" — measured (LT-190, docs/follow-up.md): at
+		// "active" wave3 (crawl + JS-static analysis) never runs at all, same
+		// as every other lab; recon's endpoint-driven idor/sqli leaves need
+		// it, exactly like crAPI's own Wave-3-needs-"full" finding.
+		Depth: "full",
+		// Templates: templatesDir() — same corpus-hang rationale as vAPI's
+		// and crAPI's own overrides below, live-verified 2026-09-22 (LT-179,
+		// LT-190's own follow-up.md entry): without it, a real 45-minute
+		// run (HACKERFIVE_ABLATION_TIMEOUT default) was killed
+		// (signal: killed) with 0 model turns and the misconfig leaf's
+		// progress line still stuck at 56/58 templates — the fast lane
+		// dispatched idor (7 findings) and a handful of parameter-free
+		// misconfig/nuclei leaves, but the model never got a turn to
+		// attempt sqli/authbypass at all. With this override: 2275s
+		// (~38 min), result=true, 5 model turns, $0.0018 — idor-1..idor-7
+		// found via the fast lane exactly as LT-190's manual check showed.
+		// The remaining two known vulnerabilities (authbypass-jwt-alg-none,
+		// sqli-product-search) are lost at a different, later stage —
+		// "recon endpoint observed, but no leaf of this class covers it" —
+		// a registry leaf-builder gap, not a recon-extraction or timeout
+		// one; see docs/follow-up.md's LT-190 follow-up entry and
+		// tests/fixtures/known-vulns/juiceshop.json's notes on both.
+		Templates: templatesDir(),
+		// Optional: JUICESHOP_OWNER_TOKEN/JUICESHOP_OTHER_TOKEN (two accounts'
+		// Bearer tokens, e.g. via POST /api/Users then POST /rest/user/login —
+		// docs/20-setup-testing-targets.md's Juice Shop section) give the idor
+		// leaf an identity, same convention as vAPI below. Live-verified
+		// (LT-190): with both set, a real `hackerfive agent` run against this
+		// lab found real idor-1..idor-7 findings on the recon-derived
+		// /rest/basket/{id} route — the actual orchestrated path, not a
+		// hand-built --endpoint.
+		AuthTokenEnv:      "JUICESHOP_OWNER_TOKEN",
+		OtherAuthTokenEnv: "JUICESHOP_OTHER_TOKEN",
+		KnownVulnsFile:    "tests/fixtures/known-vulns/juiceshop.json",
 	},
 	{
 		// Templates: "./templates/", mirroring challenges.go's deterministic
@@ -84,8 +117,20 @@ var OrchestratorScenarios = []OrchestratorScenario{
 		ExpectedFile: "tests/fixtures/expected-findings/vapi.json",
 		RequiredEnv:  []string{"VAPI_BASE_URL"},
 		Target:       func() string { return os.Getenv("VAPI_BASE_URL") },
-		Depth:        "active",
-		Templates:    "./templates/",
+		// "full": the application-layer wave (crawl, JS analysis, documentation-page
+		// routes, LT-189) only runs at full depth; at "active" recon saw one endpoint on
+		// vAPI and every known vulnerability was lost at stage 0. The slow-server timeout
+		// that first pinned this to "active" is handled by Templates below.
+		Depth:     "full",
+		Templates: "./templates/",
+		// Optional: VAPI_OWNER_TOKEN/VAPI_OTHER_TOKEN (base64 of username:password, see
+		// docs/20-setup-testing-targets.md) give the idor leaves an identity. vAPI reads
+		// the token from an Authorization-Token header, so a run using them also needs
+		// "--auth-header-name Authorization-Token --auth-header-format {token}" (the
+		// ablation harness takes it through HACKERFIVE_ABLATION_EXTRA_ARGS).
+		AuthTokenEnv:      "VAPI_OWNER_TOKEN",
+		OtherAuthTokenEnv: "VAPI_OTHER_TOKEN",
+		KnownVulnsFile:    "tests/fixtures/known-vulns/vapi.json",
 	},
 	{
 		// Templates: templatesDir() — same corpus-hang rationale as vAPI's

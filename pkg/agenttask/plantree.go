@@ -163,6 +163,12 @@ type PlanNode struct {
 	// seed instead. Empty/false on every int-keyed or seedless leaf.
 	EndpointSeedID   string `json:"endpoint_seed_id,omitempty"`
 	EndpointIDIsUUID bool   `json:"endpoint_id_is_uuid,omitempty"`
+	// HarvestedSeedID is EndpointSeedID's counterpart for an id recon read out of a
+	// list response rather than saw in a URL (LT-186 item c). It is response data,
+	// so json:"-" keeps it out of the tree's JSON, the session log and every prompt
+	// (none reads this field); it lives only in the process, and the one thing that
+	// uses it is planexec's idor dispatch. When set, EndpointIDIsUUID is true.
+	HarvestedSeedID string `json:"-"`
 	// ProtectedPaths / SSRFParams are the recon-derived required-field values
 	// for an endpoint-driven authbypass / ssrf leaf (LT-94, docs/follow-up.md),
 	// set by registry.resolveEndpointFacts from the same Suggest*FromRecon
@@ -178,6 +184,21 @@ type PlanNode struct {
 	// alongside SSRFParams on the same endpoint-driven ssrf leaf — additive,
 	// not a replacement; a leaf may carry either, both, or neither.
 	SSRFBodyParams []string `json:"ssrf_body_params,omitempty"`
+	// SSRFPath is the endpoint (path, scheme and host stripped) the SSRFParams /
+	// SSRFBodyParams belong to: one ssrf leaf per candidate endpoint, the SQLiPath
+	// treatment. Without it the probes are sent to the host root and the field they
+	// name does not exist there. Empty on a leaf that is not endpoint-driven.
+	SSRFPath string `json:"ssrf_path,omitempty"`
+	// SSRFBodyFillFields is every request-body field name recon recovered for
+	// this endpoint (recon.SSRFTarget.FillFields), not just the URL-shaped
+	// SSRFBodyParams candidates. Only used by the ssrf detector when
+	// --allow-ssrf-body-fill is also given (LT-188 a); values are field
+	// names, never real data.
+	SSRFBodyFillFields []string `json:"ssrf_body_fill_fields,omitempty"`
+	// SSRFBodyFillValues is SSRFBodyFillFields' companion
+	// (recon.SSRFTarget.FillValues): a true/false/integer literal the bundle
+	// itself declared for a field, used in place of a generic placeholder.
+	SSRFBodyFillValues map[string]string `json:"ssrf_body_fill_values,omitempty"`
 	// SQLiPath / SQLiParams are the recon-derived required-field values for
 	// an endpoint-driven sqli leaf (docs/18-implementation-plan-ph9.md Step
 	// 4, LT-87): one leaf per recon.SuggestSQLiTargets candidate path, same
@@ -189,6 +210,26 @@ type PlanNode struct {
 	// other leaf.
 	SQLiPath   string   `json:"sqli_path,omitempty"`
 	SQLiParams []string `json:"sqli_params,omitempty"`
+	// SQLiBodyPath / SQLiBodyParams are SQLiPath/SQLiParams' JSON-request-body
+	// counterpart (LT-192, docs/follow-up.md), populated from
+	// recon.SuggestSQLiBodyTargets alongside SQLiPath/SQLiParams on the same
+	// endpoint-driven sqli leaf — additive, same convention
+	// SSRFBodyParams/SSRFParams already use. SQLiBodyPath is the endpoint
+	// (path, scheme and host stripped) the fields belong to; SQLiBodyParams
+	// is the subset of its recon-recovered body field names worth testing.
+	SQLiBodyPath   string   `json:"sqli_body_path,omitempty"`
+	SQLiBodyParams []string `json:"sqli_body_params,omitempty"`
+	// SQLiBodyFillFields is every request-body field name recon recovered for
+	// this endpoint (recon.SQLiBodyTarget.FillFields), not just the tested
+	// SQLiBodyParams subset. Only used by the sqli detector when
+	// --allow-sqli-body-fill is also given (LT-192); values are field names,
+	// never real data.
+	SQLiBodyFillFields []string `json:"sqli_body_fill_fields,omitempty"`
+	// SQLiBodyFillValues is SQLiBodyFillFields' companion
+	// (recon.SQLiBodyTarget.FillValues): a true/false/integer literal the
+	// bundle itself declared for a field, used in place of a generic
+	// placeholder.
+	SQLiBodyFillValues map[string]string `json:"sqli_body_fill_values,omitempty"`
 	// CouponMintPath / CouponApplyPath / CouponCodeField / CouponAmountField
 	// are LT-135's (docs/follow-up.md) recon-derived required-field values
 	// for an endpoint-driven businesslogic leaf: a spec-documented
