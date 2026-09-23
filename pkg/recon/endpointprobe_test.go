@@ -86,3 +86,78 @@ func TestProbeUnprobedEndpoints_OutOfScopeHostSkipped(t *testing.T) {
 	require.Len(t, agg.endpoints, 1)
 	assert.Zero(t, agg.endpoints[0].StatusCode, "a non-seed host with no --scope allowance must not be probed")
 }
+
+// TestProbeTemplatedRouteAuthBoundary guards LT-191: a {param}-shaped
+// js-static/js-static-joined route (never requested by anything, since
+// probeUnprobedEndpoints itself skips any URL containing "{") gets one
+// bounded, anonymous, concrete-substituted probe; a 401/403 response
+// becomes a new EndpointFact carrying that status — the signal
+// SuggestAuthBypassPathsFromRecon already looks for — while the original
+// {param} fact (idor's own candidate) is left untouched.
+func TestProbeTemplatedRouteAuthBoundary(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/rest/basket/"):
+			w.WriteHeader(http.StatusUnauthorized)
+		case strings.HasPrefix(r.URL.Path, "/rest/public/"):
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	agg := &aggregator{target: srv.URL}
+	agg.addEndpoint(EndpointFact{URL: srv.URL + "/rest/basket/{param}", Source: "js-static", Confidence: ConfidenceLow})
+	// A public {param} route — must be probed too, but yields no new fact.
+	agg.addEndpoint(EndpointFact{URL: srv.URL + "/rest/public/{param}", Source: "js-static", Confidence: ConfidenceLow})
+	// Wrong source — idor's own leaf, out of scope for this pass.
+	agg.addEndpoint(EndpointFact{URL: srv.URL + "/rest/other/{param}", Source: "katana-crawl", Confidence: ConfidenceMedium})
+	// Already has a status — left alone regardless of source.
+	agg.addEndpoint(EndpointFact{URL: srv.URL + "/rest/known/{param}", Source: "js-static", StatusCode: 200, Confidence: ConfidenceLow})
+
+	r := New(newTestClient())
+	r.probeTemplatedRouteAuthBoundary(context.Background(), agg, []string{srv.URL})
+
+	var newFacts []EndpointFact
+	for _, ep := range agg.endpoints {
+		if ep.Source == "js-static-authcheck" {
+			newFacts = append(newFacts, ep)
+		}
+	}
+	require.Len(t, newFacts, 1, "only the genuinely gated route should produce a new fact")
+	assert.Equal(t, srv.URL+"/rest/basket/1", newFacts[0].URL)
+	assert.Equal(t, http.StatusUnauthorized, newFacts[0].StatusCode)
+
+	// The original {param} fact must be untouched — idor's own candidate
+	// list reads directly from it.
+	for _, ep := range agg.endpoints {
+		if ep.URL == srv.URL+"/rest/basket/{param}" {
+			assert.Zero(t, ep.StatusCode, "the original template fact must not be mutated")
+		}
+	}
+
+	joined := strings.Join(agg.warnings, " | ")
+	assert.Contains(t, joined, "LT-191")
+}
+
+// TestProbeTemplatedRouteAuthBoundary_MultiParamPathSkipped: a route with
+// more than one {...} segment is ambiguous to substitute a single concrete
+// value into, so it's left alone rather than guessed at.
+func TestProbeTemplatedRouteAuthBoundary_MultiParamPathSkipped(t *testing.T) {
+	var hit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	agg := &aggregator{target: srv.URL}
+	agg.addEndpoint(EndpointFact{URL: srv.URL + "/a/{x}/b/{y}", Source: "js-static", Confidence: ConfidenceLow})
+
+	r := New(newTestClient())
+	r.probeTemplatedRouteAuthBoundary(context.Background(), agg, []string{srv.URL})
+
+	assert.False(t, hit, "a multi-param route must never be probed")
+	assert.Len(t, agg.endpoints, 1, "no new fact should be added")
+}

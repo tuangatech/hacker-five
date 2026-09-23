@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -169,4 +170,143 @@ func resolveLocation(reqURL, loc string) string {
 		return loc
 	}
 	return base.ResolveReference(ref).String()
+}
+
+// maxTemplatedAuthBoundaryProbes bounds LT-191's companion pass to
+// probeUnprobedEndpoints above, over the {param}-shaped routes JS-static
+// analysis finds (LT-190) but, being a template with no id ever filled in,
+// carries no live status at all — probeUnprobedEndpoints itself skips any
+// URL containing "{" for exactly that reason.
+// recon.SuggestAuthBypassPathsFromRecon needs a directly observed 401/403
+// before it will build an authbypass leaf on a route like this
+// (docs/follow-up.md's LT-190 follow-up entry), which no bare {param}
+// literal can ever carry on its own — nothing has ever requested it.
+// Capped the same way LT-76 is.
+const maxTemplatedAuthBoundaryProbes = 15
+
+// templatedAuthBoundaryProbeID is substituted for a route's one {...}
+// segment before probing — small and inert, never claimed as a real
+// object id (idor's own EndpointTemplate/EndpointSeedID stay on the
+// original {param} fact this pass leaves untouched, since it appends a
+// new fact rather than mutating that one): the probe only needs *a*
+// response to the route's auth boundary, not the object at that id, so
+// which small value it is doesn't matter.
+const templatedAuthBoundaryProbeID = "1"
+
+// singleTrailingParamPath matches a path whose only {...} segment is its
+// final one — "/rest/basket/{param}", not "/a/{x}/b/{y}" or "/a/{x}/b" —
+// so substituting one concrete value for it is unambiguous.
+var singleTrailingParamPath = regexp.MustCompile(`^[^{}]*/\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
+// substituteTrailingParam replaces rawURL's one trailing "{...}" segment
+// (whatever name it carries — "{param}", "{id}") with value, returning ok
+// false if rawURL has no "{...}" at all.
+func substituteTrailingParam(rawURL, value string) (string, bool) {
+	open := strings.LastIndex(rawURL, "{")
+	closeIdx := strings.LastIndex(rawURL, "}")
+	if open < 0 || closeIdx < open {
+		return "", false
+	}
+	return rawURL[:open] + value + rawURL[closeIdx+1:], true
+}
+
+// probeTemplatedRouteAuthBoundary is LT-191's fix: fire one bounded,
+// anonymous GET against a concrete substitution of each single-{param}
+// JS-static/js-static-joined route recon found but never requested (the
+// same route probeUnprobedEndpoints deliberately skips, for the same
+// "still a template" reason), and record the result as a *new*
+// EndpointFact — the original {param} fact is untouched, so idor's own
+// candidate list is unaffected — when the response is 401/403, exactly
+// the signal SuggestAuthBypassPathsFromRecon already looks for. Read-only
+// and unauthenticated: a synthetic id is either free or belongs to
+// someone else, and no ownership check this probe could pass or fail
+// either way, since it carries no credential at all.
+func (r *Recon) probeTemplatedRouteAuthBoundary(ctx context.Context, agg *aggregator, seeds []string) {
+	seedHosts := make(map[string]bool, len(seeds))
+	for _, s := range seeds {
+		seedHosts[NormalizeHost(hostOnly(s))] = true
+	}
+
+	seen := map[string]bool{}
+	var candidates []string
+	for _, ep := range agg.endpoints {
+		if ep.Source != "js-static" && ep.Source != "js-static-joined" {
+			continue
+		}
+		if !strings.Contains(ep.URL, "{") {
+			continue
+		}
+		p := endpointPath(ep.URL)
+		if p == "" || !singleTrailingParamPath.MatchString(p) || IsStaticAssetPath(p) {
+			continue
+		}
+		concrete, ok := substituteTrailingParam(ep.URL, templatedAuthBoundaryProbeID)
+		if !ok || !IsPlausibleURLPath(endpointPath(concrete)) || seen[concrete] {
+			continue
+		}
+		host := hostOnly(concrete)
+		if !seedHosts[NormalizeHost(host)] {
+			if r.scope == nil || !r.scope.Allowed("https://"+host) {
+				continue
+			}
+		}
+		seen[concrete] = true
+		candidates = append(candidates, concrete)
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	sort.Strings(candidates)
+	if len(candidates) > maxTemplatedAuthBoundaryProbes {
+		candidates = candidates[:maxTemplatedAuthBoundaryProbes]
+	}
+
+	// Same client shape as probeUnprobedEndpoints — bounded, no-redirect so
+	// the first-hop status is what gets recorded, TLS posture matching
+	// recon's own client.
+	probe := &http.Client{
+		Timeout: endpointProbeTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // matches recon.ClientConfig / katana / httpx — internal-cert hosts must not fail closed
+			ForceAttemptHTTP2: true,
+		},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer probe.CloseIdleConnections()
+
+	answered, protected := 0, 0
+	for _, concreteURL := range candidates {
+		host := hostOnly(concreteURL)
+		if r.hostErrors.ShouldSkip(host) {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, concreteURL, nil)
+		if err != nil {
+			continue
+		}
+		// Deliberately no auth header applied — this pass asks "is the
+		// route gated at all", the same anonymous-request shape
+		// authbypass.checkMissingAuth itself uses.
+		resp, err := probe.Do(req)
+		if err != nil {
+			if !isRequestTimeout(err) {
+				r.hostErrors.RecordError(host)
+			}
+			continue
+		}
+		r.hostErrors.RecordSuccess(host)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCanaryBodyRead))
+		_ = resp.Body.Close()
+		answered++
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			protected++
+			agg.addEndpoint(EndpointFact{
+				URL: concreteURL, Method: http.MethodGet, StatusCode: resp.StatusCode,
+				Source: "js-static-authcheck", Confidence: ConfidenceMedium,
+			})
+		}
+	}
+	if answered > 0 {
+		agg.addWarning("wave3: probed %d templated route(s) for a live auth boundary (LT-191): %d answered, %d protected", len(candidates), answered, protected)
+	}
 }

@@ -30,6 +30,21 @@ var errorPatterns = []struct {
 	{"MSSQL", regexp.MustCompile(`(?i)Unclosed quotation mark after the character string|Microsoft SQL (Native Client|Server)|SqlException|System\.Data\.SqlClient|SQLServer JDBC Driver`)},
 	{"Oracle", regexp.MustCompile(`\bORA-[0-9]{4,5}\b|(?i)Oracle error|Oracle.*Driver`)},
 	{"SQLite", regexp.MustCompile(`(?i)SQLite/JDBCDriver|SQLite\.Exception|System\.Data\.SQLite\.SQLiteException|sqlite3\.OperationalError|SQLITE_ERROR`)},
+	// Node.js/Sequelize (LT-192, docs/follow-up.md — live-verified against
+	// Juice Shop's real POST /rest/user/login): a driver error bubbling up
+	// through Sequelize's dialect-specific query runner surfaces in an
+	// Express default error page's stack trace as a
+	// "sequelize/lib/dialects/<dialect>/query.js" frame — with no DBMS
+	// error string at all elsewhere in the page (unlike Juice Shop's own
+	// /rest/products/search, whose error handler echoes the raw
+	// "SQLITE_ERROR: ..." message directly, which the SQLite pattern above
+	// already catches). Matched on the dialect-runner frame specifically,
+	// not a broader "sequelize" mention: Sequelize's own input-validation
+	// errors (SequelizeValidationError, a malformed field caught before any
+	// query ever runs) must not match here — this file only exists in the
+	// dialect's actual query-execution path, so its presence means the
+	// query itself was attempted.
+	{"Node.js/Sequelize", regexp.MustCompile(`(?i)sequelize[/\\]lib[/\\]dialects[/\\]\w+[/\\]query\.js`)},
 	{"Generic", regexp.MustCompile(`(?i)unclosed quotation mark|quoted string not properly terminated|incorrect syntax near|syntax error at or near|you have an error in your sql syntax`)},
 }
 

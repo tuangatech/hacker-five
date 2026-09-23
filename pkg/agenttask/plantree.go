@@ -210,6 +210,26 @@ type PlanNode struct {
 	// other leaf.
 	SQLiPath   string   `json:"sqli_path,omitempty"`
 	SQLiParams []string `json:"sqli_params,omitempty"`
+	// SQLiBodyPath / SQLiBodyParams are SQLiPath/SQLiParams' JSON-request-body
+	// counterpart (LT-192, docs/follow-up.md), populated from
+	// recon.SuggestSQLiBodyTargets alongside SQLiPath/SQLiParams on the same
+	// endpoint-driven sqli leaf — additive, same convention
+	// SSRFBodyParams/SSRFParams already use. SQLiBodyPath is the endpoint
+	// (path, scheme and host stripped) the fields belong to; SQLiBodyParams
+	// is the subset of its recon-recovered body field names worth testing.
+	SQLiBodyPath   string   `json:"sqli_body_path,omitempty"`
+	SQLiBodyParams []string `json:"sqli_body_params,omitempty"`
+	// SQLiBodyFillFields is every request-body field name recon recovered for
+	// this endpoint (recon.SQLiBodyTarget.FillFields), not just the tested
+	// SQLiBodyParams subset. Only used by the sqli detector when
+	// --allow-sqli-body-fill is also given (LT-192); values are field names,
+	// never real data.
+	SQLiBodyFillFields []string `json:"sqli_body_fill_fields,omitempty"`
+	// SQLiBodyFillValues is SQLiBodyFillFields' companion
+	// (recon.SQLiBodyTarget.FillValues): a true/false/integer literal the
+	// bundle itself declared for a field, used in place of a generic
+	// placeholder.
+	SQLiBodyFillValues map[string]string `json:"sqli_body_fill_values,omitempty"`
 	// CouponMintPath / CouponApplyPath / CouponCodeField / CouponAmountField
 	// are LT-135's (docs/follow-up.md) recon-derived required-field values
 	// for an endpoint-driven businesslogic leaf: a spec-documented

@@ -231,6 +231,14 @@ func (r *Recon) runWave3(ctx context.Context, agg *aggregator, target string, li
 	// doc comment.
 	r.runJSStaticAnalysis(ctx, agg, jsAssets)
 
+	// LT-191 (docs/follow-up.md): a companion to LT-76 above, now that
+	// runJSStaticAnalysis has added whatever {param}-shaped routes it found —
+	// probeUnprobedEndpoints skips them (still a template, no id ever filled
+	// in), so without this they never get a live status and
+	// SuggestAuthBypassPathsFromRecon never builds an authbypass leaf for
+	// them at all, even when the route is genuinely auth-gated.
+	r.probeTemplatedRouteAuthBoundary(ctx, agg, seeds)
+
 	// docs/94 Phase 0: last, so it sees every endpoint the passes above found
 	// (spec routes, crawl hits, JS-derived ones) and gives each a response shape.
 	r.probeResponseShapes(ctx, agg, seeds)

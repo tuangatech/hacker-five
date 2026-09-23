@@ -247,6 +247,7 @@ func leafCoverage(l *agenttask.PlanNode) leafCover {
 	}
 	add(l.EndpointTemplate)
 	add(l.SQLiPath)
+	add(l.SQLiBodyPath)
 	add(l.SSRFPath)
 	add(l.CouponMintPath)
 	add(l.CouponApplyPath)
@@ -254,7 +255,7 @@ func leafCoverage(l *agenttask.PlanNode) leafCover {
 		add(p)
 	}
 	c.params = append(append(c.params, l.SSRFParams...), l.SSRFBodyParams...)
-	c.params = append(c.params, l.SQLiParams...)
+	c.params = append(append(c.params, l.SQLiParams...), l.SQLiBodyParams...)
 	return c
 }
 

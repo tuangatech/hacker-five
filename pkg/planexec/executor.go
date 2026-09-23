@@ -454,6 +454,19 @@ func applyLeafReconFields(cfg *scanner.Config, leaf *agenttask.PlanNode, notify 
 			notify(fmt.Sprintf("sqli: testing recon-derived endpoint %s (doc18 Step 4)", leaf.SQLiPath))
 		}
 	}
+	if leaf.SQLiBodyPath != "" && cfg.SQLiBodyPath == "" {
+		cfg.SQLiBodyPath = leaf.SQLiBodyPath
+		cfg.SQLiBodyParams = append([]string(nil), leaf.SQLiBodyParams...)
+		if notify != nil {
+			notify(fmt.Sprintf("sqli: testing recon-derived request-body field(s) %s on %s (LT-192)", strings.Join(leaf.SQLiBodyParams, ", "), leaf.SQLiBodyPath))
+		}
+	}
+	if len(leaf.SQLiBodyFillFields) > 0 && len(cfg.SQLiBodyFillFields) == 0 {
+		cfg.SQLiBodyFillFields = append([]string(nil), leaf.SQLiBodyFillFields...)
+	}
+	if len(leaf.SQLiBodyFillValues) > 0 && len(cfg.SQLiBodyFillValues) == 0 {
+		cfg.SQLiBodyFillValues = maps.Clone(leaf.SQLiBodyFillValues)
+	}
 	if leaf.CouponMintPath != "" && cfg.CouponMintPath == "" && cfg.CouponApplyPath == "" {
 		cfg.CouponMintPath = leaf.CouponMintPath
 		cfg.CouponApplyPath = leaf.CouponApplyPath
@@ -480,8 +493,10 @@ func missingRequiredField(detector string, cfg scanner.Config) string {
 			return "no --ssrf-param given and recon found no usable query or body param candidate"
 		}
 	case "sqli":
-		if cfg.SQLiPath == "" || len(cfg.SQLiParams) == 0 {
-			return "no --sqli-path/--sqli-param given and recon found no usable candidate"
+		hasQuery := cfg.SQLiPath != "" && len(cfg.SQLiParams) > 0
+		hasBody := cfg.SQLiBodyPath != "" && len(cfg.SQLiBodyParams) > 0
+		if !hasQuery && !hasBody {
+			return "no --sqli-path/--sqli-param given and recon found no usable query or body field candidate"
 		}
 	case "businesslogic":
 		if !cfg.AllowWrites {

@@ -555,6 +555,9 @@ func (e *Engine) warnIfWritesUngated() {
 	if e.cfg.Detector == "ssrf" && len(e.cfg.SSRFBodyFillFields) > 0 && !e.cfg.AllowSSRFBodyFill {
 		e.warnf("warn", "--allow-ssrf-body-fill not set — the ssrf detector's body-field check sends only the candidate field, so a target requiring its other fields before attempting the fetch (LT-188) will show no finding here; pass --allow-ssrf-body-fill to fill them (this can complete the endpoint's real action)")
 	}
+	if e.cfg.Detector == "sqli" && len(e.cfg.SQLiBodyFillFields) > 0 && !e.cfg.AllowSQLiBodyFill {
+		e.warnf("warn", "--allow-sqli-body-fill not set — the sqli detector's body-field check sends only the candidate field, so a target requiring its other fields before evaluating the query (LT-192) will show no finding here; pass --allow-sqli-body-fill to fill them (if the injection succeeds, this can complete a real unauthorized action, e.g. an authentication bypass)")
+	}
 }
 
 // loadTemplates parses every template directory in cfg.TemplatePaths once,
@@ -1116,9 +1119,28 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 		}
 		return detector.Run(ctx, ssrfTarget, e.cfg.AuthToken, e.cfg.SSRFParams, e.cfg.SSRFBodyParams, e.cfg.OOBServers)
 	case "sqli":
-		sqliURL := strings.TrimRight(target, "/") + e.cfg.SQLiPath
-		detector := sqli.New(e.client, sqli.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat), sqli.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }))
-		return detector.Run(ctx, []sqli.Target{{URL: sqliURL, Params: e.cfg.SQLiParams}}, e.cfg.AuthToken)
+		detector := sqli.New(e.client, e.sqliOptions()...)
+		var findings []detectors.Finding
+		if e.cfg.SQLiPath != "" && len(e.cfg.SQLiParams) > 0 {
+			sqliURL := strings.TrimRight(target, "/") + e.cfg.SQLiPath
+			fs, err := detector.Run(ctx, []sqli.Target{{URL: sqliURL, Params: e.cfg.SQLiParams}}, e.cfg.AuthToken)
+			if err != nil {
+				return findings, err
+			}
+			findings = append(findings, fs...)
+		}
+		// LT-192 (docs/follow-up.md): additive, not exclusive — a leaf can
+		// carry both query and body candidates (SuggestSQLiTargets and
+		// SuggestSQLiBodyTargets run independently in resolveEndpointFacts).
+		if e.cfg.SQLiBodyPath != "" && len(e.cfg.SQLiBodyParams) > 0 && ctx.Err() == nil {
+			bodyURL := strings.TrimRight(target, "/") + e.cfg.SQLiBodyPath
+			fs, err := detector.RunBodyFields(ctx, []sqli.BodyTarget{{URL: bodyURL, Params: e.cfg.SQLiBodyParams}}, e.cfg.AuthToken)
+			if err != nil {
+				return findings, err
+			}
+			findings = append(findings, fs...)
+		}
+		return findings, nil
 	case "businesslogic":
 		detector := businesslogic.New(e.client, e.businesslogicOptions()...)
 		return detector.Run(ctx, target, e.cfg.AuthToken, e.cfg.AllowWrites)
@@ -1184,6 +1206,21 @@ func (e *Engine) ssrfOptions() []ssrf.Option {
 	opts := []ssrf.Option{ssrf.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat)}
 	if e.cfg.AllowSSRFBodyFill && len(e.cfg.SSRFBodyFillFields) > 0 {
 		opts = append(opts, ssrf.WithBodyFill(e.cfg.SSRFBodyFillFields, e.cfg.SSRFBodyFillValues))
+	}
+	return opts
+}
+
+// sqliOptions builds the sqli.Option set the flag-driven --detector sqli
+// path applies. WithAuthHeader/WithLogCallback are unconditional, same
+// no-op-on-empty-string reasoning as idorOptions/ssrfOptions; WithBodyFill
+// mirrors ssrfOptions' own AllowSSRFBodyFill gate exactly (LT-192).
+func (e *Engine) sqliOptions() []sqli.Option {
+	opts := []sqli.Option{
+		sqli.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat),
+		sqli.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }),
+	}
+	if e.cfg.AllowSQLiBodyFill && len(e.cfg.SQLiBodyFillFields) > 0 {
+		opts = append(opts, sqli.WithBodyFill(e.cfg.SQLiBodyFillFields, e.cfg.SQLiBodyFillValues))
 	}
 	return opts
 }

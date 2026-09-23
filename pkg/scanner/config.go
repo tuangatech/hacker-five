@@ -185,6 +185,61 @@ type Config struct {
 	SQLiPath   string
 	SQLiParams []string
 
+	// SQLiBodyPath is the endpoint the sqli detector's body-field probes are
+	// POSTed to (LT-192, docs/follow-up.md), joined onto the target exactly
+	// like SQLiPath/SSRFPath. Blank means body-field probing doesn't run —
+	// SQLiBodyParams alone, with no path, has nowhere to send a request.
+	SQLiBodyPath string
+
+	// SQLiBodyParams are candidate JSON request-body field names (recon-
+	// derived via SuggestSQLiBodyTargets, LT-192) the sqli detector's
+	// body-field check fires against — additive to SQLiParams/SQLiPath, not
+	// a replacement: a target may take the vulnerable value in a URL query
+	// parameter, a body field, or both (a login form's email field, not a
+	// search box's query string — juiceshop-sqli-login-bypass,
+	// tests/fixtures/known-vulns/juiceshop.json). Optional even for
+	// --detector sqli.
+	SQLiBodyParams []string
+
+	// SQLiBodyFillFields are every request-body field name recon recovered
+	// for the endpoint under test (recon-derived, EndpointFact.BodyParamKeys
+	// via recon.SQLiBodyTarget), not just the candidate ones in
+	// SQLiBodyParams. Only used when AllowSQLiBodyFill is also true (LT-192):
+	// some targets (a login endpoint requiring both email and password) reject
+	// the request before the SQL query is ever built when the single field
+	// under test is sent alone, so the sqli detector's body-field check can
+	// never see a difference. With AllowSQLiBodyFill, each of these (other
+	// than the field under test) is filled with a generic placeholder value,
+	// which can satisfy that validation.
+	SQLiBodyFillFields []string
+
+	// SQLiBodyFillValues is SQLiBodyFillFields' companion (recon-derived,
+	// EndpointFact.BodyParamLiterals/recon.SQLiBodyTarget.FillValues): for a
+	// field whose value in the target's own JS bundle is a simple
+	// true/false/integer literal, that literal's canonical JSON text, used
+	// in place of the generic placeholder a strictly-typed field would
+	// otherwise reject.
+	SQLiBodyFillValues map[string]string
+
+	// AllowSQLiBodyFill (from --allow-sqli-body-fill) gates filling an
+	// endpoint's other required body fields (SQLiBodyFillFields) so the sqli
+	// detector's body-field payload actually reaches the query it feeds.
+	// Absent (the default, false), the body-field check sends only the
+	// candidate field, same as before — a stderr warning is printed once per
+	// scan when SQLiBodyFillFields is non-empty but this is false. Getting
+	// past an endpoint's own required-field validation can, if the injection
+	// actually succeeds, complete a real unauthorized action (an
+	// authentication bypass logs the caller in as another account — not a
+	// read), so this is CLAUDE.md's next explicit, independently-scoped
+	// exception to this tool's read/enumerate-only rule, alongside
+	// AllowWrites/AllowMutatingBFLA/AllowSSRFBodyFill/auto-provision — never
+	// folded into any of those. The three payload families sqli already uses
+	// (error/boolean-AND/time — see pkg/detectors/sqli's own doc comment)
+	// never widen access on their own (no OR-based always-true payload is in
+	// the set), so this flag's own risk is the same shape ssrf's is: reaching
+	// past validation, not the payload itself.
+	AllowSQLiBodyFill bool
+
 	// OOBServers are the base URL(s) of Interactsh-protocol server(s) (from
 	// repeatable --oob-server) the ssrf detector's blind callback check
 	// polls for interactions, tried in order with automatic fallback. As of
@@ -471,8 +526,10 @@ func (c Config) validate(opts ValidateOptions) error {
 	if c.Detector == "ssrf" && len(c.SSRFParams) == 0 && len(c.SSRFBodyParams) == 0 && !opts.SkipSSRFParamsRequired {
 		return fmt.Errorf("validating config: ssrf detector requires at least one --ssrf-param (query) or a recon-derived body param (LT-96)")
 	}
-	if c.Detector == "sqli" && (c.SQLiPath == "" || len(c.SQLiParams) == 0) && !opts.SkipSQLiFieldsRequired {
-		return fmt.Errorf("validating config: sqli detector requires --sqli-path and at least one --sqli-param")
+	hasSQLiQueryFields := c.SQLiPath != "" && len(c.SQLiParams) > 0
+	hasSQLiBodyFields := c.SQLiBodyPath != "" && len(c.SQLiBodyParams) > 0
+	if c.Detector == "sqli" && !hasSQLiQueryFields && !hasSQLiBodyFields && !opts.SkipSQLiFieldsRequired {
+		return fmt.Errorf("validating config: sqli detector requires --sqli-path and at least one --sqli-param (query mode), or a recon-derived body field (LT-192)")
 	}
 	if c.Detector == "businesslogic" && c.AuthToken == "" {
 		return fmt.Errorf("validating config: businesslogic detector requires --auth-token (or its env var equivalent)")

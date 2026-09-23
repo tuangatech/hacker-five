@@ -313,6 +313,124 @@ func TestSuggestSQLiTargets_NilResult(t *testing.T) {
 	}
 }
 
+// TestSuggestSQLiTargets_JSTemplateLiteralQueryValue guards LT-193: a
+// js-static/js-static-joined route whose query value is LT-190's "{param}"
+// placeholder is a candidate regardless of the key's name (unlike the
+// id-name/id-shape gates the first two signals apply) — the real shape of
+// Juice Shop's search SQLi (`?q=${e}`), where "q" would never pass
+// looksLikeIDKey. The literal placeholder text must never reach the
+// resulting Target.Path.
+func TestSuggestSQLiTargets_JSTemplateLiteralQueryValue(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/rest/products/search?q={param}", Source: "js-static"},
+	}}
+	got := SuggestSQLiTargets(result)
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want exactly 1 target", got)
+	}
+	if got[0].Path != "/rest/products/search?q=" {
+		t.Fatalf("got Path %q, want /rest/products/search?q= (the placeholder text must never appear in the emitted path)", got[0].Path)
+	}
+	if len(got[0].Params) != 1 || got[0].Params[0] != "q" {
+		t.Fatalf("got params %v, want [q]", got[0].Params)
+	}
+}
+
+// TestSuggestSQLiTargets_JSTemplateLiteralQueryValue_WrongSourceExcluded:
+// the same shape from a source LT-190 never produces it from (a live crawl
+// hit, say) is not treated as a declared-by-source signal.
+func TestSuggestSQLiTargets_JSTemplateLiteralQueryValue_WrongSourceExcluded(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/rest/products/search?q={param}", Source: "katana-crawl"},
+	}}
+	if got := SuggestSQLiTargets(result); len(got) != 0 {
+		t.Fatalf("got %+v, want no targets", got)
+	}
+}
+
+// TestSuggestSQLiTargets_JSTemplateLiteralQueryValue_PartialMatchExcluded:
+// a value that merely contains the placeholder text isn't the placeholder
+// itself (e.g. a literal string an app happens to send) — exact match only.
+func TestSuggestSQLiTargets_JSTemplateLiteralQueryValue_PartialMatchExcluded(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/search?q=x{param}y", Source: "js-static"},
+	}}
+	if got := SuggestSQLiTargets(result); len(got) != 0 {
+		t.Fatalf("got %+v, want no targets", got)
+	}
+}
+
+// TestSuggestSQLiBodyTargets guards LT-192: every recon-recovered body
+// field on an endpoint is a candidate, not just ones whose name looks
+// SQLi-relevant (unlike SuggestSSRFTargets' keyword-filtered body signal) —
+// juiceshop-sqli-login-bypass's "email" field is exactly this shape.
+func TestSuggestSQLiBodyTargets(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{
+			URL: "https://example.com/rest/user/login", Source: "js-static-joined",
+			BodyParamKeys:     []string{"email", "password"},
+			BodyParamLiterals: map[string]string{"password": "true"},
+		},
+	}}
+	got := SuggestSQLiBodyTargets(result)
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want exactly 1 target", got)
+	}
+	if got[0].Path != "/rest/user/login" {
+		t.Fatalf("got Path %q, want /rest/user/login", got[0].Path)
+	}
+	if len(got[0].BodyParams) != 2 || got[0].BodyParams[0] != "email" || got[0].BodyParams[1] != "password" {
+		t.Fatalf("got BodyParams %v, want [email password]", got[0].BodyParams)
+	}
+	if len(got[0].FillFields) != 2 {
+		t.Fatalf("got FillFields %v, want both fields carried for --allow-sqli-body-fill", got[0].FillFields)
+	}
+	if got[0].FillValues["password"] != "true" {
+		t.Fatalf("got FillValues %v, want password's recovered literal carried through", got[0].FillValues)
+	}
+}
+
+// TestSuggestSQLiBodyTargets_NoBodyFieldsExcluded: an endpoint with no
+// recon-recovered body fields at all produces no target.
+func TestSuggestSQLiBodyTargets_NoBodyFieldsExcluded(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/rest/user/login", Source: "js-static-joined"},
+	}}
+	if got := SuggestSQLiBodyTargets(result); len(got) != 0 {
+		t.Fatalf("got %+v, want no targets", got)
+	}
+}
+
+// TestSuggestSQLiBodyTargets_TemplatedPathExcluded: a {param}-shaped route
+// has no concrete path to POST to, same convention SuggestSSRFTargets uses.
+func TestSuggestSQLiBodyTargets_TemplatedPathExcluded(t *testing.T) {
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/rest/basket/{param}", Source: "js-static", BodyParamKeys: []string{"quantity"}},
+	}}
+	if got := SuggestSQLiBodyTargets(result); len(got) != 0 {
+		t.Fatalf("got %+v, want no targets", got)
+	}
+}
+
+// TestSuggestSQLiBodyTargets_CapsFieldCount: an endpoint with more than
+// maxSQLiBodyParamsPerEndpoint fields is capped, not dropped entirely.
+func TestSuggestSQLiBodyTargets_CapsFieldCount(t *testing.T) {
+	fields := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	result := &ReconResult{Endpoints: []EndpointFact{
+		{URL: "https://example.com/signup", Source: "js-static-joined", BodyParamKeys: fields},
+	}}
+	got := SuggestSQLiBodyTargets(result)
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want exactly 1 target", got)
+	}
+	if len(got[0].BodyParams) != maxSQLiBodyParamsPerEndpoint {
+		t.Fatalf("got %d body params, want the cap of %d", len(got[0].BodyParams), maxSQLiBodyParamsPerEndpoint)
+	}
+	if len(got[0].FillFields) != len(fields) {
+		t.Fatalf("got %d fill fields, want all %d uncapped (FillFields covers validation, not just the tested subset)", len(got[0].FillFields), len(fields))
+	}
+}
+
 func TestSuggestSSRFParamsFromRecon(t *testing.T) {
 	cases := []struct {
 		name string
