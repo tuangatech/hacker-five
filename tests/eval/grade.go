@@ -429,6 +429,85 @@ func num(s Stat, format string) string {
 	return fmt.Sprintf(format+" ("+format+"-"+format+")", s.Mean, s.Min, s.Max)
 }
 
+// FormatFindingDiff renders, per lab, whether every arm found exactly the same
+// set of findings — the other half of LT-183 item (i): FindingIDs has been
+// stored per run since then, but nothing diffed them, so "same findings across
+// arms" was inferred from equal counts (doc94's crAPI baseline explicitly flags
+// this) rather than shown. An arm's set is the union of its FindingIDs across
+// every run of it: a model-driven arm is not deterministic run to run, so
+// diffing individual runs would surface that noise instead of the question
+// this asks, which is "can this arm reach a finding at all". Arms with an
+// identical set print one line; a real difference prints exactly which finding
+// IDs are unique to each side.
+func FormatFindingDiff(records []RunRecord) string {
+	type key struct{ lab, arm string }
+	sets := map[key]map[string]bool{}
+	armsByLab := map[string][]string{}
+	armSeen := map[key]bool{}
+	var labs []string
+	labSeen := map[string]bool{}
+	for _, r := range records {
+		k := key{r.Lab, r.Arm}
+		if sets[k] == nil {
+			sets[k] = map[string]bool{}
+		}
+		for _, id := range r.FindingIDs {
+			sets[k][id] = true
+		}
+		if !armSeen[k] {
+			armSeen[k] = true
+			armsByLab[r.Lab] = append(armsByLab[r.Lab], r.Arm)
+		}
+		if !labSeen[r.Lab] {
+			labSeen[r.Lab] = true
+			labs = append(labs, r.Lab)
+		}
+	}
+	sort.Strings(labs)
+
+	var b strings.Builder
+	for _, lab := range labs {
+		arms := armsByLab[lab]
+		sort.Strings(arms)
+		if len(arms) < 2 {
+			continue // nothing to diff a single arm against
+		}
+		fmt.Fprintf(&b, "\n%s finding-ID diff (%d arm(s)):\n", lab, len(arms))
+		for i := 0; i < len(arms); i++ {
+			for j := i + 1; j < len(arms); j++ {
+				a, c := sets[key{lab, arms[i]}], sets[key{lab, arms[j]}]
+				onlyA, onlyC := setDiff(a, c), setDiff(c, a)
+				if len(onlyA) == 0 && len(onlyC) == 0 {
+					fmt.Fprintf(&b, "  %s == %s: identical (%d finding(s))\n", arms[i], arms[j], len(a))
+					continue
+				}
+				fmt.Fprintf(&b, "  %s vs %s: only in %s: %s | only in %s: %s\n",
+					arms[i], arms[j], arms[i], joinOrNone(onlyA), arms[j], joinOrNone(onlyC))
+			}
+		}
+	}
+	return b.String()
+}
+
+// setDiff returns the sorted IDs present in a but not in c.
+func setDiff(a, c map[string]bool) []string {
+	var out []string
+	for id := range a {
+		if !c[id] {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func joinOrNone(ids []string) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+	return strings.Join(ids, "; ")
+}
+
 // FormatSummary renders the comparison as a fixed-width table. Read it with the
 // run count in mind: with Runs of 1 a model-driven arm's row is an anecdote, and
 // the range shown is a single point.
