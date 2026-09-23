@@ -1109,6 +1109,23 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 		}
 		seenAssetURL[asset.URL] = true
 
+		assetHost := ""
+		if u, err := url.Parse(asset.URL); err == nil {
+			assetHost = u.Scheme + "://" + u.Host
+		}
+
+		// Built once per asset and shared by both endpoint-building loops
+		// below (LT-186 d follow-on): a route this yields matches either the
+		// join mechanism's own "api/..." bases (crAPI's convention, matched
+		// further down) or a plain absolute-path literal like Juice Shop's
+		// own "/rest/user/login" (matched right below) — jsCallRoute
+		// resolves whichever shape the bundle actually uses, so one map
+		// serves both without knowing in advance which convention applies.
+		bodyByRoute := map[string]jsBodyFields{}
+		for _, bf := range extractJSBodyFields(asset.Body) {
+			bodyByRoute[bf.Route] = bf
+		}
+
 		for _, epURL := range extractJSEndpoints(asset.URL, asset.Body) {
 			if endpointsAdded >= maxJSStaticEndpoints {
 				endpointsTruncated = true
@@ -1118,14 +1135,17 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 				agg.addOutOfScope(hostOnly(epURL))
 				continue
 			}
-			agg.addEndpoint(EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static", Confidence: ConfidenceLow})
+			fact := EndpointFact{URL: epURL, Method: http.MethodGet, Source: "js-static", Confidence: ConfidenceLow}
+			if assetHost != "" {
+				if bf, ok := bodyByRoute[strings.TrimPrefix(epURL, assetHost)]; ok {
+					fact.BodyParamKeys, fact.URLBodyParamKeys = bf.Keys, bf.URLKeys
+					fact.BodyParamLiterals = bf.Literals
+				}
+			}
+			agg.addEndpoint(fact)
 			endpointsAdded++
 		}
 
-		assetHost := ""
-		if u, err := url.Parse(asset.URL); err == nil {
-			assetHost = u.Scheme + "://" + u.Host
-		}
 		if assetHost != "" && endpointsAdded < maxJSStaticEndpoints && joinProbeBudget > 0 {
 			prefixes, bases, querySuffixes := collectJSPathJoinParts(asset.Body)
 			prefixes, _ = capStrings(prefixes, maxJSPathPrefixes)
@@ -1141,10 +1161,7 @@ func (r *Recon) runJSStaticAnalysis(ctx context.Context, agg *aggregator, assets
 				verifiedBases = append(verifiedBases, pair.Base)
 			}
 			suffixesByBase := assignQuerySuffixes(asset.Body, verifiedBases, querySuffixes)
-			bodyByRoute := map[string]jsBodyFields{}
-			for _, bf := range extractJSBodyFields(asset.Body) {
-				bodyByRoute[bf.Route] = bf
-			}
+			// bodyByRoute is built once per asset, above.
 			for _, pair := range verified {
 				joinCandidatesVerified++
 				pairURL := strings.TrimRight(assetHost, "/") + "/" + pair.joined()
