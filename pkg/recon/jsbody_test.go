@@ -40,13 +40,107 @@ func TestExtractJSBodyFields_Variants(t *testing.T) {
 		"quoted keys and a spread": {consts + `fetch(u+R.SAVE,{method:"PUT",body:JSON.stringify({"a-b":1,...rest,c:2})})`,
 			[]jsBodyFields{{Route: "api/profile/save", Keys: []string{"a-b", "c"}, Literals: map[string]string{"a-b": "1", "c": "2"}}}},
 		"a body that is a variable is not guessed at": {consts + `fetch(u+R.SAVE,{method:"POST",body:JSON.stringify(payload)})`, nil},
-		"a url that resolves to no route constant":    {consts + `fetch("/other",{method:"POST",body:JSON.stringify({a:1})})`, nil},
-		"no route constants in the bundle":            {`fetch(e,{method:"POST",body:JSON.stringify({a:1})})`, nil},
-		"unbalanced call is skipped, not fatal":       {consts + `fetch(u+R.SAVE,{method:"POST",body:JSON.stringify({a:1`, nil},
+		// LT-186 (d) follow-on: a plain absolute-path literal URL, no named
+		// route constant involved at all, now resolves via the literal
+		// itself (jsCallRouteFromLiteral) — this used to return nil.
+		"a plain literal URL with no route constant now resolves via the literal": {consts + `fetch("/other",{method:"POST",body:JSON.stringify({a:1})})`,
+			[]jsBodyFields{{Route: "/other", Keys: []string{"a"}, Literals: map[string]string{"a": "1"}}}},
+		"a url built from a truly unresolved variable stays unresolved": {consts + `fetch(unknownVar,{method:"POST",body:JSON.stringify({a:1})})`, nil},
+		"no route constants in the bundle":                              {`fetch(e,{method:"POST",body:JSON.stringify({a:1})})`, nil},
+		"unbalanced call is skipped, not fatal":                         {consts + `fetch(u+R.SAVE,{method:"POST",body:JSON.stringify({a:1`, nil},
 	}
 	for name, c := range cases {
 		assert.Equal(t, c.want, extractJSBodyFields(c.js), name)
 	}
+}
+
+// juiceShopLoginJS is a trimmed copy of the real shape found live in Juice
+// Shop's served bundle (2026-09-23): no named route constant anywhere (every
+// route is an inline template literal), and the service method that actually
+// posts never builds the body itself — it just forwards its own single
+// parameter, which the *caller* built one call frame up by mutating an
+// initially empty object field by field. The route constant declaration
+// below only exists so extractJSBodyFields' own len(consts)==0 early-exit
+// doesn't apply; it plays no other part in this shape.
+const juiceShopLoginJS = `X={UNUSED:"api/unused"};` +
+	`class UserService{login(e){return this.isLoggedIn.next(!0),this.http.post(this.hostServer+` + "`" + `/rest/user/login` + "`" + `,e).pipe(Q$2(t=>t.authentication))}}` +
+	`class LoginComponent{login(){this.user={},this.user.email=this.emailControl.value,this.user.password=this.passwordControl.value,this.userService.login(this.user).subscribe({next:e=>{}})}}`
+
+func TestExtractJSBodyFields_JuiceShopLoginPassthrough(t *testing.T) {
+	got := extractJSBodyFields(juiceShopLoginJS)
+	require.Len(t, got, 1)
+	assert.Equal(t, "/rest/user/login", got[0].Route)
+	assert.Equal(t, []string{"email", "password"}, got[0].Keys)
+	assert.Empty(t, got[0].URLKeys)
+}
+
+// TestExtractJSBodyFields_InlineLiteralAssignedToBareVariable covers the
+// simpler of the two new LT-186 (d) follow-on shapes: a local variable
+// assigned an inline object literal, then passed by reference — no
+// passthrough hop needed, resolved entirely within resolveBareObjectArg's
+// first branch.
+func TestExtractJSBodyFields_InlineLiteralAssignedToBareVariable(t *testing.T) {
+	consts := `R={SAVE:"api/profile/save"};`
+	js := consts + `let x={name:n,age:3};a.post(base+R.SAVE,x)`
+	got := extractJSBodyFields(js)
+	require.Len(t, got, 1)
+	assert.Equal(t, "api/profile/save", got[0].Route)
+	assert.Equal(t, []string{"name", "age"}, got[0].Keys)
+	assert.Equal(t, map[string]string{"age": "3"}, got[0].Literals)
+}
+
+// TestExtractJSBodyFields_UnresolvablePassthrough proves the passthrough
+// hop stays exactly one level: a method that forwards its own parameter,
+// called from somewhere that itself only forwards *its* parameter too (two
+// hops), is not chased — never a guess past the one hop live evidence
+// justified.
+func TestExtractJSBodyFields_UnresolvablePassthrough(t *testing.T) {
+	consts := `R={SAVE:"api/profile/save"};`
+	js := consts + `function inner(e){return a.post(base+R.SAVE,e)}` +
+		`function outer(p){return svc.inner(p)}` // outer's own arg to inner is itself just a passthrough — never resolved
+	assert.Empty(t, extractJSBodyFields(js))
+}
+
+// TestExtractJSBodyFields_ReservedWordNotMistakenForMethodName guards
+// enclosingFuncParam against "if(e){"'s identical textual shape to a
+// one-param method definition: the real enclosing method, handler(e){, sits
+// one level further back than the if-block wrapping the call, and must
+// still be found — if "if" were mistaken for the method name instead, the
+// passthrough search below would look for ".if(" call sites (none exist)
+// and this would resolve to nothing at all.
+func TestExtractJSBodyFields_ReservedWordNotMistakenForMethodName(t *testing.T) {
+	consts := `R={SAVE:"api/profile/save"};`
+	js := consts + `function handler(e){if(e){return a.post(base+R.SAVE,e)}}` +
+		`svc.handler({name:n,age:3})`
+	got := extractJSBodyFields(js)
+	require.Len(t, got, 1)
+	assert.Equal(t, "api/profile/save", got[0].Route)
+	assert.Equal(t, []string{"name", "age"}, got[0].Keys)
+}
+
+// TestRunWave3_JSStatic_BodyFieldsReachAbsolutePathEndpoint is
+// TestRunWave3_JSJoin_BodyFieldsReachTheSSRFSuggestion's counterpart for the
+// *other* endpoint-building loop in runJSStaticAnalysis (LT-186 d follow-on):
+// a bundle whose routes are plain absolute-path literals, never "api/..."
+// bases the join mechanism's own isJSAPIPathBaseCandidate would ever accept
+// (it requires the first segment to literally be "api"), reaches
+// EndpointFact.BodyParamKeys through the js-static source instead — this
+// used to be entirely unwired, so bodyByRoute was built but never consulted
+// for any endpoint extractJSEndpoints (as opposed to the join mechanism)
+// produced.
+func TestRunWave3_JSStatic_BodyFieldsReachAbsolutePathEndpoint(t *testing.T) {
+	f := newJoinFixture(t, nil, nil)
+	result := f.recon(t, juiceShopLoginJS)
+
+	var fact *EndpointFact
+	for i := range result.Endpoints {
+		if strings.HasSuffix(result.Endpoints[i].URL, "/rest/user/login") {
+			fact = &result.Endpoints[i]
+		}
+	}
+	require.NotNil(t, fact)
+	assert.Equal(t, "js-static", fact.Source)
+	assert.Equal(t, []string{"email", "password"}, fact.BodyParamKeys)
 }
 
 // LT-188 (a): jsValueLiteral only ever recognizes the true/false/integer shapes
