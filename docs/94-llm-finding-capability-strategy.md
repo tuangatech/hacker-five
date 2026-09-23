@@ -261,6 +261,36 @@ Caveats: 1 run per arm, two labs, and both are intentionally vulnerable applicat
 
 **LT-195 built and live-verified, 2026-09-23 — Juice Shop's login-bypass SQLi is now found by the fully-automatic `hackerfive agent` path, closing LT-192's last open item.** Three compounding recon gaps, not one: `extractJSBodyFields` had never resolved anything but an inline object literal, but Juice Shop's real service method only forwards its own parameter — the object is built by the *caller*, one frame up, via sequential property assignment (`this.user={},this.user.email=...`), not even an inline literal there either; `jsCallRoute` only ever recognized a named route constant, and Juice Shop declares zero of them anywhere in its bundle (every route is an inline literal); and even with both resolved, the extracted body fields were only ever wired into the join mechanism's own endpoint loop, which requires an `"api/..."`-shaped base — Juice Shop's routes are `/rest/...` and were built through an entirely separate, unwired loop. Each was found in turn by checking the real bundle at every step rather than assuming the first fix was enough (a standalone check first returned 0 results even after the body-argument fix alone). None is Juice-Shop-specific: (1) is Angular's own standard service/component split, (2) is any app that inlines routes rather than naming them, (3) is any bundle whose routes don't start with `"api/"`. Verified fully automatic end to end: `hackerfive plan` (no manual flags) now builds the real `sqli` leaf from recon alone, and `hackerfive agent --no-model --run-every-leaf` dispatched it and found `sqli-error-email-x` through the real orchestrated path. Full account in follow-up.md's LT-195 entry.
 
+### Full-suite re-measurement after LT-194/LT-195, 2026-09-23, 1 run per arm, all three labs
+
+The numbers above predate both fixes. Since J1/J2's own deferral was conditioned on "no measured miss beyond deterministic work" (§4 above), that condition needed re-checking against current code, not assumed to still hold — so all four arms (`no-model`, `no-model+all-leaves`, `model-every-turn`, `fast-lane+model`) were run fresh against crAPI, vAPI and Juice Shop, each with two throwaway accounts freshly provisioned and containers rebuilt from a clean state.
+
+| Lab | Arm | Known-vuln recall | Cost | Wall |
+|---|---|---|---|---|
+| crAPI | fast-lane+model | 71% (5/7) | $0.0114 | 1121s |
+| crAPI | model-every-turn | 57% (4/7) | $0.0109 | 1028s |
+| crAPI | no-model+all-leaves | 71% (5/7) | $0 | 1047s |
+| crAPI | no-model | 14% (1/7) | $0 | 46s |
+| vAPI | fast-lane+model | 33% (1/3) | $0.0011 | 874s |
+| vAPI | model-every-turn | 33% (1/3) | $0.0079 | 958s |
+| vAPI | no-model+all-leaves | 33% (1/3) | $0 | 883s |
+| vAPI | no-model | 0% (0/3) | $0 | 152s |
+| Juice Shop | fast-lane+model | **100% (4/4)** | $0.0063 | 2397s |
+| Juice Shop | model-every-turn | **100% (4/4)** | $0.0068 | 2383s |
+| Juice Shop | no-model+all-leaves | **100% (4/4)** | $0 | 2334s |
+| Juice Shop | no-model | 0% (0/4) | $0 | 31s |
+
+(Juice Shop's two model arms ran in a second `go test` invocation with `-timeout 100m` — the default 60m global timeout wasn't enough headroom for all four of this lab's arms in one process, given `no-model+all-leaves` alone took 2334s; the `no-model`/`no-model+all-leaves` pair from the first, timed-out invocation is still valid, since each run's own result is written to the JSONL as it finishes, not batched at the end.)
+
+Reading it:
+
+1. **LT-194 holds**: `crapi-ssrf-contact-mechanic` is `7-found` in every arm that dispatches it (`fast-lane+model`, `model-every-turn`, `no-model+all-leaves`) — the real SSRF, through the real orchestrated path, not a hand-built `--ssrf-body-param`.
+2. **LT-195 holds, completely**: Juice Shop's known-vuln recall goes from the pre-fix baseline (0 reachable through any agent arm, per the "measured the same day" note above LT-190) to **100% in every non-trivial arm**, model or not. `juiceshop-sqli-login-bypass` is `7-found` in all three.
+3. **The model arm still never beats the deterministic one, on any of the three labs.** crAPI: 71% vs 71% (ties `no-model+all-leaves`; `model-every-turn` alone is worse, 57%, because it doesn't force every leaf). vAPI: 33% vs 33%, exact tie including *which* vuln is found. Juice Shop: 100% vs 100%, exact tie. Not one case where the model reaches a known vulnerability the deterministic `--run-every-leaf` policy doesn't already reach.
+4. **What's left is not a reasoning gap.** crAPI's remaining two (`crapi-bola-vehicle-location`, no recon endpoint contains `/location`; `crapi-bfla-delete-video`, gated behind `--allow-mutating-bfla` by design) and vAPI's remaining two (`vapi-jwt-alg-none`, `vapi-ssrf-serversurfer`, neither endpoint linked or served anywhere recon can reach) are the same misses §4's "second lab" section already diagnosed — a model reading what the target serves has nothing to reason from in three of these four, and the fourth is an explicit human-approval gate, not a discovery problem.
+
+**So the answer to "is J1/J2 justified now" is still no, measured fresh rather than assumed.** Every deterministic gap this session's own live-verification work could find (LT-194, LT-195) is now closed, and closing them raised recall without any model involvement — exactly doc94's own thesis. What remains across all three labs is either an explicit gate (crAPI's DELETE-video) or genuinely unlinked/unserved evidence (crAPI's vehicle-location, vAPI's two) that a model has no more to go on than the deterministic path already does. The next deterministic candidate, if one is wanted, is `crapi-bola-vehicle-location` specifically — unlike vAPI's two, it may be a recon gap rather than a served-evidence gap (worth checking whether crAPI actually links a `/location` route anywhere before assuming it's undiscoverable too).
+
 Two things this turned up that change how to read everything above (the fourth arm's flag, `--run-every-leaf`, is a deterministic policy, not a recommended default: it runs endpoint-specific leaves blind and does not resolve unresolved ones):
 
 1. **The control arm is nearly free to run and answers the first question.** `--no-model` needs no API key, so "what does the deterministic path alone reach on crAPI" can be measured before spending on any model arm.
