@@ -319,6 +319,14 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	// scan.leaf dispatch's own separate RunPlan call — see corpusHostState's
 	// doc comment.
 	cfg.corpusHostState = map[string]bool{}
+	// LT-197 residual: one fingerprint cache for the life of this Run call,
+	// shared the same way — dispatchScanLeaf's per-leaf scanner.New(cfg)
+	// would otherwise each pay their own fresh stat-walk of the template
+	// corpus dir even though it cannot change mid-run. scanner.Config's own
+	// field carries it straight through RunPlan/runLeaf's baseCfg copy, no
+	// ExecOptions plumbing needed (unlike corpusHostState, which RunPlan
+	// itself reads before per-leaf Config even exists).
+	cfg.BaseScanConfig.TemplateDirFingerprints = &scanner.TemplateDirFingerprintCache{}
 
 	catalog := buildCatalog(cfg)
 	var (

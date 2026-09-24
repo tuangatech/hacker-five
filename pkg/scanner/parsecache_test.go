@@ -1,9 +1,11 @@
 package scanner
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -229,6 +231,128 @@ func TestFingerprintTemplateDir_StableAndSensitive(t *testing.T) {
 	fp4, err := fingerprintTemplateDir(dir)
 	require.NoError(t, err)
 	assert.Equal(t, fp1, fp4, "removing that file must restore the original fingerprint")
+}
+
+// TestTemplateDirFingerprintCache_GetSet is the LT-197-residual cache type's
+// own contract: a miss returns ok=false, a set makes the next get for the
+// same key a hit, and the zero value (no explicit construction) is usable —
+// New relies on this for every Engine that gets its own private instance.
+func TestTemplateDirFingerprintCache_GetSet(t *testing.T) {
+	var c TemplateDirFingerprintCache
+	_, ok := c.get("/some/dir")
+	assert.False(t, ok, "an empty cache must miss")
+
+	c.set("/some/dir", "fp-1")
+	got, ok := c.get("/some/dir")
+	require.True(t, ok)
+	assert.Equal(t, "fp-1", got)
+
+	_, ok = c.get("/other/dir")
+	assert.False(t, ok, "a different key must still miss")
+}
+
+// TestTemplateDirFingerprintCache_ConcurrentAccess exercises the mutex under
+// `go test -race`: Engine.Run dispatches multiple targets against the same
+// shared corpus dir concurrently (cfg.Concurrency), so concurrent get/set
+// against one cache instance must never race.
+func TestTemplateDirFingerprintCache_ConcurrentAccess(t *testing.T) {
+	var c TemplateDirFingerprintCache
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			dir := fmt.Sprintf("/dir/%d", i%5)
+			c.set(dir, fmt.Sprintf("fp-%d", i))
+			c.get(dir)
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestEngineFingerprintDir_CachesWithinOneEngine is LT-197's own logged
+// residual (docs/follow-up.md): a second call against the same dir, on the
+// same Engine, must not re-walk the directory. Proven behaviorally rather
+// than by call-counting: the corpus dir is removed between the two calls —
+// a real re-walk would fail with the directory gone, so the second call
+// only succeeds (with the identical fingerprint) if it came from the cache.
+func TestEngineFingerprintDir_CachesWithinOneEngine(t *testing.T) {
+	dir := mkParseCacheCorpus(t)
+	e := New(baseParseCacheCfg(dir))
+
+	fp1, err := e.fingerprintDir(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(dir))
+
+	fp2, err := e.fingerprintDir(dir)
+	require.NoError(t, err, "a cache hit must not re-walk the now-missing directory")
+	assert.Equal(t, fp1, fp2)
+}
+
+// TestEngineFingerprintDir_RelativeAndAbsoluteSpellingsShareOneEntry proves
+// the filepath.Abs cache-key normalization: two calls for the same
+// directory, one via a relative path and one via its absolute form, must
+// coalesce into a single cache entry.
+func TestEngineFingerprintDir_RelativeAndAbsoluteSpellingsShareOneEntry(t *testing.T) {
+	dir := mkParseCacheCorpus(t)
+	abs, err := filepath.Abs(dir)
+	require.NoError(t, err)
+
+	e := New(baseParseCacheCfg(dir))
+	fp1, err := e.fingerprintDir(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(dir))
+
+	fp2, err := e.fingerprintDir(abs)
+	require.NoError(t, err, "the absolute spelling must hit the entry the relative call already cached")
+	assert.Equal(t, fp1, fp2)
+}
+
+// TestEngineFingerprintDir_SharedCacheAcrossEngines is the cross-Engine half
+// of the fix: pkg/planexec.RunPlan constructs a brand new Engine per leaf
+// dispatch (planexec/executor.go), so an Engine-private cache alone can't
+// help an orchestrator run spanning many leaves against the same dir. A
+// caller-supplied Config.TemplateDirFingerprints (pkg/orchestrator sets one
+// once per agent Run, mirroring ExecOptions.CorpusHostState's LT-166
+// pattern) must be visible to a second, independently-constructed Engine.
+func TestEngineFingerprintDir_SharedCacheAcrossEngines(t *testing.T) {
+	dir := mkParseCacheCorpus(t)
+	shared := &TemplateDirFingerprintCache{}
+
+	cfg1 := baseParseCacheCfg(dir)
+	cfg1.TemplateDirFingerprints = shared
+	e1 := New(cfg1)
+	fp1, err := e1.fingerprintDir(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(dir))
+
+	cfg2 := baseParseCacheCfg(dir)
+	cfg2.TemplateDirFingerprints = shared
+	e2 := New(cfg2)
+	fp2, err := e2.fingerprintDir(dir)
+	require.NoError(t, err, "a second Engine sharing the same cache instance must see the first Engine's entry")
+	assert.Equal(t, fp1, fp2)
+}
+
+// TestEngineFingerprintDir_DefaultIsPerEngineNotShared pins the opposite,
+// unchanged default: when Config.TemplateDirFingerprints is left nil (every
+// caller but pkg/orchestrator today — hackerfive scan/webui/MCP), each
+// Engine gets its own fresh, unshared cache, exactly as before this fix.
+func TestEngineFingerprintDir_DefaultIsPerEngineNotShared(t *testing.T) {
+	dir := mkParseCacheCorpus(t)
+
+	e1 := New(baseParseCacheCfg(dir))
+	_, err := e1.fingerprintDir(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(dir))
+
+	e2 := New(baseParseCacheCfg(dir))
+	_, err = e2.fingerprintDir(dir)
+	assert.Error(t, err, "a fresh Engine with no shared cache must re-walk and fail against the now-missing directory")
 }
 
 func TestSelectCachedByTags(t *testing.T) {

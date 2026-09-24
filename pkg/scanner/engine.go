@@ -87,6 +87,14 @@ type Engine struct {
 
 	findingCB func(detectors.Finding)
 	logCB     func(level, msg string)
+
+	// dirFingerprints is always non-nil (LT-197 residual): cfg's own value
+	// when the caller shared one (an orchestrator run spanning many Engine
+	// instances), otherwise a fresh, Engine-lifetime-only instance — so
+	// every Engine gets at least its own cache for free, and every call
+	// site (loadDirViaParseCache/storeParseCache/loadDirViaIDIndex/
+	// storeIDIndex) can use it unconditionally with no nil check.
+	dirFingerprints *TemplateDirFingerprintCache
 }
 
 // WithFindingCallback registers fn to be invoked for every finding as its
@@ -153,6 +161,10 @@ func New(cfg Config) *Engine {
 	// isn't starved into per-request TCP/TLS churn that would add back the
 	// round-trip dead time Step 6b removes.
 	e := &Engine{cfg: cfg}
+	e.dirFingerprints = cfg.TemplateDirFingerprints
+	if e.dirFingerprints == nil {
+		e.dirFingerprints = &TemplateDirFingerprintCache{}
+	}
 	e.limiter = ratelimit.New(cfg.RateLimit)
 	if !cfg.DisableAdaptiveThrottle {
 		e.throttle = newAdaptiveThrottle(e.limiter, cfg.RateLimit, e.warnf)
@@ -767,6 +779,32 @@ func (e *Engine) effectiveScopeTags() (tags []string, source string) {
 	return nil, ""
 }
 
+// fingerprintDir is fingerprintTemplateDir with an in-process cache in
+// front of it (LT-197 residual, docs/follow-up.md) — e.dirFingerprints is
+// always non-nil (see New), so every one of this file's four
+// fingerprintTemplateDir call sites goes through here instead, and only the
+// first one for a given dir actually pays the stat-walk. filepath.Abs
+// normalizes the cache key so a caller passing a relative vs. absolute
+// spelling of the same dir still hits the same entry; a failure to resolve
+// it falls back to caching under the raw string, still correct, just
+// slightly less likely to coalesce with a differently-spelled call for the
+// same directory.
+func (e *Engine) fingerprintDir(dir string) (string, error) {
+	key := dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		key = abs
+	}
+	if fp, ok := e.dirFingerprints.get(key); ok {
+		return fp, nil
+	}
+	fp, err := fingerprintTemplateDir(dir)
+	if err != nil {
+		return "", err
+	}
+	e.dirFingerprints.set(key, fp)
+	return fp, nil
+}
+
 // loadDirViaParseCache is the LT-106 fast path: if dir has a parse-cache
 // sidecar whose fingerprint still matches the directory, parse only the
 // files it lists as carrying one of scopeTags, not the whole corpus.
@@ -775,7 +813,7 @@ func (e *Engine) effectiveScopeTags() (tags []string, source string) {
 // with no recorded path, a listed file that no longer parses), so the fast
 // path can never change what a scan sees.
 func (e *Engine) loadDirViaParseCache(dir string, scopeTags []string) (nt []*nuclei.Template, vt []*native.Template, hit bool) {
-	fp, err := fingerprintTemplateDir(dir)
+	fp, err := e.fingerprintDir(dir)
 	if err != nil {
 		return nil, nil, false
 	}
@@ -806,7 +844,7 @@ func (e *Engine) storeParseCache(dir string, nt []*nuclei.Template, vt []*native
 	if parseCacheDisabled() {
 		return
 	}
-	fp, err := fingerprintTemplateDir(dir)
+	fp, err := e.fingerprintDir(dir)
 	if err != nil {
 		return
 	}
@@ -828,7 +866,7 @@ func (e *Engine) storeParseCache(dir string, nt []*nuclei.Template, vt []*native
 // non-match. hit == false means "no usable index — caller must walk", for
 // every failure mode, same posture as loadDirViaParseCache.
 func (e *Engine) loadDirViaIDIndex(dir string, want map[string]bool) (nt []*nuclei.Template, hit bool) {
-	fp, err := fingerprintTemplateDir(dir)
+	fp, err := e.fingerprintDir(dir)
 	if err != nil {
 		return nil, false
 	}
@@ -863,7 +901,7 @@ func (e *Engine) storeIDIndex(dir string, allIDs map[string]string) {
 	if parseCacheDisabled() || len(allIDs) == 0 {
 		return
 	}
-	fp, err := fingerprintTemplateDir(dir)
+	fp, err := e.fingerprintDir(dir)
 	if err != nil {
 		return
 	}
