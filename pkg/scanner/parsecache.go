@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tuangatech/hacker-five/pkg/template/native"
@@ -142,6 +143,48 @@ func fingerprintTemplateDir(dir string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// TemplateDirFingerprintCache caches fingerprintTemplateDir's per-directory
+// result (LT-197's own logged residual, docs/follow-up.md): fingerprinting
+// is itself just a stat-only walk (no file content is read), but on a large
+// corpus (~9,650 files) even that carries real per-call cost — worse under
+// WSL2's cross-filesystem I/O, live-measured — and every one of
+// loadDirViaParseCache/storeParseCache/loadDirViaIDIndex/storeIDIndex pays
+// it independently, often several times per template-dir per Engine.Run.
+// The template corpus directory cannot change mid-run (nothing edits it
+// while a scan is in flight), so caching its identity for the life of a
+// run is always safe — this never changes what a scan sees, only how many
+// times it re-derives the same answer.
+//
+// Safe for concurrent use: Engine.Run dispatches multiple targets against
+// the shared corpus dir concurrently (cfg.Concurrency), and
+// Config.TemplateDirFingerprints lets an orchestrator run share one
+// instance across many otherwise-independent Engine instances (RunPlan
+// constructs a fresh Engine per leaf dispatch) — the same reference-type
+// cross-call sharing convention ExecOptions.CorpusHostState (LT-166)
+// already established. The zero value is ready to use.
+type TemplateDirFingerprintCache struct {
+	mu sync.Mutex
+	m  map[string]string // absolute dir path -> fingerprint
+}
+
+// get returns dir's cached fingerprint, if any.
+func (c *TemplateDirFingerprintCache) get(dir string) (fp string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fp, ok = c.m[dir]
+	return fp, ok
+}
+
+// set records dir's fingerprint.
+func (c *TemplateDirFingerprintCache) set(dir, fp string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = make(map[string]string)
+	}
+	c.m[dir] = fp
 }
 
 // readParseCache loads and validates the sidecar for dir: it must exist,

@@ -447,6 +447,23 @@ type Config struct {
 	// it asks for it; pkg/webui's Launch page always sets this true, since a
 	// Web UI operator benefits from the honesty check unconditionally.
 	IDORPreview bool
+
+	// TemplateDirFingerprints, if set, is a caller-shared cache for
+	// fingerprintTemplateDir's per-directory result (LT-197's own logged
+	// residual, docs/follow-up.md) — optional and nil-safe. Every Engine
+	// always gets an Engine-lifetime cache of its own regardless of this
+	// field (see New/Engine.fingerprintDir): that alone is enough for the
+	// common case, a single Engine.Run dispatching many targets against the
+	// same corpus dir. This field exists for the one case an Engine-local
+	// cache can't reach — pkg/planexec.RunPlan constructs a brand new
+	// Engine per leaf dispatch (planexec/executor.go), so
+	// pkg/orchestrator threads one shared *TemplateDirFingerprintCache
+	// through every leaf's Config for the life of one agent run, the same
+	// reference-type-sharing convention ExecOptions.CorpusHostState (LT-166)
+	// already established. The corpus directory cannot change mid-run, so
+	// caching its identity for an entire run — not just one Engine — is
+	// always safe.
+	TemplateDirFingerprints *TemplateDirFingerprintCache
 }
 
 // ValidateOptions lets a caller defer or waive specific requiredness
