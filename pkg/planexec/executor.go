@@ -131,6 +131,24 @@ type ExecOptions struct {
 	// semantics).
 	DetConcurrency int
 	LLMConcurrency int
+
+	// CorpusHostState carries the "has host X already had its once-per-host
+	// additive corpus pass" bookkeeping across separate RunPlan calls
+	// (LT-166, docs/follow-up.md). RunPlan's own corpusLeaves decision below
+	// is correct for a single call dispatching every leaf together
+	// (`hackerfive scan`/webui/CLI plan, one RunPlan call per run) but blind
+	// across calls — pkg/orchestrator's dispatchScanLeaf calls RunPlan once
+	// per leaf (every other leaf marked Excluded), so from inside any one of
+	// those calls the single dispatched leaf always looks like "the first
+	// leaf on this host," and every scan.leaf dispatch redundantly reloaded
+	// and re-fired the whole corpus regardless of how many leaves on that
+	// host had already carried it. A caller that dispatches leaves one at a
+	// time across several RunPlan calls within one run (only
+	// pkg/orchestrator today) passes the same map on every call so the
+	// "already loaded" state survives between them; nil (every other caller,
+	// unchanged) gets a fresh map scoped to just this call, exactly as
+	// before.
+	CorpusHostState map[string]bool
 }
 
 // RunPlan walks tree's leaves and dispatches each eligible one to a real
@@ -247,9 +265,20 @@ func RunPlan(ctx context.Context, tree *agenttask.PlanTree, baseCfg scanner.Conf
 	// host does — the rest run their detector alone. Decided here, before
 	// dispatch, in the same order leaves run (deterministic batch, then
 	// llmAssisted).
+	//
+	// seenHost comes from opts.CorpusHostState when the caller supplied one
+	// (LT-166) — a map is a reference type, so writes here are visible to
+	// every later RunPlan call sharing the same caller-held map, extending
+	// "first leaf per host" across calls instead of resetting it each time.
+	// A caller that leaves CorpusHostState nil (every one but
+	// pkg/orchestrator today) gets the exact same fresh-map-per-call
+	// behavior this always had.
 	corpusLeaves := make(map[string]bool)
 	if len(baseCfg.TemplatePaths) > 0 {
-		seenHost := make(map[string]bool)
+		seenHost := opts.CorpusHostState
+		if seenHost == nil {
+			seenHost = make(map[string]bool)
+		}
 		for _, batch := range [][]*agenttask.PlanNode{deterministic, llmAssisted} {
 			for _, leaf := range batch {
 				if !recognizedDetectors[leaf.Detector] {

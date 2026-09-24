@@ -197,6 +197,17 @@ type Config struct {
 	// observeRecon is set by Run so a later recon dispatch can feed the model's
 	// recon digest; not part of the public surface.
 	observeRecon func(*recon.ReconResult)
+
+	// corpusHostState is set by Run and threaded into every scan.leaf
+	// dispatch's planexec.ExecOptions.CorpusHostState (LT-166, docs/follow-
+	// up.md): dispatchScanLeaf calls planexec.RunPlan once per leaf, so
+	// without this a host's once-per-run additive template-corpus pass
+	// (RunPlan's own LT-18 part-c optimization) re-fired on every single
+	// leaf instead of just the first one for that host, all run long. A map
+	// is a reference type, so this one allocation — made once here, copied
+	// by value into every cfg passed down the call chain — is the same
+	// underlying map on every dispatch; not part of the public surface.
+	corpusHostState map[string]bool
 }
 
 // Result is one completed Run's outcome. Iterations counts the turns the
@@ -304,6 +315,10 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		rd.observe(r)
 		reconLedger.AddRecon(r)
 	}
+	// LT-166: one map for the life of this Run call, shared by every
+	// scan.leaf dispatch's own separate RunPlan call — see corpusHostState's
+	// doc comment.
+	cfg.corpusHostState = map[string]bool{}
 
 	catalog := buildCatalog(cfg)
 	var (
@@ -854,19 +869,25 @@ func runScanLeafOnce(ctx context.Context, cfg Config, scanConfig scanner.Config,
 		}
 	}
 
-	// LT-166 (docs/follow-up.md): every dispatch's RunPlan reloads the whole
-	// corpus, so a finding from a corpus template (or the same detector hit)
-	// is re-fired by each later dispatch. Only a finding not already recorded
-	// this run is new — a repeat is counted and dropped (not appended to the
-	// run's findings, not streamed again), so neither the report nor the
-	// model's per-turn result mistakes a re-fire for fresh evidence.
+	// LT-166 (docs/follow-up.md): before the fix, every dispatch's RunPlan
+	// call redundantly reloaded and re-fired the whole corpus (fixed via
+	// cfg.corpusHostState, above) — a corpus template's finding (or the same
+	// detector hit) was re-fired by every later dispatch on that host. Now
+	// that only the one leaf per host that actually carries the corpus pass
+	// does, the same dedup stays as a real, still-useful safety net (a
+	// detector genuinely matching an already-recorded target+type+
+	// description twice is still a repeat, not fresh evidence) rather than
+	// the load-bearing fix it used to be. Only a finding not already
+	// recorded this run is new — a repeat is counted and dropped (not
+	// appended to the run's findings, not streamed again).
 	seen := findingKeys(*findings)
 	var leafFindings []detectors.Finding
 	duplicates := 0
 	_, logs, skipped, err := planexec.RunPlan(ctx, tree, scanConfig, cfg.TemplateIndex, planexec.ExecOptions{
-		Excluded:       excluded,
-		DetConcurrency: 1,
-		LLMConcurrency: 1,
+		Excluded:        excluded,
+		DetConcurrency:  1,
+		LLMConcurrency:  1,
+		CorpusHostState: cfg.corpusHostState, // LT-166: persist "host already loaded" across every scan.leaf dispatch this run
 		OnFinding: func(_ *agenttask.PlanNode, f detectors.Finding) {
 			k := findingKey(f)
 			if seen[k] {
