@@ -446,6 +446,94 @@ func TestRunPlan_CorpusLoadsPerDistinctHost(t *testing.T) {
 	}
 }
 
+// TestRunPlan_CorpusHostState_PersistsAcrossSeparateCalls is LT-166
+// (docs/follow-up.md): pkg/orchestrator's dispatchScanLeaf calls RunPlan once
+// per leaf (every other leaf marked Excluded), so without a caller-shared
+// CorpusHostState each of those separate calls sees an empty seenHost and
+// treats its one dispatched leaf as "the first on this host" — reloading and
+// re-firing the whole corpus every single time regardless of how many leaves
+// on that host already ran. Mirrors dispatchScanLeaf's own shape: three
+// single-leaf RunPlan calls against the same host, sharing one
+// CorpusHostState map — only the first should load the corpus.
+func TestRunPlan_CorpusHostState_PersistsAcrossSeparateCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := writeOneTemplate(t, "corpus-probe", http.StatusNotFound)
+	baseCfg := scanner.Config{TemplatePaths: []string{dir}, Concurrency: 1, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	var mu sync.Mutex
+	var logs []string
+	shared := ExecOptions{DetConcurrency: 1, LLMConcurrency: 1, CorpusHostState: map[string]bool{}}
+	shared.OnLog = func(_ *agenttask.PlanNode, _, msg string) { mu.Lock(); logs = append(logs, msg); mu.Unlock() }
+
+	for _, id := range []string{"leaf-a", "leaf-b", "leaf-c"} {
+		// Same shape as orchestrator.runScanLeafOnce: one leaf dispatched,
+		// every other leaf in the tree excluded, one RunPlan call per leaf.
+		tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+			{ID: "leaf-a", Target: server.URL, Detector: "misconfig"},
+			{ID: "leaf-b", Target: server.URL, Detector: "misconfig"},
+			{ID: "leaf-c", Target: server.URL, Detector: "misconfig"},
+		}}}
+		excluded := map[string]bool{}
+		for _, other := range []string{"leaf-a", "leaf-b", "leaf-c"} {
+			if other != id {
+				excluded[other] = true
+			}
+		}
+		opts := shared
+		opts.Excluded = excluded
+		if _, _, _, err := RunPlan(context.Background(), tree, baseCfg, nil, opts); err != nil {
+			t.Fatalf("RunPlan(%s): %v", id, err)
+		}
+	}
+
+	withCorpus, withoutCorpus := countCorpusLoads(logs)
+	if withCorpus != 1 {
+		t.Fatalf("got %d of 3 separate RunPlan calls loading the corpus, want 1 (LT-166 regression); logs=%v", withCorpus, logs)
+	}
+	if withoutCorpus != 2 {
+		t.Fatalf("got %d calls running detector-only, want 2; logs=%v", withoutCorpus, logs)
+	}
+}
+
+// TestRunPlan_CorpusHostState_NilLeavesEachCallIndependent confirms the nil
+// default — every caller but pkg/orchestrator — is unaffected: two separate
+// RunPlan calls against the same host, no CorpusHostState set, each load the
+// corpus independently (today's existing behavior for `hackerfive scan`/
+// webui/MCP, all of which only ever make one RunPlan call anyway, but this
+// pins the *default* stays "fresh map per call" now that a caller can opt
+// into sharing one).
+func TestRunPlan_CorpusHostState_NilLeavesEachCallIndependent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := writeOneTemplate(t, "corpus-probe", http.StatusNotFound)
+	baseCfg := scanner.Config{TemplatePaths: []string{dir}, Concurrency: 1, RateLimit: 50, Timeout: 3 * time.Second, OutputFormat: "json"}
+
+	var mu sync.Mutex
+	var logs []string
+	opts := testOpts() // CorpusHostState left nil
+	opts.OnLog = func(_ *agenttask.PlanNode, _, msg string) { mu.Lock(); logs = append(logs, msg); mu.Unlock() }
+
+	for i := 0; i < 2; i++ {
+		tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+			{ID: "leaf", Target: server.URL, Detector: "misconfig"},
+		}}}
+		if _, _, _, err := RunPlan(context.Background(), tree, baseCfg, nil, opts); err != nil {
+			t.Fatalf("RunPlan call %d: %v", i, err)
+		}
+	}
+
+	if withCorpus, _ := countCorpusLoads(logs); withCorpus != 2 {
+		t.Fatalf("got %d corpus loads across 2 independent RunPlan calls with no CorpusHostState, want 2 (unchanged default); logs=%v", withCorpus, logs)
+	}
+}
+
 // TestRunPlan_TemplateIDLeafKeepsCorpus confirms Step 6c's caveat: a
 // specific-template leaf always loads the corpus (it needs a full parse to
 // resolve its id:), even when a builtin leaf on the same host already carries
