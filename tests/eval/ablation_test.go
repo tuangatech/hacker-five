@@ -124,8 +124,10 @@ func TestAblation(t *testing.T) {
 				t.Logf("%s / %s: skipped, no LLM tier configured (%v)", sc.Name, arm.Name, modelErr)
 				continue
 			}
+			scopeFile := filepath.Join(t.TempDir(), "scope.txt")
+			require.NoError(t, os.WriteFile(scopeFile, []byte(hostScopeEntry(sc.Target())+"\n"), 0o644))
 			for run := 1; run <= runs; run++ {
-				rec := runAblationOnce(t, sc, arm, run, prefixes, known, timeout, extraArgs, reconAuth)
+				rec := runAblationOnce(t, sc, scopeFile, arm, run, prefixes, known, timeout, extraArgs, reconAuth)
 				rec.Settings = settings
 				records = append(records, rec)
 				require.NoError(t, enc.Encode(rec)) // written per run, so a killed harness keeps what finished
@@ -143,11 +145,14 @@ func TestAblation(t *testing.T) {
 		outPath, FormatSummary(Summarize(records)), FormatMissAttribution(records), FormatFindingDiff(records))
 }
 
-func runAblationOnce(t *testing.T, sc OrchestratorScenario, arm Arm, run int, prefixes []string, known []KnownVuln, timeout time.Duration, extraArgs []string, reconAuth bool) RunRecord {
+// runAblationOnce runs one (scenario, arm, run) against binPath and grades it.
+// scopeFile is the caller's to build: every lab scenario derives it from the
+// scenario's own single target host (hostScopeEntry), but a real-scope run
+// (TestAblationRealScope) needs the operator's own wildcard/multi-host scope
+// file instead, so this never derives one itself.
+func runAblationOnce(t *testing.T, sc OrchestratorScenario, scopeFile string, arm Arm, run int, prefixes []string, known []KnownVuln, timeout time.Duration, extraArgs []string, reconAuth bool) RunRecord {
 	t.Helper()
 	target := sc.Target()
-	scopeFile := filepath.Join(t.TempDir(), "scope.txt")
-	require.NoError(t, os.WriteFile(scopeFile, []byte(hostScopeEntry(target)+"\n"), 0o644))
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
