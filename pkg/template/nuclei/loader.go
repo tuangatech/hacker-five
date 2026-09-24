@@ -84,20 +84,48 @@ func LoadDirDetailed(dir string) (templates []*Template, errs []LoadError) {
 }
 
 // LoadDirByIDs is LoadDirDetailed narrowed to templates whose id: is in
-// want — F4 (docs/follow-up.md LT-71). It still walks the whole tree (a
-// cheap readdir), but only fully parses + validates a file whose id:,
-// cheaply peeked from the head of the file, is one of the requested IDs.
-// For a plan dispatching a handful of named template leaves this turns a
-// ~9,500-file parse into a ~10-file one, with a result identical to
-// LoadDirDetailed followed by an exact-id filter: a caller that can't
-// account for every requested ID in the result should fall back to the full
-// load (a template whose id: sits outside the peeked head is far outside
-// nuclei convention, but the fallback keeps the narrowing a pure
-// optimisation). want == nil / empty returns nothing.
+// want — F4 (docs/follow-up.md LT-71). It only fully parses + validates a
+// file whose id:, cheaply peeked from the head of the file, is one of the
+// requested IDs — for a plan dispatching a handful of named template leaves
+// this turns a ~9,500-file *parse* into a ~10-file one, with a result
+// identical to LoadDirDetailed followed by an exact-id filter. **It still
+// walks and reads (os.ReadFile) every file in dir to peek each one's id:,
+// every single call** — LT-197 (docs/follow-up.md) found this is not the
+// "cheap readdir" an earlier version of this comment claimed: on a real
+// ~9.6k-file corpus this walk-and-read alone measured ~30s, dominant over
+// the parse it skips. LoadDirByIDsWithIndex is the same walk with a way to
+// amortize that cost across calls; a caller dispatching many specific-
+// template leaves against the same dir (pkg/orchestrator's per-leaf
+// pkg/scanner.Engine calls) should prefer it. A caller that can't account
+// for every requested ID in the result should fall back to the full load (a
+// template whose id: sits outside the peeked head is far outside nuclei
+// convention, but the fallback keeps the narrowing a pure optimisation).
+// want == nil / empty returns nothing, walks nothing.
 func LoadDirByIDs(dir string, want map[string]bool) (templates []*Template, errs []LoadError) {
 	if len(want) == 0 {
 		return nil, nil
 	}
+	templates, _, errs = loadDirByIDsIndexed(dir, want)
+	return templates, errs
+}
+
+// LoadDirByIDsWithIndex is LoadDirByIDs plus a second return: allIDs, the
+// id->dir-relative-path of every template file the same walk observed, not
+// only the wanted ones (LT-197, docs/follow-up.md). The walk already reads
+// and peeks every file's id: to decide whether it's wanted — collecting the
+// rest costs nothing extra. A caller can persist allIDs (see
+// pkg/scanner.Engine.storeIDIndex) so a later LoadDirByIDsWithIndex/
+// LoadDirByIDs call for a *different* id, against the same dir, can resolve
+// via that index instead of walking again.
+func LoadDirByIDsWithIndex(dir string, want map[string]bool) (templates []*Template, allIDs map[string]string, errs []LoadError) {
+	if len(want) == 0 {
+		return nil, nil, nil
+	}
+	return loadDirByIDsIndexed(dir, want)
+}
+
+func loadDirByIDsIndexed(dir string, want map[string]bool) (templates []*Template, allIDs map[string]string, errs []LoadError) {
+	allIDs = make(map[string]string)
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
@@ -110,7 +138,14 @@ func LoadDirByIDs(dir string, want map[string]bool) (templates []*Template, errs
 			errs = append(errs, LoadError{Path: path, Err: fmt.Errorf("reading file: %w", rerr)})
 			return nil
 		}
-		if id := peekTemplateID(data); id == "" || !want[id] {
+		id := peekTemplateID(data)
+		if id == "" {
+			return nil
+		}
+		if rel, rerr := filepath.Rel(dir, path); rerr == nil {
+			allIDs[id] = filepath.ToSlash(rel)
+		}
+		if !want[id] {
 			return nil
 		}
 		tmpl, lerr := loadFileData(data, dir)
@@ -121,7 +156,7 @@ func LoadDirByIDs(dir string, want map[string]bool) (templates []*Template, errs
 		templates = append(templates, tmpl)
 		return nil
 	})
-	return templates, errs
+	return templates, allIDs, errs
 }
 
 // LoadFiles parses exactly the files named in relPaths (each resolved

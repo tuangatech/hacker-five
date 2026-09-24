@@ -91,3 +91,38 @@ func TestLoadDirByIDs_NestedDirs(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "deep-template", got[0].ID)
 }
+
+// TestLoadDirByIDsWithIndex_ReturnsFullIndexAsAByproduct is LT-197's core
+// guarantee (docs/follow-up.md): the same single walk LoadDirByIDs already
+// does also yields allIDs, the id->path of *every* template file observed —
+// not only the wanted ones — with no extra I/O pass over the directory.
+func TestLoadDirByIDsWithIndex_ReturnsFullIndexAsAByproduct(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 50; i++ {
+		writeTemplate(t, dir, fmt.Sprintf("t%03d.yaml", i), tmplBody(fmt.Sprintf("tmpl-%03d", i)))
+	}
+
+	got, allIDs, errs := nuclei.LoadDirByIDsWithIndex(dir, map[string]bool{"tmpl-007": true})
+	require.Empty(t, errs)
+	require.Len(t, got, 1)
+	assert.Equal(t, "tmpl-007", got[0].ID)
+
+	require.Len(t, allIDs, 50, "the index must cover every template the walk observed, not only the one wanted")
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprintf("tmpl-%03d", i)
+		path, ok := allIDs[id]
+		require.True(t, ok, "%s missing from the index", id)
+		assert.Equal(t, fmt.Sprintf("t%03d.yaml", i), path)
+	}
+}
+
+// TestLoadDirByIDsWithIndex_EmptyWant matches LoadDirByIDs' own contract:
+// nothing requested, nothing walked, no index either.
+func TestLoadDirByIDsWithIndex_EmptyWant(t *testing.T) {
+	dir := t.TempDir()
+	writeTemplate(t, dir, "a.yaml", tmplBody("a"))
+	got, allIDs, errs := nuclei.LoadDirByIDsWithIndex(dir, nil)
+	assert.Empty(t, got)
+	assert.Empty(t, allIDs)
+	assert.Empty(t, errs)
+}
