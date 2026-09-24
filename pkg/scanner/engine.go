@@ -584,6 +584,13 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 	// whatever loads, so the cache can only narrow, never widen.
 	scopeTags, scopeSource := e.effectiveScopeTags()
 	tagCacheEligible := fastIDs == nil && len(scopeTags) > 0 && !parseCacheDisabled()
+	// idCacheEligible (LT-197, docs/follow-up.md): the same sidecar, keyed by
+	// exact id: membership instead of tag intersection — LoadDirByIDs' own
+	// "peek" still walks and reads every file in dir, every single call
+	// (measured ~30s on a real ~9.6k-file corpus), so a caller dispatching
+	// many specific-template leaves against the same dir pays that cost once
+	// per leaf without this.
+	idCacheEligible := fastIDs != nil && !parseCacheDisabled()
 
 	var (
 		nucleiTemplates []*nuclei.Template
@@ -605,16 +612,56 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		}
 		var (
 			nt    []*nuclei.Template
+			vt    []*native.Template
 			nErrs []nuclei.LoadError
+			vErrs []native.LoadError
 		)
-		if fastIDs != nil {
+		switch {
+		case idCacheEligible:
+			if cnt, hit := e.loadDirViaIDIndex(dir, fastIDs); hit {
+				nt = cnt
+				cacheHitDirs++
+			} else {
+				// LT-197: this walk peeks every file's id: anyway (that's how
+				// it finds the wanted one(s) among files it doesn't keep) —
+				// collect the full id->path map as a free byproduct and
+				// persist it, so the *next* specific-template leaf's lookup
+				// (this dir, any id) is an index hit instead of another walk.
+				var allIDs map[string]string
+				nt, allIDs, nErrs = nuclei.LoadDirByIDsWithIndex(dir, fastIDs)
+				e.storeIDIndex(dir, allIDs)
+			}
+			// vt/vErrs deliberately stay nil here — see the comment below the
+			// switch on why a native.LoadDirDetailed pass is skipped on this
+			// path, not just made cache-aware.
+		case fastIDs != nil:
+			// idCacheEligible is false only when the parse cache is disabled
+			// (HACKERFIVE_DISABLE_PARSE_CACHE) — same walk as always, just
+			// never touching the cache, matching that env var's contract.
 			nt, nErrs = nuclei.LoadDirByIDs(dir, fastIDs)
-		} else {
+			vt, vErrs = native.LoadDirDetailed(dir)
+		default:
 			nt, nErrs = nuclei.LoadDirDetailed(dir)
+			vt, vErrs = native.LoadDirDetailed(dir)
 		}
 		nucleiTemplates = append(nucleiTemplates, nt...)
 
-		vt, vErrs := native.LoadDirDetailed(dir)
+		// LT-197: native.LoadDirDetailed is itself a full, uncached
+		// walk-and-parse-attempt of every file in dir — on the id-cache-
+		// eligible path this was, empirically, the *larger* of the two costs
+		// this item fixes (a live ~9.6k-file corpus measured single-digit
+		// minutes here, worse than the nuclei side's own ~30s). It is safe to
+		// skip entirely on this path: a TemplateID-narrowed leaf's fastIDs
+		// come from registry's synced-corpus template-tag selection
+		// (pkg/templatesync), never a native (first-party, templates/idor/)
+		// template — a native template dispatches through the tag-scoped
+		// corpus pass instead (RunPlan's "additive corpus" leaf), which sets
+		// Tags/DerivedTags and so never takes this fastIDs-narrowed branch at
+		// all (fastLoadNucleiIDs returns nil whenever either is set). If that
+		// assumption is ever wrong for a given id, nucleiIDsCovered below
+		// still catches it — nt/vt won't cover the id, so this falls back to
+		// a genuine full parse (nuclei + native) rather than silently
+		// missing a match.
 		nativeTemplates = append(nativeTemplates, vt...)
 
 		// A file valid in one format is expected to fail the other format's
@@ -769,6 +816,67 @@ func (e *Engine) storeParseCache(dir string, nt []*nuclei.Template, vt []*native
 	}
 	if err := writeParseCache(dir, fp, entries); err != nil {
 		e.warnf("info", "could not write parse cache for %s: %v (LT-106; next run re-parses the full corpus)", dir, err)
+	}
+}
+
+// loadDirViaIDIndex is loadDirViaParseCache's id:-based counterpart (LT-197,
+// docs/follow-up.md): the same on-disk sidecar, selected by exact ID
+// membership (selectCachedByIDs) instead of tag intersection. A hit means
+// every id in want resolved to a recorded path in a fingerprint-matching
+// cache — it skips nuclei.LoadDirByIDs' own corpus walk entirely, not just
+// the per-file YAML parse that walk's own id:-peek already skipped for a
+// non-match. hit == false means "no usable index — caller must walk", for
+// every failure mode, same posture as loadDirViaParseCache.
+func (e *Engine) loadDirViaIDIndex(dir string, want map[string]bool) (nt []*nuclei.Template, hit bool) {
+	fp, err := fingerprintTemplateDir(dir)
+	if err != nil {
+		return nil, false
+	}
+	pc, err := readParseCache(dir)
+	if err != nil || pc.Fingerprint != fp {
+		return nil, false
+	}
+	nucleiPaths, _, all := selectCachedByIDs(pc.Entries, want)
+	if !all {
+		return nil, false
+	}
+	nt, nErrs := nuclei.LoadFiles(dir, nucleiPaths)
+	if len(nErrs) > 0 || len(nt) != len(nucleiPaths) {
+		e.warnf("info", "id index for %s no longer resolves cleanly (%d unreadable entry(ies)) — falling back to a full walk (LT-197)",
+			dir, len(nErrs)+(len(nucleiPaths)-len(nt)))
+		return nil, false
+	}
+	e.warnf("info", "id index hit for %s: resolved %d requested template(s) without walking the corpus (LT-197)", dir, len(nt))
+	return nt, true
+}
+
+// storeIDIndex merges an id-only index for dir into its parse-cache sidecar
+// (LT-197, docs/follow-up.md): nuclei.LoadDirByIDsWithIndex's walk already
+// peeks every file's id: as a side effect of finding its own wanted one(s)
+// — this persists the rest, so the *next* specific-template leaf's lookup
+// against this dir (any id, this run or a later one — the sidecar is
+// disk-persisted) is an index lookup (loadDirViaIDIndex) instead of another
+// full walk. Never downgrades an existing, tag-usable entry
+// (mergeIDOnlyEntries); best-effort like storeParseCache — a write failure
+// is logged, never fatal.
+func (e *Engine) storeIDIndex(dir string, allIDs map[string]string) {
+	if parseCacheDisabled() || len(allIDs) == 0 {
+		return
+	}
+	fp, err := fingerprintTemplateDir(dir)
+	if err != nil {
+		return
+	}
+	var existing []parseCacheEntry
+	if pc, err := readParseCache(dir); err == nil && pc.Fingerprint == fp {
+		existing = pc.Entries
+	}
+	merged, changed := mergeIDOnlyEntries(existing, allIDs)
+	if !changed {
+		return
+	}
+	if err := writeParseCache(dir, fp, merged); err != nil {
+		e.warnf("info", "could not write id index for %s: %v (LT-197; next specific-template leaf re-walks the corpus)", dir, err)
 	}
 }
 

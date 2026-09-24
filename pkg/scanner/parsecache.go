@@ -259,3 +259,53 @@ func selectCachedByTags(entries []parseCacheEntry, want []string) (nucleiPaths, 
 	}
 	return nucleiPaths, nativePaths, true
 }
+
+// mergeIDOnlyEntries adds an id-only entry (ID+Path, Format "nuclei", no
+// Tags/Severity) for every id in allIDs not already present in existing —
+// LT-197's write path. An id already recorded (whether from a real full
+// parse, carrying real Tags/Severity, or an earlier id-only merge) is left
+// untouched: this never downgrades a tag-usable entry, only adds coverage
+// for an id this sidecar has never seen. changed is false when nothing was
+// added (existing already covered every id in allIDs).
+func mergeIDOnlyEntries(existing []parseCacheEntry, allIDs map[string]string) (merged []parseCacheEntry, changed bool) {
+	have := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		have[e.ID] = true
+	}
+	merged = existing
+	for id, path := range allIDs {
+		if have[id] {
+			continue
+		}
+		merged = append(merged, parseCacheEntry{ID: id, Path: path, Format: "nuclei"})
+		changed = true
+	}
+	return merged, changed
+}
+
+// selectCachedByIDs is selectCachedByTags' id:-based counterpart (LT-197,
+// docs/follow-up.md): a specific-template leaf wants exact IDs, not a tag
+// intersection. all is false unless *every* id in want resolves to a
+// recorded path — a partial hit is treated the same as no hit at all
+// (simplest, safest contract: the caller falls back to a full walk rather
+// than reasoning about a mixed cached/uncached result), mirroring
+// selectCachedByTags' own all-or-nothing Path=="" rule.
+func selectCachedByIDs(entries []parseCacheEntry, want map[string]bool) (nucleiPaths, nativePaths []string, all bool) {
+	if len(want) == 0 {
+		return nil, nil, false
+	}
+	found := make(map[string]bool, len(want))
+	for _, e := range entries {
+		if !want[e.ID] || e.Path == "" || found[e.ID] {
+			continue
+		}
+		found[e.ID] = true
+		switch e.Format {
+		case "native":
+			nativePaths = append(nativePaths, e.Path)
+		default:
+			nucleiPaths = append(nucleiPaths, e.Path)
+		}
+	}
+	return nucleiPaths, nativePaths, len(found) == len(want)
+}

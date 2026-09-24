@@ -251,6 +251,116 @@ func TestSelectCachedByTags(t *testing.T) {
 	assert.False(t, ok, "a matched entry with an empty path must abandon the fast path")
 }
 
+// TestSelectCachedByIDs is LT-197's counterpart to TestSelectCachedByTags:
+// an id:-based lookup, all-or-nothing.
+func TestSelectCachedByIDs(t *testing.T) {
+	entries := []parseCacheEntry{
+		{ID: "a", Path: "a.yaml", Format: "nuclei", Tags: "wordpress,cms"},
+		{ID: "b", Path: "b.yaml", Format: "nuclei", Tags: "exposure,config"},
+		{ID: "n", Path: "n1.yaml", Format: "native", Tags: "wordpress"},
+		{ID: "id-only", Path: "d.yaml", Format: "nuclei"}, // no Tags — still id-selectable
+	}
+
+	nucleiPaths, nativePaths, all := selectCachedByIDs(entries, map[string]bool{"a": true, "n": true})
+	require.True(t, all)
+	assert.ElementsMatch(t, []string{"a.yaml"}, nucleiPaths)
+	assert.ElementsMatch(t, []string{"n1.yaml"}, nativePaths)
+
+	// An id-only entry (from LT-197's merge path, never a real full parse) is
+	// still a valid hit — Tags/Severity being blank doesn't disqualify an
+	// ID-keyed lookup the way it would a tag-keyed one.
+	nucleiPaths, _, all = selectCachedByIDs(entries, map[string]bool{"id-only": true})
+	require.True(t, all)
+	assert.Equal(t, []string{"d.yaml"}, nucleiPaths)
+
+	// Any wanted id missing from entries (or recorded with an empty path)
+	// means the whole lookup is not a hit — never a partial result.
+	_, _, all = selectCachedByIDs(entries, map[string]bool{"a": true, "never-seen": true})
+	assert.False(t, all, "a wanted id with no entry must abandon the fast path entirely, not return a partial hit")
+
+	entriesWithEmptyPath := append([]parseCacheEntry{}, entries...)
+	entriesWithEmptyPath = append(entriesWithEmptyPath, parseCacheEntry{ID: "z", Path: "", Format: "nuclei"})
+	_, _, all = selectCachedByIDs(entriesWithEmptyPath, map[string]bool{"z": true})
+	assert.False(t, all, "an entry with no recorded path is the same as not having it")
+
+	_, _, all = selectCachedByIDs(entries, nil)
+	assert.False(t, all, "an empty want is never a hit — nothing to select")
+}
+
+// TestMergeIDOnlyEntries confirms LT-197's write path never downgrades an
+// existing tag-usable entry and only adds coverage for a genuinely new id.
+func TestMergeIDOnlyEntries(t *testing.T) {
+	existing := []parseCacheEntry{
+		{ID: "a", Path: "a.yaml", Format: "nuclei", Tags: "wordpress,cms", Severity: "high"},
+	}
+
+	merged, changed := mergeIDOnlyEntries(existing, map[string]string{
+		"a": "a-wrong-path.yaml", // already present — must be left exactly as-is
+		"b": "b.yaml",            // new — added id-only
+	})
+	require.True(t, changed)
+	require.Len(t, merged, 2)
+	byID := map[string]parseCacheEntry{}
+	for _, e := range merged {
+		byID[e.ID] = e
+	}
+	assert.Equal(t, "a.yaml", byID["a"].Path, "an existing entry's path/tags must never be overwritten by an id-only merge")
+	assert.Equal(t, "wordpress,cms", byID["a"].Tags)
+	assert.Equal(t, "b.yaml", byID["b"].Path)
+	assert.Empty(t, byID["b"].Tags, "an id-only entry carries no tags — it's only ever id-selectable")
+
+	_, changed = mergeIDOnlyEntries(merged, map[string]string{"a": "a.yaml", "b": "b.yaml"})
+	assert.False(t, changed, "every id already covered — nothing to add")
+}
+
+// TestParseCache_IDIndex_MissThenHitForADifferentID is LT-197's core
+// guarantee: a specific-template leaf's cold load (id "a") persists an
+// id-only index as a side effect, and a *different* specific-template leaf
+// (id "b", same dir, never itself requested before) then hits that index —
+// not a fresh walk — and still returns the exact template a full parse
+// would.
+func TestParseCache_IDIndex_MissThenHitForADifferentID(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	dir := mkParseCacheCorpus(t)
+	cfgFor := func(id string) Config {
+		return Config{
+			Targets: []string{"https://example.com"}, TemplateID: id, Detector: "misconfig",
+			Concurrency: 5, RateLimit: 50, Timeout: 5 * time.Second, TemplatePaths: []string{dir},
+		}
+	}
+
+	n1, _, log1 := loadWithCapturedLog(t, cfgFor("pc-nuclei-wp"))
+	assert.Equal(t, []string{"pc-nuclei-wp"}, n1)
+	assert.NotContains(t, log1, "id index hit", "first load for any id in this dir has no index yet")
+
+	n2, _, log2 := loadWithCapturedLog(t, cfgFor("pc-nuclei-exposure"))
+	assert.Equal(t, []string{"pc-nuclei-exposure"}, n2, "a cache hit must still return the id actually requested, not the first leaf's")
+	assert.Contains(t, log2, "id index hit", "a different id, same dir, must resolve from the index left by the first load")
+}
+
+// TestLoadTemplates_IDCacheEligible_SkipsNativeLoad_FallsBackIfActuallyNeeded
+// is LT-197's safety net: the id-cache-eligible path deliberately never
+// calls native.LoadDirDetailed (empirically the larger of the two costs this
+// item fixes) on the assumption a TemplateID-narrowed leaf is always a
+// synced-corpus (nuclei) id, never a native one. If that assumption is ever
+// wrong, nucleiIDsCovered's existing fallback must still find the template —
+// this pins that a TemplateID matching a *native* template's id still
+// resolves correctly, just via the slower full-parse fallback instead of the
+// fast path, rather than silently missing it.
+func TestLoadTemplates_IDCacheEligible_SkipsNativeLoad_FallsBackIfActuallyNeeded(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	dir := mkParseCacheCorpus(t)
+	cfg := Config{
+		Targets: []string{"https://example.com"}, TemplateID: "pc-native-wp", Detector: "misconfig",
+		Concurrency: 5, RateLimit: 50, Timeout: 5 * time.Second, TemplatePaths: []string{dir},
+	}
+
+	nucleiIDs, nativeIDs, log := loadWithCapturedLog(t, cfg)
+	assert.Empty(t, nucleiIDs)
+	assert.Equal(t, []string{"pc-native-wp"}, nativeIDs, "a TemplateID that is actually a native template's id must still be found")
+	assert.Contains(t, log, "did not account for every requested id", "must go through the F4 fallback, not silently miss it")
+}
+
 func TestReadParseCache_RejectsWrongDir(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	dirA := mkParseCacheCorpus(t)
