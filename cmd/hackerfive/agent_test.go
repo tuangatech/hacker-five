@@ -170,6 +170,20 @@ func TestAgentCmd_ReconDepthDefaultsFull(t *testing.T) {
 	assert.Equal(t, "full", flag.DefValue)
 }
 
+// LT-179: hackerfive agent never wired scan's own --max-target-duration flag
+// (LT-79) into its BaseScanConfig at all, so every scan.leaf dispatch ran with
+// no wall-clock cap — live-measured eating 16-17m of a 20m run on a single
+// broad misconfig leaf, starving every other leaf in the tree. Default is
+// shorter than scan's own 15m: agent dispatches one leaf at a time inside a
+// run-wide iteration/budget cap, so a leaf consuming most of that budget on
+// its own is a worse outcome here than for a one-shot `scan`.
+func TestAgentCmd_MaxTargetDurationDefaultsToFiveMinutes(t *testing.T) {
+	cmd := newAgentCmd(&rootFlags{})
+	flag := cmd.Flags().Lookup("max-target-duration")
+	require.NotNil(t, flag, "--max-target-duration must be registered")
+	assert.Equal(t, "5m0s", flag.DefValue)
+}
+
 // agent mirrors scan's blind-SSRF default (LT-188 b, the user's explicit choice on
 // 2026-09-21): two public Interactsh servers unless --no-oob. Before this the agent
 // passed no server at all, so its ssrf leaves could never prove a blind SSRF.

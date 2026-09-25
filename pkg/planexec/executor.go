@@ -672,6 +672,24 @@ func runLeaf(ctx context.Context, leaf *agenttask.PlanNode, baseCfg scanner.Conf
 	if _, err := engine.Run(ctx); err != nil {
 		res.err = fmt.Errorf("leaf %s: %w", leaf.ID, err)
 	}
+
+	// LT-174 (docs/follow-up.md): a specific-template leaf (cfg.TemplateID
+	// set) that loaded zero templates never ran its check — an
+	// index/corpus-drift gap (a stale index.json after a re-pin), a
+	// TemplateID naming something outside baseCfg.TemplatePaths, or a
+	// tag-scope narrowing that excludes it before the id: filter runs (see
+	// the "Found live" note above). That is indistinguishable from "ran and
+	// found nothing" unless callers check for it — before this fix,
+	// planexec.RunPlan marked it StatusDone either way, so a real gap read
+	// exactly like a clean result to both a human report and an LLM
+	// orchestrator's NextAction reasoning. Only checked when the run itself
+	// didn't already error and found nothing: a real error or finding is
+	// proof enough that this leaf ran.
+	if cfg.TemplateID != "" && res.err == nil && len(res.findings) == 0 {
+		if n, v := engine.TemplatesLoaded(); n == 0 && v == 0 {
+			return executionResult{skip: fmt.Sprintf("%s: skipped — template %q not loadable in the loaded dirs (0 templates matched; ran no check)", leaf.ID, cfg.TemplateID)}
+		}
+	}
 	return res
 }
 

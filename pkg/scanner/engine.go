@@ -95,6 +95,27 @@ type Engine struct {
 	// site (loadDirViaParseCache/storeParseCache/loadDirViaIDIndex/
 	// storeIDIndex) can use it unconditionally with no nil check.
 	dirFingerprints *TemplateDirFingerprintCache
+
+	// lastNuclei/NativeTemplatesLoaded record loadTemplates' final, post-
+	// tag/TemplateID-filter counts for the Engine's one Run call (LT-174,
+	// docs/follow-up.md) — set once, before any dispatch. TemplatesLoaded
+	// exposes them so a caller (pkg/planexec's runLeaf) can tell "ran and
+	// found nothing" from "the requested template(s) never loaded"
+	// (an index/corpus drift, or an id: absent from the loaded dirs)
+	// without scraping log text. Both stay 0 until Run is called.
+	lastNucleiTemplatesLoaded int
+	lastNativeTemplatesLoaded int
+}
+
+// TemplatesLoaded reports how many nuclei-compatible and native templates
+// the most recent Run call loaded, after tag/TemplateID narrowing (LT-174).
+// 0, 0 before the first Run call, or when the load genuinely matched
+// nothing — the latter is exactly the signal a TemplateID-only leaf (a
+// specific-template plan leaf, pkg/planexec) needs: a real dispatch that
+// loaded no templates never ran any check, so "0 finding(s)" from it means
+// "didn't run", not "tested clean".
+func (e *Engine) TemplatesLoaded() (nuclei, native int) {
+	return e.lastNucleiTemplatesLoaded, e.lastNativeTemplatesLoaded
 }
 
 // WithFindingCallback registers fn to be invoked for every finding as its
@@ -761,6 +782,7 @@ func (e *Engine) loadTemplates() ([]*nuclei.Template, []*native.Template) {
 		e.warnf("info", "loaded %d nuclei-compatible, %d native templates (%d rejected, %d filtered by tag)",
 			len(nucleiTemplates), len(nativeTemplates), len(rejected), filtered)
 	}
+	e.lastNucleiTemplatesLoaded, e.lastNativeTemplatesLoaded = len(nucleiTemplates), len(nativeTemplates)
 	return nucleiTemplates, nativeTemplates
 }
 
