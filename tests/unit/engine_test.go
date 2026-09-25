@@ -421,6 +421,56 @@ http:
 	assert.False(t, haveUnwanted, "a template sharing the same tag but a different id: must not fire")
 }
 
+// TestEngineRun_TemplatesLoaded_ReportsPostFilterCounts is LT-174
+// (docs/follow-up.md): pkg/planexec needs a real "did anything actually
+// load" signal — distinct from Run's findings — to tell a specific-template
+// leaf that ran and found nothing apart from one whose TemplateID matched no
+// loaded file at all (an index/corpus-drift gap). TemplatesLoaded must
+// reflect the count *after* TemplateID/tag narrowing, not the raw parse.
+func TestEngineRun_TemplatesLoaded_ReportsPostFilterCounts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "present.yaml"), []byte(`
+id: present-check
+info:
+  name: Present check
+  severity: info
+  tags: misconfig
+http:
+  - method: GET
+    path: ["{{BaseURL}}/"]
+    matchers:
+      - type: status
+        status: [404]
+`), 0o644))
+
+	present := scanner.Config{
+		Targets: []string{server.URL}, TemplatePaths: []string{dir}, TemplateID: "present-check",
+		Concurrency: 1, RateLimit: 50, Timeout: 5 * time.Second,
+	}
+	require.NoError(t, present.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true}))
+	presentEngine := scanner.New(present)
+	_, err := presentEngine.Run(context.Background())
+	require.NoError(t, err)
+	nucleiN, nativeN := presentEngine.TemplatesLoaded()
+	assert.Equal(t, 1, nucleiN, "the matching template must be counted as loaded")
+	assert.Equal(t, 0, nativeN)
+
+	absent := present
+	absent.TemplateID = "does-not-exist"
+	require.NoError(t, absent.ValidateWithOptions(scanner.ValidateOptions{SkipDetectorRequired: true}))
+	absentEngine := scanner.New(absent)
+	_, err = absentEngine.Run(context.Background())
+	require.NoError(t, err)
+	nucleiN, nativeN = absentEngine.TemplatesLoaded()
+	assert.Equal(t, 0, nucleiN, "a TemplateID matching nothing in the loaded dirs must report 0, not the raw dir's template count")
+	assert.Equal(t, 0, nativeN)
+}
+
 // TestEngineRun_TemplateID_FastLoadSkipsCorpusParse is F4 (LT-71): a
 // TemplateID-only narrow parses just that one template, not the whole
 // directory — asserted via loadTemplates' own "loaded N nuclei-compatible"

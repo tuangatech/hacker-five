@@ -328,12 +328,20 @@ func TestApplyLeafReconFields_CouponFieldsCopied(t *testing.T) {
 // TestRunPlan_DispatchesKnownTemplateIDLeaf locks in the fix for what was
 // previously always-skipped: a leaf whose Detector matches a real
 // templatesync.Entry.ID (not a built-in detector name) now dispatches as a
-// templates-only run instead of landing in skipped.
+// templates-only run instead of landing in skipped. The template must
+// actually be loadable from baseCfg.TemplatePaths — LT-174 below covers the
+// case where it isn't.
 func TestRunPlan_DispatchesKnownTemplateIDLeaf(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := writeOneTemplate(t, "wordpress-xmlrpc-enabled", http.StatusNotFound)
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
-		{ID: "template-id-leaf", Target: "http://127.0.0.1:1", Detector: "wordpress-xmlrpc-enabled"},
+		{ID: "template-id-leaf", Target: server.URL, Detector: "wordpress-xmlrpc-enabled"},
 	}}}
-	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 2 * time.Second, OutputFormat: "json"}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 2 * time.Second, OutputFormat: "json", TemplatePaths: []string{dir}}
 	templateIndex := []templatesync.Entry{{ID: "wordpress-xmlrpc-enabled", Tags: []string{"wordpress"}}}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -341,10 +349,38 @@ func TestRunPlan_DispatchesKnownTemplateIDLeaf(t *testing.T) {
 	_, _, skipped, _ := RunPlan(ctx, tree, baseCfg, templateIndex, testOpts())
 
 	if len(skipped) != 0 {
-		t.Fatalf("got skipped=%v, want none — the leaf's Detector matches a real template ID", skipped)
+		t.Fatalf("got skipped=%v, want none — the leaf's Detector matches a real, loadable template ID", skipped)
 	}
 	if tree.Find("template-id-leaf").Status != agenttask.StatusDone {
 		t.Fatalf("got Status=%q, want done (dispatched as a templates-only run, regardless of scan outcome)", tree.Find("template-id-leaf").Status)
+	}
+}
+
+// TestRunPlan_TemplateIDLeafThatLoadsNothingIsSkippedNotDone is LT-174
+// (docs/follow-up.md): a template-ID leaf whose id: matches nothing in
+// baseCfg.TemplatePaths (an index/corpus-drift gap, or a stale/renamed
+// entry) previously still reported StatusDone with 0 findings —
+// indistinguishable from "ran and found nothing" to both a human report and
+// an LLM orchestrator's NextAction reasoning. It must now land in skipped
+// and never reach StatusDone.
+func TestRunPlan_TemplateIDLeafThatLoadsNothingIsSkippedNotDone(t *testing.T) {
+	dir := writeOneTemplate(t, "some-other-template", http.StatusNotFound)
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "drifted-leaf", Target: "http://127.0.0.1:1", Detector: "wordpress-xmlrpc-enabled"},
+	}}}
+	baseCfg := scanner.Config{Concurrency: 1, RateLimit: 50, Timeout: 2 * time.Second, OutputFormat: "json", TemplatePaths: []string{dir}}
+	templateIndex := []templatesync.Entry{{ID: "wordpress-xmlrpc-enabled", Tags: []string{"wordpress"}}}
+
+	_, _, skipped, _ := RunPlan(context.Background(), tree, baseCfg, templateIndex, testOpts())
+
+	if len(skipped) != 1 {
+		t.Fatalf("got skipped=%v, want exactly 1 (the id loaded nothing)", skipped)
+	}
+	if !strings.Contains(skipped[0], "not loadable in the loaded dirs") {
+		t.Fatalf("got skip reason %q, want it to name the load gap", skipped[0])
+	}
+	if tree.Find("drifted-leaf").Status == agenttask.StatusDone {
+		t.Fatal("a leaf that loaded 0 templates must not report StatusDone")
 	}
 }
 
