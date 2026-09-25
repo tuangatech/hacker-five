@@ -124,6 +124,22 @@ func TestNewScanCmd_NoOOBFlagRegistered(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
+// TestNewScanCmd_AllowMutatingMassAssignmentFlagRegistered: LT-133's
+// massassignment detector needs its own gate flag (never --allow-writes/
+// --allow-mutating-bfla/--auto-provision-account), defaulting off so an
+// existing scripted/CLI invocation sees no behavior change unless it opts in.
+func TestNewScanCmd_AllowMutatingMassAssignmentFlagRegistered(t *testing.T) {
+	cmd := newScanCmd(&rootFlags{})
+
+	flag := cmd.Flags().Lookup("allow-mutating-massassignment")
+	require.NotNil(t, flag, "--allow-mutating-massassignment must be registered")
+	assert.Equal(t, "false", flag.DefValue)
+
+	methodFlag := cmd.Flags().Lookup("massassignment-method")
+	require.NotNil(t, methodFlag, "--massassignment-method must be registered")
+	assert.Equal(t, "PATCH", methodFlag.DefValue, "PUT/PATCH self-update is v1's only scope, see the massassignment package's own doc comment")
+}
+
 // TestNewScanCmd_AutoProvisionAccountFlagsRegistered covers Part B's two new
 // flags, both defaulting off/empty so an existing scripted invocation sees
 // no behavior change unless it opts in.

@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -12,15 +13,16 @@ import (
 
 // recognizedDetectors is the set of --detector values accepted.
 var recognizedDetectors = map[string]bool{
-	"idor":          true,
-	"misconfig":     true,
-	"authbypass":    true,
-	"ssrf":          true,
-	"businesslogic": true,
-	"netservice":    true,
-	"sqli":          true,
-	"mutatebfla":    true,
-	"tls":           true,
+	"idor":           true,
+	"misconfig":      true,
+	"authbypass":     true,
+	"ssrf":           true,
+	"businesslogic":  true,
+	"netservice":     true,
+	"sqli":           true,
+	"mutatebfla":     true,
+	"massassignment": true,
+	"tls":            true,
 }
 
 // Config is passed from the CLI into the Engine.
@@ -438,6 +440,39 @@ type Config struct {
 	MutateBFLAVerifyPath string
 	MutateBFLAMarker     string
 
+	// AllowMutatingMassAssignment (from --allow-mutating-massassignment)
+	// gates the massassignment detector's Run entirely (docs/follow-up.md
+	// LT-133) — a *fourth*, independently-scoped exception to this tool's
+	// read/enumerate-only default, deliberately its own flag rather than
+	// folded into AllowWrites/AllowMutatingBFLA/AutoProvisionAccount:
+	// CLAUDE.md requires any new mutating capability get its own
+	// equally-scoped gate. Absent (the default, false), the detector
+	// returns no findings with a stderr warning printed once per scan
+	// (pkg/scanner/engine.go), same treatment as AllowMutatingBFLA's
+	// absence.
+	AllowMutatingMassAssignment bool
+
+	// MassAssignmentPath/MassAssignmentVerifyPath/MassAssignmentMethod/
+	// MassAssignmentBody are the massassignment detector's required fields
+	// for --detector massassignment (docs/follow-up.md LT-133).
+	// MassAssignmentPath is path+query with scheme+host stripped, joined
+	// with each target exactly like MutateBFLADeletePath/EndpointTemplate.
+	// MassAssignmentMethod must be PUT or PATCH — v1 only covers a
+	// self-service update endpoint, never a POST-create (see the
+	// massassignment package's own doc comment for why). MassAssignmentBody
+	// is the operator's own confirmed-legitimate JSON request body for that
+	// endpoint — never recon-synthesized (recon's EndpointFact.BodyParamKeys
+	// only ever gives field names, never values it could safely invent).
+	// MassAssignmentVerifyPath, if empty, defaults to MassAssignmentPath
+	// (the common case: a self-update resource's GET/PUT/PATCH share a
+	// path). CLI-flag-driven only for now, same reasoning as
+	// MutateBFLA*'s own comment: no decisionengine/planexec
+	// auto-derivation yet.
+	MassAssignmentPath       string
+	MassAssignmentVerifyPath string
+	MassAssignmentMethod     string
+	MassAssignmentBody       string
+
 	// IDORPreview (from --idor-preview) fires one extra preflight GET against
 	// the resolved --endpoint before idor's real ID-enumeration loop begins,
 	// logging its status/body-length — closes the "a wrong EndpointTemplate
@@ -557,6 +592,21 @@ func (c Config) validate(opts ValidateOptions) error {
 		}
 		if c.MutateBFLADeletePath == "" || c.MutateBFLAMarker == "" {
 			return fmt.Errorf("validating config: mutatebfla detector requires --mutatebfla-delete-path and --mutatebfla-marker")
+		}
+	}
+	if c.Detector == "massassignment" {
+		if c.AuthToken == "" {
+			return fmt.Errorf("validating config: massassignment detector requires --auth-token (or its env var equivalent)")
+		}
+		if c.MassAssignmentPath == "" || c.MassAssignmentBody == "" {
+			return fmt.Errorf("validating config: massassignment detector requires --massassignment-path and --massassignment-body")
+		}
+		method := strings.ToUpper(c.MassAssignmentMethod)
+		if method != "PUT" && method != "PATCH" {
+			return fmt.Errorf("validating config: massassignment detector requires --massassignment-method to be PUT or PATCH (got %q) — a POST-create endpoint isn't supported yet, see the massassignment package's own doc comment", c.MassAssignmentMethod)
+		}
+		if !json.Valid([]byte(c.MassAssignmentBody)) {
+			return fmt.Errorf("validating config: --massassignment-body must be valid JSON")
 		}
 	}
 	if c.AutoProvisionAccount && c.ProvisionEmailTemplate == "" {
