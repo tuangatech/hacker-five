@@ -130,6 +130,46 @@ func TestAgentCmd_ReconAuthWithoutTokenFailsEarly(t *testing.T) {
 	require.ErrorContains(t, err, "--recon-auth: recon authentication needs an owner token")
 }
 
+// LT-187: doc94 measured --recon-auth changes findings, not just coverage
+// (crAPI 4/7 -> 5/7 known vulnerabilities), so it now defaults on whenever a
+// token is available and the flag wasn't given explicitly — an operator who
+// already supplies --auth-token no longer has to separately remember
+// --recon-auth. Table-driven against the pure function directly rather than
+// through cmd.Execute(): a real recon run against the closed port here took
+// 40-100s per case even at --recon-depth passive in this environment, which
+// resolveReconAuthDefault's own extraction exists to avoid depending on.
+func TestResolveReconAuthDefault(t *testing.T) {
+	cases := []struct {
+		name          string
+		explicitlySet bool
+		current       bool
+		authToken     string
+		want          bool
+	}{
+		{"token present, flag not given -> turns on", false, false, "test-token", true},
+		{"token present, flag explicitly false -> stays off", true, false, "test-token", false},
+		{"token present, flag explicitly true -> stays on", true, true, "test-token", true},
+		{"no token, flag not given -> stays off", false, false, "", false},
+		{"no token, flag explicitly true -> stays on (caller already validates the token exists)", true, true, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveReconAuthDefault(tc.explicitlySet, tc.current, tc.authToken))
+		})
+	}
+}
+
+// LT-189: every doc94 ablation result that found more than the misconfig
+// baseline ran at --recon-depth full (vAPI's BOLA, Juice Shop's full
+// recall); "active" silently skips the crawl/JS-analysis/docs/seeding wave
+// that produces those leaves. Made the default 2026-09-24.
+func TestAgentCmd_ReconDepthDefaultsFull(t *testing.T) {
+	cmd := newAgentCmd(&rootFlags{})
+	flag := cmd.Flags().Lookup("recon-depth")
+	require.NotNil(t, flag, "--recon-depth must be registered")
+	assert.Equal(t, "full", flag.DefValue)
+}
+
 // agent mirrors scan's blind-SSRF default (LT-188 b, the user's explicit choice on
 // 2026-09-21): two public Interactsh servers unless --no-oob. Before this the agent
 // passed no server at all, so its ssrf leaves could never prove a blind SSRF.
