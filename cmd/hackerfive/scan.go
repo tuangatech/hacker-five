@@ -83,6 +83,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 		mutateBFLADeletePath string
 		mutateBFLAVerifyPath string
 		mutateBFLAMarker     string
+
+		allowMutatingMassAssignment bool
+		massAssignmentPath          string
+		massAssignmentVerifyPath    string
+		massAssignmentMethod        string
+		massAssignmentBody          string
 	)
 
 	cmd := &cobra.Command{
@@ -196,6 +202,12 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 				MutateBFLADeletePath:    mutateBFLADeletePath,
 				MutateBFLAVerifyPath:    mutateBFLAVerifyPath,
 				MutateBFLAMarker:        mutateBFLAMarker,
+
+				AllowMutatingMassAssignment: allowMutatingMassAssignment,
+				MassAssignmentPath:          massAssignmentPath,
+				MassAssignmentVerifyPath:    massAssignmentVerifyPath,
+				MassAssignmentMethod:        massAssignmentMethod,
+				MassAssignmentBody:          massAssignmentBody,
 			}
 			// LT-34 / A6 (doc16 Phase 7 Step 1): parse --recon-file once, up
 			// front — it feeds both the template scoping below and the
@@ -438,6 +450,11 @@ func newScanCmd(root *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&mutateBFLADeletePath, "mutatebfla-delete-path", "", `path+query of a resource with its real, concrete ID already substituted in, e.g. "/workshop/api/merchant/video/delete/42" (required for --detector mutatebfla) — the ID must be one you have independently confirmed --auth-token's own account owns; this detector never enumerates a range the way idor does`)
 	cmd.Flags().StringVar(&mutateBFLAVerifyPath, "mutatebfla-verify-path", "", `GET path+query used to read the resource's state before/after the mutating attempt, as --auth-token; defaults to --mutatebfla-delete-path (the common case: a RESTful resource shares its GET/DELETE path) — set explicitly when a target splits them (e.g. a delete-by-id path with no GET-by-id sibling, verified instead via a list endpoint)`)
 	cmd.Flags().StringVar(&mutateBFLAMarker, "mutatebfla-marker", "", `substring that must appear in --mutatebfla-verify-path's response body while the resource still exists (typically its own ID) — required for --detector mutatebfla; the detector refuses to mutate a target it cannot itself confirm via this marker`)
+	cmd.Flags().BoolVar(&allowMutatingMassAssignment, "allow-mutating-massassignment", false, "allow the massassignment detector to fire its real PUT/PATCH against --massassignment-path, carrying an extra undeclared field alongside --massassignment-body (LT-133) — a fourth, independently-scoped exception to this tool's read/enumerate-only default (never --allow-writes/--allow-mutating-bfla/--auto-provision-account); omitted, the detector is skipped with a warning. The extra field is always an inert, randomly-generated probe value — this can never itself escalate privilege — but it does leave that junk field on the tested resource, with no cleanup attempted")
+	cmd.Flags().StringVar(&massAssignmentPath, "massassignment-path", "", `path+query of a self-service PUT/PATCH update endpoint under --auth-token's own account, e.g. "/identity/api/v2/user/update" (required for --detector massassignment) — a POST-create endpoint isn't supported yet (v1 scope, see the massassignment package's own doc comment)`)
+	cmd.Flags().StringVar(&massAssignmentMethod, "massassignment-method", "PATCH", `HTTP method for --massassignment-path — must be "PUT" or "PATCH"`)
+	cmd.Flags().StringVar(&massAssignmentBody, "massassignment-body", "", `your own confirmed-legitimate JSON request body for --massassignment-path (required for --detector massassignment) — never invented for you; the detector adds one extra, inert, randomly-named/valued field to this body and checks whether it persists`)
+	cmd.Flags().StringVar(&massAssignmentVerifyPath, "massassignment-verify-path", "", `GET path+query used to independently confirm whether the probe field persisted, as --auth-token; defaults to --massassignment-path (the common case: a self-update resource's GET and PUT/PATCH share a path)`)
 	cmd.Flags().StringVar(&format, "format", "json", `output format: "json", "markdown", "html", or "hackerone-json" (an offline, best-effort HackerOne report_intent draft — see "hackerfive report" for the live API workflow)`)
 	cmd.Flags().StringVar(&reconFile, "recon-file", "", "path to a prior 'hackerfive recon --output <path>' JSON result — when given, its detected tech stack adds product-specific template tags on top of the --detector category floor (LT-16/LT-17, docs/follow-up.md)")
 	cmd.Flags().BoolVar(&narrowByTech, "narrow-by-tech", true, "scope the loaded template corpus to the --detector's categories (plus --recon-file's tech stack, if given) instead of loading all ~9.5k synced templates (doc15 Step 6a). On by default; set --narrow-by-tech=false or --all-templates to load everything. Never overrides an explicit --tags.")

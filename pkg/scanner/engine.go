@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/tuangatech/hacker-five/pkg/detectors/authbypass"
 	"github.com/tuangatech/hacker-five/pkg/detectors/businesslogic"
 	"github.com/tuangatech/hacker-five/pkg/detectors/idor"
+	"github.com/tuangatech/hacker-five/pkg/detectors/massassignment"
 	"github.com/tuangatech/hacker-five/pkg/detectors/misconfig"
 	"github.com/tuangatech/hacker-five/pkg/detectors/mutatebfla"
 	"github.com/tuangatech/hacker-five/pkg/detectors/netservice"
@@ -584,6 +586,9 @@ func (e *Engine) warnIfWritesUngated() {
 	}
 	if e.cfg.Detector == "mutatebfla" && !e.cfg.AllowMutatingBFLA {
 		e.warnf("warn", "--allow-mutating-bfla not set — the mutatebfla detector will be skipped; pass --allow-mutating-bfla to run it (LT-132: it fires a real DELETE against the resource, gated behind its own flag per CLAUDE.md)")
+	}
+	if e.cfg.Detector == "massassignment" && !e.cfg.AllowMutatingMassAssignment {
+		e.warnf("warn", "--allow-mutating-massassignment not set — the massassignment detector will be skipped; pass --allow-mutating-massassignment to run it (LT-133: it fires a real PUT/PATCH carrying an extra undeclared field, gated behind its own flag per CLAUDE.md)")
 	}
 	if e.cfg.Detector == "ssrf" && len(e.cfg.SSRFBodyFillFields) > 0 && !e.cfg.AllowSSRFBodyFill {
 		e.warnf("warn", "--allow-ssrf-body-fill not set — the ssrf detector's body-field check sends only the candidate field, so a target requiring its other fields before attempting the fetch (LT-188) will show no finding here; pass --allow-ssrf-body-fill to fill them (this can complete the endpoint's real action)")
@@ -1328,6 +1333,27 @@ func (e *Engine) runDetector(ctx context.Context, target string) ([]detectors.Fi
 			Marker:    e.cfg.MutateBFLAMarker,
 		}}
 		return detector.Run(ctx, targets, e.cfg.AuthToken, e.cfg.OtherAuthToken, e.cfg.AllowMutatingBFLA)
+	case "massassignment":
+		base := strings.TrimRight(target, "/")
+		verifyPath := e.cfg.MassAssignmentVerifyPath
+		if verifyPath == "" {
+			verifyPath = e.cfg.MassAssignmentPath
+		}
+		var body map[string]any
+		if err := json.Unmarshal([]byte(e.cfg.MassAssignmentBody), &body); err != nil {
+			return nil, fmt.Errorf("massassignment: --massassignment-body: %w", err)
+		}
+		detector := massassignment.New(e.client,
+			massassignment.WithAuthHeader(e.cfg.AuthHeaderName, e.cfg.AuthHeaderFormat),
+			massassignment.WithLogCallback(func(level, msg string) { e.warnf(level, "%s", msg) }),
+		)
+		targets := []massassignment.Target{{
+			URL:       base + e.cfg.MassAssignmentPath,
+			Method:    e.cfg.MassAssignmentMethod,
+			Body:      body,
+			VerifyURL: base + verifyPath,
+		}}
+		return detector.Run(ctx, targets, e.cfg.AuthToken, e.cfg.AllowMutatingMassAssignment)
 	case "netservice":
 		detector := netservice.New(netservice.WithTimeout(e.cfg.Timeout))
 		return detector.Run(ctx, target)

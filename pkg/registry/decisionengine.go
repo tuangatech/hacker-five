@@ -610,6 +610,10 @@ var detectorTemplateTagFloor = map[string][]string{
 	// than an explicit --tags" documented default businesslogic already
 	// gets.
 	"mutatebfla": nil,
+	// massassignment is native-only, same as mutatebfla/businesslogic above:
+	// a single self-update-endpoint probe (LT-133), not a corpus template
+	// category — nil floor falls through to the same "no filtering" default.
+	"massassignment": nil,
 	// "ssl"/"tls" are real Nuclei's own conventional tags on its ssl/
 	// (network-protocol) template category — same "narrows away the ~9.5k
 	// http:-only corpus" role as netservice's "network" floor above, and
@@ -1124,7 +1128,7 @@ type LeafContext struct {
 // "templates" instead of the detector's own name), never a dispatch bug.
 var builtinDetectorClasses = map[string]bool{
 	"idor": true, "misconfig": true, "authbypass": true, "ssrf": true, "businesslogic": true,
-	"netservice": true, "sqli": true, "mutatebfla": true, "tls": true,
+	"netservice": true, "sqli": true, "mutatebfla": true, "massassignment": true, "tls": true,
 }
 
 // LeafClass returns the vuln-class label a leaf belongs under in the
