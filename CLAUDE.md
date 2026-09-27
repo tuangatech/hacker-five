@@ -55,6 +55,7 @@ Check `pwd`/OS first; don't assume which applies.
 - For non-trivial tasks: discuss impact → plan affected code → update specs → implement.
 - Push back with evidence when appropriate.
 - Never mark a task complete without proving it works.
+- Weigh a change's measured gain against its cost: if an idea shows only a minor improvement but adds runtime and code to maintain, abandon it — net value is the gain minus (added runtime + maintenance burden), and a marginal gain doesn't clear that bar (this is why [docs/94-llm-finding-capability-strategy.md](docs/94-llm-finding-capability-strategy.md) keeps the LLM loop deferred: it never beats the deterministic `--run-every-leaf` ceiling). Don't decide on a single run — a delta inside run-to-run measurement noise isn't a real gain; confirm it first, and re-measure at real scope, not just labs. Exception: keep genuine correctness/safety fixes (scope-safety, false-positive suppression, no-recall-loss guards) even at a small measured delta — they're cheap to maintain and reduce risk.
 - Proactively recommend features/practices that raise the tool's maturity (feature parity with established tools, robustness, real-world usability), not just answers to the literal question asked.
 - While testing or reviewing, raise any enhancement opportunity you notice (scanning quality, speed, maintainability) as soon as you see it; if it can't be done right away, log it to [docs/follow-up.md](docs/follow-up.md) instead of letting it drop.
 - User instructions always override this file.
