@@ -391,3 +391,70 @@ func TestIDORDetector_PublicPaginationDenylist(t *testing.T) {
 		assert.Equal(t, "403", findings[0].Evidence["status"])
 	})
 }
+
+// TestIDORDetector_PublicCMSContentSuppression covers LT-199 (docs/follow-up.md):
+// single-token heuristic mode flooded ~30 findings across a public DokuWiki's
+// `doku.php?id=<page>` URLs live on wiki.nettix.com.pe — every wiki page
+// legitimately differs in size/content, which the bare signature diff cannot
+// tell apart from an access-control differential, and DokuWiki content is public
+// by design (no per-user boundary). The fix recognizes the CMS front-controller
+// script (`doku.php`) rather than denylisting `id` itself: `id` is *the*
+// canonical IDOR parameter, so an `id`-keyed enumeration on any other path must
+// still flag, and a non-2xx differential on the wiki (a DokuWiki ACL) is kept.
+func TestIDORDetector_PublicCMSContentSuppression(t *testing.T) {
+	client := httpclient.New(httpclient.Config{
+		Timeout:             5 * time.Second,
+		MaxRedirects:        5,
+		MaxIdleConnsPerHost: 10,
+	})
+	strategy := idor.SequentialIntStrategy{Start: 1, End: 5}
+
+	// queryIDServer returns a distinct-length 200 body per `?id=<n>` (well beyond
+	// Signature's 5% body-size tolerance), like a wiki serving different pages.
+	queryIDServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := r.URL.Query().Get("id")
+			n := 1
+			if len(id) > 0 {
+				n = int(id[0]-'0') + 1
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(strings.Repeat("public-wiki-page-content ", n*20)))
+		}))
+	}
+
+	t.Run("doku.php?id=<page> public wiki suppressed", func(t *testing.T) {
+		srv := queryIDServer()
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/lib/exe/doku.php?id={{id}}", "", "")
+		require.NoError(t, err)
+		assert.Empty(t, findings)
+	})
+
+	t.Run("id on a non-CMS path still flagged (id is never denylisted)", func(t *testing.T) {
+		srv := queryIDServer()
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/api/resource?id={{id}}", "", "")
+		require.NoError(t, err)
+		assert.NotEmpty(t, findings)
+	})
+
+	t.Run("non-2xx differential on the CMS script is kept", func(t *testing.T) {
+		// Uniform public 200 for every page except id=3, which is 403 — a real
+		// DokuWiki-ACL differential the suppression must not swallow.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("id") == "3" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("access denied"))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("uniform public wiki page"))
+		}))
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/lib/exe/doku.php?id={{id}}", "", "")
+		require.NoError(t, err)
+		require.Len(t, findings, 1)
+		assert.Equal(t, "403", findings[0].Evidence["status"])
+	})
+}
