@@ -314,3 +314,80 @@ func TestIDORDetector_TemplatePreview(t *testing.T) {
 		assert.Empty(t, logs)
 	})
 }
+
+// TestIDORDetector_PublicPaginationDenylist covers LT-198 (docs/follow-up.md):
+// single-token heuristic mode fired 19 near-identical findings across a public
+// blog's pagination/post URLs (WordPress ?p= / ?paged= / /page/<n>) live on
+// nettix.com.pe. That content is public by design — there is no authorization
+// boundary for the heuristic to have found bypassed — so a differing-content
+// signal there is noise, not IDOR. The denylist suppresses such a deviation
+// only when the sample is a public 2xx; a non-2xx differential on the same
+// parameter is still surfaced, and the suppression is deliberately narrow.
+func TestIDORDetector_PublicPaginationDenylist(t *testing.T) {
+	client := httpclient.New(httpclient.Config{
+		Timeout:             5 * time.Second,
+		MaxRedirects:        5,
+		MaxIdleConnsPerHost: 10,
+	})
+	strategy := idor.SequentialIntStrategy{Start: 1, End: 5}
+
+	// uniquePerIDServer returns a distinct-length 200 body for every id (well
+	// beyond Signature's 5% body-size tolerance), so plain heuristic mode would
+	// otherwise flag every deviation from the majority.
+	uniquePerIDServer := func(idFrom func(r *http.Request) string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := idFrom(r)
+			n := 1
+			if len(id) > 0 {
+				n = int(id[0]-'0') + 1
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(strings.Repeat("public-blog-content ", n*20)))
+		}))
+	}
+	queryP := func(r *http.Request) string { return r.URL.Query().Get("p") }
+	pathID := func(r *http.Request) string { return path.Base(r.URL.Path) }
+
+	t.Run("?p=<n> public posts suppressed", func(t *testing.T) {
+		srv := uniquePerIDServer(queryP)
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/?p={{id}}", "", "")
+		require.NoError(t, err)
+		assert.Empty(t, findings)
+	})
+
+	t.Run("/page/<n> pretty pagination suppressed", func(t *testing.T) {
+		srv := uniquePerIDServer(pathID)
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/page/{{id}}", "", "")
+		require.NoError(t, err)
+		assert.Empty(t, findings)
+	})
+
+	t.Run("non-denylist param still flagged (suppression stays narrow)", func(t *testing.T) {
+		srv := uniquePerIDServer(pathID)
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/api/orders/{{id}}", "", "")
+		require.NoError(t, err)
+		assert.NotEmpty(t, findings)
+	})
+
+	t.Run("non-2xx differential on a denylist param is kept", func(t *testing.T) {
+		// Uniform public 200 for every id except id=3, which is 403 — a real
+		// access differential the denylist must not swallow.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("p") == "3" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"forbidden"}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("uniform public listing page"))
+		}))
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/?p={{id}}", "", "")
+		require.NoError(t, err)
+		require.Len(t, findings, 1)
+		assert.Equal(t, "403", findings[0].Evidence["status"])
+	})
+}
