@@ -60,6 +60,30 @@ One unified **Launch page** (`GET /`) superseded the earlier separate New Scan /
 
 `pkg/orchestrator` (`hackerfive agent`) builds the same recon → `registry.Resolve` → `PlanTree` as `plan`, then loops: ask `llmfallback.Client.NextAction` which of a fixed tool catalog to run next, dispatch it via the same `pkg/planexec` every other frontend uses, fold the result back into the tree, ask again — until the model stops, a budget/iteration ceiling is hit, or nothing actionable remains. It never fabricates a `Finding` itself: every finding still comes from a real detector match, or from `script.explore`'s proposed request independently re-issued and confirmed outside its sandbox, never from the script's self-reported output alone. One tool, `script.explore` (`pkg/scriptexec`), is a genuinely open-ended shell/interpreter capability — gated by three independent layers (an AST precheck rejecting subprocess/socket/filesystem-outside-scratch/out-of-scope access, per-script human approval, and a Docker sandbox: read-only root, all capabilities dropped, non-root, capped memory/PIDs, egress proxied to in-scope hosts only). This is the one exception to the MCP server's "no shell/exec tool" boundary above — it lives only behind `hackerfive agent`'s own approval gate, never MCP/`scan`/`plan`. See [93-implementation-plan-agent-orchestrator.md](93-implementation-plan-agent-orchestrator.md) for the design and [94-llm-finding-capability-strategy.md](94-llm-finding-capability-strategy.md) for where this loop's reasoning does and doesn't add measured value over the deterministic path alone.
 
+**The loop dispatches leaves in three tiers, deterministic-first by construction:**
+
+1. **Fast lane** (`fastlane.go`) — deterministic, always-run, *parameter-free* leaves are dispatched directly, with no model call at all (`FastLane=true` is the production default). These are the cheap, broadly-applicable checks; spending a `NextAction` round trip to "decide" to run something that has no parameters and always applies is pure waste.
+2. **Model-decided leaves** — the parameterized or ambiguous work the model schedules situationally via `NextAction`. This is the tier where "the LLM picks based on the situation" actually earns its cost — a leaf needing a chosen endpoint/param, an order across dependent steps, a judgment call deterministic logic can't make.
+3. **Terminal sweep** (LT-183(j)) — after the model loop ends, a deterministic net drains every still-runnable leaf the model never scheduled, via the same `scan.leaf` path (gated `FastLane && !llmDown && !RunEveryLeaf`; swept leaves count as `FastLaneTurns`, not `Iterations`). This makes `fast-lane+model` a superset-or-equal of the no-model ceiling by construction — the model loop can add findings but can *never lose* one the deterministic path would have found on its own.
+
+The standing measured verdict ([94-llm-finding-capability-strategy.md](94-llm-finding-capability-strategy.md)) is that on the targets tested to date, tier 2 adds no *unique* real finding over tiers 1+3 — so the fast lane plus the terminal sweep are the load-bearing tiers, and the model loop is retained for the genuine gaps (tier 2's stated purpose), not as the default finder.
+
+### Where a new capability lands: LLM-gated tool vs deterministic path
+
+A recurring design decision — for a target-conditional capability (valuable where its triggering condition holds, dead weight elsewhere), does it belong in the model-decided tier (an LLM-selected tool/leaf) or baked into the deterministic path (fast lane + a cheap precondition gate)? The split:
+
+**Keep it deterministic (the default for detector/precision work) when:**
+- The triggering condition is **cheaply detectable** — a param name, a path signature, a recon fact (tech fingerprint, observed open port). A model call to decide what a `strings.Contains`/regex/recon-fact already decides is pure waste and adds run-to-run non-determinism.
+- It's a **precision/false-positive fix** — these must be *consistent and testable*; FPs erode trust on every target (the <5% bar), so model variance must never be what decides whether one fires.
+- It's **cheap to always-run** — then just run it (the fast lane's whole point). Gate it on a cheap recon precondition only if it's noisy or wasteful where its condition is absent.
+
+**Make it an LLM-gated tool (the model-decided tier, or an MCP tool) when:**
+- The triggering condition is **semantic/contextual** and genuinely hard to encode deterministically — novel template authoring, ambiguous triage, cross-host correlation (the "genuine gaps" the Detection-philosophy section names).
+- The action is **expensive or intrusive**, so you *want* it run rarely and behind a spend/attempt cap plus a human-approval gate ([90-research-hackerbot.md](90-research-hackerbot.md) Decisions 5–6).
+- The condition is **rare**, so paying a per-decision model cost beats always running.
+
+**MCP-specific nuance:** exposing a capability as an MCP *tool* with a description — so the operator's own external agent selects it situationally, behind MCP-elicitation approval — is a fine home for an intrusive/expensive capability triggered judgmentally. That is different from HackerFive's *internal* orchestrator routing routine tool-selection through the model: that is the deferred J-series question (doc94), and it must clear doc94's bar — demonstrably beat "just run the deterministic version" on a target that exhibits the condition — before it ships, or it's the same unjustified model-cost trap the standing verdict warns against.
+
 ### Dependencies (minimal)
 
 ```
