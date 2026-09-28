@@ -245,7 +245,7 @@ func (d *Detector) runBaseline(ctx context.Context, endpointTemplate, ownerToken
 		for i, s := range samples {
 			heuristicSamples[i] = idSample{id: s.id, url: s.url, sig: s.otherSig, reqEvidence: s.reqEvidence, respEvidence: s.respEvidence}
 		}
-		return heuristicFindings(heuristicSamples), nil
+		return heuristicFindings(endpointTemplate, heuristicSamples), nil
 	}
 
 	var findings []detectors.Finding
@@ -315,7 +315,68 @@ func (d *Detector) runHeuristic(ctx context.Context, endpointTemplate, token str
 		samples = append(samples, idSample{id: id, url: reqURL, sig: sig, reqEvidence: reqEvidence, respEvidence: respEvidence})
 	}
 
-	return heuristicFindings(samples), nil
+	return heuristicFindings(endpointTemplate, samples), nil
+}
+
+// paginationParamDenylist holds query-parameter names that denote public
+// content-navigation or list pagination rather than a user-owned direct object
+// reference. Enumerating them yields differing-but-public responses that the
+// single-token heuristic (which only compares response signatures) can never
+// distinguish from real access-control noise — the confirmed source of LT-198's
+// 19 near-identical false positives across a public blog's pagination/post URLs
+// (WordPress `?p=`/`?paged=`/`/page/<n>`). Such content is public by design:
+// there is no authorization boundary for the heuristic to have found bypassed,
+// so a signature deviation on one of these, when the response is a public 2xx,
+// is not IDOR evidence. The gate is deliberately narrow — it fires only on a
+// public 2xx sample, so a genuine authorization differential (a 401/403 or a
+// redirect on one ID but not others) on the same parameter still surfaces — and
+// baseline (two-account) mode is unaffected: a real cross-account differential
+// there is still reported at high confidence.
+var paginationParamDenylist = map[string]bool{
+	"p":       true, // CMS post ID (public post, e.g. WordPress ?p=123)
+	"page":    true,
+	"paged":   true, // WordPress pagination
+	"page_id": true, // WordPress page (public)
+	"cpage":   true, // WordPress comment pagination
+	"cat":     true, // WordPress category archive
+	"tag":     true,
+	"m":       true, // WordPress date archive (yyyymm)
+	"post":    true,
+	"offset":  true,
+	"start":   true,
+}
+
+// idPlaceholderIsPublicNavParam reports whether endpointTemplate enumerates its
+// {{id}} placeholder through a public content-navigation parameter
+// (paginationParamDenylist) or a `/page/<n>` path segment. It parses the
+// template with the placeholder swapped for an inert sentinel so a malformed
+// template just yields false (never suppresses). See paginationParamDenylist
+// for why heuristic-mode findings on such an enumeration are public-CMS noise.
+func idPlaceholderIsPublicNavParam(endpointTemplate string) bool {
+	const sentinel = "hfidnavsentinel"
+	u, err := url.Parse(strings.ReplaceAll(endpointTemplate, "{{id}}", sentinel))
+	if err != nil {
+		return false
+	}
+	for key, vals := range u.Query() {
+		if !paginationParamDenylist[strings.ToLower(key)] {
+			continue
+		}
+		for _, v := range vals {
+			if strings.Contains(v, sentinel) {
+				return true
+			}
+		}
+	}
+	// WordPress pretty pagination: /page/<n>/ — the placeholder is the path
+	// segment immediately after a "page" segment.
+	segs := strings.Split(u.EscapedPath(), "/")
+	for i := 1; i < len(segs); i++ {
+		if strings.EqualFold(segs[i-1], "page") && strings.Contains(segs[i], sentinel) {
+			return true
+		}
+	}
+	return false
 }
 
 // heuristicFindings flags every sample whose signature differs from the
@@ -324,10 +385,16 @@ func (d *Detector) runHeuristic(ctx context.Context, endpointTemplate, token str
 // legitimately has different, non-sensitive content" (e.g. two different
 // public product pages) — every deviation is reported as low-confidence,
 // manual-triage material.
-func heuristicFindings(samples []idSample) []detectors.Finding {
+//
+// endpointTemplate is passed so a deviation on a public content-navigation
+// enumeration (paginationParamDenylist) that returned a public 2xx can be
+// suppressed as public-CMS noise rather than reported (LT-198).
+func heuristicFindings(endpointTemplate string, samples []idSample) []detectors.Finding {
 	if len(samples) == 0 {
 		return nil
 	}
+
+	suppressPublicNav := idPlaceholderIsPublicNavParam(endpointTemplate)
 
 	sigs := make([]Signature, len(samples))
 	for i, s := range samples {
@@ -338,6 +405,14 @@ func heuristicFindings(samples []idSample) []detectors.Finding {
 	var findings []detectors.Finding
 	for _, s := range samples {
 		if !s.sig.DiffersFrom(majority) {
+			continue
+		}
+		// A signature deviation on a public content-navigation parameter that
+		// still returned a public 2xx is expected (each page/post legitimately
+		// differs) and carries no authorization boundary — suppress it. A
+		// non-2xx deviation (a 401/403/redirect on one ID) is kept: that could
+		// be a real access differential worth manual triage.
+		if suppressPublicNav && s.sig.StatusCode >= 200 && s.sig.StatusCode < 300 {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
