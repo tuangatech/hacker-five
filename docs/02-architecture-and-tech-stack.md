@@ -56,6 +56,10 @@ One unified **Launch page** (`GET /`) superseded the earlier separate New Scan /
 
 `pkg/mcpserver` (`hackerfive mcp-serve`, Phase 6) is a third frontend over the same engine. Its tools, in the order a scan moves through them — `templates.list`/`sync` (get the corpus on disk), `templates.search`/`tools.search` (discover what's available), `recon` (enumerate the target), `plan` (build + approve the PlanTree), `scan` (execute), `findings.triage` (rank the results), `findings.export` (draft the report). No shell/exec-shaped tool (a permanent boundary): the agent selects targets/templates, every `Finding` still comes from the deterministic matcher engine. Dependency: `github.com/modelcontextprotocol/go-sdk` (official). Human approval uses MCP's `elicitation` primitive via SEP-2322's multi-round-trip shape (a handler returns `InputRequests` and is retried once the client answers) — a synchronous mid-request `Elicit` is not available in the current protocol. A client that doesn't advertise elicitation support gets the plan back **unexecuted**, not a failure.
 
+### `hackerfive agent`: autonomous LLM orchestrator (optional, a fourth frontend)
+
+`pkg/orchestrator` (`hackerfive agent`) builds the same recon → `registry.Resolve` → `PlanTree` as `plan`, then loops: ask `llmfallback.Client.NextAction` which of a fixed tool catalog to run next, dispatch it via the same `pkg/planexec` every other frontend uses, fold the result back into the tree, ask again — until the model stops, a budget/iteration ceiling is hit, or nothing actionable remains. It never fabricates a `Finding` itself: every finding still comes from a real detector match, or from `script.explore`'s proposed request independently re-issued and confirmed outside its sandbox, never from the script's self-reported output alone. One tool, `script.explore` (`pkg/scriptexec`), is a genuinely open-ended shell/interpreter capability — gated by three independent layers (an AST precheck rejecting subprocess/socket/filesystem-outside-scratch/out-of-scope access, per-script human approval, and a Docker sandbox: read-only root, all capabilities dropped, non-root, capped memory/PIDs, egress proxied to in-scope hosts only). This is the one exception to the MCP server's "no shell/exec tool" boundary above — it lives only behind `hackerfive agent`'s own approval gate, never MCP/`scan`/`plan`. See [93-implementation-plan-agent-orchestrator.md](93-implementation-plan-agent-orchestrator.md) for the design and [94-llm-finding-capability-strategy.md](94-llm-finding-capability-strategy.md) for where this loop's reasoning does and doesn't add measured value over the deterministic path alone.
+
 ### Dependencies (minimal)
 
 ```
@@ -162,37 +166,37 @@ The full flow, `recon → decision engine → approval → scan → triage`. **S
 ### Module map
 
 ```
-┌───────────────────────┬───────────────────────┬────────────────────────┐
-│   CLI (hackerfive …)   │  Web UI (serve, htmx  │  MCP server (mcp-serve, │
-│                        │  + SSE, Plan Preview) │  elicitation approval)  │
-└───────────┬────────────┴───────────┬───────────┴────────────┬───────────┘
-            └────────────────────────┼────────────────────────┘
-                                     │  (three frontends, one engine — no scan logic duplicated)
-        ┌────────────────────────────┼────────────────────────────┐
-        │                            │                            │
-   pkg/recon                  pkg/fingerprint               pkg/templatesync
-   waves 0-3, ReconResult     signature table               pinned git sync + index.json
-        │                            │                            │
-        └──────────────┬─────────────┴────────────────────────────┘
-                       │
-                pkg/registry (decision engine)  ──▶  pkg/agenttask (PlanTree)
-                registry.Resolve, tech→tag map        leaf-only mutation, spend ceiling
-                       │                                     │
-                       │  (registry miss)                    │  (approved)
-                       ▼                                     ▼
-                pkg/llmfallback                        pkg/planexec (RunPlan)
-                local + frontier tiers,               shared dispatcher for MCP + Web UI
-                3 stateless callers                          │
-                                                             ▼
-                                         pkg/scanner/engine  ─runs─▶  pkg/detectors/*
-                                         scope, workerpool,           idor, misconfig,
-                                         httpclient, hosterrors       authbypass, ssrf,
-                                                             │        businesslogic
-                                                             ▼        (+ Phase 8: netservice, tls)
-                                         pkg/template/{nuclei,native}  +  pkg/oob (Interactsh)
-                                                             │
-                                                             ▼
-                                         pkg/reporter  ─▶  JSON / MD / HTML / HackerOne draft
+┌───────────────┬───────────────────────┬────────────────────────┬───────────────────────┐
+│ CLI (hackerfive│  Web UI (serve, htmx  │  MCP server (mcp-serve, │ agent (pkg/orchestrator,│
+│ scan/plan/…)   │  + SSE, Plan Preview) │  elicitation approval)  │ NextAction loop)        │
+└───────┬────────┴───────────┬───────────┴────────────┬───────────┴────────────┬───────────┘
+        └────────────────────┼────────────────────────┼─────────────────────────┘
+                              │  (four frontends, one engine — no scan logic duplicated)
+        ┌─────────────────────┼─────────────────────────┐
+        │                     │                          │
+   pkg/recon           pkg/fingerprint             pkg/templatesync
+   waves 0-3, ReconResult  signature table          pinned git sync + index.json
+        │                     │                          │
+        └───────────┬─────────┴──────────────────────────┘
+                    │
+             pkg/registry (decision engine)  ──▶  pkg/agenttask (PlanTree)
+             registry.Resolve, tech→tag map        leaf-only mutation, spend ceiling
+                    │                                     │
+                    │  (registry miss)                    │  (approved)
+                    ▼                                     ▼
+             pkg/llmfallback                        pkg/planexec (RunPlan)
+             local + frontier tiers,          shared dispatcher for MCP + Web UI + agent
+             3 stateless callers                            │
+                                                              ▼
+                                     pkg/scanner/engine  ─runs─▶  pkg/detectors/*
+                                     scope, workerpool,           idor, misconfig, authbypass,
+                                     httpclient, hosterrors       ssrf, businesslogic, netservice,
+                                                       │          tls, sqli, mutatebfla,
+                                                       ▼          massassignment
+                                     pkg/template/{nuclei,native}  +  pkg/oob (Interactsh)
+                                                       │
+                                                       ▼
+                                     pkg/reporter  ─▶  JSON / MD / HTML / HackerOne draft
 ```
 
 ### Detectors (one package each, `New(...)` + `Run(ctx, …) ([]Finding, error)`)
@@ -202,7 +206,10 @@ The full flow, `recon → decision engine → approval → scan → triage`. **S
 - **Auth Bypass** — state-based checks: no-credentials call, JWT tampering (`alg:none`, stripped signature), cross-user token reuse, rate-limit-signal probe.
 - **SSRF** — scheme-based redirection probes (`file://`, `gopher://`) plus a blind out-of-band check via `pkg/oob`'s Interactsh client. `--oob-server` defaults to 2 public servers; `--no-oob` or a self-hosted server for a real third-party engagement.
 - **Business Logic** — the one detector with mutating checks (coupon self-mint/apply, apply race), gated behind `--allow-writes` — CLAUDE.md's sole permanent exception to read/enumerate-only; absent, those checks are skipped with a stderr warning.
-- **Planned ([Phase 8](17-implementation-plan-ph8.md)):** a `tcp:` protocol executor + `netservice` detector (anonymous-FTP / unauth-DB / open-Elasticsearch, read-only), a `tls` detector (expired/weak certs, sub-1.2 protocols), and JS static analysis (secrets + endpoints in served JS, folded into `ReconResult.Endpoints`). **[Phase 9](18-implementation-plan-ph9.md):** OOB blind-RCE verification, and first-party `sqli`/`xss`/`lfi`/`uploadbypass` + WAF-aware probing.
+- **Netservice / TLS** ([Phase 8](17-implementation-plan-ph8.md), built) — `netservice`: bounded, read-only handshakes for unauthenticated FTP/MySQL/Redis/PostgreSQL/MongoDB exposure, dispatched from an open port fact. `tls`: passive expired/weak-cert and sub-1.2-protocol checks, dispatched from a live TLS host fact.
+- **SQLi** ([Phase 9](18-implementation-plan-ph9.md) Step 4, built) — first-party error-based, boolean-blind, and time-blind checks appended to a param's existing value, closing the gap left by a WAF blocking the generic nuclei corpus.
+- **MutateBFLA / Mass Assignment** (built) — the mutating-method siblings of IDOR/Business Logic, each behind its own flag (never folded into `--allow-writes`): `mutatebfla` fires a DELETE with a second account's token against a resource confirmed to belong to the first (`--allow-mutating-bfla`); `massassignment` PUT/PATCHes a caller-supplied legitimate body plus one inert random probe field, confirming persistence only via an independent follow-up GET (`--allow-mutating-massassignment`).
+- **Planned ([Phase 9](18-implementation-plan-ph9.md)):** OOB blind-RCE verification, first-party `xss`/`lfi`/`uploadbypass` + WAF-aware probing, and the AI-agent attack surface (`llms.txt`/`SKILL.md`/unauthenticated MCP `tools/list`).
 
 Detector-specific logic sits on top of the shared **Template Runner** (YAML parse → request via the worker pool → matcher/extractor engine) rather than each detector reimplementing HTTP handling.
 
@@ -217,7 +224,7 @@ A tour of the main files, for orienting in the codebase rather than these diagra
 ### Entry point & CLI (`cmd/hackerfive/`)
 - [`main.go`](../cmd/hackerfive/main.go) → Cobra root ([`root.go`](../cmd/hackerfive/root.go)); [`dotenv.go`](../cmd/hackerfive/dotenv.go) loads `.env` once for every subcommand.
 - [`scan.go`](../cmd/hackerfive/scan.go) — flags → `scanner.Config` → `scanner.Engine` → `reporter.Dedup`/`ExporterFor`. The clearest map of "what a scan does." `--recon-file … --narrow-by-tech` applies LT-16's tech-stack narrowing.
-- [`serve.go`](../cmd/hackerfive/serve.go) / [`mcpserve.go`](../cmd/hackerfive/mcpserve.go) — the Web UI and MCP frontends.
+- [`serve.go`](../cmd/hackerfive/serve.go) / [`mcpserve.go`](../cmd/hackerfive/mcpserve.go) / [`agent.go`](../cmd/hackerfive/agent.go) — the Web UI, MCP, and autonomous-orchestrator frontends.
 - [`recon.go`](../cmd/hackerfive/recon.go) / [`plan.go`](../cmd/hackerfive/plan.go) — standalone recon, and recon → `registry.Resolve` → `PlanTree` as JSON (`plan --llm-assist` adds the fallback pass). `--verbose` streams wave progress to stderr.
 - [`templates.go`](../cmd/hackerfive/templates.go) — `sync|list|index`; `index` generates `templates/index.json`.
 - [`report.go`](../cmd/hackerfive/report.go) — `weaknesses|scopes|create|submit`; only `submit --yes` can make a report visible (permanent invariant).
@@ -229,7 +236,7 @@ A tour of the main files, for orienting in the codebase rather than these diagra
 
 ### Detectors & templates
 - [`pkg/detectors/types.go`](../pkg/detectors/types.go) — the shared `Finding` struct.
-- `pkg/detectors/{idor,misconfig,authbypass,ssrf,businesslogic}/` — one package each.
+- `pkg/detectors/{idor,misconfig,authbypass,ssrf,businesslogic,netservice,tls,sqli,mutatebfla,massassignment}/` — one package each.
 - `pkg/template/{nuclei,native}/` — the two engines; `native/` has `dsl/`, `extractor/`, `matcher/`.
 - `pkg/templatesync/` — `git` sync + `LoadIndex`/`WriteIndex` (`index.go`, consolidated once a third consumer needed it).
 - `pkg/oob/` — the Interactsh client and its shared `Poller` (one registration across the whole `Executor`, one background poll loop, a nonce→waiter map; idle-skips the network poll when nobody's waiting).
@@ -242,7 +249,8 @@ A tour of the main files, for orienting in the codebase rather than these diagra
 
 ### Agent frontends
 - [`pkg/mcpserver`](../pkg/mcpserver) — `server.go` (tool registration), `scope.go` (`requireScope` D3 hard-fail, `clientSupportsElicitation`), `tools_*.go`, `planstate.go` (TTL-bounded cache bridging the two elicitation rounds), `executor.go` (thin — delegates to `pkg/planexec`).
-- [`pkg/planexec`](../pkg/planexec) — `RunPlan`/`runLeaf`/`missingRequiredField`, transport-agnostic (`ExecOptions{Notify, OnFinding, OnLog, Excluded, DetConcurrency, LLMConcurrency}`). The single dispatcher both `pkg/mcpserver` and `pkg/webui` call.
+- [`pkg/planexec`](../pkg/planexec) — `RunPlan`/`runLeaf`/`missingRequiredField`, transport-agnostic (`ExecOptions{Notify, OnFinding, OnLog, Excluded, DetConcurrency, LLMConcurrency}`). The single dispatcher `pkg/mcpserver`, `pkg/webui`, and `pkg/orchestrator` all call.
+- [`pkg/orchestrator`](../pkg/orchestrator) — `orchestrator.go` (`Run`, the `NextAction` loop, budget/iteration ceilings), `fastlane.go` (skips the model for a parameter-free leaf), `digest.go` (prompt digests), `reconledger.go`/`reconrefresh.go` (coverage ledger, mid-run recon merge), `scriptevidence.go` (independent re-issue/confirmation of a `script.explore` candidate). `cmd/hackerfive/agent.go` is its CLI entry.
 - [`pkg/llmfallback`](../pkg/llmfallback) — `client.go` (tiered `net/http`), `leaf.go` (`ResolveLeaf` + `rankRelevantTemplates`), `field.go` (`ResolveField`), `triage.go`, `spend.go` (process-lifetime ceiling).
 - [`pkg/webui`](../pkg/webui) — `server.go` (routes), `jobs.go` (`Job` carries recon waves + `ReconResult` + `Cancel`), `handlers_launch.go` (the unified page + `fillReconFields`), `handlers_plan_exec.go` (`POST /plan-preview/execute` → `pkg/planexec`), `handlers_scan.go` (`/scans/{id}` + SSE + `/catchup`).
 
