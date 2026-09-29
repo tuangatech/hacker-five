@@ -73,7 +73,21 @@ var commonPaths = []string{
 // pkg/detectors/misconfig.baselineCanaryPath's own reasoning: a WAF/CDN
 // block page that echoes the requested path back HTML-entity-encodes
 // punctuation but leaves alphanumeric runs literal.
-const reconCanaryPath = "/hackerfivereconcanary8b2e14d0"
+//
+// reconCanaryPath2 is LT-127's second, differently-named canary: a
+// page-name-templated catch-all (a wiki's "this topic does not exist" 200
+// whose body echoes the requested page name) defeats the single-canary
+// sameAsCanary check, because every probed path gets a legitimately-different
+// body. Diffing two differently-named canaries against each other — after
+// stripping each of its own echoed token — reveals the shared template.
+// The two tokens are deliberately equal-length so the stripped remainders
+// align byte-for-byte with no tolerance needed.
+const (
+	reconCanaryToken  = "hackerfivereconcanary8b2e14d0"
+	reconCanaryToken2 = "hackerfivereconcanary7f31c2a9"
+	reconCanaryPath   = "/" + reconCanaryToken
+	reconCanaryPath2  = "/" + reconCanaryToken2
+)
 
 // maxKatanaJSONLLineBytes is runKatana's bufio.Scanner max-token-size —
 // raised from 1 MiB to 8 MiB (LT-164, docs/follow-up.md). Live-verified
@@ -133,6 +147,32 @@ func (c canaryResponse) sameAsCanary(status, bodyLen int, contentType string) bo
 		diff = -diff
 	}
 	return diff <= tol
+}
+
+// isTemplatedCatchall reports whether two differently-named canaries came
+// back as the same page template with only the echoed path/name differing —
+// the DokuWiki/wiki "this topic does not exist" 200 that defeats sameAsCanary
+// (LT-127, docs/follow-up.md), because its per-path body varies by design and
+// so never matches a single canary's shape, fabricating a ConfidenceHigh
+// endpoint for every probed path. Requires both canaries 2xx and the same
+// normalized content type; strips each body sample of its own canary token
+// and compares the remainders, which must be byte-identical. The two tokens
+// are equal-length, so a genuine template leaves identical remainders with no
+// tolerance — a host serving distinct pages per path leaves different ones
+// and is not classified as a catch-all.
+func isTemplatedCatchall(c1, c2 canaryResponse) bool {
+	if !c1.fetched || !c2.fetched {
+		return false
+	}
+	if c1.status < 200 || c1.status >= 300 || c2.status < 200 || c2.status >= 300 {
+		return false
+	}
+	if c1.contentType != c2.contentType {
+		return false
+	}
+	r1 := bytes.ReplaceAll(c1.bodySample, []byte(reconCanaryToken), nil)
+	r2 := bytes.ReplaceAll(c2.bodySample, []byte(reconCanaryToken2), nil)
+	return bytes.Equal(r1, r2)
 }
 
 // normalizeContentType lower-cases a Content-Type header and drops its
@@ -505,7 +545,18 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 
 	canary := r.fetchReconCanary(ctx, agg, base, host)
 
+	// LT-127 (docs/follow-up.md): only when the first canary echoed its own
+	// path back (the templating tell) fetch a second, differently-named
+	// canary and check the two are one shared template — so a normal host,
+	// whose canary does not echo the path, pays zero extra requests.
+	templatedCatchall := false
+	if canary.fetched && bytes.Contains(canary.bodySample, []byte(reconCanaryToken)) {
+		canary2 := r.fetchCanaryAt(ctx, agg, base, host, reconCanaryPath2)
+		templatedCatchall = isTemplatedCatchall(canary, canary2)
+	}
+
 	suppressed := 0
+	templatedSuppressed := 0
 	timedOut := 0
 	blocked, answered := 0, 0
 	var commonPathHits []commonPathHit // LT-66 tail: this call's own wave3-common-path-probe endpoints, for the post-verdict catch-all cleanup below
@@ -568,6 +619,15 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 		}
 		bodyLen := int(n)
 		ctype := normalizeContentType(resp.Header.Get("Content-Type"))
+		if templatedCatchall {
+			// LT-127: this host serves one page-name-templated catch-all for
+			// every path, so a 200 here is the template with the probed path
+			// echoed in, not a real resource — never a ConfidenceHigh endpoint
+			// (and never a spec, even at /openapi.json). Skip before recording.
+			templatedSuppressed++
+			blocked++
+			continue
+		}
 		if canary.sameAsCanary(resp.StatusCode, bodyLen, ctype) {
 			suppressed++
 			blocked++ // every path is the same catch-all page — recon is blind here too
@@ -618,6 +678,9 @@ func (r *Recon) probeCommonPaths(ctx context.Context, agg *aggregator, seed stri
 	}
 	if suppressed > 0 {
 		agg.addWarning("wave3: %s: %d common-path probe(s) returned a response indistinguishable from a random-path canary (uniform SPA/catch-all) — not recorded as endpoints (LT-30)", host, suppressed)
+	}
+	if templatedSuppressed > 0 {
+		agg.addWarning("wave3: %s: %d common-path probe(s) suppressed — this host serves a page-name-templated catch-all (a second, differently-named canary returned the same template with only the echoed name differing), so a 200 on a probed path is the template, not a real resource (LT-127)", host, templatedSuppressed)
 	}
 	if timedOut > 0 {
 		agg.addWarning("wave3: %s: %d common-path probe(s) timed out (host tarpits some paths) — counted as per-path skips, not toward the host-down breaker (LT-86)", host, timedOut)
@@ -937,7 +1000,14 @@ func (r *Recon) fetchRootObservation(ctx context.Context, base, host string) (un
 // same hostErrors circuit breaker as the real probes so a wholly-broken
 // host still trips it here.
 func (r *Recon) fetchReconCanary(ctx context.Context, agg *aggregator, base, host string) canaryResponse {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+reconCanaryPath, nil)
+	return r.fetchCanaryAt(ctx, agg, base, host, reconCanaryPath)
+}
+
+// fetchCanaryAt is fetchReconCanary parameterized on the canary path, so
+// LT-127's second canary (reconCanaryPath2) reuses the identical fetch +
+// circuit-breaker handling rather than duplicating it.
+func (r *Recon) fetchCanaryAt(ctx context.Context, agg *aggregator, base, host, canaryPath string) canaryResponse {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+canaryPath, nil)
 	if err != nil {
 		return canaryResponse{}
 	}
