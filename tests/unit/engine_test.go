@@ -206,7 +206,7 @@ func TestEngineRun_CoverageGap_EmitsFindingOnlyForUncoveredTech(t *testing.T) {
 		Detector:    "misconfig",
 		TechStack: []recon.TechFact{
 			{Host: u.Host, Name: "WordPress 6.4"},  // native rule match -> not a gap
-			{Host: u.Host, Name: "Webmin 2.111"},   // nothing covers it -> a gap
+			{Host: u.Host, Name: "Zabbix 6.0"},   // nothing covers it -> a gap
 		},
 	}
 	require.NoError(t, cfg.Validate())
@@ -221,7 +221,7 @@ func TestEngineRun_CoverageGap_EmitsFindingOnlyForUncoveredTech(t *testing.T) {
 		}
 	}
 	require.Len(t, gapFindings, 1, "exactly one coverage-gap finding, for the uncovered tech only")
-	assert.Equal(t, "Webmin 2.111", gapFindings[0].Evidence["product"])
+	assert.Equal(t, "Zabbix 6.0", gapFindings[0].Evidence["product"])
 	assert.Equal(t, u.Host, gapFindings[0].Target)
 }
 

@@ -1,5 +1,7 @@
 package fingerprint
 
+import "regexp"
+
 // Signature is one static tech-signature rule: every non-empty field is an
 // AND'able condition (a signature setting only one field, the common case,
 // degenerates to a single check). Modeled directly on HexStrike AI's
@@ -17,7 +19,28 @@ type Signature struct {
 	BodyContains   string // substring the response body must contain, case-insensitive
 	FaviconHash    string // exact match against httpx's own mmh3 favicon hash string
 	Port           int    // well-known port; 0 = skip this condition
+	// VersionRegex, when set, is applied to the same signal the signature
+	// matched on (the header's value for a header signature, the body for a
+	// body signature); its first capture group becomes Match.Version.
+	// Best-effort: no capture (a product that hides its version pre-login)
+	// still yields the unversioned Match. Ignored for favicon/port signatures,
+	// which carry no text to capture from.
+	VersionRegex string
 }
+
+// versionRegexes holds each signature's compiled VersionRegex, keyed by the
+// pattern string, built once at package init so Detect never recompiles. A
+// malformed pattern panics at startup (and in TestSignatures_VersionRegexesCompile)
+// rather than silently disabling version capture.
+var versionRegexes = func() map[string]*regexp.Regexp {
+	m := make(map[string]*regexp.Regexp)
+	for _, s := range signatures {
+		if s.VersionRegex != "" {
+			m[s.VersionRegex] = regexp.MustCompile(s.VersionRegex)
+		}
+	}
+	return m
+}()
 
 // signatures is intentionally small and reviewable, not exhaustive — a
 // TechFact with no match here is meant to surface as an explicit
@@ -68,4 +91,37 @@ var signatures = []Signature{
 	{Product: "s3", HeaderName: "server", HeaderContains: "amazons3"}, // S3 static-website hosting
 	{Product: "gcp", HeaderName: "x-goog-generation"},                 // GCS object metadata
 	{Product: "gcp", HeaderName: "x-guploader-uploadid"},              // GCS upload/session header
+
+	// Self-hosted CMS / admin-panel products (LT-129, docs/follow-up.md). Each
+	// marker below was confirmed against a live instance (the four products
+	// all run on the owned *.nettix.com.pe scope, 2026-09-30) and cross-checked
+	// against the synced nuclei corpus's own detect templates, not recalled.
+	// Session-cookie names are used as the header signal because they are
+	// product-fixed and, unlike a Server header, survive an nginx/Apache front:
+	// erp.* sets DOLSESSID_<hash>, cloud01.* sets oc_sessionPassphrase plus
+	// __Host-nc_sameSiteCookie*, wiki.* sets DokuWiki=<sid>.
+	//
+	// Webmin/MiniServ: the Server header is the hard signal, but MiniServ omits
+	// its version pre-login by default (cloud02.*:10000 answered a bare
+	// "Server: MiniServ"), so VersionRegex is best-effort. The port-only entry
+	// is deliberately weak (ConfidenceLow via SourcePort, same as MySQL/Redis)
+	// — 10000 alone doesn't prove Webmin — but it is what lets recon's naabu
+	// port fact dispatch the Webmin checks for a host whose :10000 httpx never
+	// probed (its default probe set is 80/443).
+	{Product: "Webmin", HeaderName: "server", HeaderContains: "miniserv", VersionRegex: `(?i)miniserv/(\d+\.\d+(?:\.\d+)?)`},
+	{Product: "Webmin", Port: 10000},
+	// Dolibarr: the login page's author <meta> is the same hard product gate
+	// misconfig.checkDolibarrOutdated uses; every themed CSS/JS URL in its
+	// <head> carries "&version=<DOL_VERSION>" (live: erp.* read 23.0.3).
+	{Product: "Dolibarr", HeaderName: "set-cookie", HeaderContains: "DOLSESSID_"},
+	{Product: "Dolibarr", BodyContains: `<meta name="author" content="Dolibarr Development Team">`, VersionRegex: `[?&](?:amp;)?version=(\d+\.\d+\.\d+)`},
+	// Nextcloud: its login page exposes no version (that lives only on
+	// /status.php, which misconfig.checkNextcloudStatus reads), so no
+	// VersionRegex here.
+	{Product: "Nextcloud", HeaderName: "set-cookie", HeaderContains: "oc_sessionPassphrase"},
+	{Product: "Nextcloud", HeaderName: "set-cookie", HeaderContains: "__Host-nc_sameSiteCookie"},
+	// DokuWiki: the generator <meta> names the product but not the release, so
+	// no VersionRegex.
+	{Product: "DokuWiki", HeaderName: "set-cookie", HeaderContains: "DokuWiki="},
+	{Product: "DokuWiki", BodyContains: `<meta name="generator" content="DokuWiki`},
 }

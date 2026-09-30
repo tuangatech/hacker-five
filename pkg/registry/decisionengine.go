@@ -109,6 +109,15 @@ var techRules = []techRule{
 	{Match: "iis", Capabilities: []string{"misconfig"}},
 	{Match: "litespeed", Capabilities: []string{"misconfig"}},
 	{Match: "woocommerce", Capabilities: []string{"misconfig"}},
+	// LT-129: the four self-hosted products pkg/fingerprint now recognizes.
+	// misconfig carries their product-gated version/exposure checks
+	// (checkDolibarrOutdated / checkNextcloudStatus / checkWebmin, and the
+	// generic exposed-path rules); without a rule here a fingerprinted host
+	// only reached them incidentally, via an unrelated PHP/nginx fact.
+	{Match: "dolibarr", Capabilities: []string{"misconfig"}},
+	{Match: "nextcloud", Capabilities: []string{"misconfig"}},
+	{Match: "webmin", Capabilities: []string{"misconfig"}},
+	{Match: "dokuwiki", Capabilities: []string{"misconfig"}},
 }
 
 // apiSpecTechName maps an APISpecFact.Kind to the techRules tech name whose
@@ -281,6 +290,13 @@ var hostnameProductHints = map[string]string{
 	"sonarqube":  "sonarqube",
 	"portainer":  "portainer",
 	"prometheus": "prometheus",
+	// LT-129: unambiguous product names only — a bare "cloud"/"erp"/"wiki"
+	// label is far too generic to hint on (nettix's cloud01/erp/wiki hosts are
+	// caught by fingerprint instead).
+	"dolibarr":  "dolibarr",
+	"nextcloud": "nextcloud",
+	"webmin":    "webmin",
+	"dokuwiki":  "dokuwiki",
 }
 
 // hostnameProductHint returns the tech name hostnameProductHints associates

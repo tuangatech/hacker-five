@@ -2261,3 +2261,55 @@ func TestResolve_TechEndpointSignature_NoHitLeavesConfidenceAlone(t *testing.T) 
 	require.NotNil(t, leaf)
 	assert.Equal(t, agenttask.ConfidenceLow, leaf.Confidence, "no signature endpoint -> the fingerprint's own confidence stands")
 }
+
+// TestResolve_CMSFingerprint_DispatchesMisconfigAndProductTemplates is LT-129's
+// registry half: a host fingerprinted (by pkg/fingerprint) as one of the four
+// self-hosted products must get its misconfig leaf — where the product-gated
+// version/exposure checks live — plus that product's own tagged templates,
+// even with no PHP/nginx fact on the host to carry misconfig incidentally. The
+// versioned "Dolibarr:23.0.3" name must still resolve.
+func TestResolve_CMSFingerprint_DispatchesMisconfigAndProductTemplates(t *testing.T) {
+	cases := []struct {
+		tech     string
+		tag      string
+		template string
+	}{
+		{"Dolibarr:23.0.3", "dolibarr", "dolibarr-panel"},
+		{"Nextcloud", "nextcloud", "nextcloud-detect"},
+		{"Webmin", "webmin", "webmin-panel"},
+		{"DokuWiki", "dokuwiki", "dokuwiki-panel"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tech, func(t *testing.T) {
+			result := &recon.ReconResult{
+				Target:    "http://app.example.test",
+				TechStack: []recon.TechFact{{Name: tc.tech, Host: "app.example.test", Source: "fingerprint-header", Confidence: "high"}},
+			}
+			index := []templatesync.Entry{
+				{ID: tc.template, Tags: []string{"panel", tc.tag}, Severity: "info"},
+				{ID: "unrelated-thing", Tags: []string{"wordpress"}, Severity: "info"},
+			}
+
+			tree, _ := Resolve(result, index)
+
+			assert.NotNil(t, findLeaf(t, tree, "app.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "misconfig" }),
+				"a %s fact must dispatch the misconfig capability", tc.tech)
+			assert.NotNil(t, findLeaf(t, tree, "app.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == tc.template }),
+				"a %s fact must dispatch its %s-tagged template", tc.tech, tc.tag)
+			assert.Nil(t, findLeaf(t, tree, "app.example.test", func(n *agenttask.PlanNode) bool { return n.Detector == "unrelated-thing" }))
+		})
+	}
+}
+
+// TestResolve_HostnameProductHint_CMSNames: the four LT-129 product names are
+// exact-first-label hints; the generic labels a real deployment uses for them
+// (cloud/erp/wiki) deliberately are not.
+func TestResolve_HostnameProductHint_CMSNames(t *testing.T) {
+	assert.Equal(t, "webmin", hostnameProductHint("webmin01.example.com"))
+	assert.Equal(t, "nextcloud", hostnameProductHint("nextcloud.example.com"))
+	assert.Equal(t, "dolibarr", hostnameProductHint("dolibarr01.example.com"))
+	assert.Equal(t, "dokuwiki", hostnameProductHint("dokuwiki2.example.com"))
+	for _, generic := range []string{"cloud01.example.com", "erp.example.com", "wiki.example.com", "mynextcloud-notes.example.com"} {
+		assert.Empty(t, hostnameProductHint(generic), generic)
+	}
+}

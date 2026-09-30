@@ -134,7 +134,15 @@ func (r *Recon) runWave2(ctx context.Context, agg *aggregator, targetHost string
 			case fingerprint.SourcePort:
 				confidence = ConfidenceLow
 			}
-			agg.addTech(TechFact{Name: m.Product, Host: hf.Host, Source: m.Source, Confidence: confidence})
+			// "Product:version" is the versioned-name convention httpx's own
+			// -tech-detect uses ("PHP:8.3.30"); addTech upgrades an existing
+			// unversioned fact for the same product+host to it, and the
+			// registry's CVE-recency scoring reads it via techVersionSuffix.
+			name := m.Product
+			if m.Version != "" {
+				name += ":" + m.Version
+			}
+			agg.addTech(TechFact{Name: name, Host: hf.Host, Source: m.Source, Confidence: confidence})
 		}
 	}
 	return liveURLs

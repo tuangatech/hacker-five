@@ -35,6 +35,7 @@ const (
 type Match struct {
 	Product string
 	Source  string
+	Version string // captured by the signature's VersionRegex; "" when unset or no capture
 }
 
 // Detect checks every Signature against s, returning one Match per
@@ -45,8 +46,8 @@ type Match struct {
 func Detect(s Signal) []Match {
 	var matches []Match
 	for _, sig := range signatures {
-		if src, ok := evaluate(sig, s); ok {
-			matches = append(matches, Match{Product: sig.Product, Source: src})
+		if src, version, ok := evaluate(sig, s); ok {
+			matches = append(matches, Match{Product: sig.Product, Source: src, Version: version})
 		}
 	}
 	return matches
@@ -57,33 +58,52 @@ func Detect(s Signal) []Match {
 // only ever set one condition at a time (see signatures.go), so the first
 // condition found true is the one reported; a future multi-condition
 // signature would need this to report all of them, not just the first.
-func evaluate(sig Signature, s Signal) (source string, ok bool) {
+// version is the first capture group of sig.VersionRegex applied to the text
+// the signature matched on (header value or body), "" when unset/no capture.
+func evaluate(sig Signature, s Signal) (source, version string, ok bool) {
 	if sig.HeaderName != "" {
 		v, found := lookupHeader(s.Headers, sig.HeaderName)
 		if !found || !containsFold(v, sig.HeaderContains) {
-			return "", false
+			return "", "", false
 		}
-		return SourceHeader, true
+		return SourceHeader, captureVersion(sig.VersionRegex, v), true
 	}
 	if sig.BodyContains != "" {
 		if !containsFold(s.Body, sig.BodyContains) {
-			return "", false
+			return "", "", false
 		}
-		return SourceBody, true
+		return SourceBody, captureVersion(sig.VersionRegex, s.Body), true
 	}
 	if sig.FaviconHash != "" {
 		if s.FaviconHash != sig.FaviconHash {
-			return "", false
+			return "", "", false
 		}
-		return SourceFavicon, true
+		return SourceFavicon, "", true
 	}
 	if sig.Port != 0 {
 		if !containsPort(s.Ports, sig.Port) {
-			return "", false
+			return "", "", false
 		}
-		return SourcePort, true
+		return SourcePort, "", true
 	}
-	return "", false
+	return "", "", false
+}
+
+// captureVersion returns the first capture group of pattern (a
+// Signature.VersionRegex) matched against text, or "" when pattern is empty or
+// nothing captured.
+func captureVersion(pattern, text string) string {
+	if pattern == "" {
+		return ""
+	}
+	re := versionRegexes[pattern]
+	if re == nil {
+		return ""
+	}
+	if m := re.FindStringSubmatch(text); len(m) > 1 {
+		return m[1]
+	}
+	return ""
 }
 
 func lookupHeader(headers map[string]string, name string) (string, bool) {
