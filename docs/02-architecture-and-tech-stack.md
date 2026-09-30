@@ -267,7 +267,7 @@ A tour of the main files, for orienting in the codebase rather than these diagra
 
 ### Recon, fingerprint, decision engine
 - [`pkg/recon`](../pkg/recon) — `recon.go` (`Run`), `passive.go`/`active.go`/`crawl.go` (waves 1/2/3), `aggregate.go` (merge/dedup, `NormalizeHost`), `wpplugins.go` (WordPress plugin/theme slugs from crawl URLs), `suggest.go` (recon-derived field candidates), `types.go` (frozen schema shape). `recon.ClientConfig` forces `InsecureSkipVerify` for recon's own client (matching katana/httpx).
-- [`pkg/fingerprint`](../pkg/fingerprint) — ~20-entry signature table over header/body/favicon/port signals.
+- [`pkg/fingerprint`](../pkg/fingerprint) — ~30-entry signature table over header/body/favicon/port signals; a `Signature` may carry an optional `VersionRegex` (first capture group over the matched header/body), which recon surfaces as the versioned `Product:version` TechFact name the registry's CVE-recency scoring already reads (LT-129).
 - [`pkg/registry`](../pkg/registry) — `Capabilities` (`registry.go`, doc01's table in `tools.search` shape); `Resolve` (`decisionengine.go`) → `PlanTree` leaves + a `map[string]LeafContext` of originating facts. Ranked tag matching, `canonicalTechTags`, `nonActionableTech`, `hostnameProductHints`, `TechStackTags`.
 - [`pkg/agenttask`](../pkg/agenttask) — `PlanTree`/`PlanNode`, mutex-guarded, leaf-only `ApplyLeafUpdate` (shape-change rejected), spend ceiling.
 
