@@ -379,6 +379,80 @@ func idPlaceholderIsPublicNavParam(endpointTemplate string) bool {
 	return false
 }
 
+// publicCMSContentScripts holds URL path basenames of well-known content-
+// management / wiki front-controller scripts whose primary object parameter
+// addresses a *public* content page, not a user-owned object. DokuWiki serves
+// every wiki page as `doku.php?id=<pagename>`; enumerating that `id` walks
+// public pages that legitimately differ in size/content, which the single-token
+// heuristic (a bare response-signature diff) cannot tell apart from an
+// access-control differential — the confirmed source of LT-199's idor-heuristic
+// false-positive flood on wiki.nettix.com.pe (a public DokuWiki, ~30 `?id=<n>`
+// pages each flagged). Unlike a REST `/api/orders/{id}`, there is no per-user
+// authorization boundary here for the heuristic to have found bypassed.
+//
+// `id` itself is deliberately never denylisted — it is *the* canonical IDOR
+// parameter, and blanket-suppressing it would blind the heuristic to real
+// object-reference bypasses. The suppression instead keys on the CMS front-
+// controller script name *plus* a public 2xx, so a genuine `/api/.../{id}`
+// enumeration (a different path basename) is untouched, and an authorization
+// differential on the wiki itself (a 401/403/redirect on one page, e.g. a
+// DokuWiki ACL) is a non-2xx sample that is still surfaced.
+var publicCMSContentScripts = map[string]bool{
+	"doku.php": true, // DokuWiki — every page is doku.php?id=<pagename>
+}
+
+// publicCMSCodePathPrefixes holds URL path prefixes of a CMS's own code/asset
+// directories, where a numeric {{id}} *path segment* is a file/route name, not
+// an object reference. Live-observed 2026-09-30 on wiki.nettix.com.pe (right
+// after LT-199): besides `doku.php?id=<n>`, the heuristic flagged ~60 sequential
+// `/lib/plugins/captcha/<n>` paths — DokuWiki's plugin directory, which falls
+// through to an ordinary public wiki page for any trailing segment. Same gate as
+// publicCMSContentScripts: the suppression only ever applies when the sample
+// returned a public 2xx, so a 401/403/redirect differential is still surfaced,
+// and a REST `/api/.../{id}` path never starts with these prefixes.
+var publicCMSCodePathPrefixes = []string{
+	"/lib/plugins/", // DokuWiki plugin directory
+	"/lib/tpl/",     // DokuWiki template directory
+	"/lib/exe/",     // DokuWiki front-controller/asset scripts
+}
+
+// idPlaceholderIsPublicCMSContent reports whether endpointTemplate enumerates
+// its {{id}} placeholder through the query string of a known public-content CMS
+// front-controller (publicCMSContentScripts). It parses the template with the
+// placeholder swapped for an inert sentinel so a malformed template just yields
+// false (never suppresses). See publicCMSContentScripts for why heuristic-mode
+// findings on such an enumeration are public-content noise, not IDOR.
+func idPlaceholderIsPublicCMSContent(endpointTemplate string) bool {
+	const sentinel = "hfidnavsentinel"
+	u, err := url.Parse(strings.ReplaceAll(endpointTemplate, "{{id}}", sentinel))
+	if err != nil {
+		return false
+	}
+	if strings.Contains(u.Path, sentinel) {
+		lower := strings.ToLower(u.Path)
+		for _, prefix := range publicCMSCodePathPrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
+		}
+	}
+	segs := strings.Split(u.EscapedPath(), "/")
+	base := strings.ToLower(segs[len(segs)-1])
+	if !publicCMSContentScripts[base] {
+		return false
+	}
+	// The placeholder must actually be enumerated through this script's query
+	// string (its content parameter), not merely appear somewhere in the path.
+	for _, vals := range u.Query() {
+		for _, v := range vals {
+			if strings.Contains(v, sentinel) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // heuristicFindings flags every sample whose signature differs from the
 // majority signature across all samples. This is the documented limitation
 // of heuristic mode, not a bug: it cannot distinguish "IDOR" from "this ID
@@ -386,15 +460,18 @@ func idPlaceholderIsPublicNavParam(endpointTemplate string) bool {
 // public product pages) — every deviation is reported as low-confidence,
 // manual-triage material.
 //
-// endpointTemplate is passed so a deviation on a public content-navigation
-// enumeration (paginationParamDenylist) that returned a public 2xx can be
-// suppressed as public-CMS noise rather than reported (LT-198).
+// endpointTemplate is passed so a deviation on a public content enumeration
+// that returned a public 2xx can be suppressed as public-content noise rather
+// than reported: a content-navigation/pagination parameter (LT-198,
+// paginationParamDenylist) or a public-CMS front-controller's content parameter
+// (LT-199, publicCMSContentScripts — e.g. DokuWiki `doku.php?id=<page>`).
 func heuristicFindings(endpointTemplate string, samples []idSample) []detectors.Finding {
 	if len(samples) == 0 {
 		return nil
 	}
 
-	suppressPublicNav := idPlaceholderIsPublicNavParam(endpointTemplate)
+	suppressPublicContent := idPlaceholderIsPublicNavParam(endpointTemplate) ||
+		idPlaceholderIsPublicCMSContent(endpointTemplate)
 
 	sigs := make([]Signature, len(samples))
 	for i, s := range samples {
@@ -407,12 +484,13 @@ func heuristicFindings(endpointTemplate string, samples []idSample) []detectors.
 		if !s.sig.DiffersFrom(majority) {
 			continue
 		}
-		// A signature deviation on a public content-navigation parameter that
-		// still returned a public 2xx is expected (each page/post legitimately
-		// differs) and carries no authorization boundary — suppress it. A
-		// non-2xx deviation (a 401/403/redirect on one ID) is kept: that could
-		// be a real access differential worth manual triage.
-		if suppressPublicNav && s.sig.StatusCode >= 200 && s.sig.StatusCode < 300 {
+		// A signature deviation on a public content enumeration (pagination
+		// parameter or public-CMS content script) that still returned a public
+		// 2xx is expected (each page/post legitimately differs) and carries no
+		// authorization boundary — suppress it. A non-2xx deviation (a
+		// 401/403/redirect on one ID) is kept: that could be a real access
+		// differential worth manual triage.
+		if suppressPublicContent && s.sig.StatusCode >= 200 && s.sig.StatusCode < 300 {
 			continue
 		}
 		findings = append(findings, detectors.Finding{
