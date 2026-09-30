@@ -165,6 +165,50 @@ func TestRun_FastLane_RunsParameterFreeLeafWithoutAskingTheModel(t *testing.T) {
 	}
 }
 
+// TestRun_TerminalSweep_DispatchesLeavesTheModelNeverReached guards the
+// LT-183 (j) regression (doc94's "Near-term: the orchestrator iteration-budget
+// fix"): on nettix.com.pe the fast-lane+model arm ended its turn budget with 2
+// endpoint-specific leaves still pending and lost 2 real findings the
+// deterministic no-model+all-leaves arm caught. A fast-lane+model run must
+// never end a subset of that ceiling — whatever runnable leaves the model
+// leaves (here it just stops without dispatching the endpoint-specific one)
+// are swept deterministically before the run returns, without a model call.
+func TestRun_TerminalSweep_DispatchesLeavesTheModelNeverReached(t *testing.T) {
+	srv := fastLaneTargetServer(t)
+	// The model stops without ever dispatching a scan.leaf of its own.
+	client := &fakeLLMClient{actions: []llmfallback.Action{{Kind: "stop", Rationale: "calling it off early"}}}
+	cfg := fastLaneConfig(srv, client) // FastLane=true (the production default)
+	cfg.MinIterations = 1
+	cfg.Recon = &fakeRecon{result: &recon.ReconResult{
+		Target: srv.URL,
+		Endpoints: []recon.EndpointFact{
+			{URL: srv.URL + "/", StatusCode: 200, Source: "httpx"},
+			{URL: srv.URL + "/api/private", Method: "GET", Source: "api-spec", AuthRequired: true},
+		},
+	}}
+
+	result, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Iterations != 0 {
+		t.Fatalf("Iterations = %d, want 0 (the model dispatched no leaf, it only stopped)", result.Iterations)
+	}
+	for _, leaf := range agenttask.Leaves(result.Tree.Root) {
+		if leaf.Status == agenttask.StatusPending {
+			t.Errorf("leaf %s (%s) is still pending — the terminal sweep must dispatch what the model left runnable", leaf.ID, leaf.Detector)
+		}
+	}
+	// The broad misconfig sweep (fast lane, during the loop) plus the
+	// endpoint-specific leaf (terminal sweep, after the honored stop).
+	if result.FastLaneTurns < 2 {
+		t.Fatalf("FastLaneTurns = %d, want >= 2 (the in-loop sweep plus the terminal sweep of the leaf the model left)", result.FastLaneTurns)
+	}
+	if client.calls == 0 {
+		t.Fatal("the model should still have been asked (and chose stop); the sweep itself makes no model call")
+	}
+}
+
 func TestRun_FastLaneOff_StillAsksTheModelForTheSameLeaf(t *testing.T) {
 	srv := fastLaneTargetServer(t)
 	client := &fakeLLMClient{actions: []llmfallback.Action{{Kind: "stop", Rationale: "done"}}}

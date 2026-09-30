@@ -129,8 +129,15 @@ type Config struct {
 	// <= 0 uses DefaultBudgetUSD — this run always has a real ceiling, never
 	// an implicit unbounded one.
 	Budget float64
-	// MaxIterations caps the number of dispatched turns (a "stop" action
-	// doesn't count as one). <= 0 uses DefaultMaxIterations.
+	// MaxIterations caps the number of model-directed dispatched turns (a
+	// "stop" action, and the fast-lane / terminal-sweep turns below, don't
+	// count). <= 0 uses DefaultMaxIterations. It bounds the model's *ordering*
+	// budget only: with FastLane on, a terminal deterministic sweep (see Run)
+	// dispatches any runnable leaf the model never reached before the run
+	// returns, so hitting this cap can never cost recall relative to
+	// --run-every-leaf (doc94's "Near-term: the orchestrator iteration-budget
+	// fix", LT-183 (j) — the model arm hit this cap with 2 real findings still
+	// undispatched on nettix.com.pe).
 	MaxIterations int
 	// MinIterations is a floor on dispatched turns: a "stop" action is
 	// rejected (fed back into history, NextAction asked again) while fewer
@@ -442,6 +449,46 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		}
 		history = append(history, rec)
 		cfg.logTurn(fmt.Sprintf("turn %d", iteration), rec)
+	}
+
+	// Terminal deterministic sweep (doc94's "Near-term: the orchestrator
+	// iteration-budget fix", LT-183 (j)): a fast-lane+model run must never end a
+	// strict subset of the deterministic --run-every-leaf ceiling. On
+	// nettix.com.pe the model arm hit DefaultMaxIterations with 2
+	// endpoint-specific (authbypass) leaves still pending and lost 2 real
+	// findings the no-model+all-leaves arm caught — a scheduling loss, not a
+	// reasoning one (the model's ordering has never beaten running everything on
+	// any measured target, doc94 §4). Drain whatever runnable leaves the model
+	// left through the same scan.leaf dispatch RunEveryLeaf uses: no model call,
+	// counted as FastLaneTurns not Iterations, so the model keeps its full
+	// ordering budget and the run is a superset-or-equal of the ceiling by
+	// construction. An accepted "stop" therefore no longer skips remaining
+	// runnable leaves — deliberately, per that evidence.
+	//
+	// Gated to FastLane (the production default and the measured arm) and skipped
+	// when: the model was never healthy this run (llmDown covers both
+	// --no-model/NoModelClient — whose control arm must NOT run endpoint-specific
+	// leaves, that being no-model+all-leaves' distinct job — and a mid-run outage,
+	// whose remaining leaves stay reported via Degraded, unchanged); RunEveryLeaf
+	// already drained every runnable leaf in the loop; the context was cancelled;
+	// or the run-wide spend ceiling is already hit (the sweep adds no spend, but a
+	// budget-exhausted run should not grow a long deterministic tail). A leaf the
+	// model dispatched that stayed pending (e.g. a field-miss skip) is not in
+	// fastTried, so it may be re-dispatched once here — harmless: finding dedup
+	// absorbs repeats and a field-missing leaf skips cheaply again.
+	if cfg.FastLane && !llmDown && !cfg.RunEveryLeaf {
+		for ctx.Err() == nil {
+			if tree.SpendCeilingUSD > 0 && tree.SpendSoFar() >= tree.SpendCeilingUSD {
+				break
+			}
+			leaf := nextFastLaneLeaf(tree, fastTried, true)
+			if leaf == nil {
+				break
+			}
+			fastTried[leaf.ID] = true
+			fastTurns++
+			history = append(history, dispatchFastLaneLeaf(ctx, cfg, tree, &findings, leaf))
+		}
 	}
 
 	res := snapshot()
