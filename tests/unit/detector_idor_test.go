@@ -431,6 +431,32 @@ func TestIDORDetector_PublicCMSContentSuppression(t *testing.T) {
 		assert.Empty(t, findings)
 	})
 
+	t.Run("numeric path segment under a DokuWiki code dir suppressed", func(t *testing.T) {
+		// /lib/plugins/captcha/<n>: a distinct public 200 per trailing segment,
+		// live-observed on a public DokuWiki right after LT-199.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := int(r.URL.Path[len(r.URL.Path)-1]-'0') + 1
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(strings.Repeat("public-wiki-page-content ", n*20)))
+		}))
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/lib/plugins/captcha/{{id}}", "", "")
+		require.NoError(t, err)
+		assert.Empty(t, findings)
+	})
+
+	t.Run("numeric path segment outside a CMS code dir still flagged", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := r.URL.Path[len(r.URL.Path)-1] - '0'
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(strings.Repeat("record-body ", (int(id)+1)*20)))
+		}))
+		defer srv.Close()
+		findings, err := idor.New(client, strategy).Run(context.Background(), srv.URL+"/api/orders/{{id}}", "", "")
+		require.NoError(t, err)
+		assert.NotEmpty(t, findings)
+	})
+
 	t.Run("id on a non-CMS path still flagged (id is never denylisted)", func(t *testing.T) {
 		srv := queryIDServer()
 		defer srv.Close()

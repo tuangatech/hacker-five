@@ -401,6 +401,21 @@ var publicCMSContentScripts = map[string]bool{
 	"doku.php": true, // DokuWiki — every page is doku.php?id=<pagename>
 }
 
+// publicCMSCodePathPrefixes holds URL path prefixes of a CMS's own code/asset
+// directories, where a numeric {{id}} *path segment* is a file/route name, not
+// an object reference. Live-observed 2026-09-30 on wiki.nettix.com.pe (right
+// after LT-199): besides `doku.php?id=<n>`, the heuristic flagged ~60 sequential
+// `/lib/plugins/captcha/<n>` paths — DokuWiki's plugin directory, which falls
+// through to an ordinary public wiki page for any trailing segment. Same gate as
+// publicCMSContentScripts: the suppression only ever applies when the sample
+// returned a public 2xx, so a 401/403/redirect differential is still surfaced,
+// and a REST `/api/.../{id}` path never starts with these prefixes.
+var publicCMSCodePathPrefixes = []string{
+	"/lib/plugins/", // DokuWiki plugin directory
+	"/lib/tpl/",     // DokuWiki template directory
+	"/lib/exe/",     // DokuWiki front-controller/asset scripts
+}
+
 // idPlaceholderIsPublicCMSContent reports whether endpointTemplate enumerates
 // its {{id}} placeholder through the query string of a known public-content CMS
 // front-controller (publicCMSContentScripts). It parses the template with the
@@ -412,6 +427,14 @@ func idPlaceholderIsPublicCMSContent(endpointTemplate string) bool {
 	u, err := url.Parse(strings.ReplaceAll(endpointTemplate, "{{id}}", sentinel))
 	if err != nil {
 		return false
+	}
+	if strings.Contains(u.Path, sentinel) {
+		lower := strings.ToLower(u.Path)
+		for _, prefix := range publicCMSCodePathPrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
+		}
 	}
 	segs := strings.Split(u.EscapedPath(), "/")
 	base := strings.ToLower(segs[len(segs)-1])
