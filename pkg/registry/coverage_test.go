@@ -33,7 +33,7 @@ func TestCoverageStatus_NonActionable(t *testing.T) {
 }
 
 func TestCoverageStatus_GenuineGap(t *testing.T) {
-	hasNative, hasTemplate, nonActionable := CoverageStatus("Webmin 2.111", nil)
+	hasNative, hasTemplate, nonActionable := CoverageStatus("Zabbix 6.0", nil)
 	assert.False(t, hasNative)
 	assert.False(t, hasTemplate)
 	assert.False(t, nonActionable)
