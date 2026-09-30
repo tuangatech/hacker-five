@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -725,4 +726,133 @@ func TestTagAuthBoundary_HostAlreadyTripped_SkipsRequest(t *testing.T) {
 	r.tagAuthBoundary(context.Background(), agg, srv.URL)
 
 	assert.Empty(t, agg.finalize().Endpoints, "a host already past the error threshold must not get a fresh auth-boundary probe")
+}
+
+// TestProbeCommonPaths_TemplatedCatchall_SuppressesFabricatedEndpoints guards
+// LT-127 (docs/follow-up.md): a page-name-templated catch-all (a wiki's "this
+// topic does not exist" 200 whose body echoes the requested path) returns a
+// legitimately-different body for every path, so the single-canary
+// sameAsCanary check never fires and every probed common path — /api,
+// /graphql, /openapi.json — is fabricated as a ConfidenceHigh endpoint. The
+// second-canary diff must recognize the shared template and suppress them.
+func TestProbeCommonPaths_TemplatedCatchall_SuppressesFabricatedEndpoints(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	// Every path, including both canaries and the root, returns 200 with the
+	// requested path echoed into an otherwise-identical HTML template.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html><head><title>Topic " + r.URL.Path + " does not exist</title></head><body>Create this page?</body></html>"))
+	}))
+	defer srv.Close()
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	for _, ep := range result.Endpoints {
+		if ep.Source == "wave3-common-path-probe" {
+			t.Errorf("LT-127: a templated catch-all must record no wave3-common-path-probe endpoint, got %q", ep.URL)
+		}
+	}
+	assert.Nil(t, result.APISpec, "LT-127: /openapi.json served as the templated catch-all must not become an APISpecFact")
+	assert.Contains(t, strings.Join(result.Warnings, " | "), "(LT-127)", "expected the LT-127 suppression warning")
+}
+
+// TestProbeCommonPaths_RealHost_RecordsEndpointsAndNeverFetchesSecondCanary is
+// the LT-127 negative control: a host serving a genuine 404 for unknown paths
+// (so the templating tell never fires) must keep its real common-path
+// endpoints and must never pay for the second canary.
+func TestProbeCommonPaths_RealHost_RecordsEndpointsAndNeverFetchesSecondCanary(t *testing.T) {
+	_, fake := recordingRun(t, nil)
+	var mu sync.Mutex
+	reqs := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reqs[r.URL.Path]++
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("homepage"))
+		case "/api":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"service":"orders","version":3}`))
+		case "/graphql":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"__typename":"Query"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	r := New(newTestClient(), withRun(fake))
+	result, err := r.Run(context.Background(), srv.URL, DepthFull)
+	require.NoError(t, err)
+
+	var sawAPI, sawGraphQL bool
+	for _, ep := range result.Endpoints {
+		switch {
+		case strings.HasSuffix(ep.URL, "/api"):
+			sawAPI = true
+		case strings.HasSuffix(ep.URL, "/graphql"):
+			sawGraphQL = true
+		}
+	}
+	assert.True(t, sawAPI, "a real distinct /api must still be recorded")
+	assert.True(t, sawGraphQL, "a real distinct /graphql must still be recorded")
+	assert.NotContains(t, strings.Join(result.Warnings, " | "), "(LT-127)", "no templated-catch-all warning on a real host")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, reqs[reconCanaryPath2], "LT-127: the second canary must not be fetched when the first canary never echoes its own path")
+}
+
+func TestIsTemplatedCatchall(t *testing.T) {
+	body := func(token string) []byte {
+		return []byte("<title>Topic /" + token + " does not exist</title>")
+	}
+	for _, tc := range []struct {
+		name   string
+		c1, c2 canaryResponse
+		want   bool
+	}{
+		{
+			name: "shared template, only echoed name differs",
+			c1:   canaryResponse{fetched: true, status: 200, contentType: "text/html", bodySample: body(reconCanaryToken)},
+			c2:   canaryResponse{fetched: true, status: 200, contentType: "text/html", bodySample: body(reconCanaryToken2)},
+			want: true,
+		},
+		{
+			name: "genuinely distinct pages",
+			c1:   canaryResponse{fetched: true, status: 200, contentType: "text/html", bodySample: []byte("<title>Login</title>")},
+			c2:   canaryResponse{fetched: true, status: 200, contentType: "text/html", bodySample: []byte("<title>Dashboard</title>")},
+			want: false,
+		},
+		{
+			name: "not 2xx",
+			c1:   canaryResponse{fetched: true, status: 404, contentType: "text/html", bodySample: body(reconCanaryToken)},
+			c2:   canaryResponse{fetched: true, status: 404, contentType: "text/html", bodySample: body(reconCanaryToken2)},
+			want: false,
+		},
+		{
+			name: "content-type mismatch",
+			c1:   canaryResponse{fetched: true, status: 200, contentType: "text/html", bodySample: body(reconCanaryToken)},
+			c2:   canaryResponse{fetched: true, status: 200, contentType: "application/json", bodySample: body(reconCanaryToken2)},
+			want: false,
+		},
+		{
+			name: "second canary not fetched",
+			c1:   canaryResponse{fetched: true, status: 200, contentType: "text/html", bodySample: body(reconCanaryToken)},
+			c2:   canaryResponse{fetched: false},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isTemplatedCatchall(tc.c1, tc.c2))
+		})
+	}
 }
