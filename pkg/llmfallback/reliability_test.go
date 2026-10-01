@@ -1,8 +1,10 @@
 package llmfallback
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,5 +196,81 @@ func TestCompleteLabeled_TimesOutLogsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a retrying-once log line naming retry-label, got %v", msgs)
+	}
+}
+
+// truncatedThenOKTransport answers the first request with a truncated
+// (finish_reason "length", empty content) chat-completion body and every
+// request after that with a normal successful one, recording each request
+// body it saw — lets a test prove both that the retry happened and that it
+// changed the outgoing request.
+type truncatedThenOKTransport struct {
+	bodies [][]byte
+}
+
+func (tt *truncatedThenOKTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	b, _ := io.ReadAll(req.Body)
+	tt.bodies = append(tt.bodies, b)
+	reply := `{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":100,"completion_tokens":100}}`
+	if len(tt.bodies) > 1 {
+		reply = `{"choices":[{"message":{"role":"assistant","content":"{\"kind\":\"stop\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":20}}`
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(reply))),
+		Request:    req,
+	}, nil
+}
+
+// TestCompleteLabeled_RetriesOnceOnTruncation_ClearsReasoningEffort guards
+// LT-206/LT-207's fix (docs/follow-up.md): errTruncatedResponse — a
+// reasoning-heavy model burning its whole output cap with no answer text —
+// gets one retry, same as the existing own-timeout retry, but with
+// reasoningEffort cleared first since retrying identically would very
+// likely truncate the same way again.
+func TestCompleteLabeled_RetriesOnceOnTruncation_ClearsReasoningEffort(t *testing.T) {
+	resetGlobalSpendForTest()
+	ct := &truncatedThenOKTransport{}
+	c := &Client{httpClient: &http.Client{Transport: ct}, openRouterKey: "k", openRouterModel: "m"}
+
+	text, _, err := c.completeLabeledWith(context.Background(), tierFrontier, "sys", "user", "test-label", 5*time.Second,
+		callOpts{maxTokens: 64, reasoningEffort: "low"})
+	if err != nil {
+		t.Fatalf("completeLabeledWith: %v", err)
+	}
+	if text != `{"kind":"stop"}` {
+		t.Fatalf("got text %q, want the retried attempt's answer", text)
+	}
+	if len(ct.bodies) != 2 {
+		t.Fatalf("transport saw %d request(s), want exactly 2 (one truncated, one retry)", len(ct.bodies))
+	}
+
+	first := decodeBody(t, ct.bodies[0])
+	if first["reasoning"] == nil {
+		t.Fatalf("first attempt should still carry the requested reasoning effort, got %v", first)
+	}
+	second := decodeBody(t, ct.bodies[1])
+	if _, ok := second["reasoning"]; ok {
+		t.Fatalf("retry must clear reasoningEffort, got %v", second)
+	}
+}
+
+// TestCompleteLabeled_TruncatedWithNoReasoningEffort_NoRetry guards the
+// guard: when reasoningEffort was already empty, a second identical attempt
+// would truncate the same way again, so it's skipped rather than spending a
+// second call for a guaranteed-same failure.
+func TestCompleteLabeled_TruncatedWithNoReasoningEffort_NoRetry(t *testing.T) {
+	resetGlobalSpendForTest()
+	ct := &truncatedThenOKTransport{}
+	c := &Client{httpClient: &http.Client{Transport: ct}, openRouterKey: "k", openRouterModel: "m"}
+
+	_, _, err := c.completeLabeledWith(context.Background(), tierFrontier, "sys", "user", "test-label", 5*time.Second,
+		callOpts{maxTokens: 64})
+	if err == nil {
+		t.Fatal("expected an error when the truncated attempt has no reasoningEffort to clear")
+	}
+	if len(ct.bodies) != 1 {
+		t.Fatalf("transport saw %d request(s), want exactly 1 (no retry when reasoningEffort was already empty)", len(ct.bodies))
 	}
 }
