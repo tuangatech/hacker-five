@@ -52,3 +52,9 @@ dist/
 !/templates-proposed/.gitkeep
 # Ablation harness results (tests/eval/ablation_test.go) — one JSONL per run of the harness, local measurement data
 /tests/eval/results/
+
+# Ad hoc local test-session workspace (bootstrap scripts, scope files, run logs
+# against the docker-compose labs) — personal paths, never committed; promote
+# anything worth keeping into tests/integration/scripts/ instead.
+/.scratch/
+/.scratch-labs/
