@@ -47,6 +47,36 @@ func TestEngineRun_DetectorOnly(t *testing.T) {
 	}
 }
 
+// TestEngineRun_ExtraHeaders_ReachNativeDetector regression-tests LT-209
+// (docs/follow-up.md): --header's value (scanner.Config.ExtraHeaders) was
+// previously only threaded into the two template-execution engines
+// (nuclei/native), never into any of the five native Go detectors, so a
+// cookie/header-gated target was silently scanned as an anonymous visitor
+// with no warning. Fixed via the httpclient.WithHeaders middleware added to
+// pkg/scanner/engine.go's New.
+func TestEngineRun_ExtraHeaders_ReachNativeDetector(t *testing.T) {
+	var gotCookie string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := scanner.Config{
+		Targets:      []string{server.URL},
+		Concurrency:  5,
+		RateLimit:    50,
+		Timeout:      5 * time.Second,
+		Detector:     "misconfig",
+		ExtraHeaders: map[string]string{"Cookie": "session=abc123"},
+	}
+	require.NoError(t, cfg.Validate())
+
+	_, err := scanner.New(cfg).Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "session=abc123", gotCookie, "ExtraHeaders must reach the native misconfig detector's requests")
+}
+
 // TestEngineRun_TemplatesRunAlongsideDetector is the first test to exercise
 // Engine.Run's Step 3 template-loading path (loadTemplates + both
 // executors), which was previously entirely untested — see

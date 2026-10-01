@@ -196,6 +196,14 @@ func New(cfg Config) *Engine {
 	mws := []httpclient.Middleware{
 		httpclient.WithRateLimit(e.limiter),
 		httpclient.WithRetry(retryMaxAttempts, retryBackoff),
+		// --header's value (ExtraHeaders) was previously only threaded into
+		// the two template-execution engines (nuclei/native, below) — the
+		// five native Go detectors (misconfig/idor/authbypass/sqli/ssrf)
+		// never received it at all, so a cookie/header-gated target was
+		// silently scanned as an anonymous visitor by those detectors with
+		// no warning anywhere (LT-209, docs/follow-up.md). A nil/empty map
+		// is a no-op.
+		httpclient.WithHeaders(cfg.ExtraHeaders),
 	}
 	if e.throttle != nil {
 		// Outermost (passed last): it sees the final, post-retry outcome, the
