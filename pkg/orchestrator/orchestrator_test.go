@@ -387,6 +387,83 @@ func TestWarnDuplicateLeafTargets_NoLogWhenLeavesDiffer(t *testing.T) {
 	}
 }
 
+// TestWarnDuplicateLeafTargets_NoLogForDistinctSSRFCandidates regression-tests
+// LT-205 (docs/follow-up.md): two ssrf leaves on the same host previously
+// false-positived as "identical dispatch" because EndpointTemplate is unused
+// by ssrf leaves — their real candidate lives in SSRFPath/SSRFParams, which
+// leafDispatchKeyOf did not key on.
+func TestWarnDuplicateLeafTargets_NoLogForDistinctSSRFCandidates(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-61", Detector: "ssrf", Target: "https://example.test", SSRFPath: "/", SSRFParams: []string{"feed"}, Status: agenttask.StatusPending},
+		{ID: "leaf-62", Detector: "ssrf", Target: "https://example.test", SSRFPath: "/index.php", SSRFParams: []string{"url"}, Status: agenttask.StatusPending},
+	}}}
+
+	var logs []string
+	cfg := Config{OnLog: func(level, msg string) { logs = append(logs, level+": "+msg) }}
+	warnDuplicateLeafTargets(cfg, tree)
+
+	if len(logs) != 0 {
+		t.Fatalf("got %d log line(s), want 0 — leaf-61 and leaf-62 are distinct SSRF candidates: %v", len(logs), logs)
+	}
+}
+
+// TestWarnDuplicateLeafTargets_NoLogForDistinctSQLiCandidates regression-tests
+// LT-208: the same false positive, now confirmed on sqli leaves distinguished
+// only by SQLiPath/SQLiParams or SQLiBodyPath/SQLiBodyParams.
+func TestWarnDuplicateLeafTargets_NoLogForDistinctSQLiCandidates(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-a", Detector: "sqli", Target: "http://localhost:8888", SQLiPath: "/orders", SQLiParams: []string{"order_id"}, Status: agenttask.StatusPending},
+		{ID: "leaf-b", Detector: "sqli", Target: "http://localhost:8888", SQLiBodyPath: "/identity/api/auth/signup", SQLiBodyParams: []string{"email", "password"}, Status: agenttask.StatusPending},
+	}}}
+
+	var logs []string
+	cfg := Config{OnLog: func(level, msg string) { logs = append(logs, level+": "+msg) }}
+	warnDuplicateLeafTargets(cfg, tree)
+
+	if len(logs) != 0 {
+		t.Fatalf("got %d log line(s), want 0 — leaf-a and leaf-b are distinct SQLi candidates: %v", len(logs), logs)
+	}
+}
+
+// TestWarnDuplicateLeafTargets_SkipsUnresolvedAndDetectorlessLeaves
+// regression-tests LT-205's second finding: a StatusUnresolved, detector-less
+// leaf dispatches nothing, so it can never duplicate another leaf's work —
+// including it in the keyed-by-dispatch map only produced false warnings.
+func TestWarnDuplicateLeafTargets_SkipsUnresolvedAndDetectorlessLeaves(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-30", Target: "https://example.test", Status: agenttask.StatusUnresolved},
+		{ID: "leaf-64", Target: "https://example.test", Status: agenttask.StatusUnresolved},
+		{ID: "leaf-65", Target: "https://example.test", Status: agenttask.StatusUnresolved},
+	}}}
+
+	var logs []string
+	cfg := Config{OnLog: func(level, msg string) { logs = append(logs, level+": "+msg) }}
+	warnDuplicateLeafTargets(cfg, tree)
+
+	if len(logs) != 0 {
+		t.Fatalf("got %d log line(s), want 0 — unresolved, detector-less leaves can't dispatch, so can't duplicate: %v", len(logs), logs)
+	}
+}
+
+// TestWarnDuplicateLeafTargets_LogsForGenuinelyIdenticalSSRFCandidates
+// confirms the LT-205/LT-208 fix didn't overcorrect: two ssrf leaves naming
+// the exact same path+params (params in a different order) are still
+// genuinely identical dispatches and must still be flagged.
+func TestWarnDuplicateLeafTargets_LogsForGenuinelyIdenticalSSRFCandidates(t *testing.T) {
+	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root", Children: []*agenttask.PlanNode{
+		{ID: "leaf-x", Detector: "ssrf", Target: "https://example.test", SSRFPath: "/fetch", SSRFParams: []string{"url", "callback"}, Status: agenttask.StatusPending},
+		{ID: "leaf-y", Detector: "ssrf", Target: "https://example.test", SSRFPath: "/fetch", SSRFParams: []string{"callback", "url"}, Status: agenttask.StatusPending},
+	}}}
+
+	var logs []string
+	cfg := Config{OnLog: func(level, msg string) { logs = append(logs, level+": "+msg) }}
+	warnDuplicateLeafTargets(cfg, tree)
+
+	if len(logs) != 1 {
+		t.Fatalf("got %d log line(s), want 1 — leaf-x and leaf-y are the same candidate: %v", len(logs), logs)
+	}
+}
+
 func TestDispatch_RegistryLookup(t *testing.T) {
 	tree := &agenttask.PlanTree{Root: &agenttask.PlanNode{ID: "root"}}
 	var findings []detectors.Finding

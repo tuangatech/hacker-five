@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -638,6 +639,13 @@ func warnDuplicateLeafTargets(cfg Config, tree *agenttask.PlanTree) {
 	}
 	byKey := map[leafDispatchKey][]string{}
 	for _, leaf := range agenttask.Leaves(tree.Root) {
+		// LT-205: a StatusUnresolved or detector-less leaf can never dispatch
+		// anything, so it can never duplicate another leaf's dispatch either
+		// — including it here only produced false "would independently run
+		// and report" warnings for leaves that run nothing at all.
+		if leaf.Status == agenttask.StatusUnresolved || leaf.Detector == "" {
+			continue
+		}
 		k := leafDispatchKeyOf(leaf)
 		byKey[k] = append(byKey[k], leaf.ID)
 	}
@@ -650,15 +658,51 @@ func warnDuplicateLeafTargets(cfg Config, tree *agenttask.PlanTree) {
 	}
 }
 
-// leafDispatchKey identifies what a leaf would actually dispatch —
-// Detector+Target+EndpointTemplate — shared by warnDuplicateLeafTargets'
-// same-tree duplicate check and mergeReconRefresh's (LT-160 item 2,
-// docs/follow-up.md) cross-tree "is this genuinely new" check, so the two
-// never drift into checking different notions of "identical leaf."
-type leafDispatchKey struct{ detector, target, endpointTemplate string }
+// leafDispatchKey identifies what a leaf would actually dispatch, shared by
+// warnDuplicateLeafTargets' same-tree duplicate check and mergeReconRefresh's
+// (LT-160 item 2, docs/follow-up.md) cross-tree "is this genuinely new"
+// check, so the two never drift into checking different notions of
+// "identical leaf." Detector+Target+EndpointTemplate alone under-identifies
+// an ssrf/sqli/authbypass leaf: those detectors carry their real candidate
+// (path/params/protected-paths) in their own PlanNode fields instead of
+// EndpointTemplate, so two genuinely distinct candidates on the same
+// host+detector previously collided on the same key (LT-205/LT-208,
+// docs/follow-up.md) — both false-positiving the duplicate-leaf diagnostic
+// and, in mergeReconRefresh, wrongly skipping a fresh leaf as "already
+// present."
+type leafDispatchKey struct {
+	detector, target, endpointTemplate                 string
+	ssrfPath, ssrfParams, ssrfBodyParams               string
+	sqliPath, sqliParams, sqliBodyPath, sqliBodyParams string
+	protectedPaths                                     string
+}
 
 func leafDispatchKeyOf(leaf *agenttask.PlanNode) leafDispatchKey {
-	return leafDispatchKey{leaf.Detector, leaf.Target, leaf.EndpointTemplate}
+	return leafDispatchKey{
+		detector:         leaf.Detector,
+		target:           leaf.Target,
+		endpointTemplate: leaf.EndpointTemplate,
+		ssrfPath:         leaf.SSRFPath,
+		ssrfParams:       canonicalStringSet(leaf.SSRFParams),
+		ssrfBodyParams:   canonicalStringSet(leaf.SSRFBodyParams),
+		sqliPath:         leaf.SQLiPath,
+		sqliParams:       canonicalStringSet(leaf.SQLiParams),
+		sqliBodyPath:     leaf.SQLiBodyPath,
+		sqliBodyParams:   canonicalStringSet(leaf.SQLiBodyParams),
+		protectedPaths:   canonicalStringSet(leaf.ProtectedPaths),
+	}
+}
+
+// canonicalStringSet turns a param/path-list PlanNode field into an
+// order-independent, map-key-safe string, so two leaves naming the same set
+// of params in a different order still key identically.
+func canonicalStringSet(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), ss...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "\x1f")
 }
 
 // hasActionableLeaves reports whether tree has any leaf a future turn could

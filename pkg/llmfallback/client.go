@@ -400,13 +400,35 @@ func (c *Client) completeLabeled(ctx context.Context, t tier, system, user, labe
 }
 
 // completeLabeledWith is completeLabeled with LT-173's optional output controls.
+//
+// A second failure mode gets its own one-shot retry (LT-206/LT-207,
+// docs/follow-up.md): errTruncatedResponse, a reasoning-heavy model burning
+// its whole output cap on hidden reasoning with no answer text. Unlike the
+// timeout case, retrying with identical opts would very likely truncate the
+// same way again (temperature 0), so the retry clears reasoningEffort first
+// — the same no-reasoning-field behavior the documented
+// HACKERFIVE_DECISION_REASONING_EFFORT="" escape hatch already produces.
+// Skipped when reasoningEffort was already empty, since that retry would be
+// identical to the failed attempt.
 func (c *Client) completeLabeledWith(ctx context.Context, t tier, system, user, label string, timeout time.Duration, opts callOpts) (text string, costUSD float64, err error) {
 	text, costUSD, err = c.completeOnceWith(ctx, t, system, user, label, timeout, opts)
-	if err != nil && isOwnTimeout(ctx, err) {
+	switch {
+	case err != nil && isOwnTimeout(ctx, err):
 		c.logf("warn", "%s: timed out after %s — retrying once", label, timeout)
 		var retryText string
 		var retryCost float64
 		retryText, retryCost, err = c.completeOnceWith(ctx, t, system, user, label, timeout, opts)
+		costUSD += retryCost
+		if err == nil {
+			text = retryText
+		}
+	case err != nil && errors.Is(err, errTruncatedResponse) && opts.reasoningEffort != "":
+		c.logf("warn", "%s: truncated before any answer text (reasoning consumed the budget) — retrying once with reasoning effort cleared", label)
+		retryOpts := opts
+		retryOpts.reasoningEffort = ""
+		var retryText string
+		var retryCost float64
+		retryText, retryCost, err = c.completeOnceWith(ctx, t, system, user, label, timeout, retryOpts)
 		costUSD += retryCost
 		if err == nil {
 			text = retryText
